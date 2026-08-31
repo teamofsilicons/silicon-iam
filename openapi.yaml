@@ -1,0 +1,636 @@
+openapi: 3.1.0
+info:
+  title: Silicon IAM API
+  version: 0.1.0
+  description: Identity, authentication, organization directory, authorization metadata, application registration, and OBO Access for the Silicon platform.
+servers:
+  - url: https://backend.iam.teamofsilicons.com/api/v1
+tags:
+  - name: Carbon Authentication
+  - name: Silicon Authentication
+  - name: Organizations
+  - name: Members
+  - name: Governance
+  - name: Applications
+  - name: OBO Access
+  - name: SSO
+paths:
+  /signup/sessions:
+    post:
+      tags: [Carbon Authentication]
+      operationId: createSignupSession
+      security: []
+      responses:
+        '201':
+          description: Signup session valid for 48 hours
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSession' }
+        default: { $ref: '#/components/responses/Error' }
+  /signup/sessions/{session_id}/email:
+    post:
+      tags: [Carbon Authentication]
+      operationId: sendSignupEmailCode
+      security: []
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [email], properties: { email: { type: string, format: email } } }
+      responses:
+        '202': { $ref: '#/components/responses/CodeSent' }
+        '409': { $ref: '#/components/responses/AlreadyExists' }
+        default: { $ref: '#/components/responses/Error' }
+  /signup/sessions/{session_id}/email/verify:
+    post:
+      tags: [Carbon Authentication]
+      operationId: verifySignupEmail
+      security: []
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      requestBody: { $ref: '#/components/requestBodies/VerificationCode' }
+      responses:
+        '200': { $ref: '#/components/responses/Verified' }
+        default: { $ref: '#/components/responses/Error' }
+  /signup/sessions/{session_id}/phone:
+    post:
+      tags: [Carbon Authentication]
+      operationId: sendSignupPhoneCode
+      security: []
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [phone_number], properties: { phone_number: { type: string, pattern: '^\\+[1-9][0-9]{7,14}$' } } }
+      responses:
+        '202': { $ref: '#/components/responses/CodeSent' }
+        '409': { $ref: '#/components/responses/AlreadyExists' }
+        default: { $ref: '#/components/responses/Error' }
+  /signup/sessions/{session_id}/phone/verify:
+    post:
+      tags: [Carbon Authentication]
+      operationId: verifySignupPhone
+      security: []
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      requestBody: { $ref: '#/components/requestBodies/VerificationCode' }
+      responses:
+        '200': { $ref: '#/components/responses/Verified' }
+        default: { $ref: '#/components/responses/Error' }
+  /signup/sessions/{session_id}/complete:
+    post:
+      tags: [Carbon Authentication]
+      operationId: completeCarbonSignup
+      security: []
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [carbon_id, display_name]
+              properties:
+                carbon_id: { $ref: '#/components/schemas/CarbonId' }
+                display_name: { type: string, minLength: 1, maxLength: 200 }
+                description: { type: string, maxLength: 5000 }
+                profile_photo: { type: string, format: uri }
+      responses:
+        '201':
+          description: Carbon created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Carbon' }
+        default: { $ref: '#/components/responses/Error' }
+  /carbon-ids/{carbon_id}/availability:
+    get:
+      tags: [Carbon Authentication]
+      operationId: checkCarbonIdAvailability
+      security: []
+      parameters: [{ $ref: '#/components/parameters/CarbonId' }]
+      responses:
+        '200':
+          description: Availability
+          content:
+            application/json:
+              schema: { type: object, required: [available], properties: { available: { type: boolean } } }
+  /carbons/search:
+    get:
+      tags: [Members]
+      operationId: searchCarbons
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 10, default: 10 } }
+      responses:
+        '200':
+          description: Matching public Carbon profiles
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/CarbonSummary' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /login/challenges:
+    post:
+      tags: [Carbon Authentication]
+      operationId: createLoginChallenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              oneOf: [{ required: [email] }, { required: [phone_number] }, { required: [carbon_id] }]
+              properties:
+                email: { type: string, format: email }
+                phone_number: { type: string }
+                carbon_id: { $ref: '#/components/schemas/CarbonId' }
+      responses:
+        '201':
+          description: Challenge created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSession' }
+        default: { $ref: '#/components/responses/Error' }
+  /login/challenges/{session_id}/verify:
+    post:
+      tags: [Carbon Authentication]
+      operationId: verifyLoginChallenge
+      security: []
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      requestBody: { $ref: '#/components/requestBodies/VerificationCode' }
+      responses:
+        '200':
+          description: IAM session established
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        default: { $ref: '#/components/responses/Error' }
+  /silicon-auth/token:
+    post:
+      tags: [Silicon Authentication]
+      operationId: authenticateSilicon
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [silicon_id, silicon_token]
+              properties:
+                silicon_id: { type: string }
+                silicon_token: { type: string, pattern: '^stk-[A-Fa-f0-9]{16}$' }
+      responses:
+        '200':
+          description: Silicon access token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        default: { $ref: '#/components/responses/Error' }
+  /oauth/authorize:
+    get:
+      tags: [Applications]
+      operationId: authorizeApplication
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: app_id, in: query, required: true, schema: { type: string } }
+        - { name: redirect_uri, in: query, required: true, schema: { type: string, format: uri } }
+        - { name: state, in: query, required: true, schema: { type: string } }
+        - { name: org_id, in: query, schema: { type: string } }
+      responses:
+        '302': { description: Redirect with a two-minute authorization code, headers: { Location: { schema: { type: string, format: uri } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /oauth/token:
+    post:
+      tags: [Applications]
+      operationId: exchangeAuthorizationCode
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, app_secret, code, redirect_uri]
+              properties:
+                app_id: { type: string }
+                app_secret: { type: string }
+                code: { type: string }
+                redirect_uri: { type: string, format: uri }
+      responses:
+        '200':
+          description: Application access token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        default: { $ref: '#/components/responses/Error' }
+  /logout:
+    post:
+      tags: [Carbon Authentication]
+      operationId: logoutEverywhere
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Session revoked and app logout events queued }
+        default: { $ref: '#/components/responses/Error' }
+  /organizations:
+    get:
+      tags: [Organizations]
+      operationId: listOrganizations
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Organizations for the current Carbon
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Organization' } } } }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      tags: [Organizations]
+      operationId: createOrganization
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrganizationCreate' }
+      responses:
+        '201':
+          description: Organization created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Organization' }
+        default: { $ref: '#/components/responses/Error' }
+  /organizations/{org_id}:
+    parameters: [{ $ref: '#/components/parameters/OrgIdPath' }]
+    get:
+      tags: [Organizations]
+      operationId: getOrganization
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Organization, content: { application/json: { schema: { $ref: '#/components/schemas/Organization' } } } }
+        default: { $ref: '#/components/responses/Error' }
+    patch:
+      tags: [Organizations]
+      operationId: updateOrganization
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string }
+                logo: { type: [string, 'null'], format: uri }
+                description: { type: [string, 'null'] }
+                join_method: { type: string, enum: [email, sso] }
+      responses:
+        '200': { description: Updated organization, content: { application/json: { schema: { $ref: '#/components/schemas/Organization' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /organizations/{org_id}/members:
+    get:
+      tags: [Members]
+      operationId: listOrganizationMembers
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrgIdPath' }
+        - { name: actor_type, in: query, schema: { type: string, enum: [carbon, silicon] } }
+        - { name: tag, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Members
+          content:
+            application/json:
+              schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Member' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /organizations/{org_id}/carbon-invites:
+    post:
+      tags: [Members]
+      operationId: inviteCarbon
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgIdPath' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CarbonInviteCreate' }
+      responses:
+        '201': { description: Invite created, content: { application/json: { schema: { $ref: '#/components/schemas/Invite' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /organizations/{org_id}/silicons:
+    post:
+      tags: [Members]
+      operationId: createSilicon
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgIdPath' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SiliconCreate' }
+      responses:
+        '201':
+          description: Silicon created; silicon_token is shown once
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Silicon'
+                  - type: object
+                    required: [silicon_token]
+                    properties: { silicon_token: { type: string } }
+        default: { $ref: '#/components/responses/Error' }
+  /organizations/{org_id}/members/{actor_id}:
+    delete:
+      tags: [Members]
+      operationId: removeOrganizationMember
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrgIdPath' }
+        - { name: actor_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Member removed and revocation events emitted }
+        default: { $ref: '#/components/responses/Error' }
+  /organizations/{org_id}/join:
+    post:
+      tags: [Members]
+      operationId: joinOrganizationByEmail
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgIdPath' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [invite_id, verification_code], properties: { invite_id: { type: string, format: uuid }, verification_code: { $ref: '#/components/schemas/VerificationCode' } } }
+      responses:
+        '200': { description: Membership created, content: { application/json: { schema: { $ref: '#/components/schemas/Member' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /organizations/{org_id}/tags:
+    get:
+      tags: [Governance]
+      operationId: listTags
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgIdPath' }]
+      responses:
+        '200': { description: Tags, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { type: string } } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+    put:
+      tags: [Governance]
+      operationId: replaceTags
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgIdPath' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, uniqueItems: true, items: { type: string } } } } } } }
+      responses:
+        '200': { description: Tags replaced }
+        default: { $ref: '#/components/responses/Error' }
+  /organizations/{org_id}/role-change-requests:
+    post:
+      tags: [Governance]
+      operationId: requestRoleChange
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgIdPath' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [actor_id, role], properties: { actor_id: { type: string }, role: { type: string, maxLength: 5000 } } }
+      responses:
+        '201': { description: Approval request, content: { application/json: { schema: { $ref: '#/components/schemas/ApprovalRequest' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /organizations/{org_id}/role-change-requests/{request_id}/decisions:
+    post:
+      tags: [Governance]
+      operationId: decideRoleChange
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrgIdPath' }
+        - { name: request_id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [decision], properties: { decision: { type: string, enum: [approve, reject] } } } } } }
+      responses:
+        '200': { description: Updated approval request, content: { application/json: { schema: { $ref: '#/components/schemas/ApprovalRequest' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /organizations/{org_id}/trust:
+    put:
+      tags: [Governance]
+      operationId: setTrustRule
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgIdPath' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TrustRule' }
+      responses:
+        '200': { description: Trust rule saved, content: { application/json: { schema: { $ref: '#/components/schemas/TrustRule' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /organizations/{org_id}/silicons/{silicon_id}/token-rotation-requests:
+    post:
+      tags: [Governance]
+      operationId: requestSiliconTokenRotation
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrgIdPath' }
+        - { name: silicon_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '201': { description: Owner approval required, content: { application/json: { schema: { $ref: '#/components/schemas/ApprovalRequest' } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /organizations/{org_id}/sso/setup-link:
+    post:
+      tags: [SSO]
+      operationId: createSsoSetupLink
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgIdPath' }]
+      responses:
+        '201': { description: Two-hour WorkOS setup link, content: { application/json: { schema: { type: object, required: [url, expires_at], properties: { url: { type: string, format: uri }, expires_at: { type: string, format: date-time } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /organizations/{org_id}/sso/test:
+    post:
+      tags: [SSO]
+      operationId: testSsoConfiguration
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgIdPath' }]
+      responses:
+        '200': { description: Test result, content: { application/json: { schema: { type: object, required: [ok], properties: { ok: { type: boolean }, message: { type: string } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /applications:
+    get:
+      tags: [Applications]
+      operationId: listApplications
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Applications, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Application' } } } } } } }
+        default: { $ref: '#/components/responses/Error' }
+    post:
+      tags: [Applications]
+      operationId: createApplication
+      security: [{ bearerAuth: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ApplicationCreate' } } } }
+      responses:
+        '201': { description: Unverified application; secret shown once, content: { application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Application' }, { type: object, properties: { app_secret: { type: string } } }] } } } }
+        default: { $ref: '#/components/responses/Error' }
+  /applications/{app_id}:
+    delete:
+      tags: [Applications]
+      operationId: deleteApplication
+      security: [{ bearerAuth: [] }]
+      parameters: [{ name: app_id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '204': { description: Application deleted }
+        default: { $ref: '#/components/responses/Error' }
+  /obo-access/verify:
+    post:
+      tags: [OBO Access]
+      operationId: verifyOboAccess
+      security: [{ appCredentials: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [access_proof, audience, action]
+              properties:
+                access_proof: { type: string }
+                audience: { type: string, description: Target application ID }
+                action: { type: string }
+                resource: { type: string }
+      responses:
+        '200':
+          description: Verified OBO actor and access constraints
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OboAccessResult' }
+        default: { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: IAM access token }
+    appCredentials: { type: http, scheme: basic, description: Application ID and secret }
+  parameters:
+    SessionId: { name: session_id, in: path, required: true, schema: { type: string, format: uuid } }
+    CarbonId: { name: carbon_id, in: path, required: true, schema: { $ref: '#/components/schemas/CarbonId' } }
+    OrgIdPath: { name: org_id, in: path, required: true, schema: { type: string, pattern: '^[a-z0-9_-]{3,50}$' } }
+  requestBodies:
+    VerificationCode:
+      required: true
+      content:
+        application/json:
+          schema: { type: object, required: [verification_code], properties: { verification_code: { $ref: '#/components/schemas/VerificationCode' } } }
+  responses:
+    Error:
+      description: Error
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    CodeSent:
+      description: Verification code sent
+      content: { application/json: { schema: { type: object, required: [expires_at], properties: { expires_at: { type: string, format: date-time } } } } }
+    AlreadyExists:
+      description: Identity is already registered
+      content: { application/json: { schema: { type: object, required: [already_exists], properties: { already_exists: { const: true } } } } }
+    Verified:
+      description: Verification successful
+      content: { application/json: { schema: { type: object, required: [verified], properties: { verified: { const: true } } } } }
+  schemas:
+    VerificationCode: { type: string, pattern: '^[0-9]{6}$' }
+    CarbonId: { type: string, pattern: '^[a-z0-9_-]{3,30}$' }
+    AuthSession:
+      type: object
+      required: [session_id, expires_at]
+      properties: { session_id: { type: string, format: uuid }, expires_at: { type: string, format: date-time } }
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in]
+      properties: { access_token: { type: string }, token_type: { const: Bearer }, expires_in: { type: integer, minimum: 1 }, actor: { $ref: '#/components/schemas/ActorRef' } }
+    ActorRef:
+      type: object
+      required: [type, id]
+      properties: { type: { type: string, enum: [carbon, silicon, application] }, id: { type: string } }
+    CarbonSummary:
+      type: object
+      required: [carbon_id, display_name]
+      properties: { carbon_id: { $ref: '#/components/schemas/CarbonId' }, display_name: { type: string }, profile_photo: { type: [string, 'null'], format: uri } }
+    Carbon:
+      allOf:
+        - $ref: '#/components/schemas/CarbonSummary'
+        - type: object
+          required: [email, phone_number, created_at]
+          properties: { email: { type: string, format: email }, phone_number: { type: string }, description: { type: [string, 'null'] }, created_at: { type: string, format: date-time } }
+    OrganizationCreate:
+      type: object
+      required: [org_id, name]
+      properties: { org_id: { type: string, pattern: '^[a-z0-9_-]{3,50}$' }, name: { type: string }, logo: { type: string, format: uri }, description: { type: string } }
+    Organization:
+      allOf:
+        - $ref: '#/components/schemas/OrganizationCreate'
+        - type: object
+          required: [owner_id, join_method, created_at]
+          properties: { owner_id: { type: string }, join_method: { type: string, enum: [email, sso] }, sso_status: { type: string, enum: [disabled, pending, active, error] }, created_at: { type: string, format: date-time } }
+    Member:
+      type: object
+      required: [actor, org_role, role, tags]
+      properties:
+        actor: { $ref: '#/components/schemas/ActorRef' }
+        org_role: { type: string, enum: [owner, admin, member] }
+        role: { type: string, maxLength: 5000 }
+        tags: { type: array, uniqueItems: true, items: { type: string } }
+        reports_to: { type: [string, 'null'] }
+        first_silicon: { type: [string, 'null'] }
+        extra_silicons: { type: array, items: { type: string } }
+    CarbonInviteCreate:
+      type: object
+      required: [role, first_silicon, default_trust]
+      oneOf: [{ required: [carbon_id] }, { required: [email] }]
+      properties:
+        carbon_id: { $ref: '#/components/schemas/CarbonId' }
+        email: { type: string, format: email }
+        role: { type: string, maxLength: 5000 }
+        tags: { type: array, items: { type: string } }
+        first_silicon: { type: string }
+        extra_silicons: { type: array, items: { type: string } }
+        default_trust: { $ref: '#/components/schemas/TrustLevel' }
+    Invite:
+      type: object
+      required: [id, org_id, status, invited_by, expires_at]
+      properties: { id: { type: string, format: uuid }, org_id: { type: string }, status: { type: string, enum: [pending, accepted, revoked, expired] }, invited_by: { $ref: '#/components/schemas/ActorRef' }, expires_at: { type: string, format: date-time } }
+    SiliconCreate:
+      type: object
+      required: [silicon_id, profile_photo, role]
+      properties: { silicon_id: { type: string, pattern: '^[a-z0-9_-]{3,50}$', description: Organization suffix is appended by IAM }, profile_photo: { type: string, format: uri }, role: { type: string, maxLength: 5000 }, reports_to: { type: [string, 'null'] }, tags: { type: array, items: { type: string } } }
+    Silicon:
+      type: object
+      required: [silicon_id, org_id, profile_photo, role, tags]
+      properties: { silicon_id: { type: string }, org_id: { type: string }, profile_photo: { type: string, format: uri }, role: { type: string }, reports_to: { type: [string, 'null'] }, tags: { type: array, items: { type: string } } }
+    TrustLevel:
+      type: object
+      required: [boundary, level]
+      properties: { boundary: { type: string, enum: [internal, external] }, level: { type: string, enum: [not_trusted, needs_approval, trusted] } }
+    TrustRule:
+      type: object
+      required: [subject, target, trust]
+      properties: { subject: { type: string, description: Actor ID or tag selector }, target: { type: string, description: Silicon ID or tag selector }, trust: { $ref: '#/components/schemas/TrustLevel' } }
+    ApprovalRequest:
+      type: object
+      required: [id, kind, status, requested_by, required_approvers, approvals]
+      properties: { id: { type: string, format: uuid }, kind: { type: string, enum: [carbon_role_change, silicon_role_change, silicon_token_rotation] }, status: { type: string, enum: [pending, approved, rejected, expired] }, requested_by: { $ref: '#/components/schemas/ActorRef' }, required_approvers: { type: array, items: { type: string } }, approvals: { type: array, items: { $ref: '#/components/schemas/ActorRef' } } }
+    ApplicationCreate:
+      type: object
+      required: [app_id, webhook_url, redirect_uri, scopes]
+      properties: { app_id: { type: string }, app_name: { type: string }, app_logo: { type: string, format: uri }, webhook_url: { type: string, format: uri }, redirect_uri: { type: string, format: uri }, scopes: { type: array, uniqueItems: true, items: { type: string } } }
+    Application:
+      allOf:
+        - $ref: '#/components/schemas/ApplicationCreate'
+        - type: object
+          required: [status, notify_users, created_at]
+          properties: { status: { type: string, enum: [under_review, verified, suspended] }, notify_users: { type: boolean }, created_at: { type: string, format: date-time } }
+    OboAccessResult:
+      type: object
+      required: [valid, actor, org_id, audience, actions, expires_at]
+      properties: { valid: { const: true }, actor: { $ref: '#/components/schemas/ActorRef' }, org_id: { type: string }, audience: { type: string }, actions: { type: array, items: { type: string } }, expires_at: { type: string, format: date-time } }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties: { code: { type: string }, message: { type: string }, details: { type: object, additionalProperties: true }, request_id: { type: string } }
