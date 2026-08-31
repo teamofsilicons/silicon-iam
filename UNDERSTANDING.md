@@ -256,11 +256,6 @@ App A contacts App B with it's app_id, and a hashed (auth_token of the carbon c 
 
 ---
 
-# How to login/signup to IAm
-
-This is not for how to create a carbon/silicon account this is for how to create an account on IAm itself for creating applications, a simple email and password login here. 
-
-
 # Frontend
 
 Our frontend is gonna support the login/signup layer and also the layer where all the apps can be managed and configured, also the backend should have a webpage where it's easy to see all the apps configured and be able to remove apps, allow/disallow some specific actions as defined, etc.
