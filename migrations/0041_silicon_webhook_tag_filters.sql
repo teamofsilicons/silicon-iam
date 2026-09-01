@@ -146,6 +146,10 @@ AS $$
                         ON extra_tag.subscription_id = subscription.id
                        AND extra_tag.organization_id = subscription.organization_id
                        AND extra_tag.tag_id = affected_tag.tag_id
+                      JOIN iam.organization_tags AS configured_tag
+                        ON configured_tag.organization_id = extra_tag.organization_id
+                       AND configured_tag.id = extra_tag.tag_id
+                       AND configured_tag.status = 'active'
                       WHERE affected_tag.outbox_event_id = event.id
                   )
               )

@@ -727,4 +727,218 @@ mod tests {
         let second = replace_claim_request(organization_id, Uuid::now_v7(), &input);
         assert_ne!(first, second);
     }
+
+    #[tokio::test]
+    #[ignore = "requires a local Docker daemon"]
+    async fn archived_additional_tag_no_longer_authorizes_delivery() -> anyhow::Result<()> {
+        use anyhow::ensure;
+        use sqlx::postgres::PgPoolOptions;
+        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
+        use testcontainers_modules::postgres::Postgres as TestPostgres;
+
+        let container = TestPostgres::default()
+            .with_tag("16-alpine")
+            .start()
+            .await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(5432).await?;
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&format!(
+                "postgres://postgres:postgres@{host}:{port}/postgres"
+            ))
+            .await?;
+        crate::infrastructure::postgres::migrate(&pool).await?;
+
+        let organization_id = Uuid::from_u128(0x41_01);
+        let creator_id = Uuid::from_u128(0x41_02);
+        let silicon_id = Uuid::from_u128(0x41_03);
+        let membership_id = Uuid::from_u128(0x41_04);
+        let endpoint_id = Uuid::from_u128(0x41_05);
+        let signing_key_id = Uuid::from_u128(0x41_06);
+        let subscription_id = Uuid::from_u128(0x41_07);
+        let tag_id = Uuid::from_u128(0x41_08);
+        let event_id = Uuid::from_u128(0x41_09);
+
+        let mut transaction = pool.begin().await?;
+        // This focused resolver test deliberately bypasses unrelated foreign-key
+        // fixtures while retaining all CHECK constraints and the routing query.
+        sqlx::query("SET LOCAL session_replication_role = replica")
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.organizations (id, org_id, created_by_carbon_id, name)
+            VALUES ($1, 'tag-filter-test', $2, 'Tag filter test')
+            ",
+        )
+        .bind(organization_id)
+        .bind(creator_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.principals (id, kind, status, activated_at)
+            VALUES ($1, 'silicon', 'active', transaction_timestamp())
+            ",
+        )
+        .bind(silicon_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.organization_memberships (
+                id, organization_id, principal_id, principal_kind, org_role
+            ) VALUES ($1, $2, $3, 'silicon', 'member')
+            ",
+        )
+        .bind(membership_id)
+        .bind(organization_id)
+        .bind(silicon_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.silicons (
+                id, organization_id, membership_id, organization_handle,
+                silicon_handle, display_name, provisioning_status
+            ) VALUES (
+                $1, $2, $3, 'tag-filter-test', 'subscriber',
+                'Subscriber', 'active'
+            )
+            ",
+        )
+        .bind(silicon_id)
+        .bind(organization_id)
+        .bind(membership_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.silicon_webhook_endpoints (
+                id, organization_id, silicon_id, url_ciphertext, url_nonce,
+                encryption_key_version, url_digest
+            ) VALUES ($1, $2, $3, decode(repeat('41', 17), 'hex'),
+                      decode(repeat('41', 12), 'hex'), 1,
+                      decode(repeat('41', 32), 'hex'))
+            ",
+        )
+        .bind(endpoint_id)
+        .bind(organization_id)
+        .bind(silicon_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.silicon_webhook_signing_keys (
+                id, organization_id, silicon_id, endpoint_id, secret_version,
+                key_prefix, secret_ciphertext, secret_nonce,
+                encryption_key_version
+            ) VALUES ($1, $2, $3, $4, 1, 'swhs_1234567',
+                      decode(repeat('41', 17), 'hex'),
+                      decode(repeat('41', 12), 'hex'), 1)
+            ",
+        )
+        .bind(signing_key_id)
+        .bind(organization_id)
+        .bind(silicon_id)
+        .bind(endpoint_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.silicon_webhook_subscriptions (
+                id, organization_id, silicon_id, endpoint_id, mode,
+                tag_filter_enabled
+            ) VALUES ($1, $2, $3, $4, 'all', true)
+            ",
+        )
+        .bind(subscription_id)
+        .bind(organization_id)
+        .bind(silicon_id)
+        .bind(endpoint_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.organization_tags (
+                id, organization_id, name, normalized_name,
+                created_by_membership_id
+            ) VALUES ($1, $2, 'Subscribed tag', 'subscribed-tag', $3)
+            ",
+        )
+        .bind(tag_id)
+        .bind(organization_id)
+        .bind(membership_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.silicon_webhook_subscription_extra_tags (
+                organization_id, subscription_id, tag_id
+            ) VALUES ($1, $2, $3)
+            ",
+        )
+        .bind(organization_id)
+        .bind(subscription_id)
+        .bind(tag_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.outbox_events (
+                id, organization_id, aggregate_type, aggregate_id,
+                aggregate_version, event_type, payload,
+                silicon_webhook_routable
+            ) VALUES ($1, $2, 'organization_membership', $3, 1,
+                      'organization.membership.updated.v1', '{}'::jsonb, true)
+            ",
+        )
+        .bind(event_id)
+        .bind(organization_id)
+        .bind(membership_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO iam.outbox_event_affected_tags (outbox_event_id, tag_id) VALUES ($1, $2)",
+        )
+        .bind(event_id)
+        .bind(tag_id)
+        .execute(&mut *transaction)
+        .await?;
+
+        let active_recipients = sqlx::query_scalar::<_, Uuid>(
+            "SELECT silicon_id FROM iam_private.list_worker_silicon_webhook_recipients($1)",
+        )
+        .bind(event_id)
+        .fetch_all(&mut *transaction)
+        .await?;
+        ensure!(
+            active_recipients == vec![silicon_id],
+            "an active additional tag did not authorize its subscriber"
+        );
+
+        sqlx::query(
+            r"
+            UPDATE iam.organization_tags
+            SET status = 'archived', archived_at = transaction_timestamp()
+            WHERE id = $1
+            ",
+        )
+        .bind(tag_id)
+        .execute(&mut *transaction)
+        .await?;
+        let archived_recipients = sqlx::query_scalar::<_, Uuid>(
+            "SELECT silicon_id FROM iam_private.list_worker_silicon_webhook_recipients($1)",
+        )
+        .bind(event_id)
+        .fetch_all(&mut *transaction)
+        .await?;
+        ensure!(
+            archived_recipients.is_empty(),
+            "an archived additional tag still authorized webhook delivery"
+        );
+        transaction.rollback().await?;
+        Ok(())
+    }
 }
