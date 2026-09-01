@@ -30,6 +30,12 @@ pub(super) struct AppPath {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+pub(super) struct AppRedirectPath {
+    pub(super) app_id: String,
+    pub(super) redirect_uri_id: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ApplicationCreate {
     pub(super) app_id: String,
@@ -54,6 +60,45 @@ pub(super) struct ApplicationPatch {
     pub(super) redirect_uris: Option<Vec<String>>,
     pub(super) requested_scopes: Option<Vec<String>>,
     pub(super) obo_endpoints: Option<Vec<ApplicationOboEndpoint>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RedirectUriCreate {
+    pub(super) redirect_uri: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]
+pub(super) struct RedirectUriView {
+    pub(super) id: Uuid,
+    pub(super) redirect_uri: String,
+    pub(super) status: String,
+    pub(super) version: i64,
+    pub(super) created_at: OffsetDateTime,
+    pub(super) approved_at: Option<OffsetDateTime>,
+    pub(super) retired_at: Option<OffsetDateTime>,
+    pub(super) updated_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct RedirectUriPage {
+    pub(super) items: Vec<RedirectUriView>,
+    pub(super) page: PageInfo,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct RedirectUriMutation {
+    pub(super) redirect_uri: RedirectUriView,
+    pub(super) application_version: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct ApplicationSecretRotated {
+    pub(super) app_id: String,
+    pub(super) app_secret: String,
+    pub(super) app_secret_version: i64,
+    pub(super) application_version: i64,
+    pub(super) secret_replay_expires_at: OffsetDateTime,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]
@@ -142,6 +187,49 @@ pub(super) struct WebhookView {
     pub(super) status: String,
     pub(super) secret_version: i64,
     pub(super) version: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(super) struct DeadLetterPageQuery {
+    pub(super) cursor: Option<String>,
+    pub(super) limit: Option<u16>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]
+pub(super) struct WebhookDeadLetterView {
+    pub(super) delivery_id: Uuid,
+    pub(super) event_id: Uuid,
+    pub(super) event_type: String,
+    pub(super) occurred_at: OffsetDateTime,
+    pub(super) aggregate_type: String,
+    pub(super) aggregate_id: Uuid,
+    pub(super) aggregate_version: i64,
+    pub(super) status: String,
+    pub(super) attempt_count: i32,
+    pub(super) cycle_attempt_count: i32,
+    pub(super) manual_replay_count: i32,
+    pub(super) last_http_status: Option<i16>,
+    pub(super) last_error_code: Option<String>,
+    pub(super) dead_lettered_at: Option<OffsetDateTime>,
+    pub(super) version: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct WebhookDeadLetterPage {
+    pub(super) items: Vec<WebhookDeadLetterView>,
+    pub(super) page: PageInfo,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WebhookReplayRequest {
+    pub(super) delivery_ids: Vec<Uuid>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct WebhookReplayResponse {
+    pub(super) deliveries: Vec<WebhookDeadLetterView>,
+    pub(super) replayed_count: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]

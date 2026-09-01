@@ -278,6 +278,8 @@ pub(super) enum StepUpAction {
     AccountSessionRevoke,
     #[serde(rename = "account.sessions_revoke_all")]
     AccountSessionsRevokeAll,
+    #[serde(rename = "application.client_secret.rotate")]
+    ApplicationClientSecretRotate,
     #[serde(rename = "organization.transfer_ownership")]
     OrganizationTransferOwnership,
     #[serde(rename = "organization.authorization_change")]
@@ -299,6 +301,7 @@ impl StepUpAction {
         match self {
             Self::AccountSessionRevoke => "account.session_revoke",
             Self::AccountSessionsRevokeAll => "account.sessions_revoke_all",
+            Self::ApplicationClientSecretRotate => "application.client_secret.rotate",
             Self::OrganizationTransferOwnership => "organization.transfer_ownership",
             Self::OrganizationAuthorizationChange => "organization.authorization_change",
             Self::OrganizationSsoChange => "organization.sso_change",

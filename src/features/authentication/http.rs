@@ -27,7 +27,7 @@ use crate::{
 };
 
 use super::{
-    contacts,
+    LogoutTrigger, contacts,
     database::expired,
     idempotency::{IdempotencyKey, Outcome},
     login,
@@ -239,18 +239,24 @@ pub(super) async fn logout(
         .map_err(|_| validation::validation("body", "must match the documented JSON schema"))?
         .map_or_default(|Json(input)| input)
         .mode;
-    let step_up_token = if matches!(mode, LogoutMode::AllSessions) {
+    let step_up_token = if matches!(mode, LogoutMode::AllSessions)
+        && matches!(identity.trigger, LogoutTrigger::FirstPartyCarbon)
+    {
         optional_step_up_token(&headers)?
     } else {
         None
     };
     let outcome = sessions::logout(
         &state,
-        identity.principal_id,
-        identity.authentication_session_id,
-        &key,
-        step_up_token.as_ref(),
-        mode,
+        sessions::LogoutCommand {
+            principal_id: identity.principal_id,
+            authentication_session_id: identity.authentication_session_id,
+            trigger: identity.trigger,
+            credential_state: identity.credential_state,
+            key: &key,
+            step_up_token: step_up_token.as_ref(),
+            mode,
+        },
     )
     .await?;
     cleared_browser_session_response(outcome.status, outcome.replayed)

@@ -35,6 +35,7 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     crate::infrastructure::postgres::migrate(&pool).await?;
     seed_protocol_rows(&pool).await?;
 
+    application_lifecycle_and_manual_replay_are_atomic(&pool).await?;
     application_deletion_revokes_all_client_authority(&pool).await?;
     authorization_code_scope_revocation_fails_closed(&pool).await?;
     application_scope_revocation_contains_existing_access(&pool).await?;
@@ -44,6 +45,332 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     obo_proof_is_single_use(&pool).await?;
     committed_application_secret_revocation_wins_authentication(&pool).await?;
     Ok(())
+}
+
+async fn application_lifecycle_and_manual_replay_are_atomic(pool: &PgPool) -> anyhow::Result<()> {
+    let replacement_secret_id = Uuid::from_u128(0x132);
+    let replacement_redirect_id = Uuid::from_u128(0x52);
+    let event_id = Uuid::from_u128(0x151);
+    let recipient_id = Uuid::from_u128(0x152);
+    let delivery_id = Uuid::from_u128(0x153);
+    let second_event_id = Uuid::from_u128(0x157);
+    let second_recipient_id = Uuid::from_u128(0x158);
+    let second_delivery_id = Uuid::from_u128(0x159);
+    let replay_batch_id = Uuid::from_u128(0x156);
+    let mut transaction = pool.begin().await?;
+
+    sqlx::query(
+        r"
+        UPDATE iam.application_secrets
+        SET status = 'retired', retired_at = transaction_timestamp(), retires_at = NULL
+        WHERE application_id = $1 AND status IN ('active', 'retiring')
+        ",
+    )
+    .bind(APP_A_ID)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.application_secrets (
+            id, application_id, secret_version, secret_prefix, secret_digest,
+            pepper_key_version, created_by_carbon_id
+        ) VALUES ($1, $2, 2, 'ask_ijklmnop', decode(repeat('23', 32), 'hex'), 1, $3)
+        ",
+    )
+    .bind(replacement_secret_id)
+    .bind(APP_A_ID)
+    .bind(CARBON_ID)
+    .execute(&mut *transaction)
+    .await?;
+    let secret_states = sqlx::query_as::<_, (i64, String)>(
+        r"
+        SELECT secret_version, status
+        FROM iam.application_secrets
+        WHERE application_id = $1
+        ORDER BY secret_version
+        ",
+    )
+    .bind(APP_A_ID)
+    .fetch_all(&mut *transaction)
+    .await?;
+    ensure!(
+        secret_states == [(1, "retired".to_owned()), (2, "active".to_owned())],
+        "client-secret rotation did not atomically retire the previous secret"
+    );
+
+    sqlx::query(
+        r"
+        UPDATE iam.application_redirect_uris
+        SET status = 'retired', retired_at = transaction_timestamp()
+        WHERE application_id = $1 AND status IN ('active', 'pending_review')
+        ",
+    )
+    .bind(APP_A_ID)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.application_redirect_uris (
+            id, application_id, redirect_uri, uri_digest
+        ) VALUES ($1, $2, 'https://client.test/new-callback', decode(repeat('52', 32), 'hex'))
+        ",
+    )
+    .bind(replacement_redirect_id)
+    .bind(APP_A_ID)
+    .execute(&mut *transaction)
+    .await?;
+    let redirect_states = sqlx::query_as::<_, (Uuid, String, i64)>(
+        r"
+        SELECT id, status, version
+        FROM iam.application_redirect_uris
+        WHERE application_id = $1
+        ORDER BY created_at, id
+        ",
+    )
+    .bind(APP_A_ID)
+    .fetch_all(&mut *transaction)
+    .await?;
+    ensure!(
+        redirect_states
+            == [
+                (Uuid::from_u128(0x51), "retired".to_owned(), 2),
+                (replacement_redirect_id, "pending_review".to_owned(), 1),
+            ],
+        "redirect replacement did not retain versioned retired history"
+    );
+
+    sqlx::query(
+        r"
+        INSERT INTO iam.outbox_events (
+            id, aggregate_type, aggregate_id, aggregate_version,
+            event_ordinal, event_type, schema_version, payload, status, completed_at
+        ) VALUES ($1, 'application', $2, 3, 1,
+                  'application.updated', 1, jsonb_build_object('application_id', $2),
+                  'completed', transaction_timestamp())
+        ",
+    )
+    .bind(event_id)
+    .bind(APP_A_ID)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.outbox_events (
+            id, aggregate_type, aggregate_id, aggregate_version,
+            event_ordinal, event_type, schema_version, payload, status, completed_at
+        ) VALUES ($1, 'carbon', $2, 7, 1,
+                  'carbon.updated.v1', 1, jsonb_build_object('carbon_id', $2),
+                  'completed', transaction_timestamp())
+        ",
+    )
+    .bind(second_event_id)
+    .bind(CARBON_ID)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.outbox_event_recipients (
+            id, outbox_event_id, recipient_kind,
+            application_webhook_endpoint_id, ordering_key
+        ) VALUES ($1, $2, 'application',
+                  '00000000-0000-0000-0000-000000000141',
+                  'application:test:application:test')
+        ",
+    )
+    .bind(recipient_id)
+    .bind(event_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.outbox_event_recipients (
+            id, outbox_event_id, recipient_kind,
+            application_webhook_endpoint_id, ordering_key
+        ) VALUES ($1, $2, 'application',
+                  '00000000-0000-0000-0000-000000000141',
+                  'application:test:carbon:test')
+        ",
+    )
+    .bind(second_recipient_id)
+    .bind(second_event_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.webhook_deliveries (
+            id, outbox_event_id, recipient_id, signing_key_id, status,
+            attempt_count, cycle_attempt_count, dead_lettered_at, last_error_code
+        ) VALUES ($1, $2, $3,
+                  '00000000-0000-0000-0000-000000000142', 'dead_letter',
+                  2, 2, transaction_timestamp(), 'remote_server_error')
+        ",
+    )
+    .bind(delivery_id)
+    .bind(event_id)
+    .bind(recipient_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.webhook_deliveries (
+            id, outbox_event_id, recipient_id, signing_key_id, status,
+            attempt_count, cycle_attempt_count, dead_lettered_at, last_error_code
+        ) VALUES ($1, $2, $3,
+                  '00000000-0000-0000-0000-000000000142', 'dead_letter',
+                  1, 1, transaction_timestamp(), 'timeout')
+        ",
+    )
+    .bind(second_delivery_id)
+    .bind(second_event_id)
+    .bind(second_recipient_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.webhook_delivery_attempts (
+            id, delivery_id, attempt_number, started_at, finished_at, error_code
+        ) VALUES
+          ('00000000-0000-0000-0000-000000000154', $1, 1,
+           transaction_timestamp(), transaction_timestamp(), 'timeout'),
+          ('00000000-0000-0000-0000-000000000155', $1, 2,
+           transaction_timestamp(), transaction_timestamp(), 'remote_server_error')
+        ",
+    )
+    .bind(delivery_id)
+    .execute(&mut *transaction)
+    .await?;
+    let locked = crate::features::webhook_replay::lock_application_dead_letters(
+        &mut transaction,
+        APP_A_ID,
+        &[second_delivery_id, delivery_id],
+    )
+    .await?;
+    ensure!(
+        locked.iter().map(|row| row.delivery_id).collect::<Vec<_>>()
+            == [delivery_id, second_delivery_id],
+        "dead letters were not locked in original event order"
+    );
+    let mut replayed = Vec::with_capacity(locked.len());
+    for delivery in &locked {
+        replayed.push(
+            crate::features::webhook_replay::replay_application_delivery(
+                &mut transaction,
+                delivery,
+                Uuid::from_u128(0x141),
+                Uuid::from_u128(0x142),
+                replay_batch_id,
+            )
+            .await?,
+        );
+    }
+    let retained_attempts = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM iam.webhook_delivery_attempts WHERE delivery_id = $1",
+    )
+    .bind(delivery_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    ensure!(
+        replayed[0].status == "pending"
+            && replayed[0].attempt_count == 2
+            && replayed[0].cycle_attempt_count == 0
+            && replayed[0].manual_replay_count == 1
+            && replayed[0].dead_lettered_at.is_none()
+            && replayed[0].version == 2
+            && retained_attempts == 2,
+        "manual replay did not preserve lifetime attempts and reset only the delivery cycle"
+    );
+    let ordering_keys = sqlx::query_scalar::<_, String>(
+        r"
+        SELECT ordering_key
+        FROM iam.outbox_event_recipients
+        WHERE id = ANY($1::uuid[])
+        ORDER BY outbox_event_id
+        ",
+    )
+    .bind([recipient_id, second_recipient_id].as_slice())
+    .fetch_all(&mut *transaction)
+    .await?;
+    ensure!(
+        ordering_keys.len() == 2 && ordering_keys[0] == ordering_keys[1],
+        "a replay batch did not share one destination-bound worker ordering lane"
+    );
+    let delivery_ids = [delivery_id, second_delivery_id];
+    let first_claimable = claimable_replay_deliveries(&mut transaction, &delivery_ids).await?;
+    ensure!(
+        first_claimable == [delivery_id],
+        "the worker could claim more than the earliest replay-batch delivery"
+    );
+    sqlx::query(
+        r"
+        UPDATE iam.webhook_deliveries
+        SET status = 'delivered', delivered_at = transaction_timestamp()
+        WHERE id = $1
+        ",
+    )
+    .bind(delivery_id)
+    .execute(&mut *transaction)
+    .await?;
+    let second_claimable = claimable_replay_deliveries(&mut transaction, &delivery_ids).await?;
+    ensure!(
+        second_claimable == [second_delivery_id],
+        "the next replay-batch delivery did not become eligible after its predecessor finished"
+    );
+    let preserved_event = sqlx::query_as::<_, (Uuid, i64, String, serde_json::Value)>(
+        r"
+        SELECT id, aggregate_version, event_type, payload
+        FROM iam.outbox_events WHERE id = $1
+        ",
+    )
+    .bind(event_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    ensure!(
+        preserved_event
+            == (
+                event_id,
+                3,
+                "application.updated".to_owned(),
+                serde_json::json!({ "application_id": APP_A_ID }),
+            ),
+        "manual replay mutated the original event identity, version, type, or payload"
+    );
+    transaction.rollback().await?;
+    Ok(())
+}
+
+async fn claimable_replay_deliveries(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    delivery_ids: &[Uuid],
+) -> anyhow::Result<Vec<Uuid>> {
+    sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT delivery.id
+        FROM iam.webhook_deliveries AS delivery
+        JOIN iam.outbox_event_recipients AS recipient
+          ON recipient.id = delivery.recipient_id
+         AND recipient.outbox_event_id = delivery.outbox_event_id
+        JOIN iam.outbox_events AS event ON event.id = delivery.outbox_event_id
+        WHERE delivery.id = ANY($1::uuid[])
+          AND delivery.status = 'pending'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM iam.webhook_deliveries AS prior_delivery
+              JOIN iam.outbox_event_recipients AS prior_recipient
+                ON prior_recipient.id = prior_delivery.recipient_id
+               AND prior_recipient.outbox_event_id = prior_delivery.outbox_event_id
+              JOIN iam.outbox_events AS prior_event
+                ON prior_event.id = prior_delivery.outbox_event_id
+              WHERE prior_recipient.ordering_key = recipient.ordering_key
+                AND prior_event.global_sequence < event.global_sequence
+                AND prior_delivery.status IN ('pending', 'processing')
+          )
+        ORDER BY event.global_sequence, delivery.id
+        ",
+    )
+    .bind(delivery_ids)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(Into::into)
 }
 
 async fn application_deletion_revokes_all_client_authority(pool: &PgPool) -> anyhow::Result<()> {

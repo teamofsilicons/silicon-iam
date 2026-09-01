@@ -103,23 +103,54 @@ pub(super) async fn begin<T: DeserializeOwned>(
             record_id: Lease(lease),
         }),
         IdempotencyClaim::Replay(replay) => {
-            let stored =
-                serde_json::from_slice::<StoredResponse<T>>(&replay.body).map_err(|_| {
-                    AppError::Internal {
-                        category: "idempotency_response_decode",
-                    }
-                })?;
-            if !(100..=599).contains(&stored.public_status) {
-                return Err(AppError::Internal {
-                    category: "idempotency_response_status",
-                });
-            }
+            let stored = decode_stored_response(&replay.body)?;
             Ok(Claim::Replay {
                 status: stored.public_status,
                 response: stored.response,
             })
         }
     }
+}
+
+/// Looks up an exact committed response without creating a fresh reservation.
+/// This is the only idempotency operation permitted for an inactive logout
+/// credential.
+pub(super) async fn replay_if_present<T: DeserializeOwned>(
+    transaction: &mut Transaction<'_, Postgres>,
+    crypto: &CryptoService,
+    key: &IdempotencyKey,
+    caller_scope: &[u8],
+    route: &'static str,
+    request_digest: [u8; 32],
+    contains_one_time_secret: bool,
+) -> Result<Option<Outcome<T>>, AppError> {
+    let caller_scope = SecretString::from(URL_SAFE_NO_PAD.encode(caller_scope));
+    let request_payload = SecretString::from(URL_SAFE_NO_PAD.encode(request_digest));
+    let request = IdempotencyRequest {
+        route,
+        caller_scope: &caller_scope,
+        key: &key.parsed,
+        request_payload: &request_payload,
+        contains_one_time_secret,
+    };
+    let Some(replay) = shared::replay_if_present(transaction, crypto, request).await? else {
+        return Ok(None);
+    };
+    let stored = decode_stored_response(&replay.body)?;
+    Ok(Some(Outcome::replay(stored.public_status, stored.response)))
+}
+
+fn decode_stored_response<T: DeserializeOwned>(body: &[u8]) -> Result<StoredResponse<T>, AppError> {
+    let stored =
+        serde_json::from_slice::<StoredResponse<T>>(body).map_err(|_| AppError::Internal {
+            category: "idempotency_response_decode",
+        })?;
+    if !(100..=599).contains(&stored.public_status) {
+        return Err(AppError::Internal {
+            category: "idempotency_response_status",
+        });
+    }
+    Ok(stored)
 }
 
 pub(super) async fn complete<T: Serialize>(

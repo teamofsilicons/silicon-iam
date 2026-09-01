@@ -32,6 +32,12 @@ pub(super) fn application_create(input: &model::ApplicationCreate) -> Result<(),
     app_id(&input.app_id)?;
     optional_text("app_name", input.app_name.as_deref(), 1, 200)?;
     optional_https_uri("app_logo_uri", input.app_logo_uri.as_deref(), 2_048)?;
+    if input.redirect_uris.len() != 1 {
+        return Err(ApiError::validation(
+            "redirect_uris",
+            "must contain exactly one initial URI",
+        ));
+    }
     redirect_uris(&input.redirect_uris)?;
     webhook_url(&input.webhook_url)?;
     scopes(&input.requested_scopes)?;
@@ -62,6 +68,12 @@ pub(super) fn application_patch(input: &model::ApplicationPatch) -> Result<(), A
         optional_https_uri("app_logo_uri", Some(value), 2_048)?;
     }
     if let Some(values) = &input.redirect_uris {
+        if values.len() != 1 {
+            return Err(ApiError::validation(
+                "redirect_uris",
+                "must contain exactly one replacement URI",
+            ));
+        }
         redirect_uris(values)?;
     }
     if let Some(values) = &input.requested_scopes {
@@ -82,29 +94,54 @@ pub(super) fn redirect_uris(values: &[String]) -> Result<(), ApiError> {
     }
     let mut unique = BTreeSet::<&str>::new();
     for value in values {
-        let parsed = Url::parse(value)
-            .map_err(|_| ApiError::validation("redirect_uris", "contains an invalid URI"))?;
-        if value.len() > 2_048
-            || parsed.fragment().is_some()
-            || !parsed.username().is_empty()
-            || parsed.password().is_some()
-            || parsed.host_str().is_none()
-            || !matches!(parsed.scheme(), "https" | "http")
-            || (parsed.scheme() == "http"
-                && !matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "::1")))
-            || parsed.as_str() != value
-        {
-            return Err(ApiError::validation(
-                "redirect_uris",
-                "must contain canonical exact HTTPS URIs (HTTP is limited to loopback development)",
-            ));
-        }
+        redirect_uri_value("redirect_uris", value)?;
         if !unique.insert(value.as_str()) {
             return Err(ApiError::validation(
                 "redirect_uris",
                 "must not contain duplicates",
             ));
         }
+    }
+    Ok(())
+}
+
+pub(super) fn redirect_uri(value: &str) -> Result<(), ApiError> {
+    redirect_uri_value("redirect_uri", value)
+}
+
+fn redirect_uri_value(field: &'static str, value: &str) -> Result<(), ApiError> {
+    let parsed =
+        Url::parse(value).map_err(|_| ApiError::validation(field, "must be a valid URI"))?;
+    if value.len() > 2_048
+        || parsed.fragment().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.host_str().is_none()
+        || !matches!(parsed.scheme(), "https" | "http")
+        || (parsed.scheme() == "http"
+            && !matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "::1")))
+        || parsed.as_str() != value
+    {
+        return Err(ApiError::validation(
+            field,
+            "must be a canonical exact HTTPS URI (HTTP is limited to loopback development)",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn delivery_ids(values: &[uuid::Uuid]) -> Result<(), ApiError> {
+    if !(1..=100).contains(&values.len()) {
+        return Err(ApiError::validation(
+            "delivery_ids",
+            "must contain between 1 and 100 delivery IDs",
+        ));
+    }
+    if values.iter().collect::<BTreeSet<_>>().len() != values.len() {
+        return Err(ApiError::validation(
+            "delivery_ids",
+            "must not contain duplicates",
+        ));
     }
     Ok(())
 }

@@ -21,6 +21,8 @@ pub struct AccessContext {
     pub subject: ActorRef,
     /// OAuth client application, when one is involved.
     pub client_application_id: Option<Uuid>,
+    /// Application audience, when this is an Application access token.
+    pub audience_application_id: Option<Uuid>,
     /// Audience string checked by the receiving service.
     pub audience: String,
     /// Organization authorization boundary, when present.
@@ -31,6 +33,21 @@ pub struct AccessContext {
     pub scopes: Vec<String>,
     /// Authentication assurance level from the parent session.
     pub assurance_level: i16,
+}
+
+/// Immutable token identity used only to locate an exact completed logout
+/// replay after the presented credential has become inactive.
+#[derive(Clone, Debug)]
+pub(crate) struct LogoutReplayIdentity {
+    pub(crate) token_id: Uuid,
+    pub(crate) authentication_session_id: Uuid,
+    pub(crate) subject: ActorRef,
+    pub(crate) client_application_id: Option<Uuid>,
+    pub(crate) audience_application_id: Option<Uuid>,
+    pub(crate) audience: String,
+    pub(crate) organization_id: Option<Uuid>,
+    pub(crate) membership_id: Option<Uuid>,
+    pub(crate) scopes: Vec<String>,
 }
 
 /// Access-token lookup failure.
@@ -57,6 +74,7 @@ struct AccessRow {
     subject_principal_id: Uuid,
     subject_kind: String,
     client_application_id: Option<Uuid>,
+    audience_application_id: Option<Uuid>,
     audience: String,
     organization_id: Option<Uuid>,
     membership_id: Option<Uuid>,
@@ -69,6 +87,66 @@ struct AccessCandidate {
     token_id: Uuid,
     subject_principal_id: Uuid,
 }
+
+struct AccessLookup {
+    token_class: &'static str,
+    key_versions: Vec<i16>,
+    digest_bytes: Vec<Vec<u8>>,
+}
+
+#[derive(FromRow)]
+struct LogoutReplayRow {
+    token_id: Uuid,
+    authentication_session_id: Uuid,
+    subject_principal_id: Uuid,
+    subject_kind: String,
+    client_application_id: Option<Uuid>,
+    audience_application_id: Option<Uuid>,
+    audience: String,
+    organization_id: Option<Uuid>,
+    membership_id: Option<Uuid>,
+    scopes: Vec<String>,
+}
+
+const LOGOUT_REPLAY_IDENTITY_QUERY: &str = r"
+    SELECT
+        token.id AS token_id,
+        token.authentication_session_id,
+        token.subject_principal_id,
+        token.subject_kind::text AS subject_kind,
+        token.client_application_id,
+        token.audience_application_id,
+        token.audience,
+        token.organization_id,
+        token.membership_id,
+        ARRAY(
+            SELECT token_scope.scope
+            FROM iam.access_token_scopes AS token_scope
+            WHERE token_scope.access_token_id = token.id
+            ORDER BY token_scope.scope
+        ) AS scopes
+    FROM iam.access_tokens AS token
+    JOIN iam.authentication_sessions AS session
+      ON session.id = token.authentication_session_id
+     AND session.subject_principal_id = token.subject_principal_id
+     AND session.subject_kind = token.subject_kind
+    JOIN iam.principals AS subject
+      ON subject.id = token.subject_principal_id
+     AND subject.kind = token.subject_kind
+    WHERE token.id = $1
+      AND token.token_class = $2
+      AND (
+          token.token_class <> 'application_access'
+          OR EXISTS (
+              SELECT 1
+              FROM iam.applications AS application
+              WHERE application.id = token.client_application_id
+                AND application.id = token.audience_application_id
+                AND application.app_id = token.audience
+          )
+      )
+    LIMIT 1
+    ";
 
 /// Resolves a bearer token only while all parent epochs and grants are active.
 ///
@@ -86,37 +164,9 @@ pub async fn authenticate(
     crypto: &CryptoService,
     token: &SecretString,
 ) -> Result<Option<AccessContext>, AccessTokenError> {
-    let (purpose, token_class) = token_class(token)?;
-    let digests = crypto.digest_secrets(purpose, token)?;
-    let key_versions = digests
-        .iter()
-        .map(crate::infrastructure::crypto::SecretDigest::key_version)
-        .collect::<Vec<_>>();
-    let digest_bytes = digests
-        .iter()
-        .map(|digest| digest.as_bytes().to_vec())
-        .collect::<Vec<_>>();
-
+    let lookup = access_lookup(crypto, token)?;
     let mut transaction = pool.begin().await?;
-    let candidate = sqlx::query_as::<_, AccessCandidate>(
-        r"
-        WITH supplied_digest (key_version, digest) AS (
-            SELECT * FROM unnest($1::smallint[], $2::bytea[])
-        )
-        SELECT token.id AS token_id, token.subject_principal_id
-        FROM supplied_digest
-        JOIN iam.access_tokens AS token
-          ON token.digest_key_version = supplied_digest.key_version
-         AND token.token_digest = supplied_digest.digest
-        WHERE token.token_class = $3
-        LIMIT 1
-        ",
-    )
-    .bind(key_versions)
-    .bind(digest_bytes)
-    .bind(token_class)
-    .fetch_optional(&mut *transaction)
-    .await?;
+    let candidate = find_candidate(&mut transaction, &lookup).await?;
     let Some(candidate) = candidate else {
         transaction.rollback().await?;
         return Ok(None);
@@ -134,6 +184,7 @@ pub async fn authenticate(
             token.subject_principal_id,
             token.subject_kind::text AS subject_kind,
             token.client_application_id,
+            token.audience_application_id,
             token.audience,
             token.organization_id,
             token.membership_id,
@@ -199,11 +250,88 @@ pub async fn authenticate(
         ",
     )
     .bind(candidate.token_id)
-    .bind(token_class)
+    .bind(lookup.token_class)
     .fetch_optional(&mut *transaction)
     .await?;
     transaction.commit().await?;
     row.map(AccessContext::try_from).transpose()
+}
+
+/// Resolves only immutable Carbon/Application token identity for exact logout
+/// replay lookup. This function deliberately does not confer authority: it
+/// ignores current token/session/epoch/tenant state, and callers must never use
+/// its result to execute a fresh mutation.
+pub(crate) async fn identify_for_logout_replay(
+    pool: &PgPool,
+    crypto: &CryptoService,
+    token: &SecretString,
+) -> Result<Option<LogoutReplayIdentity>, AccessTokenError> {
+    let lookup = access_lookup(crypto, token)?;
+    if !matches!(lookup.token_class, "carbon_access" | "application_access") {
+        return Ok(None);
+    }
+
+    let mut transaction = pool.begin().await?;
+    let candidate = find_candidate(&mut transaction, &lookup).await?;
+    let Some(candidate) = candidate else {
+        transaction.rollback().await?;
+        return Ok(None);
+    };
+    sqlx::query("SELECT set_config('iam.principal_id', $1, true)")
+        .bind(candidate.subject_principal_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+    let row = sqlx::query_as::<_, LogoutReplayRow>(LOGOUT_REPLAY_IDENTITY_QUERY)
+        .bind(candidate.token_id)
+        .bind(lookup.token_class)
+        .fetch_optional(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    row.map(LogoutReplayIdentity::try_from).transpose()
+}
+
+fn access_lookup(
+    crypto: &CryptoService,
+    token: &SecretString,
+) -> Result<AccessLookup, AccessTokenError> {
+    let (purpose, token_class) = token_class(token)?;
+    let digests = crypto.digest_secrets(purpose, token)?;
+    Ok(AccessLookup {
+        token_class,
+        key_versions: digests
+            .iter()
+            .map(crate::infrastructure::crypto::SecretDigest::key_version)
+            .collect(),
+        digest_bytes: digests
+            .iter()
+            .map(|digest| digest.as_bytes().to_vec())
+            .collect(),
+    })
+}
+
+async fn find_candidate(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    lookup: &AccessLookup,
+) -> Result<Option<AccessCandidate>, sqlx::Error> {
+    sqlx::query_as::<_, AccessCandidate>(
+        r"
+        WITH supplied_digest (key_version, digest) AS (
+            SELECT * FROM unnest($1::smallint[], $2::bytea[])
+        )
+        SELECT token.id AS token_id, token.subject_principal_id
+        FROM supplied_digest
+        JOIN iam.access_tokens AS token
+          ON token.digest_key_version = supplied_digest.key_version
+         AND token.token_digest = supplied_digest.digest
+        WHERE token.token_class = $3
+        LIMIT 1
+        ",
+    )
+    .bind(&lookup.key_versions)
+    .bind(&lookup.digest_bytes)
+    .bind(lookup.token_class)
+    .fetch_optional(&mut **transaction)
+    .await
 }
 
 fn token_class(token: &SecretString) -> Result<(DigestPurpose, &'static str), AccessTokenError> {
@@ -229,21 +357,15 @@ impl TryFrom<AccessRow> for AccessContext {
     type Error = AccessTokenError;
 
     fn try_from(row: AccessRow) -> Result<Self, Self::Error> {
-        let actor_type = match row.subject_kind.as_str() {
-            "carbon" => ActorType::Carbon,
-            "silicon" => ActorType::Silicon,
-            "application" => ActorType::Application,
-            "service" => ActorType::Service,
-            _ => return Err(AccessTokenError::InvalidStoredActorKind),
-        };
         Ok(Self {
             token_id: row.token_id,
             authentication_session_id: row.authentication_session_id,
             subject: ActorRef {
-                actor_type,
+                actor_type: actor_type(&row.subject_kind)?,
                 id: row.subject_principal_id,
             },
             client_application_id: row.client_application_id,
+            audience_application_id: row.audience_application_id,
             audience: row.audience,
             organization_id: row.organization_id,
             membership_id: row.membership_id,
@@ -253,11 +375,42 @@ impl TryFrom<AccessRow> for AccessContext {
     }
 }
 
+impl TryFrom<LogoutReplayRow> for LogoutReplayIdentity {
+    type Error = AccessTokenError;
+
+    fn try_from(row: LogoutReplayRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            token_id: row.token_id,
+            authentication_session_id: row.authentication_session_id,
+            subject: ActorRef {
+                actor_type: actor_type(&row.subject_kind)?,
+                id: row.subject_principal_id,
+            },
+            client_application_id: row.client_application_id,
+            audience_application_id: row.audience_application_id,
+            audience: row.audience,
+            organization_id: row.organization_id,
+            membership_id: row.membership_id,
+            scopes: row.scopes,
+        })
+    }
+}
+
+fn actor_type(value: &str) -> Result<ActorType, AccessTokenError> {
+    match value {
+        "carbon" => Ok(ActorType::Carbon),
+        "silicon" => Ok(ActorType::Silicon),
+        "application" => Ok(ActorType::Application),
+        "service" => Ok(ActorType::Service),
+        _ => Err(AccessTokenError::InvalidStoredActorKind),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use secrecy::SecretString;
 
-    use super::{AccessTokenError, token_class};
+    use super::{AccessTokenError, LOGOUT_REPLAY_IDENTITY_QUERY, token_class};
 
     #[test]
     fn token_class_requires_exact_wire_shape() {
@@ -275,5 +428,31 @@ mod tests {
             token_class(&retired_service_token),
             Err(AccessTokenError::InvalidFormat)
         ));
+    }
+
+    #[test]
+    fn logout_replay_identity_is_immutable_identity_not_live_authority() {
+        for binding in [
+            "session.id = token.authentication_session_id",
+            "session.subject_principal_id = token.subject_principal_id",
+            "session.subject_kind = token.subject_kind",
+            "subject.id = token.subject_principal_id",
+            "subject.kind = token.subject_kind",
+            "token.id = $1",
+            "token.token_class = $2",
+            "application.id = token.client_application_id",
+            "application.id = token.audience_application_id",
+            "application.app_id = token.audience",
+        ] {
+            assert!(LOGOUT_REPLAY_IDENTITY_QUERY.contains(binding));
+        }
+        for live_authority_predicate in [
+            "token.revoked_at IS NULL",
+            "token.expires_at >",
+            "session.status = 'active'",
+            "subject.status = 'active'",
+        ] {
+            assert!(!LOGOUT_REPLAY_IDENTITY_QUERY.contains(live_authority_predicate));
+        }
     }
 }

@@ -10,13 +10,14 @@ use subtle::ConstantTimeEq as _;
 use uuid::Uuid;
 
 use crate::{
-    domain::actor::ActorType,
+    domain::actor::{ActorRef, ActorType},
     error::AppError,
+    features::authentication::{LogoutCredentialState, LogoutTrigger},
     infrastructure::{
         browser_session::{self, BrowserSessionCookieError},
         postgres::{
             context::{self, DatabaseContext},
-            tokens::{self, AccessContext, AccessTokenError},
+            tokens::{self, AccessContext, AccessTokenError, LogoutReplayIdentity},
         },
     },
 };
@@ -27,36 +28,53 @@ use super::ApiState;
 #[derive(Clone, Debug)]
 pub(crate) struct Authenticated(pub(crate) AccessContext);
 
-/// First-party Carbon identity accepted by logout through either a bearer
-/// credential or the signed browser session plus double-submit CSRF token.
+/// Carbon session and immutable trigger identity accepted by global logout.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LogoutAuthenticated {
     pub(crate) principal_id: Uuid,
     pub(crate) authentication_session_id: Uuid,
+    pub(crate) trigger: LogoutTrigger,
+    pub(crate) credential_state: LogoutCredentialState,
 }
 
 #[derive(FromRow)]
 struct BrowserLogoutSessionRow {
     session_id: Uuid,
     carbon_id: Uuid,
+    authority_active: bool,
 }
 
-const ACTIVE_BROWSER_LOGOUT_SESSION_QUERY: &str = r"
+const BROWSER_LOGOUT_SESSION_QUERY: &str = r"
     SELECT
         session.id AS session_id,
-        session.subject_principal_id AS carbon_id
+        session.subject_principal_id AS carbon_id,
+        (
+            principal.status = 'active'
+            AND principal.auth_epoch = session.subject_auth_epoch
+            AND session.status = 'active'
+            AND session.idle_expires_at > transaction_timestamp()
+            AND session.absolute_expires_at > transaction_timestamp()
+        ) AS authority_active
     FROM iam.authentication_sessions AS session
     JOIN iam.principals AS principal
       ON principal.id = session.subject_principal_id
      AND principal.kind = 'carbon'
-     AND principal.status = 'active'
-     AND principal.auth_epoch = session.subject_auth_epoch
     WHERE session.id = $1
       AND session.subject_kind = 'carbon'
-      AND session.status = 'active'
-      AND session.idle_expires_at > transaction_timestamp()
-      AND session.absolute_expires_at > transaction_timestamp()
     ";
+
+#[derive(Clone, Copy)]
+struct LogoutBearerContext<'a> {
+    token_id: Uuid,
+    authentication_session_id: Uuid,
+    subject: ActorRef,
+    client_application_id: Option<Uuid>,
+    audience_application_id: Option<Uuid>,
+    audience: &'a str,
+    organization_id: Option<Uuid>,
+    membership_id: Option<Uuid>,
+    scopes: &'a [String],
+}
 
 impl FromRequestParts<ApiState> for Authenticated {
     type Rejection = AppError;
@@ -79,8 +97,7 @@ impl FromRequestParts<ApiState> for LogoutAuthenticated {
         // An explicitly supplied Authorization header is authoritative. Never
         // fall back to a cookie when a malformed or revoked bearer is present.
         if parts.headers.contains_key(header::AUTHORIZATION) {
-            let access = authenticate_bearer(state, &parts.headers).await?;
-            return logout_bearer_identity(&access);
+            return authenticate_logout_bearer(state, &parts.headers).await;
         }
 
         let verified =
@@ -93,7 +110,7 @@ impl FromRequestParts<ApiState> for LogoutAuthenticated {
             .map_err(|_| AppError::Internal {
                 category: "logout_browser_session_context",
             })?;
-        let row = sqlx::query_as::<_, BrowserLogoutSessionRow>(ACTIVE_BROWSER_LOGOUT_SESSION_QUERY)
+        let row = sqlx::query_as::<_, BrowserLogoutSessionRow>(BROWSER_LOGOUT_SESSION_QUERY)
             .bind(verified.session_id)
             .fetch_optional(&mut *transaction)
             .await
@@ -107,6 +124,12 @@ impl FromRequestParts<ApiState> for LogoutAuthenticated {
         Ok(Self {
             principal_id: row.carbon_id,
             authentication_session_id: row.session_id,
+            trigger: LogoutTrigger::FirstPartyCarbon,
+            credential_state: if row.authority_active {
+                LogoutCredentialState::Active
+            } else {
+                LogoutCredentialState::ReplayOnly
+            },
         })
     }
 }
@@ -115,6 +138,39 @@ async fn authenticate_bearer(
     state: &ApiState,
     headers: &HeaderMap,
 ) -> Result<AccessContext, AppError> {
+    let credential = bearer_credential(headers)?;
+    tokens::authenticate(&state.pool, &state.crypto, &credential)
+        .await
+        .map_err(|error| map_access_token_error(&error))?
+        .ok_or(AppError::Unauthenticated)
+}
+
+async fn authenticate_logout_bearer(
+    state: &ApiState,
+    headers: &HeaderMap,
+) -> Result<LogoutAuthenticated, AppError> {
+    let credential = bearer_credential(headers)?;
+    if let Some(context) = tokens::authenticate(&state.pool, &state.crypto, &credential)
+        .await
+        .map_err(|error| map_access_token_error(&error))?
+    {
+        logout_bearer_identity(
+            LogoutBearerContext::from(&context),
+            LogoutCredentialState::Active,
+        )
+    } else {
+        let identity = tokens::identify_for_logout_replay(&state.pool, &state.crypto, &credential)
+            .await
+            .map_err(|error| map_access_token_error(&error))?
+            .ok_or(AppError::Unauthenticated)?;
+        logout_bearer_identity(
+            LogoutBearerContext::from(&identity),
+            LogoutCredentialState::ReplayOnly,
+        )
+    }
+}
+
+fn bearer_credential(headers: &HeaderMap) -> Result<SecretString, AppError> {
     let authorization_headers = headers.get_all(header::AUTHORIZATION);
     let mut authorization_values = authorization_headers.iter();
     let header = authorization_values
@@ -132,36 +188,90 @@ async fn authenticate_bearer(
         return Err(AppError::Unauthenticated);
     }
 
-    let credential = SecretString::from(credential.to_owned());
-    match tokens::authenticate(&state.pool, &state.crypto, &credential).await {
-        Ok(Some(context)) => Ok(context),
-        Ok(None) | Err(AccessTokenError::InvalidFormat) => Err(AppError::Unauthenticated),
-        Err(AccessTokenError::Crypto(_)) => Err(AppError::Internal {
+    Ok(SecretString::from(credential.to_owned()))
+}
+
+fn map_access_token_error(error: &AccessTokenError) -> AppError {
+    match error {
+        AccessTokenError::InvalidFormat => AppError::Unauthenticated,
+        AccessTokenError::Crypto(_) => AppError::Internal {
             category: "access_token_crypto",
-        }),
-        Err(AccessTokenError::Database(_)) => Err(AppError::Internal {
+        },
+        AccessTokenError::Database(_) => AppError::Internal {
             category: "access_token_database",
-        }),
-        Err(AccessTokenError::InvalidStoredActorKind) => Err(AppError::Internal {
+        },
+        AccessTokenError::InvalidStoredActorKind => AppError::Internal {
             category: "access_token_actor_kind",
-        }),
+        },
     }
 }
 
-fn logout_bearer_identity(access: &AccessContext) -> Result<LogoutAuthenticated, AppError> {
-    if access.subject.actor_type != ActorType::Carbon
-        || access.audience != "silicon-iam"
-        || access.client_application_id.is_some()
-        || access.organization_id.is_some()
-        || access.membership_id.is_some()
-        || !access.scopes.iter().any(|scope| scope == "iam.self")
-    {
+fn logout_bearer_identity(
+    access: LogoutBearerContext<'_>,
+    credential_state: LogoutCredentialState,
+) -> Result<LogoutAuthenticated, AppError> {
+    if access.subject.actor_type != ActorType::Carbon {
         return Err(AppError::Forbidden);
     }
+
+    let trigger = match (access.client_application_id, access.audience_application_id) {
+        (None, None)
+            if access.audience == "silicon-iam"
+                && access.organization_id.is_none()
+                && access.membership_id.is_none()
+                && access.scopes.iter().any(|scope| scope == "iam.self") =>
+        {
+            LogoutTrigger::FirstPartyCarbon
+        }
+        (Some(application_id), Some(audience_application_id))
+            if application_id == audience_application_id =>
+        {
+            LogoutTrigger::Application {
+                application_id,
+                access_token_id: access.token_id,
+            }
+        }
+        _ => return Err(AppError::Forbidden),
+    };
+
     Ok(LogoutAuthenticated {
         principal_id: access.subject.id,
         authentication_session_id: access.authentication_session_id,
+        trigger,
+        credential_state,
     })
+}
+
+impl<'a> From<&'a AccessContext> for LogoutBearerContext<'a> {
+    fn from(access: &'a AccessContext) -> Self {
+        Self {
+            token_id: access.token_id,
+            authentication_session_id: access.authentication_session_id,
+            subject: access.subject,
+            client_application_id: access.client_application_id,
+            audience_application_id: access.audience_application_id,
+            audience: &access.audience,
+            organization_id: access.organization_id,
+            membership_id: access.membership_id,
+            scopes: &access.scopes,
+        }
+    }
+}
+
+impl<'a> From<&'a LogoutReplayIdentity> for LogoutBearerContext<'a> {
+    fn from(access: &'a LogoutReplayIdentity) -> Self {
+        Self {
+            token_id: access.token_id,
+            authentication_session_id: access.authentication_session_id,
+            subject: access.subject,
+            client_application_id: access.client_application_id,
+            audience_application_id: access.audience_application_id,
+            audience: &access.audience,
+            organization_id: access.organization_id,
+            membership_id: access.membership_id,
+            scopes: &access.scopes,
+        }
+    }
 }
 
 fn require_matching_csrf(headers: &HeaderMap, expected: &str) -> Result<(), AppError> {
@@ -206,8 +316,10 @@ mod tests {
     };
 
     use super::{
-        ACTIVE_BROWSER_LOGOUT_SESSION_QUERY, logout_bearer_identity, require_matching_csrf,
+        BROWSER_LOGOUT_SESSION_QUERY, LogoutBearerContext, logout_bearer_identity,
+        require_matching_csrf,
     };
+    use crate::features::authentication::{LogoutCredentialState, LogoutTrigger};
 
     #[test]
     fn cookie_logout_requires_an_exact_csrf_token() {
@@ -222,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_logout_revalidates_every_session_authority_layer() {
+    fn browser_logout_classifies_live_authority_and_retains_replay_identity() {
         for required in [
             "principal.kind = 'carbon'",
             "principal.status = 'active'",
@@ -232,12 +344,14 @@ mod tests {
             "session.idle_expires_at > transaction_timestamp()",
             "session.absolute_expires_at > transaction_timestamp()",
         ] {
-            assert!(ACTIVE_BROWSER_LOGOUT_SESSION_QUERY.contains(required));
+            assert!(BROWSER_LOGOUT_SESSION_QUERY.contains(required));
         }
+        assert!(BROWSER_LOGOUT_SESSION_QUERY.contains(") AS authority_active"));
+        assert!(!BROWSER_LOGOUT_SESSION_QUERY.contains("WHERE session.status = 'active'"));
     }
 
     #[test]
-    fn delegated_bearer_cannot_use_first_party_logout() {
+    fn logout_accepts_only_direct_carbon_or_bound_application_bearers() {
         let principal_id = Uuid::from_u128(1);
         let mut access = AccessContext {
             token_id: Uuid::from_u128(2),
@@ -247,14 +361,59 @@ mod tests {
                 id: principal_id,
             },
             client_application_id: None,
+            audience_application_id: None,
             audience: "silicon-iam".to_owned(),
             organization_id: None,
             membership_id: None,
             scopes: vec!["iam.self".to_owned()],
             assurance_level: 1,
         };
-        assert!(logout_bearer_identity(&access).is_ok());
+        assert!(matches!(
+            logout_bearer_identity(
+                LogoutBearerContext::from(&access),
+                LogoutCredentialState::Active,
+            ),
+            Ok(super::LogoutAuthenticated {
+                trigger: LogoutTrigger::FirstPartyCarbon,
+                credential_state: LogoutCredentialState::Active,
+                ..
+            })
+        ));
+        assert!(matches!(
+            logout_bearer_identity(
+                LogoutBearerContext::from(&access),
+                LogoutCredentialState::ReplayOnly,
+            ),
+            Ok(super::LogoutAuthenticated {
+                trigger: LogoutTrigger::FirstPartyCarbon,
+                credential_state: LogoutCredentialState::ReplayOnly,
+                ..
+            })
+        ));
         access.client_application_id = Some(Uuid::from_u128(4));
-        assert!(logout_bearer_identity(&access).is_err());
+        access.audience_application_id = Some(Uuid::from_u128(4));
+        access.audience = "configured-app".to_owned();
+        assert!(matches!(
+            logout_bearer_identity(
+                LogoutBearerContext::from(&access),
+                LogoutCredentialState::Active,
+            ),
+            Ok(super::LogoutAuthenticated {
+                trigger: LogoutTrigger::Application {
+                    application_id,
+                    access_token_id,
+                },
+                ..
+            }) if application_id == Uuid::from_u128(4)
+                && access_token_id == Uuid::from_u128(2)
+        ));
+        access.audience_application_id = Some(Uuid::from_u128(5));
+        assert!(
+            logout_bearer_identity(
+                LogoutBearerContext::from(&access),
+                LogoutCredentialState::Active,
+            )
+            .is_err()
+        );
     }
 }

@@ -65,6 +65,18 @@ const SESSION_RESOURCE_OWNERSHIP_QUERY: &str = r"
       AND subject_kind = 'carbon'
     FOR SHARE
 ";
+const APPLICATION_RESOURCE_OWNERSHIP_QUERY: &str = r"
+    SELECT application.id
+    FROM iam.applications AS application
+    JOIN iam.principals AS owner
+      ON owner.id = application.owner_carbon_id
+     AND owner.kind = 'carbon'
+     AND owner.status = 'active'
+    WHERE application.id = $1
+      AND application.owner_carbon_id = $2
+      AND application.deleted_at IS NULL
+    FOR SHARE OF application
+";
 
 #[derive(FromRow)]
 struct ContactRow {
@@ -423,6 +435,7 @@ async fn confirm_step_up_delivery(
             subject_id: Some(principal_id),
             actor_id: Some(principal_id),
             authentication_session_id: Some(authentication_session_id),
+            application_id: None,
             aggregate_type: "step_up_challenge",
             aggregate_id: challenge_id,
             aggregate_version,
@@ -708,6 +721,7 @@ pub(super) async fn verify_challenge(
             subject_id: Some(principal_id),
             actor_id: Some(principal_id),
             authentication_session_id: Some(context.authentication_session_id),
+            application_id: None,
             aggregate_type: "step_up_challenge",
             aggregate_id: challenge_id,
             aggregate_version,
@@ -802,6 +816,20 @@ async fn validate_resource_binding(
                 }),
             });
         }
+        StepUpAction::ApplicationClientSecretRotate => {
+            let owned_application =
+                sqlx::query_scalar::<_, Uuid>(APPLICATION_RESOURCE_OWNERSHIP_QUERY)
+                    .bind(resource_id)
+                    .bind(principal_id)
+                    .fetch_optional(&mut **transaction)
+                    .await
+                    .map_err(|_| AppError::Internal {
+                        category: "step_up_application_resource_validate",
+                    })?;
+            if owned_application.is_none() {
+                return Err(AppError::NotFound);
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -871,6 +899,7 @@ async fn record_failure(
             subject_id: Some(principal_id),
             actor_id: Some(principal_id),
             authentication_session_id: Some(authentication_session_id),
+            application_id: None,
             aggregate_type: "step_up_challenge",
             aggregate_id: challenge_id,
             aggregate_version,
@@ -904,6 +933,7 @@ async fn record_cancellation(
             subject_id: Some(principal_id),
             actor_id: Some(principal_id),
             authentication_session_id: Some(authentication_session_id),
+            application_id: None,
             aggregate_type: "step_up_challenge",
             aggregate_id: challenge.id,
             aggregate_version,
@@ -936,6 +966,7 @@ fn parse_action(value: &str) -> Result<StepUpAction, AppError> {
     match value {
         "account.session_revoke" => Ok(StepUpAction::AccountSessionRevoke),
         "account.sessions_revoke_all" => Ok(StepUpAction::AccountSessionsRevokeAll),
+        "application.client_secret.rotate" => Ok(StepUpAction::ApplicationClientSecretRotate),
         "organization.transfer_ownership" => Ok(StepUpAction::OrganizationTransferOwnership),
         "organization.authorization_change" => Ok(StepUpAction::OrganizationAuthorizationChange),
         "organization.sso_change" => Ok(StepUpAction::OrganizationSsoChange),
@@ -961,8 +992,8 @@ fn duration_seconds(
 #[cfg(test)]
 mod tests {
     use super::{
-        SESSION_RESOURCE_OWNERSHIP_QUERY, STEP_UP_CHALLENGE_LOCK_QUERY, StepUpAction,
-        StepUpChallengeInput, parse_action,
+        APPLICATION_RESOURCE_OWNERSHIP_QUERY, SESSION_RESOURCE_OWNERSHIP_QUERY,
+        STEP_UP_CHALLENGE_LOCK_QUERY, StepUpAction, StepUpChallengeInput, parse_action,
     };
 
     #[test]
@@ -977,6 +1008,10 @@ mod tests {
         assert!(matches!(
             parse_action("account.sessions_revoke_all"),
             Ok(StepUpAction::AccountSessionsRevokeAll)
+        ));
+        assert!(matches!(
+            parse_action("application.client_secret.rotate"),
+            Ok(StepUpAction::ApplicationClientSecretRotate)
         ));
         assert!(matches!(
             parse_action("organization.silicon_webhook.redirect"),
@@ -1015,6 +1050,13 @@ mod tests {
     }
 
     #[test]
+    fn client_secret_rotation_step_up_is_bound_to_an_owned_live_application() {
+        assert!(APPLICATION_RESOURCE_OWNERSHIP_QUERY.contains("application.id = $1"));
+        assert!(APPLICATION_RESOURCE_OWNERSHIP_QUERY.contains("application.owner_carbon_id = $2"));
+        assert!(APPLICATION_RESOURCE_OWNERSHIP_QUERY.contains("application.deleted_at IS NULL"));
+    }
+
+    #[test]
     fn forward_migration_closes_step_up_action_and_resource_catalogs() {
         let migration = include_str!("../../../migrations/0035_auth_contract_hardening.sql");
         assert!(migration.contains("'platform_admin.sso_entitlement'"));
@@ -1022,5 +1064,9 @@ mod tests {
         assert!(migration.contains("CHECK (resource_id IS NOT NULL) NOT VALID"));
         assert!(migration.contains("step_up_challenges_supported_purpose"));
         assert!(migration.contains("step_up_assertions_supported_purpose"));
+        let application_migration = include_str!(
+            "../../../migrations/0037_application_credential_and_redirect_lifecycle.sql"
+        );
+        assert!(application_migration.contains("'application.client_secret.rotate'"));
     }
 }

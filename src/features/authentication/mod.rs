@@ -25,6 +25,26 @@ use axum::{
 
 use crate::api::ApiState;
 
+/// Credential class that legitimately initiated a Carbon's global logout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LogoutTrigger {
+    /// The Carbon used an IAM bearer or browser session directly.
+    FirstPartyCarbon,
+    /// A reviewed Application used its Carbon-bound OAuth access token.
+    Application {
+        application_id: uuid::Uuid,
+        access_token_id: uuid::Uuid,
+    },
+}
+
+/// Whether the presented logout credential can execute a fresh mutation or
+/// can only locate an exact response committed while it was authoritative.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LogoutCredentialState {
+    Active,
+    ReplayOnly,
+}
+
 /// Builds the Carbon authentication feature router.
 pub(crate) fn router() -> Router<ApiState> {
     Router::new()

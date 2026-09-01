@@ -15,6 +15,7 @@ pub(super) struct SecurityMutation<'a> {
     pub(super) subject_id: Option<Uuid>,
     pub(super) actor_id: Option<Uuid>,
     pub(super) authentication_session_id: Option<Uuid>,
+    pub(super) application_id: Option<Uuid>,
     pub(super) aggregate_type: &'a str,
     pub(super) aggregate_id: Uuid,
     pub(super) aggregate_version: i64,
@@ -65,6 +66,7 @@ pub(super) async fn record(
             subject_principal_id,
             subject_kind,
             authentication_session_id,
+            application_id,
             request_id,
             failure_code,
             metadata
@@ -72,7 +74,7 @@ pub(super) async fn record(
         VALUES (
             $1, $2, $3, $4,
             (SELECT principal.kind FROM iam.principals AS principal WHERE principal.id = $4),
-            $5, $6, $7, $8
+            $5, $6, $7, $8, $9
         )
         ",
     )
@@ -81,6 +83,7 @@ pub(super) async fn record(
     .bind(mutation.authentication_outcome)
     .bind(mutation.subject_id)
     .bind(mutation.authentication_session_id)
+    .bind(mutation.application_id)
     .bind(request_id)
     .bind(mutation.failure_code)
     .bind(&mutation.metadata)
@@ -99,6 +102,7 @@ pub(super) async fn record(
             actor_principal_id,
             actor_kind,
             actor_authentication_session_id,
+            application_id,
             action,
             target_type,
             target_id,
@@ -111,7 +115,7 @@ pub(super) async fn record(
         VALUES (
             transaction_timestamp(), $1, $2, $3,
             (SELECT principal.kind FROM iam.principals AS principal WHERE principal.id = $3),
-            $4, $5, $6, $7, $8, $9, $10, $11, $12
+            $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
         )
         ",
     )
@@ -119,6 +123,7 @@ pub(super) async fn record(
     .bind(request_id)
     .bind(mutation.actor_id)
     .bind(mutation.actor_id.and(mutation.authentication_session_id))
+    .bind(mutation.application_id)
     .bind(mutation.audit_action)
     .bind(mutation.aggregate_type)
     .bind(mutation.aggregate_id)

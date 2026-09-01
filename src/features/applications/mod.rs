@@ -48,8 +48,28 @@ pub fn router() -> Router<ApiState> {
             get(applications::get).patch(applications::patch),
         )
         .route(
+            "/api/v1/applications/{app_id}/client-secret-rotations",
+            post(applications::rotate_client_secret),
+        )
+        .route(
+            "/api/v1/applications/{app_id}/redirect-uris",
+            get(applications::list_redirect_uris).post(applications::add_redirect_uri),
+        )
+        .route(
+            "/api/v1/applications/{app_id}/redirect-uris/{redirect_uri_id}",
+            axum::routing::delete(applications::retire_redirect_uri),
+        )
+        .route(
             "/api/v1/applications/{app_id}/webhook",
             get(webhooks::get).put(webhooks::replace),
+        )
+        .route(
+            "/api/v1/applications/{app_id}/webhook/dead-letters",
+            get(webhooks::list_dead_letters),
+        )
+        .route(
+            "/api/v1/applications/{app_id}/webhook/dead-letters/replays",
+            post(webhooks::replay_dead_letters),
         )
         .route(
             "/api/v1/applications/{app_id}/login-history",

@@ -31,9 +31,10 @@ use super::{
     events::{self, Mutation},
     idempotency::{self, Claim},
     model::{
-        AppPath, ApplicationAdminDecision, ApplicationCreate, ApplicationCreated,
+        AppPath, AppRedirectPath, ApplicationAdminDecision, ApplicationCreate, ApplicationCreated,
         ApplicationDetail, ApplicationOboEndpoint, ApplicationPage, ApplicationPatch,
-        ApplicationView, PageInfo, PageQuery, PublicActor,
+        ApplicationSecretRotated, ApplicationView, PageInfo, PageQuery, PublicActor,
+        RedirectUriCreate, RedirectUriMutation, RedirectUriPage, RedirectUriView,
     },
     security::{
         Bearer, expected_version, require_carbon, require_platform_capability, require_step_up,
@@ -56,6 +57,8 @@ pub(super) const REVOKE_ACCESS_TOKENS_FOR_REMOVED_SCOPES_QUERY: &str = r"
             AND token_scope.scope = ANY($2::text[])
       )
     ";
+
+const CLIENT_SECRET_ROTATION_STEP_UP_ACTION: &str = "application.client_secret.rotate";
 
 pub(super) async fn list(
     State(state): State<ApiState>,
@@ -415,6 +418,418 @@ pub(super) async fn get(
     json_with_etag(StatusCode::OK, &detail, detail.version)
 }
 
+pub(super) async fn rotate_client_secret(
+    State(state): State<ApiState>,
+    Bearer(access): Bearer,
+    Path(path): Path<AppPath>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let carbon_id = require_carbon(&access)?;
+    validation::app_id(&path.app_id)?;
+    let canonical = b"{}";
+    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+        .await
+        .map_err(|_| ApiError::internal("application_secret_rotation_context"))?;
+    let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
+    let caller_scope = format!("carbon:{carbon_id}:application:{}", app.id);
+    let claim = idempotency::claim::<ApplicationSecretRotated>(
+        &mut transaction,
+        &state.crypto,
+        &headers,
+        &caller_scope,
+        "POST /api/v1/applications/{app_id}/client-secret-rotations",
+        canonical,
+        true,
+    )
+    .await?;
+    if let Claim::Replay { status, response } = claim {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("application_secret_rotation_replay_commit"))?;
+        let status = StatusCode::from_u16(status)
+            .map_err(|_| ApiError::internal("application_secret_rotation_replay_status"))?;
+        return secret_json_with_etag(status, &response, response.application_version, true);
+    }
+    let Claim::Acquired(idempotency_id) = claim else {
+        return Err(ApiError::internal(
+            "application_secret_rotation_idempotency",
+        ));
+    };
+    let expected = expected_version(&headers)?;
+    let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, true).await?;
+    if app.version != expected {
+        return Err(ApiError::precondition_failed());
+    }
+    require_step_up(
+        &mut transaction,
+        &state.crypto,
+        &headers,
+        &access,
+        CLIENT_SECRET_ROTATION_STEP_UP_ACTION,
+        app.id,
+        RequiredAssurance::VerifiedChannel,
+    )
+    .await?;
+
+    let secret_version = sqlx::query_scalar::<_, i64>(
+        r"
+        SELECT COALESCE(MAX(secret_version), 0) + 1
+        FROM iam.application_secrets
+        WHERE application_id = $1
+        ",
+    )
+    .bind(app.id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_secret_rotation_version"))?;
+    let secret_id = Uuid::now_v7();
+    let secret = state
+        .crypto
+        .generate_secret(SecretKind::ApplicationSecret)
+        .map_err(|_| ApiError::internal("application_secret_rotation_generate"))?;
+    let digest = state
+        .crypto
+        .digest_secret(DigestPurpose::ApplicationSecret, &secret)
+        .map_err(|_| ApiError::internal("application_secret_rotation_digest"))?;
+
+    sqlx::query(
+        r"
+        UPDATE iam.application_secrets
+        SET status = 'retired', retired_at = transaction_timestamp(), retires_at = NULL
+        WHERE application_id = $1 AND status IN ('active', 'retiring')
+        ",
+    )
+    .bind(app.id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_secret_rotation_retire"))?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.application_secrets (
+            id, application_id, secret_version, secret_prefix, secret_digest,
+            pepper_key_version, created_by_carbon_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ",
+    )
+    .bind(secret_id)
+    .bind(app.id)
+    .bind(secret_version)
+    .bind(secret_prefix(secret.expose_secret()))
+    .bind(digest.as_bytes().as_slice())
+    .bind(digest.key_version())
+    .bind(carbon_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_secret_rotation_insert"))?;
+    let application_version = bump_application(&mut transaction, app.id).await?;
+    let secret_replay_expires_at = sqlx::query_scalar::<_, OffsetDateTime>(
+        "SELECT transaction_timestamp() + interval '10 minutes'",
+    )
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_secret_rotation_replay_expiry"))?;
+    let response = ApplicationSecretRotated {
+        app_id: app.app_id,
+        app_secret: secret.expose_secret().to_owned(),
+        app_secret_version: secret_version,
+        application_version,
+        secret_replay_expires_at,
+    };
+    events::record(
+        &mut transaction,
+        Mutation {
+            actor_id: Some(carbon_id),
+            authentication_session_id: Some(access.authentication_session_id),
+            application_id: app.id,
+            action: "application.client_secret.rotate",
+            target_type: "application_secret",
+            target_id: Some(secret_id),
+            aggregate_type: "application",
+            aggregate_id: app.id,
+            aggregate_version: application_version,
+            before: None,
+            after: Some(json!({ "secret_version": secret_version, "status": "active" })),
+            metadata: json!({ "secret_version": secret_version }),
+            event_type: "application.client_secret_rotated",
+        },
+    )
+    .await?;
+    idempotency::complete(
+        &mut transaction,
+        &state.crypto,
+        idempotency_id,
+        200,
+        &response,
+        true,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("application_secret_rotation_commit"))?;
+    secret_json_with_etag(
+        StatusCode::OK,
+        &response,
+        response.application_version,
+        false,
+    )
+}
+
+pub(super) async fn list_redirect_uris(
+    State(state): State<ApiState>,
+    Bearer(access): Bearer,
+    Path(path): Path<AppPath>,
+    Query(query): Query<PageQuery>,
+) -> Result<Response, ApiError> {
+    let carbon_id = require_carbon(&access)?;
+    validation::app_id(&path.app_id)?;
+    let cursor = cursor::decode(query.cursor.as_deref())?;
+    let limit = cursor::limit(query.limit);
+    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+        .await
+        .map_err(|_| ApiError::internal("application_redirect_list_context"))?;
+    let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
+    let (at, id) = cursor.map_or((None, None), |cursor| (Some(cursor.at), Some(cursor.id)));
+    let mut items = sqlx::query_as::<_, RedirectUriView>(
+        r"
+        SELECT id, redirect_uri, status, version, created_at, approved_at,
+               retired_at, updated_at
+        FROM iam.application_redirect_uris
+        WHERE application_id = $1
+          AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))
+        ORDER BY created_at DESC, id DESC
+        LIMIT $4
+        ",
+    )
+    .bind(app.id)
+    .bind(at)
+    .bind(id)
+    .bind(limit + 1)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_redirect_list"))?;
+    let next_cursor = if i64::try_from(items.len()).unwrap_or(i64::MAX) > limit {
+        items.pop();
+        items
+            .last()
+            .map(|item| cursor::encode(item.created_at, item.id))
+            .transpose()?
+    } else {
+        None
+    };
+    let response = RedirectUriPage {
+        items,
+        page: PageInfo::from_next_cursor(next_cursor),
+    };
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("application_redirect_list_commit"))?;
+    json_with_etag(StatusCode::OK, &response, app.version)
+}
+
+pub(super) async fn add_redirect_uri(
+    State(state): State<ApiState>,
+    Bearer(access): Bearer,
+    Path(path): Path<AppPath>,
+    headers: HeaderMap,
+    Json(input): Json<RedirectUriCreate>,
+) -> Result<Response, ApiError> {
+    let carbon_id = require_carbon(&access)?;
+    validation::app_id(&path.app_id)?;
+    validation::redirect_uri(&input.redirect_uri)?;
+    let canonical = serde_json::to_vec(&input)
+        .map_err(|_| ApiError::internal("application_redirect_add_canonical"))?;
+    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+        .await
+        .map_err(|_| ApiError::internal("application_redirect_add_context"))?;
+    let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
+    let caller_scope = format!("carbon:{carbon_id}:application:{}", app.id);
+    let claim = idempotency::claim::<RedirectUriMutation>(
+        &mut transaction,
+        &state.crypto,
+        &headers,
+        &caller_scope,
+        "POST /api/v1/applications/{app_id}/redirect-uris",
+        &canonical,
+        false,
+    )
+    .await?;
+    if let Claim::Replay { status, response } = claim {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("application_redirect_add_replay_commit"))?;
+        let status = StatusCode::from_u16(status)
+            .map_err(|_| ApiError::internal("application_redirect_add_replay_status"))?;
+        return json_with_etag_replayed(status, &response, response.application_version);
+    }
+    let Claim::Acquired(idempotency_id) = claim else {
+        return Err(ApiError::internal("application_redirect_add_idempotency"));
+    };
+    let expected = expected_version(&headers)?;
+    let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, true).await?;
+    if app.version != expected {
+        return Err(ApiError::precondition_failed());
+    }
+    let redirect_uri_id = Uuid::now_v7();
+    retire_current_redirect_uris(&mut transaction, app.id).await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.application_redirect_uris (
+            id, application_id, redirect_uri, uri_digest
+        ) VALUES ($1, $2, $3, $4)
+        ",
+    )
+    .bind(redirect_uri_id)
+    .bind(app.id)
+    .bind(&input.redirect_uri)
+    .bind(Sha256::digest(input.redirect_uri.as_bytes()).as_slice())
+    .execute(&mut *transaction)
+    .await
+    .map_err(map_application_write)?;
+    let application_version = bump_application(&mut transaction, app.id).await?;
+    let redirect_uri = load_redirect_uri(&mut transaction, app.id, redirect_uri_id).await?;
+    let response = RedirectUriMutation {
+        redirect_uri,
+        application_version,
+    };
+    record_redirect_mutation(
+        &mut transaction,
+        access.authentication_session_id,
+        carbon_id,
+        app.id,
+        application_version,
+        redirect_uri_id,
+        "application.redirect_uri.add",
+        "application.redirect_uri_added",
+        "pending_review",
+    )
+    .await?;
+    idempotency::complete(
+        &mut transaction,
+        &state.crypto,
+        idempotency_id,
+        201,
+        &response,
+        false,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("application_redirect_add_commit"))?;
+    json_with_etag(StatusCode::CREATED, &response, response.application_version)
+}
+
+pub(super) async fn retire_redirect_uri(
+    State(state): State<ApiState>,
+    Bearer(access): Bearer,
+    Path(path): Path<AppRedirectPath>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let carbon_id = require_carbon(&access)?;
+    validation::app_id(&path.app_id)?;
+    let canonical = b"{}";
+    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+        .await
+        .map_err(|_| ApiError::internal("application_redirect_retire_context"))?;
+    let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
+    let caller_scope = format!(
+        "carbon:{carbon_id}:application:{}:redirect-uri:{}",
+        app.id, path.redirect_uri_id
+    );
+    let claim = idempotency::claim::<RedirectUriMutation>(
+        &mut transaction,
+        &state.crypto,
+        &headers,
+        &caller_scope,
+        "DELETE /api/v1/applications/{app_id}/redirect-uris/{redirect_uri_id}",
+        canonical,
+        false,
+    )
+    .await?;
+    if let Claim::Replay { status, response } = claim {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("application_redirect_retire_replay_commit"))?;
+        let status = StatusCode::from_u16(status)
+            .map_err(|_| ApiError::internal("application_redirect_retire_replay_status"))?;
+        return json_with_etag_replayed(status, &response, response.application_version);
+    }
+    let Claim::Acquired(idempotency_id) = claim else {
+        return Err(ApiError::internal(
+            "application_redirect_retire_idempotency",
+        ));
+    };
+    let expected = expected_version(&headers)?;
+    let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, true).await?;
+    if app.version != expected {
+        return Err(ApiError::precondition_failed());
+    }
+    let result = sqlx::query(
+        r"
+        UPDATE iam.application_redirect_uris
+        SET status = 'retired', retired_at = transaction_timestamp()
+        WHERE application_id = $1 AND id = $2 AND status <> 'retired'
+        ",
+    )
+    .bind(app.id)
+    .bind(path.redirect_uri_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_redirect_retire"))?;
+    if result.rows_affected() != 1 {
+        let exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM iam.application_redirect_uris WHERE application_id = $1 AND id = $2)",
+        )
+        .bind(app.id)
+        .bind(path.redirect_uri_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ApiError::internal("application_redirect_retire_exists"))?;
+        return Err(if exists {
+            ApiError::conflict("redirect_uri_already_retired")
+        } else {
+            ApiError::not_found()
+        });
+    }
+    let application_version = bump_application(&mut transaction, app.id).await?;
+    let redirect_uri = load_redirect_uri(&mut transaction, app.id, path.redirect_uri_id).await?;
+    let response = RedirectUriMutation {
+        redirect_uri,
+        application_version,
+    };
+    record_redirect_mutation(
+        &mut transaction,
+        access.authentication_session_id,
+        carbon_id,
+        app.id,
+        application_version,
+        path.redirect_uri_id,
+        "application.redirect_uri.retire",
+        "application.redirect_uri_retired",
+        "retired",
+    )
+    .await?;
+    idempotency::complete(
+        &mut transaction,
+        &state.crypto,
+        idempotency_id,
+        200,
+        &response,
+        false,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("application_redirect_retire_commit"))?;
+    json_with_etag(StatusCode::OK, &response, response.application_version)
+}
+
 pub(super) async fn patch(
     State(state): State<ApiState>,
     Bearer(access): Bearer,
@@ -532,13 +947,13 @@ pub(super) async fn patch(
         .map_err(|_| ApiError::internal("application_scope_remove"))?;
     }
     if let Some(redirect_uris) = &input.redirect_uris {
+        retire_current_redirect_uris(&mut transaction, before.id).await?;
         for redirect_uri in redirect_uris {
             sqlx::query(
                 r"
                 INSERT INTO iam.application_redirect_uris (
                     id, application_id, redirect_uri, uri_digest
                 ) VALUES ($1, $2, $3, $4)
-                ON CONFLICT (application_id, uri_digest) DO NOTHING
                 ",
             )
             .bind(Uuid::now_v7())
@@ -1630,6 +2045,78 @@ fn review_decision_name(decision: &str) -> &'static str {
     }
 }
 
+async fn retire_current_redirect_uris(
+    transaction: &mut Transaction<'_, Postgres>,
+    application_id: Uuid,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        r"
+        UPDATE iam.application_redirect_uris
+        SET status = 'retired', retired_at = transaction_timestamp()
+        WHERE application_id = $1 AND status IN ('active', 'pending_review')
+        ",
+    )
+    .bind(application_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_redirect_replace_retire"))?;
+    Ok(())
+}
+
+async fn load_redirect_uri(
+    transaction: &mut Transaction<'_, Postgres>,
+    application_id: Uuid,
+    redirect_uri_id: Uuid,
+) -> Result<RedirectUriView, ApiError> {
+    sqlx::query_as::<_, RedirectUriView>(
+        r"
+        SELECT id, redirect_uri, status, version, created_at, approved_at,
+               retired_at, updated_at
+        FROM iam.application_redirect_uris
+        WHERE application_id = $1 AND id = $2
+        ",
+    )
+    .bind(application_id)
+    .bind(redirect_uri_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_redirect_load"))?
+    .ok_or_else(ApiError::not_found)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_redirect_mutation(
+    transaction: &mut Transaction<'_, Postgres>,
+    authentication_session_id: Uuid,
+    carbon_id: Uuid,
+    application_id: Uuid,
+    application_version: i64,
+    redirect_uri_id: Uuid,
+    action: &'static str,
+    event_type: &'static str,
+    status: &'static str,
+) -> Result<(), ApiError> {
+    events::record(
+        transaction,
+        Mutation {
+            actor_id: Some(carbon_id),
+            authentication_session_id: Some(authentication_session_id),
+            application_id,
+            action,
+            target_type: "application_redirect_uri",
+            target_id: Some(redirect_uri_id),
+            aggregate_type: "application",
+            aggregate_id: application_id,
+            aggregate_version: application_version,
+            before: None,
+            after: Some(json!({ "redirect_uri_id": redirect_uri_id, "status": status })),
+            metadata: json!({ "redirect_uri_id": redirect_uri_id, "status": status }),
+            event_type,
+        },
+    )
+    .await
+}
+
 fn input_as_json(input: &ApplicationPatch) -> serde_json::Value {
     json!({
         "app_name": input.app_name,
@@ -1722,6 +2209,28 @@ fn created_secret_response(
         );
     }
     response
+}
+
+fn secret_json_with_etag<T: serde::Serialize>(
+    status: StatusCode,
+    body: &T,
+    version: i64,
+    replayed: bool,
+) -> Result<Response, ApiError> {
+    let mut response = json_with_etag(status, body, version)?;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    if replayed {
+        response.headers_mut().insert(
+            http::HeaderName::from_static("idempotency-replayed"),
+            HeaderValue::from_static("true"),
+        );
+    }
+    Ok(response)
 }
 
 pub(super) fn json_with_etag<T: serde::Serialize>(
