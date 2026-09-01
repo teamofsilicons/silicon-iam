@@ -57,14 +57,14 @@ DECLARE
     select_table_names text[] := ARRAY[
         'access_token_scopes',
         'access_tokens',
-        'account_deletion_requests',
         'application_approved_scopes',
-        'application_collaborators',
+        'application_obo_endpoints',
         'application_redirect_uris',
         'application_requested_scopes',
         'application_reviews',
         'application_secrets',
         'application_webhook_endpoints',
+        'application_webhook_event_projections',
         'application_webhook_signing_keys',
         'applications',
         'approval_decisions',
@@ -76,9 +76,6 @@ DECLARE
         'carbon_contacts',
         'carbon_membership_settings',
         'carbons',
-        'contact_blind_indexes',
-        'contact_change_blind_indexes',
-        'contact_change_sessions',
         'extra_silicon_access_grants',
         'idempotency_records',
         'invitation_verification_challenges',
@@ -86,6 +83,7 @@ DECLARE
         'job_role_history',
         'login_challenge_channels',
         'login_challenges',
+        'membership_tag_change_history',
         'membership_tags',
         'notification_jobs',
         'oauth_authorization_codes',
@@ -95,13 +93,12 @@ DECLARE
         'oauth_consent_grants',
         'oauth_refresh_family_scopes',
         'oauth_scope_catalog',
-        'obo_action_catalog',
-        'obo_application_grants',
         'obo_proofs',
-        'oidc_signing_keys',
         'organization_capability_catalog',
         'organization_capability_grants',
         'organization_invitation_extra_silicons',
+        'organization_invitation_silicon_trust_overrides',
+        'organization_invitation_tag_trust_overrides',
         'organization_invitation_tags',
         'organization_invitations',
         'organization_memberships',
@@ -109,6 +106,7 @@ DECLARE
         'organization_tags',
         'organizations',
         'outbox_event_affected_tags',
+        'outbox_event_own_tag_memberships',
         'outbox_event_recipients',
         'outbox_event_topics',
         'outbox_events',
@@ -125,7 +123,6 @@ DECLARE
         'signup_sessions',
         'silicon_credential_history',
         'silicon_credentials',
-        'silicon_hooks',
         'silicon_token_rotation_requests',
         'silicon_webhook_endpoints',
         'silicon_webhook_signing_keys',
@@ -134,28 +131,24 @@ DECLARE
         'silicons',
         'sso_authorization_transactions',
         'sso_connections',
-        'sso_membership_policies',
-        'sso_membership_policy_tags',
         'sso_setup_sessions',
         'step_up_assertions',
         'step_up_challenges',
+        'tag_change_requests',
         'trust_rules',
-        'webauthn_ceremonies',
-        'webauthn_credentials',
-        'webhook_deliveries',
-        'webhook_delivery_attempts'
+        'webhook_deliveries'
     ];
     insert_table_names text[] := ARRAY[
         'access_token_scopes',
         'access_tokens',
-        'account_deletion_requests',
         'application_approved_scopes',
-        'application_collaborators',
+        'application_obo_endpoints',
         'application_redirect_uris',
         'application_requested_scopes',
         'application_reviews',
         'application_secrets',
         'application_webhook_endpoints',
+        'application_webhook_event_projections',
         'application_webhook_signing_keys',
         'applications',
         'approval_decisions',
@@ -164,11 +157,7 @@ DECLARE
         'audit_events',
         'authentication_events',
         'authentication_sessions',
-        'carbon_contacts',
         'carbon_membership_settings',
-        'contact_blind_indexes',
-        'contact_change_blind_indexes',
-        'contact_change_sessions',
         'extra_silicon_access_grants',
         'idempotency_records',
         'invitation_verification_challenges',
@@ -176,7 +165,6 @@ DECLARE
         'job_role_history',
         'login_challenge_channels',
         'login_challenges',
-        'membership_tags',
         'notification_jobs',
         'oauth_authorization_codes',
         'oauth_authorization_request_scopes',
@@ -185,18 +173,19 @@ DECLARE
         'oauth_consent_grants',
         'oauth_refresh_family_scopes',
         'obo_proofs',
-        'oidc_signing_keys',
         'organization_capability_grants',
         'organization_invitation_extra_silicons',
+        'organization_invitation_silicon_trust_overrides',
+        'organization_invitation_tag_trust_overrides',
         'organization_invitation_tags',
         'organization_invitations',
         'organization_memberships',
         'organization_tags',
         'organizations',
         'outbox_event_affected_tags',
+        'outbox_event_own_tag_memberships',
         'outbox_event_topics',
         'outbox_events',
-        'platform_role_grants',
         'principals',
         'rate_limit_buckets',
         'refresh_token_families',
@@ -213,19 +202,16 @@ DECLARE
         'silicon_webhook_subscription_topics',
         'silicon_webhook_subscriptions',
         'silicons',
-        'sso_membership_policies',
-        'sso_membership_policy_tags',
         'sso_setup_sessions',
         'step_up_assertions',
         'step_up_challenges',
-        'trust_rules',
-        'webauthn_ceremonies',
-        'webauthn_credentials'
+        'tag_change_requests',
+        'trust_rules'
     ];
     update_table_names text[] := ARRAY[
         'access_tokens',
         'application_approved_scopes',
-        'application_collaborators',
+        'application_obo_endpoints',
         'application_redirect_uris',
         'application_secrets',
         'application_webhook_endpoints',
@@ -233,10 +219,8 @@ DECLARE
         'applications',
         'approval_requests',
         'authentication_sessions',
-        'carbon_contacts',
         'carbon_membership_settings',
         'carbons',
-        'contact_change_sessions',
         'extra_silicon_access_grants',
         'idempotency_records',
         'invitation_verification_challenges',
@@ -247,14 +231,12 @@ DECLARE
         'oauth_authorization_requests',
         'oauth_consent_grants',
         'obo_proofs',
-        'oidc_signing_keys',
         'organization_capability_grants',
         'organization_invitations',
         'organization_memberships',
         'organization_sso_configs',
         'organization_tags',
         'organizations',
-        'platform_role_grants',
         'principals',
         'rate_limit_buckets',
         'refresh_token_families',
@@ -270,32 +252,30 @@ DECLARE
         'silicons',
         'sso_authorization_transactions',
         'sso_connections',
-        'sso_membership_policies',
         'sso_setup_sessions',
         'step_up_assertions',
         'step_up_challenges',
         'trust_rules',
-        'webauthn_ceremonies',
-        'webauthn_credentials',
         'webhook_deliveries'
     ];
     delete_table_names text[] := ARRAY[
         'application_requested_scopes',
-        'membership_tags',
+        'idempotency_records',
         'oauth_consent_grant_scopes',
         'silicon_webhook_subscription_topics',
-        'silicon_webhook_subscriptions',
-        'sso_membership_policy_tags'
+        'silicon_webhook_subscriptions'
     ];
     denied_table_names text[] := ARRAY[
+        'contact_blind_indexes',
         'cryptographic_key_versions',
         'external_webhook_receipts',
         'platform_capability_catalog',
         'platform_role_capabilities',
         'platform_role_catalog',
         'runtime_key_activations',
-        'service_credentials',
-        'sso_identities'
+        'silicon_hooks',
+        'sso_identities',
+        'webhook_delivery_attempts'
     ];
 BEGIN
     IF pg_catalog.cardinality(select_table_names) <> (
@@ -513,14 +493,16 @@ DECLARE
     matched_function_count integer;
     function_record record;
     api_function_names text[] := ARRAY[
+        'apply_approved_tag_change',
         'apply_workos_connection_event',
-        'archive_organization_tag',
+        'assign_initial_silicon_tags',
         'assert_active_carbon_contacts',
         'assert_active_principal_subtype',
         'assert_approval_request_shape',
         'assert_exactly_one_organization_owner',
         'assert_platform_administrator_present',
         'begin_sso_authorization',
+        'cancel_silicon_webhook_deliveries',
         'can_administer_application',
         'can_manage_application',
         'can_manage_application_technical',
@@ -532,24 +514,33 @@ DECLARE
         'current_application_id',
         'current_organization_id',
         'current_principal_id',
-        'get_audit_public_identifiers',
-        'get_platform_carbon',
+        'deactivate_silicon_webhook_for_removal',
+        'get_organization_invitation_destination',
         'has_organization_capability',
         'has_platform_capability',
         'is_active_organization_member',
         'is_organization_creator',
         'is_valid_sso_callback_correlation',
         'list_active_carbon_login_contacts',
+        'list_organization_member_webhook_authorizations',
+        'list_organization_member_webhook_projection_sources',
+        'list_profile_webhook_authorization_scopes',
+        'lock_membership_removal_event_scope',
+        'lock_sso_membership_activation_state',
+        'lock_silicon_webhook_delivery_scope',
+        'lock_silicon_webhook_own_tag_audience',
+        'lock_silicon_webhook_target',
+        'non_deleted_carbon_contact_exists',
         'organization_handle_is_available',
         'reconcile_runtime_keyring',
         'record_ignored_workos_event',
         'remove_organization_membership',
-        'replace_carbon_status',
         'replace_organization_sso_entitlement',
         'resolve_active_carbon_by_contact_digest',
         'resolve_active_carbon_by_handle',
         'resolve_active_silicon_credential',
         'resolve_organization_invitation_tenant',
+        'resolve_pending_email_join_invitation',
         'resolve_platform_sso_organization',
         'set_organization_admin_role'
     ];
@@ -557,19 +548,21 @@ DECLARE
         'activate_runtime_key_version',
         'complete_worker_silicon_hook',
         'fail_worker_silicon_hook',
+        'get_audit_public_identifiers',
         'get_worker_application_webhook_material',
+        'get_worker_application_webhook_event_projection',
         'get_worker_invitation_context',
         'get_worker_notification_contact',
         'get_worker_security_notice_contact',
         'get_worker_silicon_hook_identity',
         'get_worker_silicon_webhook_material',
         'list_worker_application_webhook_recipients',
+        'list_worker_captured_application_webhook_recipients',
         'list_worker_silicon_webhook_recipients',
         'prevent_oauth_refresh_family_scope_mutation',
         'reject_audit_mutation',
         'reject_immutable_history_mutation',
         'reconcile_worker_contact_aead_keyring',
-        'run_worker_account_deletion_finalization',
         'run_worker_ephemeral_maintenance',
         'run_worker_retention_maintenance'
     ];
@@ -642,26 +635,20 @@ GRANT SELECT ON public._sqlx_migrations TO silicon_iam_worker;
 -- policy helpers whose EXECUTE privilege they intentionally do not receive.
 ALTER POLICY silicons_member_select
     ON iam.silicons TO silicon_iam_api;
-ALTER POLICY silicon_hooks_member_select
-    ON iam.silicon_hooks TO silicon_iam_api;
-ALTER POLICY silicon_hooks_create
-    ON iam.silicon_hooks TO silicon_iam_api;
-ALTER POLICY silicon_hooks_manage
-    ON iam.silicon_hooks TO silicon_iam_api;
-ALTER POLICY silicon_hooks_platform_delivery_select
-    ON iam.silicon_hooks TO silicon_iam_api;
 ALTER POLICY silicon_webhook_endpoints_manage
     ON iam.silicon_webhook_endpoints TO silicon_iam_api;
-ALTER POLICY silicon_webhook_endpoints_platform_delivery_select
-    ON iam.silicon_webhook_endpoints TO silicon_iam_api;
-ALTER POLICY application_webhook_endpoints_platform_delivery_select
-    ON iam.application_webhook_endpoints TO silicon_iam_api;
 ALTER POLICY silicon_webhook_signing_keys_manage
     ON iam.silicon_webhook_signing_keys TO silicon_iam_api;
 ALTER POLICY silicon_webhook_subscriptions_manage
     ON iam.silicon_webhook_subscriptions TO silicon_iam_api;
 ALTER POLICY silicon_webhook_subscription_topics_manage
     ON iam.silicon_webhook_subscription_topics TO silicon_iam_api;
+ALTER POLICY tag_change_requests_member_select
+    ON iam.tag_change_requests TO silicon_iam_api;
+ALTER POLICY tag_change_requests_create
+    ON iam.tag_change_requests TO silicon_iam_api;
+ALTER POLICY membership_tag_change_history_member_select
+    ON iam.membership_tag_change_history TO silicon_iam_api;
 
 -- Remove stale worker policies from deployments that previously provisioned
 -- provider-managed Silicon Hooks. Table privileges are rebuilt from zero above.
@@ -676,14 +663,16 @@ DECLARE
     function_record record;
     worker_function_names text[] := ARRAY[
         'get_worker_application_webhook_material',
+        'get_worker_application_webhook_event_projection',
         'get_worker_invitation_context',
         'get_worker_notification_contact',
         'get_worker_security_notice_contact',
         'get_worker_silicon_webhook_material',
         'list_worker_application_webhook_recipients',
+        'list_worker_captured_application_webhook_recipients',
         'list_worker_silicon_webhook_recipients',
+        'lock_silicon_webhook_delivery_scope',
         'reconcile_worker_contact_aead_keyring',
-        'run_worker_account_deletion_finalization',
         'run_worker_ephemeral_maintenance',
         'run_worker_retention_maintenance'
     ];

@@ -29,29 +29,31 @@ EXCLUDED_NON_API_BINARY_PATHS = %w[
 # API role still requires SELECT on them when a transaction reaches commit.
 TRIGGER_ONLY_SELECT_EXCEPTIONS = {
   "ownership_transfer_requests" => "assert_approval_request_shape",
+  "platform_role_grants" => "assert_platform_administrator_present",
   "service_principals" => "assert_active_principal_subtype"
 }.freeze
 
 EXPECTED_DELETE_TABLES = Set.new(%w[
   application_requested_scopes
-  membership_tags
+  idempotency_records
   oauth_consent_grant_scopes
   silicon_webhook_subscription_topics
   silicon_webhook_subscriptions
-  sso_membership_policy_tags
 ]).freeze
 
 # These relations deliberately stay outside the API table capability manifest.
 # Access must remain mediated by narrow fixed-path functions or another process.
 CRITICAL_DENIED_TABLES = Set.new(%w[
+  contact_blind_indexes
   cryptographic_key_versions
   external_webhook_receipts
   platform_capability_catalog
   platform_role_capabilities
   platform_role_catalog
   runtime_key_activations
-  service_credentials
+  silicon_hooks
   sso_identities
+  webhook_delivery_attempts
 ]).freeze
 
 DML_VERBS = %w[SELECT INSERT UPDATE DELETE].freeze
@@ -303,6 +305,23 @@ all_table_names = migration_source.scan(
 partition_table_names = migration_source.scan(
   /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?iam\.([a-z0-9_]+)\s+PARTITION\s+OF\s+iam\./i
 ).flatten.map(&:downcase).to_set
+migration_source.scan(
+  /\bALTER\s+TABLE\s+iam\.([a-z0-9_]+)\s+RENAME\s+TO\s+([a-z0-9_]+)\b/i
+).each do |old_name, new_name|
+  old_name = old_name.downcase
+  new_name = new_name.downcase
+  all_table_names.delete(old_name)
+  all_table_names.add(new_name)
+  if partition_table_names.delete?(old_name)
+    partition_table_names.add(new_name)
+  end
+end
+migration_source.scan(/\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?iam\.([a-z0-9_]+)\b/i)
+  .flatten
+  .each do |table_name|
+    all_table_names.delete(table_name.downcase)
+    partition_table_names.delete(table_name.downcase)
+  end
 base_table_names = all_table_names - partition_table_names
 
 api_paths = production_api_paths

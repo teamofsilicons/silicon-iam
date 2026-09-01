@@ -71,7 +71,6 @@ pub async fn serve(settings: Settings) -> anyhow::Result<()> {
     postgres::register_runtime_key_versions(&pool, &settings.security).await?;
     let bind_addr = settings.server.bind_addr;
     let crypto = CryptoService::from_settings(&settings.security)?;
-    crate::features::applications::signing::reconcile(&pool, &crypto, &settings.security).await?;
     let notifications = NotificationProviders::from_settings(&settings.providers)?;
     let workos = WorkOsClient::from_settings(&settings.providers)?.map(Arc::new);
     let state = ApiState {
@@ -176,11 +175,7 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
         .route("/healthz", get(health))
         .route("/readyz", get(readiness))
         .route("/api/v1/version", get(version))
-        .route(
-            "/api/v1/me",
-            get(me::get).patch(me::patch).delete(me::delete),
-        )
-        .merge(crate::features::administration::router())
+        .route("/api/v1/me", get(me::get).patch(me::patch))
         .merge(crate::features::authentication::router())
         .merge(crate::features::organizations::router())
         .merge(crate::features::applications::router())

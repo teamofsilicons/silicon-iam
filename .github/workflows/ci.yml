@@ -194,14 +194,6 @@ jobs:
           PGUSER: postgres
         run: psql --set=ON_ERROR_STOP=1 --file=deploy/postgres/runtime-grants.sql
 
-      - name: Exercise restricted account-deletion finalization
-        env:
-          PGDATABASE: silicon_iam
-          PGHOST: 127.0.0.1
-          PGPASSWORD: postgres
-          PGUSER: postgres
-        run: psql --file=scripts/smoke-account-deletion.sql
-
       - name: Smoke-test worker through the restricted role
         env:
           IAM_DATABASE_URL: postgres://silicon_iam_worker_runtime:worker-test-password@127.0.0.1:5432/silicon_iam
