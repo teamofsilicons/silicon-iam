@@ -74,6 +74,36 @@ unless duplicate_operation_ids.empty?
   raise "duplicate operationId values: #{duplicate_operation_ids.join(", ")}"
 end
 
+idempotency_parameter = "#/components/parameters/IdempotencyKey"
+replay_header = "Idempotency-Replayed"
+idempotent_responses_missing_replay_header = []
+document.fetch("paths").each do |path, path_item|
+  HTTP_METHODS.each do |method|
+    operation = path_item[method]
+    next unless operation
+
+    parameters = Array(path_item["parameters"]) + Array(operation["parameters"])
+    next unless parameters.any? { |parameter| parameter["$ref"] == idempotency_parameter }
+
+    operation.fetch("responses").each do |status, response|
+      next unless status.match?(/\A[23]\d\d\z/)
+
+      if response["$ref"]
+        response_name = response.fetch("$ref").delete_prefix("#/components/responses/")
+        response = document.dig("components", "responses", response_name)
+        raise "unknown response reference for #{method.upcase} #{path}: #{response_name}" unless response
+      end
+      next if response.fetch("headers", {}).key?(replay_header)
+
+      idempotent_responses_missing_replay_header << "#{method.upcase} #{path} #{status}"
+    end
+  end
+end
+unless idempotent_responses_missing_replay_header.empty?
+  raise "idempotent success responses missing #{replay_header}: " \
+    "#{idempotent_responses_missing_replay_header.join(", ")}"
+end
+
 router_files = Dir["src/features/*/mod.rs"].sort + ["src/api/mod.rs"]
 actual = router_files.each_with_object({}) do |path, routes|
   extract_routes(path).each do |route, methods|
@@ -107,4 +137,4 @@ unless missing.empty? && extra.empty? && unmerged_features.empty?
   exit 1
 end
 
-puts "OpenAPI and Axum agree on #{expected.length} paths and #{expected_operations.length} operations."
+puts "OpenAPI and Axum agree on #{expected.length} paths and #{expected_operations.length} operations; idempotent success responses expose replay state."

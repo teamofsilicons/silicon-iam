@@ -3,8 +3,7 @@
 This document explains the behavior of the public, organization, application,
 provider-callback, and platform-administration endpoints in
 [`openapi.yaml`](./openapi.yaml). The OpenAPI file is the normative HTTP
-contract. `decisions.md` is authoritative for security and architecture
-interpretation, while `UNDERSTANDING.md` remains the product-intent source.
+contract. `UNDERSTANDING.md` is the authoritative product-scope source.
 
 The production origin is:
 
@@ -13,25 +12,25 @@ https://backend.iam.teamofsilicons.com
 ```
 
 JSON APIs are under `/api/v1`. Liveness and readiness remain at `/healthz`
-and `/readyz`; OIDC discovery and JWKS use their standard root paths.
+and `/readyz`.
 
 ## Security model
 
 ### Principals and identifiers
 
-There are four internal principal types:
+There are three public principal types:
 
 - **Carbon** — a human account.
 - **Silicon** — an organization-scoped machine identity.
-- **Application** — a registered confidential OAuth/OIDC client and OBO actor.
-- **Service** — an internal workload identity.
+- **Application** — a registered confidential OAuth client and OBO actor.
 
 Persistent entities use UUIDv7 primary identifiers. Public handles
-(`carbon_id`, `org_id`, `app_id`, and Silicon local/global IDs) are
+(`carbon_id`, `org_id`, `app_id`, and the global Silicon ID) are
 immutable normalized labels, never foreign keys, and are not reused after
 deletion. Carbon IDs accept lowercase `a-z`, digits `0-9`, `_`, and `-`
 and are 3–30 characters long. A global Silicon ID is
-`{local_silicon_id}:{org_id}`.
+`{handle}:{org_id}`; the handle is only creation input and is never an
+independently addressable public ID.
 
 A typed `principal_id` prevents collisions between a Carbon and a Silicon
 whose public labels happen to look alike. Organization resources use
@@ -42,7 +41,7 @@ Cross-tenant resources return `404 not_found` rather than disclose existence.
 
 | Mode | Transport | Use |
 | --- | --- | --- |
-| Public | no credential | Signup, login initiation/verification, availability, discovery, JWKS, callbacks |
+| Public | no credential | Signup, login initiation/verification, availability, and callbacks |
 | IAM bearer | `Authorization: Bearer …` | Carbon or Silicon API access |
 | Browser session | secure `iam_session` cookie | Interactive OAuth consent and SSO navigation |
 | Application | HTTP Basic, app ID and app secret | OAuth token operations, introspection, OBO |
@@ -50,11 +49,16 @@ Cross-tenant resources return `404 not_found` rather than disclose existence.
 | Step-up | `X-Step-Up-Token` in addition to bearer | Ownership, credentials, SSO, deletion, and privileged grants |
 | WorkOS | verified `WorkOS-Signature` | WorkOS webhook receiver |
 
-Silicon and application secrets contain 256 random bits. Silicon secrets use
-`stk-` plus 64 lowercase hexadecimal characters. Raw Silicon, application,
-and webhook secrets are returned only on creation or rotation. IAM stores only
-a keyed digest. The same idempotent secret response can be replayed for ten
-minutes; after that, a lost secret must be rotated.
+Application secrets contain 256 random bits. Silicon secrets contain 128 random
+bits and use `stk-` plus 32 lowercase hexadecimal characters. Raw application
+secrets are returned only on creation; raw Silicon tokens are returned on
+creation or an approved token rotation. Both are retained only as keyed
+digests. Versioned webhook HMAC secrets are encrypted at rest. An application's
+`whs_…` signing secret is returned only when the application is created;
+replacing its webhook URL reuses that encrypted secret and never returns it.
+Only Silicon endpoint configuration or replacement returns a new `swhs_…`
+signing secret. That Silicon response can be replayed idempotently for ten
+minutes.
 
 Per-credential salts and versioned server-side peppers are internal
 implementation material. Pepper/salt rotation has no public endpoint and never
@@ -67,12 +71,12 @@ excluded from logs, traces, metrics, error details, audit diffs, and webhooks.
 
 ### Credential lifetimes
 
-| Credential/state | Default or maximum |
+| Credential/state | Exact lifetime |
 | --- | --- |
 | Signup session | 48 hours |
-| Email/phone OTP | 10 minutes, no more than 5 attempts per code |
-| IAM/OAuth access token | 15 minutes |
-| Carbon refresh-session family | absolute maximum 365 days |
+| Email/phone OTP | 10 minutes; after 10 failed attempts, a reusable challenge cools down for 1 minute before a fresh 10-attempt window |
+| IAM/OAuth access token | 30 minutes |
+| Carbon/Silicon/OAuth refresh-session family | 900 days absolute |
 | OAuth authorization code | 2 minutes, single use |
 | Step-up token | 5 minutes, action/resource bound |
 | Carbon invitation | 48 hours |
@@ -84,36 +88,30 @@ Access and refresh tokens are opaque 256-bit random values. Refresh tokens
 rotate on every successful use. Reuse of a consumed refresh token revokes its
 entire family and creates a security audit event. Applications use authenticated
 introspection when they need immediate revocation and current organization
-membership state. Only OIDC ID tokens are signed and exposed through JWKS.
-At API startup IAM derives the Ed25519 public JWK and PKCS#8 private key from
-the configured 32-byte seed, encrypts the private material with dedicated
-row-bound AAD, and reconciles exactly one active key under a cross-replica
-advisory lock. Changing the configured key places the previous public key into
-a verification overlap. A reused key ID, duplicated public key under another
-ID, retired configured key, or missing active key fails startup. Discovery
-reports only algorithms backed by a currently active stored key, and an ID
-token's `auth_time` is the parent session's authentication time rather than its
-token issuance time. IAM emits an ID token only when the effective token scopes
-contain `openid`.
+membership state. OAuth access and refresh tokens remain opaque and are never
+published through a signing-key discovery surface.
 
 ### Request headers and concurrency
 
 Every externally initiated mutation requires an `Idempotency-Key` of 16–255
 characters. The key is scoped to authenticated caller, route, and request
-digest. Repeating an identical request returns the stored result and may include
-`Idempotency-Replayed: true`; changing any request bytes under the same key
-returns `409 idempotency_conflict`.
+digest. Repeating the same validated request returns the stored result and may
+include `Idempotency-Replayed: true`; changing any canonical request field under
+the same key returns `409 idempotency_conflict`. JSON whitespace and object-key
+ordering are not semantically significant.
 
-Sensitive `PATCH`, `PUT`, and `DELETE` operations require a strong
-`If-Match: "{version}"` header. Successful reads and mutations expose that
-version as `ETag`. A stale value returns `412 version_mismatch`; an omitted
-required precondition returns `428 precondition_required`. Every externally
-visible aggregate mutation increments the version by exactly one.
+Versioned aggregate mutations require a strong `If-Match: "{version}"` header.
+Non-versioned commands, such as deleting the authenticated session, do not.
+Successful aggregate reads and mutations expose their version as `ETag`; when
+a response body also contains `version`, it is the same version represented by
+that ETag. A stale value returns `412 version_mismatch`; an omitted required
+precondition returns `428 precondition_required`. Every externally visible
+aggregate mutation increments the version by exactly one.
 
 `X-Request-ID` is accepted when valid and otherwise generated. On errors it is
-returned as `error.request_id`. `X-Org-ID` may be sent to introspection,
-userinfo, or OBO operations, but it must agree with the path, credential, and
-grant; it can never expand authority.
+returned as `error.request_id`. `X-Org-ID` may be sent to introspection or OBO
+operations, but it must agree with the path, credential, and grant; it can never
+expand authority.
 
 ### Pagination
 
@@ -175,31 +173,39 @@ redirect URI is trusted use the envelope above.
 | 504 | A bounded server or provider deadline elapsed | `gateway_timeout` |
 
 `429` includes `Retry-After`, `RateLimit-Limit`,
-`RateLimit-Remaining`, and `RateLimit-Reset`. Public OTP initiation uses
-uniform responses so callers cannot determine whether an email or phone number
-is registered. Default initiation protection permits at most ten requests per
-ten minutes in the tightest bucket, while provider policy can be stricter.
+`RateLimit-Remaining`, and `RateLimit-Reset`. Carbon login initiation returns
+`404` when the submitted identity is not registered. Signup contact initiation
+returns the product contract's exact `already_exists` boolean and sends no OTP
+when it is true. Default signup initiation protection permits ten requests and
+then a ten-minute cooldown in the tightest bucket, while provider policy can be
+stricter.
 The current baseline enforces keyed buckets across normalized identity,
 session, purpose, channel, and provider. Signup send protection includes a
 contact-global bucket that is independent of the temporary signup-session ID,
 plus a per-session bucket. IP/subnet buckets remain disabled until a deployment
 defines trusted proxy extraction and allowlisted ingress hops; IAM never trusts
 arbitrary forwarding headers. Issuing a new code invalidates the older code.
+Verification-attempt cooldowns are separate from initiation limits. Signup
+email/phone, Carbon login (including either Carbon-ID delivery channel), email
+invitation join, and verified-channel step-up challenges allow ten failed
+verifications in a window. The tenth failure starts a 60-second cooldown. The
+partial failed-attempt window and any active cooldown carry into a replacement
+code, so resend cannot reset either. After the cooldown, the current
+still-unexpired challenge receives a fresh ten-attempt window; a cooldown never
+extends that code's original ten-minute expiry.
 Application/OAuth routes additionally enforce shared one-minute buckets for
 well-formed bearer credentials before token lookup, authenticated principals,
 verified browser-session identifiers before session lookup, and app ID plus
 route before client-secret verification. Exhaustion uses the same `429` body
 and complete retry/rate-limit header set.
 
-## System and discovery
+## System
 
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
 | GET | `/healthz` | Process liveness only |
 | GET | `/readyz` | Readiness of required dependencies |
 | GET | `/api/v1/version` | Service, API, build, and commit versions |
-| GET | `/.well-known/openid-configuration` | OIDC issuer metadata |
-| GET | `/.well-known/jwks.json` | Current and rollover ID-token verification keys |
 
 Health responses contain no dependency credentials or sensitive topology.
 
@@ -222,49 +228,77 @@ All paths above are under `/api/v1/signup/sessions`.
 - Email is delivered through Postmark from `auth@teamofsilicons.com`.
 - Phone verification sends IAM-generated codes through the Twilio Messages API
   and requires E.164 input.
-- Send operations always return the same `202 accepted` shape, including when
-  an identity already exists.
+- Each send operation returns `already_exists`. When it is `true`, IAM sends no
+  code; when it is `false`, the response also includes `expires_in: 600` and a
+  new code is sent.
 - Codes are purpose-, channel-, and session-bound keyed digests.
+- Each still-unexpired email or phone code follows the ten-failure,
+  one-minute-cooldown verification policy described above.
 - Completion requires both verified identities and atomically rechecks their
   uniqueness before inserting the Carbon.
+- Completion requires `timezone` as an exact IANA TZDB identifier such as
+  `UTC` or `Asia/Kolkata`; unknown identifiers and whitespace variants are
+  rejected.
 - `profile_photo` defaults to
   `https://iris.teamofsilicons.com/pfp/carbon?id={carbon_id}` when omitted.
 - A positive `GET /api/v1/carbon-ids/{carbon_id}/availability` never reserves
   the ID.
 
 `GET /api/v1/carbons/search?q=…&limit=…` is bearer-authenticated, may use
-fuzzy public-handle matching, and returns zero to ten public Carbon profiles.
-IAM does not expose email/phone-to-Carbon reverse lookup; invitation creation
-resolves an exact normalized identity inside the authorized operation.
+fuzzy public-handle matching, and returns zero to ten objects containing only a
+`carbon_id`. Authenticated direct Carbons can resolve an exact active verified
+contact through `POST /api/v1/carbons/resolve/email` or
+`POST /api/v1/carbons/resolve/phone`; each returns only the matching
+`carbon_id`, or `404` when none exists. These lookup endpoints are independently
+rate-limited and never return contact or profile data.
 
 ## Carbon and Silicon authentication
 
 ### Carbon passwordless login
 
 `POST /api/v1/login/challenges` accepts exactly one of `email`,
-`phone_number`, or `carbon_id`. Email and phone targets receive their
-channel-specific six-digit code. Carbon-ID login may dispatch distinct codes to
-both verified channels; either code succeeds and atomically consumes every code
-in the challenge. The create response does not reveal whether the identity
-exists.
+`phone_number`, or `carbon_id`. Email and phone targets receive a six-digit
+code. Carbon-ID login dispatches the same code to both verified channels; a code
+received through either channel succeeds and atomically consumes the challenge.
+An identifier that does not belong to an active Carbon
+returns `404`; login never creates an account.
 
-`POST /api/v1/login/challenges/{session_id}/verify` returns a 15-minute access
-token and a rotating refresh token. Unknown identities and bad codes converge
-on safe verification failures. Challenges cannot create accounts.
+`POST /api/v1/login/challenges/{session_id}/verify` returns a 30-minute access
+token and a rotating refresh token. Bad codes use a safe verification failure.
+Email, phone, and Carbon-ID challenges share the same ten-failure window and
+one-minute cooldown policy.
 
 `POST /api/v1/auth/tokens/refresh` supports Carbon and Silicon IAM refresh
-families. `POST /api/v1/auth/tokens/revoke` revokes a token or, when
-authorized, its family. `POST /api/v1/auth/tokens/introspect` is available
-only to authenticated applications.
+families. IAM session revocation is exposed only through the logout and
+step-up-protected session-deletion flows below. Configured applications use
+`POST /api/v1/oauth/introspect` and `POST /api/v1/oauth/revoke` for their OAuth
+token lifecycle.
 
 `POST /api/v1/logout` defaults to the current session family and supports
 `mode=all_sessions`. Revocation is immediate in IAM; logout webhooks are
-queued for applications but are not the enforcement mechanism.
+queued for applications but are not the enforcement mechanism. Current-session
+logout is always permitted. A signed `iam_session` cookie may authenticate this
+operation only when `X-CSRF-Token` exactly matches the CSRF value protected by
+that cookie; a first-party Carbon bearer does not require the CSRF header. If
+`mode=all_sessions` would revoke another active
+session, every other target and the authenticating session must be at least 12
+hours old. The request must also include a verified-channel
+`account.sessions_revoke_all` step-up assertion bound to the current Carbon's
+`principal_id`; the transaction fails without revoking anything if any target
+is too young. When there are no other active sessions, `all_sessions` safely
+collapses to immediate current-session logout and does not require step-up.
+
+`DELETE /api/v1/me/sessions/{session_id}` is the explicit single-session
+revocation flow. The target must be at least 12 hours old, and when it differs
+from the current session, the authenticating session must also be at least 12
+hours old. Every request requires a verified-channel
+`account.session_revoke` step-up assertion whose `resource_id` is exactly the
+target session UUID. Assertion consumption and revocation commit atomically.
 
 ### Silicon login
 
 `POST /api/v1/silicon-auth/token` verifies the global Silicon ID and current
-`stk-{64 lowercase hex}` credential, then independently mints access and
+`stk-{32 lowercase hex}` credential, then independently mints access and
 refresh tokens. It never derives a bearer token from SID/STK concatenation.
 Removed Silicons, rotated credentials, and stale authorization epochs fail
 immediately.
@@ -274,54 +308,37 @@ immediately.
 `POST /api/v1/step-up/challenges` sends a reauthentication code to an existing
 verified channel for one declared sensitive action. Verification at
 `/{session_id}/verify` returns a five-minute token bound to that action and
-optional resource with `assurance=verified_channel`. A token for one action or
-resource cannot authorize another.
+required `resource_id` with `assurance=verified_channel`. A token for one action
+or resource cannot authorize another. Session-revocation challenges validate
+that the target belongs to the current Carbon before dispatch; all-session
+challenges bind the resource to the current Carbon principal UUID.
 
-Platform administration requires phishing-resistant assurance. Carbons enroll
-WebAuthn credentials through `POST /api/v1/me/passkeys/registration-options`
-and `POST /api/v1/me/passkeys/registrations`; they inspect and revoke metadata
-through `GET /api/v1/me/passkeys` and
-`DELETE /api/v1/me/passkeys/{credential_id}`. A sensitive assertion begins at
-`POST /api/v1/step-up/passkey/options` and completes at
-`POST /api/v1/step-up/passkey/verify`, returning
-`assurance=phishing_resistant`. Challenges are session-, origin-, RP-ID-,
-action-, and resource-bound. A platform administrator cannot remove their last
-active passkey.
+Signup, login, and step-up initiation first commits only an unverifiable,
+digest-backed pending challenge and its exact idempotency reservation. Provider
+I/O then runs without an open database transaction, and IAM activates the
+challenge only after every required delivery succeeds. A definitive pre-send
+rejection permits an exact retry; ambiguous or partially successful delivery
+remains fail-closed as `idempotency_in_progress` for the same key, while a new
+key safely supersedes the unusable pending challenge. Plaintext OTPs are never
+persisted. Superseding a challenge carries its partial failed-attempt count or
+active 60-second cooldown into the replacement.
 
 ## Current Carbon account
 
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
-| GET/PATCH/DELETE | `/api/v1/me` | Read/update self or begin step-up-protected deletion |
+| GET/PATCH | `/api/v1/me` | Read or update the current Carbon profile |
 | GET | `/api/v1/me/sessions` | Paginated device/session families |
-| DELETE | `/api/v1/me/sessions/{session_id}` | Revoke one family |
-| GET | `/api/v1/me/passkeys` | List WebAuthn credential metadata |
-| POST | `/api/v1/me/passkeys/registration-options` | Begin passkey enrollment |
-| POST | `/api/v1/me/passkeys/registrations` | Complete passkey enrollment |
-| DELETE | `/api/v1/me/passkeys/{credential_id}` | Revoke one passkey |
+| DELETE | `/api/v1/me/sessions/{session_id}` | Revoke a 12-hour-old session with target-bound verified-channel step-up; cross-session revocation also requires a 12-hour-old authenticating session |
 | GET | `/api/v1/me/login-history` | User-wide and app-specific login events |
-| POST | `/api/v1/me/email-change/sessions` | Begin verified email replacement |
-| POST | `/api/v1/me/email-change/sessions/{id}/verify` | Verify and atomically replace email |
-| POST | `/api/v1/me/phone-change/sessions` | Begin verified phone replacement |
-| POST | `/api/v1/me/phone-change/sessions/{id}/verify` | Verify and atomically replace phone |
-| GET | `/api/v1/me/application-grants` | List OAuth consent grants |
-| DELETE | `/api/v1/me/application-grants/{grant_id}` | Revoke grant and app token families |
 
-Contact changes require step-up, uniqueness revalidation, an ETag, and security
-notifications to old and new channels. Other session families are revoked on a
-successful contact change. Account deletion disables authority immediately and
-schedules terminal soft deletion after a 30-day grace period. A bounded worker
-finalizes due requests with transactional audit/outbox records. Terminal
-finalization deletes every contact and pending-contact-change blind index,
-removes pending contact-change state, nulls the ciphertext, nonce, and encryption
-key reference on every retained contact row, and marks those rows retired and
-purged. It also replaces the Carbon display name with the fixed deleted value
-and clears its description and profile-photo URI. Active organization and
-application ownership must be transferred or retired first; active platform
-roles must be revoked, and the final active platform administrator cannot be
-deleted.
+`GET /api/v1/me` returns the Carbon's mutable display name, description,
+effective profile-photo URL, and IANA `timezone`. `PATCH /api/v1/me` may edit
+those four fields under the current strong ETag; the public `carbon_id` remains
+immutable. Existing accounts migrated before time zones were captured use the
+safe `UTC` default until the Carbon chooses another identifier.
 
-## OAuth 2.0 and OpenID Connect
+## OAuth 2.0
 
 Silicon IAM implements only confidential-client Authorization Code with
 PKCE-S256 and rotating refresh tokens. It does not implement implicit, password,
@@ -332,7 +349,7 @@ device, or client-credentials grants for end-user login.
 ```text
 Browser -> GET /api/v1/oauth/authorize
   response_type=code
-  client_id, redirect_uri, scope, state, nonce
+  client_id, redirect_uri, scope, state
   code_challenge, code_challenge_method=S256
   optional org_id
 
@@ -343,15 +360,15 @@ IAM -> exact registered redirect_uri?code=...&state=...
 Application backend -> POST /api/v1/oauth/token
   HTTP Basic app credentials
   authorization_code + redirect_uri + code_verifier
-IAM -> opaque access token + rotating refresh token + signed ID token
+IAM -> opaque access token + rotating refresh token
 ```
 
 Browser navigation uses the secure HttpOnly `iam_session` cookie. The
 authorization endpoint never expects a bearer header on a top-level navigation.
 The redirect URI must match a reviewed registration byte-for-byte, including
 path and query; fragments and wildcards are not accepted. `state` is returned
-unchanged. `nonce` is included in the signed ID token. Authorization codes are
-keyed-digest stored, two-minute, single-use, and bound to client, redirect,
+unchanged. Authorization codes are keyed-digest stored, two-minute, single-use,
+and bound to client, redirect,
 actor, organization, scopes, and PKCE challenge.
 
 Before consuming a code, the exchange locks and revalidates current authority:
@@ -387,7 +404,6 @@ approved scopes or bypass organization checks.
 | POST | `/api/v1/oauth/token` | Exchange code or rotate OAuth refresh token |
 | POST | `/api/v1/oauth/introspect` | Authenticated current-state introspection |
 | POST | `/api/v1/oauth/revoke` | Idempotent token/family revocation |
-| GET | `/api/v1/oauth/userinfo` | Scope-limited actor and organization claims |
 
 OAuth access tokens remain linked to the parent IAM session, application,
 consent grant, and organization membership. Logout, app suspension, consent
@@ -410,14 +426,15 @@ and its sole owner membership in one transaction. The default join method is
 Organization listing is Carbon-only. A Silicon already belongs to exactly one
 organization and derives its tenant from its credential. Switching
 `join_method` to `sso` is rejected until platform SSO entitlement, an active
-connection, and an admission policy exist. Disabling SSO requires first moving
-the organization to a safe join method.
+connection, and an active SSO configuration exist. Disabling SSO requires first
+moving the organization to a safe join method.
 
 Ownership transfer requires the current owner, step-up, an ETag, and an active
 Carbon membership as the target. The new owner becomes the sole owner in the
 same transaction. The former owner becomes an admin with no delegated
 capabilities until explicitly configured. The owner cannot be removed and a
-sole owner cannot delete their Carbon account.
+sole owner must transfer ownership before they can be removed from the
+organization.
 
 ## Memberships and authorization
 
@@ -436,7 +453,6 @@ defaults; it never revives old sessions or capabilities.
 | POST | `.../members/{membership_id}/admin-promotions` | Promote an active Carbon member without implicit grants |
 | POST | `.../members/{membership_id}/admin-demotions` | Demote an admin and revoke organization grants |
 | PUT | `.../members/{membership_id}/capabilities` | Replace explicit organization capabilities without changing tier |
-| PUT | `.../members/{membership_id}/machine-capabilities` | Replace Silicon-only machine capabilities |
 
 The free-text `job_role` is directory metadata and never grants authority.
 `org_role` is `owner`, `admin`, or `member`. Silicons cannot be owners
@@ -451,21 +467,7 @@ receive only explicit capabilities:
 - `tags.manage`, `trust.manage`
 - `roles.request`, `roles.approve`
 - `admins.create`, `admins.manage`
-- `sso.manage`, `audit.read`
-
-The separate `machine_capabilities` request and response field is a Silicon UX
-projection, not a second authorization system. It persists in the same
-organization capability-grant table and is a closed subset of catalog entries
-whose `allowed_for_silicon` flag is true:
-
-- `members.update_directory`
-- `silicons.update_directory`
-- `silicons.manage_hierarchy`
-- `trust.manage`
-- `roles.request`
-
-Unknown strings and every catalog capability outside this subset are rejected;
-the service never treats a syntactically valid arbitrary string as authority.
+- `sso.manage`
 
 Same-organization directory read is baseline and therefore has no
 `members.read` capability. `admins.create` permits only a member-to-admin
@@ -479,10 +481,29 @@ scope, organization context, and authorization epochs. It never infers
 permission from job-role text, tags, reporting hierarchy, first Silicon, or
 trust metadata.
 
-Directory updates may change tags, first Silicon, explicit extra Silicons,
-profile photo, or a Silicon reporting line. They cannot directly change a job
-role; that requires governance approval. Effective Carbon-to-Silicon visibility
+Directory updates may change first Silicon, explicit extra Silicons, a
+Carbon's organization-wide advisory trust default, profile data, or a Silicon
+reporting line. Changing the Carbon trust default requires `trust.manage` and
+is rejected for Silicon memberships. They cannot directly change tags or a
+job role; both use governance approval. Effective Carbon-to-Silicon visibility
 is the union of shared-tag access and explicit extra-Silicon grants.
+
+The product-facing directory endpoints are deliberately separate from the
+administrative membership records:
+
+| Method | Endpoint | Behavior |
+| --- | --- | --- |
+| GET | `/api/v1/organizations/{org_id}/directory/self` | Current member's directory projection |
+| GET | `/api/v1/organizations/{org_id}/directory/members` | Paginated active team directory |
+| GET | `/api/v1/organizations/{org_id}/directory/members/{membership_id}` | One active team member |
+
+They return `name`, public `id`, `role`, `org`, `tags`, and advisory `trust` by
+default. `role` keeps authorization and description distinct as
+`{org_role, job_role}`. A comma-separated `fields` query may select any subset
+of `name,id,role,org,tags,trust`; unrequested properties are omitted. Trust is
+evaluated from the requester's point of view for each row. The defined trust
+directions are Carbon-to-Silicon and Silicon-to-Silicon. Carbon-to-Carbon and
+Silicon-to-Carbon trust are undefined and therefore serialized as `null`.
 
 Removing a Carbon disables only that organization's authority. Removing a
 Silicon revokes every Silicon credential and session. If the Silicon has direct
@@ -499,11 +520,15 @@ a masked delivery address, never a raw reverse lookup.
 | --- | --- | --- |
 | GET/POST | `/api/v1/organizations/{org_id}/carbon-invites` | List or create |
 | GET/DELETE | `.../carbon-invites/{invite_id}` | Inspect or revoke |
-| POST | `.../carbon-invites/{invite_id}/verification-code` | Send/resend join OTP |
+| POST | `/api/v1/organizations/{org_id}/join/email-verification-code` | Resolve the authenticated invitee's submitted email and send/replace the join OTP |
 | POST | `/api/v1/organizations/{org_id}/join` | Accept invite with bound OTP |
 
 Invitation defaults contain a descriptive job role, tags, optional first
-Silicon, explicit extra Silicons, and advisory trust. `first_silicon` may be
+Silicon, explicit extra Silicons, and advisory trust. Advisory trust requires
+an organization-wide default and may include one override per active tag and
+one override per active Silicon. Effective trust follows organization default
+→ tag override → exact-Silicon override. The complete trust configuration is
+stored with the invitation as an immutable snapshot. `first_silicon` may be
 null when the organization has none. An invitation always creates or
 reactivates `org_role=member`; it can never grant admin authority or admin
 capabilities. Promotion is a separate step-up-protected audited operation.
@@ -512,10 +537,28 @@ The notification link is built only from configured frontend origin plus
 `/join/{org_id}?app={redirect_app_id}`; the optional app ID is validated and
 does not introduce a caller-controlled redirect URL.
 
+From that link, an authenticated direct Carbon submits the invited email to the
+email-verification-code endpoint. The email must still be the exact active,
+verified address immutably bound when that Carbon's invitation was created, and
+the invitation must be pending and unexpired for the active email-join
+organization. A match sends a six-digit Postmark code,
+supersedes any prior live code, and returns only `accepted`, `invite_id`, and
+the code's `expires_in`; it never returns contact data. A missing or mismatched
+email/invitation returns the same `404 not_invited` response. The
+returned invitation ID is then supplied with the code to the join endpoint.
+
 Only one pending invitation per organization/Carbon is allowed. Join verifies
 that the authenticated Carbon is the target, the invitation and code are
 pending/unexpired, the organization matches, and every referenced tag/Silicon
-is still active. Acceptance and membership creation/reactivation are atomic.
+is still active. Ten failed code verifications start a one-minute cooldown; the
+same code may be tried in a fresh ten-attempt window afterward if it has not
+reached its original expiry. Email-code initiation allows ten attempts per
+authenticated Carbon and organization, including non-matching emails; reaching
+the limit starts a full one-minute cooldown that cannot be evaded at a
+wall-clock window boundary or by varying the email. A successful idempotent
+replay does not consume another send attempt. Acceptance, membership
+creation/reactivation, directory defaults, and trust-rule materialization are
+atomic.
 
 ## Silicons
 
@@ -523,14 +566,26 @@ is still active. Acceptance and membership creation/reactivation are atomic.
 | --- | --- | --- |
 | GET/POST | `/api/v1/organizations/{org_id}/silicons` | List or create |
 | GET/PATCH/DELETE | `.../silicons/{silicon_id}` | Read/update/remove |
-| GET/POST | `.../silicons/{silicon_id}/iam-hook` | Inspect or retry default Hook setup |
+| GET/PUT/DELETE | `.../silicons/{silicon_id}/webhook` | Inspect, configure/replace, or disable the subscriber-managed endpoint |
+| GET/PUT/DELETE | `.../silicons/{silicon_id}/webhook/subscription` | Inspect, replace, or remove organization-event topics |
 | POST | `.../silicons/{silicon_id}/token-rotation-requests` | Request owner-approved rotation |
 | POST | `.../token-rotation-requests/{request_id}/complete` | Apply approved rotation and reveal token once |
 
-Creation accepts a local ID and appends `:{org_id}`. Both local and global IDs
-are immutable and tombstoned on removal. IAM returns the raw 256-bit Silicon
-token once and asynchronously provisions the default `Silicon IAM` Hook. It
-does not hold a database transaction open across Silicon Hook.
+Creation accepts a non-addressable handle component and constructs the only
+public Silicon ID as `{handle}:{org_id}`. It requires a job role and accepts an
+optional bounded display name, exact IANA `timezone`, description, and
+profile-photo URL. An omitted display name defaults to the local handle and an
+omitted timezone defaults to `UTC`. The resulting public ID is immutable and
+tombstoned on removal. IAM returns the raw 128-bit Silicon token once. Silicon
+activation does not depend on a webhook: an endpoint and subscription are
+configured separately when the Silicon needs organization events.
+
+Silicon reads return the full mutable profile. PATCH may change display name,
+timezone, description, profile photo, or reporting parent with the corresponding
+directory or hierarchy capability and current ETag. It never changes the public
+Silicon ID or the job role; role and tag changes retain their governed
+approval workflows. Profiles predating this contract are backfilled to `UTC`
+and use their stored handle component as the display name.
 
 When no custom photo is provided, IAM generates:
 
@@ -548,6 +603,43 @@ increments the credential/auth epochs, invalidates the old secret, revokes
 Silicon sessions, and returns the raw secret under the ten-minute idempotent
 replay rule.
 
+An active Silicon may manage its own webhook and subscription. A Carbon with
+`silicons.update_directory` may manage any active Silicon in the organization
+and must present a verified-channel step-up token for each mutation. Other
+Silicons and applications are rejected. Every mutation
+requires `Idempotency-Key`. Initial endpoint or subscription creation may omit
+`If-Match` because no representation exists; replacing either requires its
+current strong ETag. Endpoint and subscription deletion always require
+`If-Match`.
+
+Endpoint, subscription, and destination changes use the
+`organization.silicon_webhook.redirect` step-up action and bind `resource_id`
+to the target Silicon membership UUID.
+
+`PUT .../webhook` accepts one SSRF-validated HTTPS URL and returns a new
+`swhs_…` HMAC secret only in that no-store response. Replacing the URL also
+rotates the secret. IAM retains encrypted URL and signing material; `GET` never
+returns the secret.
+Disabling the endpoint also removes its subscription, and a Silicon cannot
+create a subscription before it has an active endpoint.
+
+A subscription uses `mode=all` with no explicit topics, or `mode=selected`
+with one or more of `membership_lifecycle`, `member_updates`, and
+`trust_updates`. `all` receives every organization event explicitly routed to
+Silicon subscribers, including organization metadata, tag-catalog,
+invitation, governance-control, credential, and configuration events that do
+not belong to a selected topic. For `selected`, `membership_lifecycle` is only
+actual member or Silicon creation, reactivation, and removal;
+`member_updates` covers applied existing-member role, tag, profile, hierarchy,
+authorization, and ownership changes; and `trust_updates` is only trust state.
+`own_tags_only` is an orthogonal filter and may be combined with either mode.
+When enabled, IAM delivers only events whose normalized before/after
+affected-tag union intersected the Silicon membership's tags immediately before
+or after that mutation. This event-time relationship is captured in the domain
+transaction: losing a shared tag does not suppress that event, and
+gaining a tag later cannot expose an older event. Organization-wide,
+unattributed, and disjoint events fail closed and are not delivered.
+
 ## Tags, visibility, and trust
 
 Tags are stable, normalized, organization-scoped entities rather than free-form
@@ -556,13 +648,20 @@ strings embedded in memberships.
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
 | GET/POST | `/api/v1/organizations/{org_id}/tags` | List or create tags |
-| GET/PATCH/DELETE | `.../tags/{tag_id}` | Read, rename, or delete |
+| GET/PATCH | `.../tags/{tag_id}` | Read or rename |
 | GET | `.../tags/{tag_id}/members` | List attached Carbons and Silicons |
+| POST | `.../members/{membership_id}/tag-change-requests` | Request tag additions or removals |
+| GET | `.../members/{membership_id}/tag-history` | List applied tag sets with requester and approvers |
 
-A referenced tag cannot be deleted normally. Explicit `cascade=true` requires
-step-up and atomically removes membership assignments, visibility derivations,
-and trust rules while recording a complete audit event. Renaming preserves the
-tag UUID and therefore does not break references.
+Renaming preserves the tag UUID and therefore does not break references.
+
+Any active Carbon or Silicon may request a tag addition or removal for any
+active Carbon or Silicon membership, including itself. A Carbon target requires
+approval from the affected Carbon and one eligible owner/admin. A Silicon
+target requires one eligible owner/admin. Existing-membership tag writes are
+applied only by this workflow; creation and admission may still set initial
+tags. Each applied change preserves its requester, approvers, before/after tag
+sets, membership version, and timestamp.
 
 Trust is reliable advisory metadata, never an authorization decision. It has:
 
@@ -571,23 +670,25 @@ Trust is reliable advisory metadata, never an authorization decision. It has:
 
 `GET/PUT /api/v1/organizations/{org_id}/trust/default` manages the initial
 `internal/not_trusted` value. `GET/POST .../trust/rules` and
-`GET/PATCH/DELETE .../trust/rules/{rule_id}` manage typed rules. Selectors are
-`organization`, `tag`, or `membership` objects; strings such as
-`tag:finance` are not parsed as foreign keys.
+`GET/PATCH/DELETE .../trust/rules/{rule_id}` manage typed rules. Rule selectors
+are `tag` or `membership` objects; strings such as `tag:finance` are not parsed
+as foreign keys. Organization-wide baseline trust is represented only by the
+separate `/trust/default` resource.
 
 `POST .../trust/effective` explains the value for one subject and target
-Silicon. Precedence is organization default, then tag rule, then exact
-membership/Silicon rule. More specific rules win. Conflicts at the same
-specificity choose the more restrictive level and return every matching rule
-ID. The result always contains `advisory=true`.
+Silicon. A Carbon subject starts from its membership-wide default; a Silicon
+subject starts from the organization default. Precedence then applies a tag
+rule followed by an exact membership/Silicon rule. More specific rules win.
+Conflicts at the same specificity choose the more restrictive level and return
+every matching rule ID. The result always contains `advisory=true`.
 
 Inter-Silicon department matrices use tag-subject to tag-target rules. Carbon
 overrides use Carbon membership or tag subjects and Silicon membership or tag
 targets.
 
-## Job-role governance
+## Role and tag governance
 
-Job-role changes never use the membership patch endpoint:
+Job-role and tag changes never use the membership patch endpoint:
 
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
@@ -596,6 +697,8 @@ Job-role changes never use the membership patch endpoint:
 | GET | `.../approval-requests/{request_id}` | Inspect payload and decisions |
 | POST | `.../approval-requests/{request_id}/decisions` | Approve or reject |
 | GET | `.../members/{membership_id}/job-role-history` | Applied role history |
+| POST | `.../members/{membership_id}/tag-change-requests` | Create immutable tag request |
+| GET | `.../members/{membership_id}/tag-history` | Applied tag history |
 
 A Carbon change requires the affected Carbon and one currently eligible owner
 or admin with `roles.approve`. A Silicon change requires one currently
@@ -603,10 +706,16 @@ eligible owner/admin. A Silicon-token rotation requires the owner and step-up.
 Eligibility is rechecked when a decision is made and when a terminal operation
 is applied.
 
+A Carbon tag change uses the same affected-Carbon plus owner/admin quorum. A
+Silicon tag change requires owner/admin approval only. The request captures the
+exact previous, added, removed, and proposed tag sets; if the target or its tag
+set changes before quorum, the stale request fails instead of overwriting the
+intervening change.
+
 Payloads are immutable. Each approver may decide once. Rejection is terminal.
-Expired requests cannot be revived. Once quorum exists, the role change, role
-history record, aggregate version, redacted audit event, and outbox events
-commit in one transaction and can be applied only once.
+Once quorum exists, the role change, role history record, aggregate version,
+redacted audit event, and outbox events commit in one transaction and can be
+applied only once.
 
 ## WorkOS SSO
 
@@ -618,7 +727,6 @@ appropriately authorized admin may then configure it:
 | --- | --- | --- |
 | GET/DELETE | `/api/v1/organizations/{org_id}/sso` | Inspect or safely disable |
 | POST | `.../sso/setup-link` | Create five-minute WorkOS Admin Portal setup link |
-| PUT | `.../sso/policy` | Configure admission policy and member defaults |
 | GET | `.../sso/authorize` | Begin authenticated Carbon SSO |
 | GET | `/api/v1/sso/callback` | Verify callback and admit/link |
 | POST | `.../sso/test` | Read-only active-connection test |
@@ -638,21 +746,30 @@ returned `state`; it is not a claim that WorkOS attested a provider nonce. No
 database transaction remains open during the WorkOS exchange. After the
 provider returns, completion revalidates the correlation, organization and
 connection mapping, verified identity, existing Carbon contact match, and
-admission authority before atomically consuming the transaction.
+current tenant authority before atomically consuming the transaction.
 
-An organization using `join_method=sso` must have an active connection and an
-explicit admission policy:
+An organization using `join_method=sso` must have an active WorkOS organization
+and connection mapping. That tenant-bound connection may admit an already
+existing Carbon whose verified WorkOS email matches an active verified Carbon
+email contact. Initial admission and reactivation always use `org_role=member`,
+an empty job role, no tags or first Silicon, and advisory
+`internal`/`not_trusted` trust. SSO does not consume an email invitation;
+email-code joining remains the separate `join_method=email` flow.
 
-- `invitation_required` admits only an existing pending invitation.
-- `verified_identity_policy` may admit an existing Carbon when the verified
-  WorkOS email domain and/or exact, case-sensitive Profile group string matches
-  configured rules. WorkOS's SSO Profile does not expose a stable group-ID
-  object in this contract, so IAM does not label these values as IDs.
+Setup-link requests durably reserve their request-bound `Idempotency-Key`
+before calling WorkOS. A concurrent identical request receives the retryable
+`idempotency_in_progress` conflict and cannot create another provider link;
+after successful completion, the encrypted response is replayable for its
+five-minute lifetime. WorkOS does not offer provider-side idempotency for this
+operation, so a process failure after WorkOS returns but before local completion
+leaves the key in an outcome-unknown processing state and IAM does not issue a
+second link automatically. The configuration test reads both the exact WorkOS
+organization and connection and succeeds only when the connection is active and
+belongs to the permanently mapped organization.
 
-Policy admission supplies member defaults for job role, tags, first Silicon,
-and trust and always joins as `member`. WorkOS webhook bodies are bounded,
-signature checked over the raw bytes, timestamp-window checked, and deduplicated
-by provider event ID. `WorkOS-Signature` is the only signature header and has
+WorkOS webhook bodies are bounded, signature checked over the raw bytes,
+timestamp-window checked, and deduplicated by provider event ID.
+`WorkOS-Signature` is the only signature header and has
 the comma-delimited form `t=<epoch_ms>,v1=<hex_hmac>`; there is no separate
 trusted timestamp header. IAM verifies HMAC-SHA-256 in constant time over
 `timestamp + '.' + exact raw UTF-8 body`, rejects timestamps outside a
@@ -664,10 +781,9 @@ invalid upstream response is `502`; temporary dependency loss is `503`.
 ## Applications
 
 Applications are owned by an existing Carbon. There is no separate developer
-email/password identity. The owner may add existing Carbons as explicit
-collaborators.
+email/password identity. Only the owning Carbon manages the application.
 
-Application-management, webhook-management, grant, and platform-review routes
+Application-management, webhook-management, and platform-review routes
 that act as a Carbon require a direct `silicon-iam` bearer with `iam.self`, no
 client application, and no organization/membership binding. A delegated OAuth
 `oat_` cannot become a confused deputy for the Carbon subject. Client-secret
@@ -677,18 +793,14 @@ so concurrent revocation cannot authenticate after it commits.
 
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
-| GET | `/api/v1/application-ids/{app_id}/availability` | Non-reserving ID check |
-| GET/POST | `/api/v1/applications` | List manageable apps or submit registration |
-| GET/PATCH/DELETE | `/api/v1/applications/{app_id}` | Read/update/delete |
-| GET/POST | `.../collaborators` | List or add collaborator |
-| DELETE | `.../collaborators/{principal_id}` | Remove collaborator |
-| POST | `.../secret-rotations` | Rotate app secret |
+| GET/POST | `/api/v1/applications` | List owned apps or submit registration |
+| GET/PATCH | `/api/v1/applications/{app_id}` | Read/update |
 | GET/PUT | `.../webhook` | Inspect active endpoint or propose replacement |
-| POST | `.../webhook/secret-rotations` | Rotate webhook signing secret |
 | GET | `.../login-history` | App-specific authorization/login history |
 
 Registration requires an immutable app ID, at least one exact redirect URI, one
-HTTPS webhook URL, and requested scopes. It returns an `under_review`
+HTTPS webhook URL, requested scopes, and may include the application's callable
+OBO endpoint registry. It returns an `under_review`
 application plus one-time application and webhook signing secrets. The app
 cannot authorize users, introspect tokens, or issue OBO proofs until verified.
 `notify_users` defaults to `true`.
@@ -701,13 +813,17 @@ destination. During initial registration there is truthfully no active
 destination: `active_url` is `null`, `pending_url` contains the submitted URL,
 and webhook status is `pending_review`. A later replacement uses
 `replacement_under_review` while preserving the existing `active_url`.
-`notify_users` is absent from owner mutations and is configurable
-only by platform administrators.
+The webhook representation's `version` is the application aggregate version,
+not an endpoint-row version; it is identical to the response `ETag` and is the
+value required by `If-Match`. Replacement reuses the application's existing
+encrypted webhook signing secret and does not return secret material.
+`notify_users` is absent from every owner-facing response and mutation and is
+configurable only by platform administrators.
 
-Application secret and webhook secret rotations produce versioned credentials.
-The default overlap is zero; an explicitly requested overlap may be at most one
-hour to support controlled rollout. Deletion immediately disables the client,
-revokes token families, OBO proofs, consents, and delivery scheduling, and
+Initial application and webhook secrets are versioned credentials. Permanent
+deletion is available only through the backend-admin decision workflow. It
+immediately disables the client, compromises its credentials, revokes token
+families, access tokens, OBO proofs, consents, and delivery scheduling, and
 tombstones the app ID.
 
 ### Platform application review
@@ -720,15 +836,14 @@ tombstones the app ID.
 - approve or reject pending scopes, redirect URIs, or webhook replacement
 - set the approved scope list
 - set backend-only `notify_users`
+- permanently soft-delete an application and revoke all application authority
 
 Review requires a current platform administrator, step-up, idempotency key, and
 ETag. Suspension immediately revokes active application authority. Every
 decision records reviewer, reason, old/new redacted state, request ID, and
 timestamp. Removing an approved scope atomically revokes every active `oat_`
 token for that client that carries the removed scope; refresh rotation can
-retain only the reduced current-scope intersection. A platform administrator
-may also invoke the step-up-protected application `DELETE` operation when
-permanent removal is required.
+retain only the reduced current-scope intersection.
 
 ## OBO Access
 
@@ -736,33 +851,31 @@ OBO Access never hashes an access token together with an app secret.
 
 `POST /api/v1/obo-access/exchanges` authenticates App A and accepts an
 actor-bound application access token as `subject_token`, plus audience App B,
-organization, action, and optional resource. IAM confirms:
+organization, a callable endpoint registered by App B, and the exact JSON
+metadata object for that call. IAM confirms:
 
 1. App A is verified and its secret is current.
 2. The subject token was issued to App A and is active.
 3. The actor and organization membership are active.
-4. App A's reviewed scopes permit this exchange.
-5. The actor has no less authority than the requested delegated action.
+4. App A's reviewed scopes permit OBO issuance.
+5. App B is verified and the selected endpoint is active.
 
 IAM returns a random `obo_` proof with a unique ID and at most 60 seconds of
-life. It is issuer-, audience-, actor-, organization-, action-, and
-resource-bound.
+life. It is bound to the source app, audience app, subject token, actor,
+organization, registered endpoint and exact request metadata object. Endpoint
+identifiers and paths are stable. An application may register at most 50;
+metadata definitions and request metadata must be JSON objects no larger than
+16 KiB, with bounded nesting and complexity. Every top-level key in the
+registered definition is required at exchange, unregistered request keys are
+rejected, and a descriptor may enforce `string`, `number`, `integer`,
+`boolean`, `object`, `array`, or `null`.
 
-The action is a closed organization-capability value:
-`organization.update`, `members.invite`, `members.update_directory`,
-`members.remove`, `silicons.create`, `silicons.update_directory`,
-`silicons.manage_hierarchy`, `silicons.remove`, `silicons.rotate_token`,
-`tags.manage`, `trust.manage`, `roles.request`, `roles.approve`,
-`admins.create`, `admins.manage`, `sso.manage`, or `audit.read`. Unknown
-strings are rejected before authority evaluation and cannot become owner-only
-implicit permissions.
-
-App B authenticates to `POST /api/v1/obo-access/verify`. The request must
-repeat the exact audience/action/resource constraints. A successful transaction
-atomically consumes the proof and returns the represented actor and constraints.
-Replay returns a conflict. App B must still enforce resource-level permission;
-proof validity alone does not authorize a file, row, operation, or business
-action.
+App B authenticates to `POST /api/v1/obo-access/verify` and submits only the
+proof. Audience identity comes from App B's authenticated credential. A
+successful transaction atomically consumes the proof and returns the represented
+actor, bound endpoint identifier/path, and exact metadata object. Replay returns
+a conflict. App B must interpret and authorize its own endpoint and metadata;
+proof validity alone does not authorize the underlying business operation.
 
 ## Outbound events and webhooks
 
@@ -770,10 +883,10 @@ Every security-relevant mutation commits its domain change, redacted audit
 record, aggregate version increment, and outbox event in one PostgreSQL
 transaction. Workers claim outbox rows with bounded leases, deliver at least
 once, use capped exponential backoff with jitter, and retain dead-letter state
-for authorized replay.
+under the configured retention policy.
 
-The OpenAPI `webhooks` section defines application and Silicon IAM Hook
-deliveries. Event bodies use this envelope:
+The OpenAPI `webhooks` section defines application and subscriber-configured
+Silicon deliveries. Event bodies use this envelope:
 
 ```json
 {
@@ -797,12 +910,12 @@ version, such as:
 - `organization.updated.v1`
 - `organization.membership.created.v1`
 - `organization.membership.updated.v1`
+- `organization.membership.profile_updated.v1`
 - `organization.membership.removed.v1`
 - `organization.silicon.updated.v1`
 - `organization.tag_updated.v1`
 - `organization.trust.rule_updated.v1`
 - `session.logout.v1`
-- `iam.silicon.initialized.v1`
 
 Organization invitation, ownership, approval, SSO, tag, trust, Silicon
 credential, and other directory transitions use the same versioned naming
@@ -810,10 +923,56 @@ rule. Consumers must deduplicate by `event_id`, process the event types they
 understand, and safely ignore unknown event types so additive events do not
 break delivery.
 
-Events are minimal projections. They never contain OTPs, raw tokens/secrets,
-provider credentials, encrypted database records, full contact identities, or
-unrelated organization state. Application delivery is limited to actors and
-organization grants currently relevant to that reviewed application.
+Events never contain OTPs, raw tokens/secrets, provider credentials, encrypted
+database records, or unrelated organization state. A Carbon profile change is
+delivered to the union of Applications authorized immediately before and after
+the transaction. Its `data.changed_fields` and complete `data.current` snapshot
+are captured at that exact Carbon version and projected per recipient: profile
+fields require the effective `profile` consent scope, while email and phone
+require their respective effective scopes. Workers deliver this immutable
+snapshot and never hydrate a later Carbon version.
+
+The same capture rule applies to the closed Application organization-member
+vocabulary: organization update and ownership transfer; tag update;
+trust default and rule create/update/archive; membership create, reactivate,
+remove, directory update, authorization update, promotion, and demotion; and
+Silicon create, update, remove, and completed credential rotation. IAM resolves
+the exact affected membership set, captures the union of Applications
+authorized immediately before or after the mutation, and encrypts one distinct
+projection per Application in the domain transaction. `profile`,
+`organizations.read`, `memberships.read`, and `roles.read` disclose only their
+corresponding sections; `email` and `phone` may additionally disclose the
+affected Carbon's primary contact and never apply to a Silicon. A before-only
+recipient receives scope-filtered `changed_fields` but only stable
+resource/version authorization tombstones, never stale privileged state.
+
+Here, an affected resource means a principal or organization projection the
+Application can read through at least one effective data scope. Invitations,
+SSO configuration, webhook configuration, and administrative or protocol
+controls have no Application data scope and are excluded. Creating an
+unassigned tag affects no member and therefore produces no Application member
+projection.
+
+Application member-event data always uses
+`current: {"members":[...]}`, including a one-member event. An organization
+update instead uses `current: {"organization": ...}` and is delivered only to
+Applications with `organizations.read`. Tag and trust events use
+`current: {"resource": ..., "members":[...]}` so the independently versioned
+tag/default/rule state is not lost; trust-rule archive events carry a resource
+tombstone.
+All shapes and `changed_fields` are frozen at commit and cannot be hydrated from
+later state. `organization.membership.profile_updated.v1` remains Silicon-only
+because the same Carbon mutation is already represented to Applications by
+`carbon.updated.v1`. Rotation-request/control, subscription/configuration, and
+other protocol events are likewise outside this Application projection
+allowlist.
+
+For each active organization membership, a Carbon profile transaction also
+captures an `organization.membership.profile_updated.v1` Silicon event under
+the `member_updates` topic. That event carries the profile fields changed at
+the exact Carbon version, the complete current same-organization membership
+state, and the affected membership tags before and after the change. Email,
+phone, credentials, and other contact or secret material are excluded.
 
 ### Application signature verification
 
@@ -847,42 +1006,33 @@ reject trailing-dot hosts independently, so historical encrypted destinations
 cannot bypass the check. Connection, TLS, total-request, response-size, and
 concurrency limits are bounded.
 
-Silicon IAM Hook deliveries use the same event-ID, timestamp, and signature
-headers and the same `{timestamp}.{body}` HMAC construction. They authenticate
-with the configured Silicon Hook service credential, which is also the signing
-key; the application-only key-version header is omitted.
+Silicon webhook deliveries use the same event-ID, timestamp, key-version, and
+signature headers and the same `{timestamp}.{body}` HMAC construction. The key
+version identifies the subscriber-managed `swhs_…` secret returned when the
+endpoint is configured or replaced. IAM never sends a provider bearer
+credential to the destination.
 
-Application owners inspect:
+### Silicon subscriptions
 
-- `GET /api/v1/applications/{app_id}/webhook-deliveries`
-- `GET .../webhook-deliveries/{delivery_id}`
-- `POST .../webhook-deliveries/{delivery_id}/replays`
+Silicon delivery begins only after both an active endpoint and a subscription
+exist. `all` represents the complete closed topic vocabulary in API responses
+and also receives explicitly routed Full-only organization events;
+`selected` keeps the exact requested subset and never receives those unscoped
+events. Multiple matching topics still produce one delivery per endpoint and
+event. Subscription routing metadata—including the affected membership and
+tag IDs and the event-time own-tag audience—is stored separately from the
+public event payload and is never serialized to receivers.
 
-Only failed/dead-letter deliveries can be replayed. A replay retains the
-original event ID so receivers remain idempotent.
-
-### Silicon IAM Hook
-
-Silicon creation queues default Hook provisioning named `Silicon IAM`.
-Provisioning and the first event are separate idempotent outbox operations. Once
-active, IAM sends `iam.silicon.initialized.v1` with the new Silicon's public
-directory data and a minimal current organization snapshot. Later relevant
-organization, Carbon, Silicon, role, tag, hierarchy, and removal changes are
-sent through that Hook.
-
-`GET .../silicons/{silicon_id}/iam-hook` exposes masked provisioning state,
-not a reusable secret URL. `POST` retries only pending/failed provisioning or
-initial delivery. Operator-wide failed application/Hook deliveries are visible
-through the admin delivery-failure endpoints.
+Delivery is at least once, ordered and retried through the same durable worker
+as application webhooks. Operator-wide failures use destination type
+`silicon_webhook`. The old `silicon_hook` value remains readable only for
+historical delivery records and cannot be selected for new deliveries.
 
 ## Audit and history
 
-`GET /api/v1/organizations/{org_id}/audit-events` requires owner authority or
-`audit.read`. It supports action, target, and time filters. Platform
-administrators use `GET /api/v1/admin/audit-events` for cross-tenant security
-operations.
-
-Audit records are append-only and include:
+Audit records are internal, append-only security and lifecycle evidence; IAM
+does not expose a generic organization-wide or global audit-browser HTTP API.
+They include:
 
 - initiating and effective actor
 - organization/application context
@@ -906,13 +1056,13 @@ size, which is bounded at 1,000 root rows, with ordered locking; a failure is
 isolated to that phase and the next tick advances to the following phase. The
 initial cursor follows the global wall-clock sweep slot so rolling restarts do
 not starve later phases. Defaults are 365 days for login/authentication history,
-30 days for expired challenges, ceremonies, and abandoned
-authorization/contact transactions, 90 days for expired or revoked
+30 days for expired challenges and abandoned authorization transactions,
+90 days for expired or revoked
 access/OBO/refresh metadata, 365 days for compromised refresh families, 45 days
 for webhook-attempt telemetry, and 2,555 days for security audit events.
 Approval-linked step-up records retain only a skeletal identifier, purpose,
-assurance, and timing record after their digest or encrypted ceremony state is
-erased. Authentication-session skeletons similarly remain only while a retained
+assurance, and timing record after their digest is erased.
+Authentication-session skeletons similarly remain only while a retained
 audit, consent, governance, or lifecycle FK needs them; optional fingerprint and
 revocation-detail fields are erased at the login history cutoff.
 
@@ -922,36 +1072,29 @@ There is no source-controlled default administrator password or runtime
 bootstrap secret. The first platform administrator is bootstrapped only by the
 one-time `iam-bootstrap-admin` operator command using the migrator database
 credential. Platform administrators are existing Carbon principals with a
-privileged role and strong step-up requirements.
+privileged role and strong step-up requirements. The administrator role is not
+listed, granted, or revoked through the HTTP API.
 
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
-| GET/POST | `/api/v1/admin/platform-administrators` | List or add existing Carbon admin |
-| DELETE | `.../platform-administrators/{principal_id}` | Remove admin; last admin protected |
 | GET | `/api/v1/admin/applications` | App inventory and review queue |
-| POST | `.../applications/{app_id}/decisions` | Review/configure/suspend app |
-| PUT | `/api/v1/admin/carbons/{carbon_id}/status` | Suspend/reactivate a Carbon and revoke authority on suspension |
+| POST | `.../applications/{app_id}/decisions` | Review/configure/suspend/delete app |
 | PUT | `.../organizations/{org_id}/sso-entitlement` | Backend-only SSO unlock |
-| GET | `/api/v1/admin/audit-events` | Cross-tenant redacted audit |
-| GET | `/api/v1/admin/delivery-failures` | Failed/dead-letter deliveries |
-| POST | `.../delivery-failures/{delivery_id}/replays` | Queue operator replay |
 
 Admin authorization is checked against current Carbon, admin status, session,
-and phishing-resistant step-up state on every mutation. Removal of the last active platform
-administrator is rejected. Admin endpoints never return provider credentials,
-encryption keys, secret digests, or raw one-time response envelopes.
+and verified-channel step-up state on every mutation. Admin endpoints never
+return provider credentials, encryption keys, secret digests, or raw one-time
+response envelopes.
 
 ## Reliability and revocation guarantees
 
 PostgreSQL is authoritative for identities, sessions, organizations,
 memberships, permissions, governance, applications, SSO mappings, idempotency,
-audit, and outbox state. Redis/Valkey may accelerate rate limits, caches, and
-replay markers but its loss cannot restore revoked authority or lose durable
-state.
+audit, rate limits, cooldowns, replay markers, and outbox state.
 
 Security mutations use one database transaction. No transaction remains open
-while contacting Postmark, Twilio, WorkOS, Iris, an application webhook, or
-Silicon Hook. Provider work is either a bounded request whose result is required
+while contacting Postmark, Twilio, WorkOS, Iris, or an application or Silicon
+webhook. Provider work is either a bounded request whose result is required
 for the response or an outbox job with visible retry state.
 
 Membership/app/session/credential authorization epochs allow immediate central
@@ -989,8 +1132,8 @@ Implementations and contract tests must preserve at least these invariants:
 5. Job-role text, tags, trust, and reporting edges never grant authority.
 6. Silicon reporting graphs are acyclic and organization-local.
 7. Invitation acceptance, signup completion, authorization-code exchange,
-   refresh rotation, approval completion, OBO consumption, and secret rotation
-   are atomic and replay-safe.
+   refresh rotation, approval completion, OBO consumption, and Silicon token
+   rotation are atomic and replay-safe.
 8. Domain mutation, audit, aggregate version, and outbox record commit together.
 9. Owner, membership, app, session, consent, and credential revocation are
    effective centrally before webhook delivery.
@@ -998,12 +1141,14 @@ Implementations and contract tests must preserve at least these invariants:
 
 ## Provider and non-public boundaries
 
-Postmark, Twilio Messaging, WorkOS, Iris, and Silicon Hook are accessed behind
-application ports. Their raw provider-specific payloads and outbound management
-APIs are intentionally not public IAM endpoints. Production startup refuses
-local/no-op provider implementations.
+Postmark, Twilio Messaging, WorkOS, and Iris are accessed behind application
+ports. Their raw provider-specific payloads and outbound management APIs are
+intentionally not public IAM endpoints. Production startup refuses local/no-op
+provider implementations. Subscriber-managed Silicon endpoints use IAM's
+shared SSRF-hardened outbound webhook transport rather than a provisioning
+provider.
 
 The public contract fixes IAM-visible behavior—timeouts, uniform OTP responses,
-callback/webhook validation, asynchronous Hook state, idempotency, and error
+callback/webhook validation, durable delivery state, idempotency, and error
 mapping—without coupling clients to a provider SDK. Provider API version
 upgrades therefore do not silently change this contract.

@@ -11,6 +11,11 @@ Let's go over it step by step. First let's go over sign up:
 `Carbon` - The human in the system. Every human account is called a carbon.
 `Silicon` - Our AI Agent (silicon) account is refered to as a Silicon.
 `Org` - This is our organisation, this is where all the silicons and carbons would stay for a single organisation and defines the scope. 
+`org_role` controls owner/admin/member status in the organisation;
+`job_role` is only descriptive overview of the job of the carbon/silicon at the organisation.
+
+
+Admins receive explicit capabilities. Invitations always join as members. Silicons cannot be owners/admins.
 
 
 # Carbon
@@ -37,7 +42,9 @@ The verified_email and verified_phone_number both need to be present in that ses
 
 For the `carbon_id`, the `carbon_id` can't have `: or ;`, spaces are not allowed, Special Symbols & Emojis are not allowed, Unicode/Diacritics are not allowed. 
 
-`carbon_id` would be a-z, 1-9, -, _, case-insensitive, 3-30 characters long. 
+`carbon_id` would be a-z, 0-9, -, _, case-insensitive, 3-30 characters long.
+
+Each carbon would also have a timezone associated to them, the timezone would be in `tz identifier` format.
 
 ## Log In
 
@@ -48,11 +55,11 @@ During the carbon sign in, sign in can take place through 3 ways.
 
 For the verification code, after 10 failed tries, there's a cooldown of 1 minute before trying again. 
 
-We will be using bearer auth token that has a `TTL` of `365 days` for the authentication of the endpoints. 
+We will be using bearer auth token that has a `TTL` of `30 mins`, refresh token will stay valid for `900 days` for the authentication of the endpoints.
 
 # Organisation
 
-Each carbon can also create their own organisation. While creating an organisation, they need to put in the name, logo, org-id. Org-ID is an unique identifier for an organisation. so also make an endpoint to check for the org-id. Using these the organisation can be created with the creator as the sole member. Each organisation is gonna have org_owner, org_admins, org_members. There can only be 1 org_owner, and no limit on org_admins. The org_admins can only be created by org_owner and org_admins with the permission to create other admins. For each org_member that gets org_admins rights, it should be logged which carbon_id (org_owner/org_admin) gave this person the admin rights. 
+Each carbon can also create their own organisation. While creating an organisation, they need to put in the name, logo (optional), org-id. Org-ID is an unique identifier for an organisation. so also make an endpoint to check for the org-id. Using these the organisation can be created with the creator as the sole member. Each organisation is gonna have org_owner, org_admins, org_members. There can only be 1 org_owner, and no limit on org_admins. The org_admins can only be created by org_owner and org_admins with the permission to create other admins. For each org_member that gets org_admins rights, it should be logged which carbon_id (org_owner/org_admin) gave this person the admin rights.
 
 `org_owner` - An org owner is a carbon who currently owns the organisation and is responsible for all the major actions, this person can change the org_owner only allowed settings, and also be able to assign permissions to the org_admins and remove org_admins. There can only be a single org_owner. 
 `org_admin` - An org admin is someone who will be responsible for managing/inviting all the carbons and silicons into the system. Based on the set of settings allowed by org_owner. This org_admin can also create other org_member the admin, or let the org_members invite other people on the system, etc. 
@@ -70,15 +77,15 @@ There should also be an search carbon endpoint which shows me via fuzzy search t
 
 `tags` - these are the tags that can be used to give access to silicons, departmentalization, etc.
 
-`first_silicon` - this is the first_silicon that the connection should ideally be initiated with, this shouldn't be inforced and just something that exists in the system so the frontend knows. 
+`first_silicon` (optional) - this is the first_silicon that the connection should ideally be initiated with, this shouldn't be inforced and just something that exists in the system so the frontend knows.
 
 `trust per silicon` - what's the default trust level for this carbon throughout the system and if needed override specific trusts. Trusts would be in 2 dimensions - (internal/exteral) (not_trusted/needs_approval/trusted). These trusts are just somehting that the system should store reliably, and nothing will actually happen due to these trust levels. 
 
 The logic behind internal/external is for when say some freelancer is invited to the team, or someone contract based we can give them external trust factor. 
 
-`extra_silicons` - i can define if i wanna give a carbon access to more silicons then the certain tag permits.
+`extra_silicons` (optional) - i can define if i wanna give a carbon access to more silicons then the certain tag permits.
 
-All of these feilds are nescesarry except the `extra_silicons, tags`
+All of these feilds are nescesarry except the `extra_silicons, tags and first_silicon`
 
 An sent invite would have a TTL of 48 hours, after that it becomes invalid. For everyone with the correct permission set it should be possible for revoking an invite. 
 
@@ -86,7 +93,9 @@ An sent invite would have a TTL of 48 hours, after that it becomes invalid. For 
 
 For inviting an silicon, it's the process by which a silicon is created in the system, this is the identity of a silicon in an organisation. For each silicon it would have `silicon_id, profile_photo, role, reports_to, tags`. 
 
-For the `silicon_id`, for the request recieved, add `:{org_id}` at the end of it. THis would become the global id of a silicon. For eg, for a `silicon_id` requested `head_of_growth` from the org `tos`, it would become `head_of_growth:tos`. The final registered silicon_id must always have `:` in it. 
+For the `silicon_id`, for the request recieved, add `:{org_id}` at the end of it. This would become the global id of a silicon. For eg, for a `silicon_id` requested `head_of_growth` from the org `tos`, it would become `head_of_growth:tos`. The final registered silicon_id must always have `:` in it. So there's no concept of local silicon id, there's just a single global silicon id that has `:org_name` attached to it in the end.
+
+The client supplies a Silicon handle component. It is not independently addressable. The only public Silicon ID is `{handle}:{org_id}`.
 
 For the pfp keep https://iris.teamofsilicons.com/pfp/silicon?id={silicon_id}&level={level} - for the level it's like the organisation structure, how many heads above it, so check for reports_to, if reports__to is just 1 and the silicon above it reports to no one do level=2, similarly continue down the scale. 
 
@@ -94,26 +103,28 @@ For the `pfp` it's the profile picture of the silicon, for the `role` it's the j
 
 For the `silicon_id` there can't be more than 1 silicon with the same `silicon_id` so deny that. Also make an endpoint to fetch all the current `silicons` in that org. 
 
+All these feilds are mandatory except for the `Reports_to and Tags`.  Once the request has been sent, a silicon token is generated - this is a 32 digit hexadecimal code. This would be in the format `stk-{32-digit-hexadecimal}`. Once the stk is generated attach it in the request body. Then hash the stk and store it. As in our setup SID is the username and STK is the password.
 
-All these feilds are mandatory except for the `Reports_to and Tags`.  Once the request has been sent, a silicon token is generated - this is a 16 digit hexadecimal code. This would be in the format `stk-{16-digit-hexadecimal}`. Once the stk is generated attach it in the request body. Then hash the stk and store it. As in our setup SID is the username and STK is the password.
-
-  
 
 ### Authenticating a Silicon
 
-For authenticating a silicon a similar logic to the way carbon is authenticated is followed. The silicon id and the silicon token is sent for the creating the auth_token. We will do `SID+STK+Salt` to create an auth token. This auth_token would be used by the silicon accounts to perform any silicon actions. It should be possible to rotate both the Salt and the STK. The STK rotation can be requested by the org_owner. Salt rotation doesen't have any public endpoints.
+For authenticating a silicon a similar logic to the way carbon is authenticated is followed. The silicon id and the silicon token is sent for the creation of auth_token and refresh_token. After the initial stk is generated we store the HMAC digest of the STK and its key version in our backend. When the request comes with sid and stk, we compare them and return an refresh_token with a ttl of 900 days and access_token with a ttl of  30 minutes.
 
 ---
 
 **Everything defined above was for how carbons and silicons and organisations are actually created in the system.**
 
+---
+
 # Apps
 
 Now we have concept of Apps, what IAm supports is an identity and authentication layer for all these apps and that every app can communicate and so these apps don't have to manage the authentication layer themselves. These apps can be created, for each applications it's gonna need: `app_id, webhook_url, redirect_uri, app_secret (autogenerated), scope` there are also some optional parameters - `app_name, app_logo`.  
 
-Each application must be verified manually from the backend seperately for the application to be able to request. App creation can happen from the frontend by any user. Each app must be verified before it can actually request for authentication. 
+Each application must be verified manually from the backend seperately for the application to be able to request. App creation can happen from the frontend by any authenticated carbon user. Each app must be verified before it can actually request for authentication.
 
 In the backend itself i should see an option to notify_users. This notify_users is true/false variable used to show the concent screen. By default it would be true for all the application which can be turned off application specific in the backend, no instance of this must be in the app management frontend. 
+
+Applications can only be created by user who have a carbon account and must be signed into IAm from their carbon account.
 
 
 # How would login work for configured apps
@@ -127,7 +138,7 @@ For each login that takes place also store the login history, app specific and a
 
 # Use of webhook
 
-For each application's defined webhook url, for any changes in user it should be communicated over to all the applications through the said webhook url. These updates would include anything/everything that the IAm stores regarding that user, so say if a user is kicked from an organisation it should be communicated over via webhook almost instantly. If someone's role changed, if someone's pfp changed, basically any changes that happen that are centerally managed by IAm it should be communicated over using the said webhook connection. For all the application's that the user's current auth token is valid in. 
+A change is delivered to every Application for which the user was authorized immediately before or immediately after the change. This ensures applications still receive removal and access revocation events. Each event contains the changed fields and the complete current Application authorized state of the affected resource, excluding tokens, OTPs, credentials, signing secrets, and other secret material. Events are created in the same transaction as the change and delivered near-real-time, at least once. Applications deduplicate using `event_id` and order changes using the resource version.
 
 
 ### Silicon Webhooks
@@ -135,9 +146,11 @@ For each application's defined webhook url, for any changes in user it should be
 For each silicon it's also possible for them to subscribe to organisation changes along with the scope of the changes, the scope options include:
 1) Full - Every change, description, role, new member, everything gets notified. When this is selected, basically all the options have been selected and all changes would be applied.
 2) New/Removal - Only inform about the new people that join in and if anyone is removed from the organisation.
-3) Updates - Only inform about the updates of already existing members. Like role update, tags update, trust update, etc
+3) Updates – Updates to existing members, such as roles, tags, profile, or hierarchy changes. Trust changes are excluded.
 4) Trust Updates - Only inform about the trust updates
-5) Just for my tag - Only inform me about the selected changes if they are of my tag, if a new peoson joins my tag, or gets removed, gets their roles updated, etc.
+5) Optional tag filter – Restricts the selected categories to members who had the tag before or after the change.
+
+Full selects every event category. New/Removal, Updates, and Trust Updates may be selected in any combination. “Just for my tag” is an optional filter applied to those selections, not a separate event category. Tag matching uses both the state before and after the change so joining, leaving, updating, and removal events are all delivered. Trust changes are covered by Trust Updates rather than ordinary Updates. A configured Silicon webhook URL is required before subscribing.
 
 Any PnC of the following settings is possible. Any silicon should be able to perform these subscriptions, and silicons should also have their webhook_url configured for this subscription to take place, make a seperate endpoint for configuring a webhook_url for any given silicon. This webhook_url is only for IAm to be able to push the selected subscriptions to the silicon once they subscribe. If they don't have any webhook url configured, they can't subscribe.
 
@@ -180,6 +193,12 @@ When a carbon is assigned a tag all the silicons with the same tag, the carbon w
 
 There should also be an endpoint to fetch all the silicons and carbons attached to that tag. 
 
+Similar to how roles can be requested for changed and when approved gets changed, similarly anyone should be able to raise a request for change of tags for any other silicon or carbon, and if it's a carbon so the confirmation request should go to the carbon and the org_admin/owner, and if it's a silicon the confirmation request should go just to the org_admin/owner.
+
+It should be possible to request any carbon/silicon's tag revoke or addition, including their own.
+
+An history should be maintained, who approved, who triggered, the time of approval, etc.
+
 
 ## Trust
 
@@ -194,11 +213,13 @@ or it could be silicon specifc, in tech tag they are internal and trusted, but i
 by default keep it internal and not trusted. 
 
 
-
 For inter silicon trust, it would have inter tag trust, so it would create a sort of matrix. For eg: there are 5 tags: Tech, Law, Growth, Finance
 
 Now there a matrix created
 How much does tech trust tech, tech trust law, tech trust growth, tech trust finance. Similarly for each department, so this creates both way trust, how much does a silicon in finance trust silicon in tech and how much does a silicon in tech trust silicon in finance. So this kind of matrix will be defined for it.
+
+
+Trust precedence is: `organization default → tag rule → exact Silicon rule`.
 
 
 # Joining an organisation 
@@ -207,7 +228,7 @@ This for joining an already existing organisation, there are 2 ways that a user 
 
 - `Via email`: In this the user tell the org_id, and the email that was invited, we will check if the user was actually invited, and if the user was invited, use postmark to send the user a 6 digit verification code to the said email adress. Otherwise return the user not invited. If the verification succeeds the user get's access to the organisation, and once the access has been granted, it gets addded to carbon's organisation list and the carbon won't have to reauthenticate every time they login.
 
-- `Via SSO`: For the organisation's that would have configured SSO, the employees can join in the organisation using SSO, we are using `work OS` as our SSO Provider. 
+- `Via SSO`: For the organisation's that would have configured SSO, the employees can join in the organisation using SSO, we are using `work OS` as our SSO Provider. The Work OS SSO never creates a new carbon accounts, it's only responsible for letting the people with already carbon accounts to join in the organisation.
 
 For the verification code, after 10 failed tries, there's a cooldown of 1 minute before trying again. And even for entering the email endpoint, it's a 1 minute cooldown after 10 email tries. 
 
@@ -224,7 +245,7 @@ Once an org_id has been set it cant be changed
 For any given org they can set a way of inviting a carbon, both these ways are mutually exclusive: `via email or via sso`. 
 
 The SSO would be locked by default and the option needs to be manually enabled from the backend itself. When the SSO option is enabled:
-For the said organisation we would create a corresponding organisation in workOS (store this mapping permanently) > make an endpoint that would generate the workOS setup link - this should return the setup link with a TTL of 2 hours > Listen to the endpoints using webhook > once connected set sso_status='active' along with the connection_id. 
+For the said organisation we would create a corresponding organisation in workOS (store this mapping permanently) > make an endpoint that would generate the workOS setup link - this should return the setup link with a ttl of 5 mins > Listen to the endpoints using webhook > once connected set sso_status='active' along with the connection_id.
 
 There should also be endpoints for the configured SSO orgs to be able to test the configuration.
 
@@ -239,19 +260,49 @@ For all the invites generated, keep a track of who got invited, who invited them
 When a carbon triggers logout from any given service, it would trigger a logout from IAm which would trigger a logout across all the configured applications. 
 
 
-# Inter app communication
+# Inter app communication (On behalf of)
 
 For all the apps in the system, it should also be possible for the inter app communication to take place. For this we have a system in place:
 
-Let's call them app a, and app b for this example.
+Application A requests for an OBO proof to send request to application b (the OBO proof has a ttl of 60 seconds), App A gets the obo proof (obo_<256-bit randome>) this obo proof is sent to application b, application b requests IAm to confirm the OBO proof, once confirmed app b performs the action.
 
-Let's say App A wants to perform an action on App B as Carbon C (common across both apps). 
-App A contacts App B with it's app_id, and a hashed (auth_token of the carbon c + app a secret) this would be hashed and called proof_token, this goes to app b, it calls IAm asks it to verify this proof, it also hashes the (app_secret and auth_token of carbon c on that app) and compares it to the provided hash. If those 2 match then it's a valid request and App A would be able to perfom actions on App B as the Carbon C.  
+
+Each app should be able to register their endpoints at the time of application configuration or even in future via application editing, with what all metadata do they need for this request, metadata is an object and can contain the dictionary for the requirements. This would be defined at the application level.
+
+
+# Profile Editing
+
+Profile editing is possible even after a silicon or carbon is created, it should be possible to change name, timezone, pfp, description, etc. So that all is editable for each carbon and silicon.
+
+
+# Session listing and revocation
+
+All the active sessions must be managed and should be revokable at anytime after 12 hours. For being able to revoke you must have had your current session active for more than 12 hours. Then it should be possible to revoke other sessions.
+
+Before revoking the user must once again verify their identity, this is a step up verification and would require the same login flow by entering either the email or phone number to actually be able to revoke a session.
+
+
+# Endpoints to include
+
+There should be an endpoint to request details about the authenticated user (both carbon or silicon), this should return their name, id, role, org, tags, trust.
+
+Similarly, I should be able to request the same set of details for anyone else in my organisation which should give me their name, id, role, org, tags, and trust.
+
+Similarly requesting for a list of all tags should return all active tags in the current organization.
+
+I should be able to call a single endpoint which should return all my team members along with their details, their tags, their roles, names, id's, trust.
+
+Trust returned should be in respect to the carbon/silicon who requested it and from it's POV.
+
+For the endpoints that gives me all the details by default it should send all but it should be possible to set in the parameters if only a specific field(s) is required.
 
 ---
 
-**For any changes in any of the things mentioned above, maintain a version for all of the changes. The number can differ based on the importance of the said task.** 
+**For any changes in any of the things mentioned above, maintain a version for all of the changes.**
 
+Default retention: audit 7 years, login history 1 year, expired challenges 30 days, ordinary expired token metadata 90 days, compromised families 1 year, webhook attempts 45 days.
+
+For externally initiated mutations ensure to include Idempotency keys. The key is bound to the caller, endpoint, and exact request body. Normal responses remain replayable for 24 hours. Responses containing a newly generated secret remain replayable for only 10 minutes.
 
 ---
 
@@ -289,7 +340,7 @@ For the backend UI would want to see all the app's not reviewed as of now, enabl
 
 # Design Style to follow
 
-Keep the entire design minimal, the website is gonna be light mode, #fffff with #1a1a1a text. 
+Keep the entire design minimal, the website is gonna be light mode, #ffffff with #1a1a1a text.
 The main acent: #2B4CF2 . Gradient and other colors to use: 76D4F0, F9F987, FEAD75, F15347, 14245F. 
 
 For the overall design flow think what's the best possible style to show this information, how can i make this design look extraordianry. Attached a few images to use as our design taste. 

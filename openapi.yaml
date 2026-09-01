@@ -9,6 +9,11 @@ info:
     Timestamps are UTC RFC 3339 values. One-time secret responses can be replayed
     for ten minutes only by the same caller using the same route, request digest,
     and Idempotency-Key.
+    IAM-managed six-digit OTPs expire after ten minutes. Signup, Carbon login,
+    invitation-join, and verified-channel step-up challenges allow ten failed
+    verifications, then enter a 60-second cooldown before the current unexpired
+    challenge receives a fresh ten-attempt window. Replacement codes inherit
+    the partial failed-attempt count or active cooldown.
   contact: { email: auth@teamofsilicons.com }
 servers:
   - { url: 'https://backend.iam.teamofsilicons.com', description: Production }
@@ -17,7 +22,7 @@ tags:
   - { name: Carbon signup }
   - { name: Carbon authentication }
   - { name: Carbon account }
-  - { name: OAuth and OIDC }
+  - { name: OAuth }
   - { name: Organizations }
   - { name: Memberships }
   - { name: Invitations }
@@ -29,7 +34,6 @@ tags:
   - { name: Applications }
   - { name: OBO Access }
   - { name: Webhooks }
-  - { name: Audit }
   - { name: Platform administration }
 
 paths:
@@ -60,29 +64,6 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/VersionInfo' }
-  /.well-known/openid-configuration:
-    get:
-      tags: [OAuth and OIDC]
-      operationId: getOpenIdConfiguration
-      security: []
-      responses:
-        '200':
-          description: OpenID Provider metadata.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/OpenIdConfiguration' }
-  /.well-known/jwks.json:
-    get:
-      tags: [OAuth and OIDC]
-      operationId: getJsonWebKeySet
-      security: []
-      responses:
-        '200':
-          description: Keys for signed ID tokens; IAM access tokens are opaque.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/JsonWebKeySet' }
-
   /api/v1/signup/sessions:
     post:
       tags: [Carbon signup]
@@ -92,6 +73,8 @@ paths:
       responses:
         '201':
           description: Signup session created for 48 hours.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthSession' }
@@ -190,7 +173,9 @@ paths:
       responses:
         '201':
           description: Carbon created after verified identities are rechecked atomically.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CarbonSelf' }
@@ -222,20 +207,65 @@ paths:
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 10, default: 10 } }
       responses:
         '200':
-          description: Public profiles only; contact identifiers are never returned.
+          description: Zero to ten fuzzy Carbon ID suggestions; no profile or contact data is returned.
           content:
             application/json:
               schema:
                 type: object
                 required: [items]
                 properties:
-                  items: { type: array, maxItems: 10, items: { $ref: '#/components/schemas/CarbonPublic' } }
+                  items: { type: array, maxItems: 10, items: { $ref: '#/components/schemas/CarbonSuggestion' } }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/carbons/resolve/email:
+    post:
+      tags: [Carbon account]
+      operationId: resolveCarbonByEmail
+      description: Resolve an exact active verified email to its Carbon ID. Only an authenticated direct Carbon may call this endpoint.
+      security: [{ iamBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailInput' }
+      responses:
+        '200':
+          description: Exact active Carbon identity resolved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CarbonResolution' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/carbons/resolve/phone:
+    post:
+      tags: [Carbon account]
+      operationId: resolveCarbonByPhone
+      description: Resolve an exact active verified phone number to its Carbon ID. Only an authenticated direct Carbon may call this endpoint.
+      security: [{ iamBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PhoneInput' }
+      responses:
+        '200':
+          description: Exact active Carbon identity resolved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CarbonResolution' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /api/v1/oauth/authorize:
     get:
-      tags: [OAuth and OIDC]
+      tags: [OAuth]
       operationId: authorizeApplication
       security: [{ sessionCookie: [] }]
       parameters:
@@ -244,7 +274,6 @@ paths:
         - { name: redirect_uri, in: query, required: true, schema: { type: string, format: uri, maxLength: 2048 } }
         - { name: scope, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 2000 } }
         - { name: state, in: query, required: true, schema: { type: string, minLength: 16, maxLength: 512 } }
-        - { name: nonce, in: query, required: true, schema: { type: string, minLength: 16, maxLength: 512 } }
         - { name: code_challenge, in: query, required: true, schema: { type: string, pattern: '^[A-Za-z0-9_-]{43,128}$' } }
         - { name: code_challenge_method, in: query, required: true, schema: { const: S256 } }
         - { name: org_id, in: query, schema: { $ref: '#/components/schemas/OrgId' } }
@@ -261,7 +290,7 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/oauth/authorize/decisions:
     post:
-      tags: [OAuth and OIDC]
+      tags: [OAuth]
       operationId: decideOAuthConsent
       security: [{ sessionCookie: [] }]
       parameters:
@@ -275,7 +304,9 @@ paths:
       responses:
         '302':
           description: Exact registered redirect containing code or access_denied and unchanged state.
-          headers: { Location: { schema: { type: string, format: uri } } }
+          headers:
+            Location: { schema: { type: string, format: uri } }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
@@ -284,7 +315,7 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/oauth/token:
     post:
-      tags: [OAuth and OIDC]
+      tags: [OAuth]
       operationId: exchangeOAuthToken
       security: [{ applicationBasic: [] }]
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
@@ -295,10 +326,11 @@ paths:
             schema: { $ref: '#/components/schemas/OAuthTokenRequest' }
       responses:
         '200':
-          description: OIDC response; access/refresh tokens are opaque and the ID token is signed.
+          description: OAuth response containing opaque access and rotating refresh tokens.
           headers:
             Cache-Control: { schema: { const: no-store } }
             Pragma: { schema: { const: no-cache } }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OAuthTokenResponse' }
@@ -308,7 +340,7 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/oauth/introspect:
     post:
-      tags: [OAuth and OIDC]
+      tags: [OAuth]
       operationId: introspectOAuthToken
       security: [{ applicationBasic: [] }]
       parameters: [{ $ref: '#/components/parameters/OrgContext' }]
@@ -327,7 +359,7 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/oauth/revoke:
     post:
-      tags: [OAuth and OIDC]
+      tags: [OAuth]
       operationId: revokeOAuthToken
       security: [{ applicationBasic: [] }]
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
@@ -337,56 +369,13 @@ paths:
           application/x-www-form-urlencoded:
             schema: { $ref: '#/components/schemas/OAuthRevocationRequest' }
       responses:
-        '200': { description: Revocation accepted; unknown tokens also return 200. }
+        '200':
+          description: Revocation accepted; unknown tokens also return 200.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/oauth/userinfo:
-    get:
-      tags: [OAuth and OIDC]
-      operationId: getOAuthUserInfo
-      security: [{ iamBearer: [] }]
-      parameters: [{ $ref: '#/components/parameters/OrgContext' }]
-      responses:
-        '200':
-          description: Claims limited to approved scopes and selected organization.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/UserInfo' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/me/application-grants:
-    get:
-      tags: [OAuth and OIDC, Carbon account]
-      operationId: listCurrentCarbonApplicationGrants
-      security: [{ iamBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/Cursor' }
-        - { $ref: '#/components/parameters/Limit' }
-      responses:
-        '200':
-          description: Current application consent grants.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ApplicationGrantPage' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/me/application-grants/{grant_id}:
-    delete:
-      tags: [OAuth and OIDC, Carbon account]
-      operationId: revokeCurrentCarbonApplicationGrant
-      security: [{ iamBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/GrantIdPath' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-      responses:
-        '204': { description: Grant and its token families revoked. }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-
   /api/v1/login/challenges:
     post:
       tags: [Carbon authentication]
@@ -400,10 +389,15 @@ paths:
             schema: { $ref: '#/components/schemas/LoginChallengeCreate' }
       responses:
         '201':
-          description: Uniform challenge response whether or not the identity exists.
+          description: Challenge created for an existing Carbon; Carbon-ID login may dispatch to both verified channels.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthSession' }
+        '404':
+          description: No active Carbon exists for the submitted email, phone number, or Carbon ID.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
         '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
@@ -423,6 +417,8 @@ paths:
       responses:
         '200':
           description: Carbon session established and every code in the challenge consumed.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/IamTokenResponse' }
@@ -447,12 +443,18 @@ paths:
       responses:
         '201':
           description: Reauthentication code sent to a verified channel.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthSession' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '504': { $ref: '#/components/responses/GatewayTimeout' }
   /api/v1/step-up/challenges/{session_id}/verify:
     post:
       tags: [Carbon authentication]
@@ -465,53 +467,12 @@ paths:
       responses:
         '200':
           description: Five-minute action-bound step-up token.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/StepUpTokenResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '410': { $ref: '#/components/responses/Gone' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/step-up/passkey/options:
-    post:
-      tags: [Carbon authentication]
-      operationId: createPasskeyStepUpOptions
-      security: [{ iamBearer: [] }]
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/PasskeyStepUpCreate' }
-      responses:
-        '201':
-          description: Short-lived WebAuthn assertion ceremony bound to action, resource, origin, and current session.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/PasskeyAssertionOptions' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/step-up/passkey/verify:
-    post:
-      tags: [Carbon authentication]
-      operationId: verifyPasskeyStepUp
-      security: [{ iamBearer: [] }]
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/PasskeyAssertionVerify' }
-      responses:
-        '200':
-          description: Phishing-resistant five-minute step-up token.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/StepUpTokenResponse' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
@@ -529,62 +490,55 @@ paths:
       responses:
         '200':
           description: Rotated tokens; reuse of a consumed refresh token revokes its family.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/IamTokenResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/auth/tokens/introspect:
-    post:
-      tags: [Carbon authentication]
-      operationId: introspectIamToken
-      security: [{ applicationBasic: [] }]
-      parameters: [{ $ref: '#/components/parameters/OrgContext' }]
-      requestBody:
-        required: true
-        content:
-          application/x-www-form-urlencoded:
-            schema: { $ref: '#/components/schemas/TokenIntrospectionRequest' }
-      responses:
-        '200':
-          description: Current token, principal, scope, session, and membership state.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/TokenIntrospection' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/auth/tokens/revoke:
-    post:
-      tags: [Carbon authentication]
-      operationId: revokeIamToken
-      security: [{ iamBearer: [] }, { applicationBasic: [] }]
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/TokenRevocationRequest' }
-      responses:
-        '204': { description: Token or family revoked; unknown values are treated idempotently. }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/logout:
     post:
       tags: [Carbon authentication]
       operationId: logout
+      description: >-
+        Revokes the current session immediately by default. If all_sessions
+        would revoke another active session, every target and the authenticating
+        session must be at least 12 hours old and X-Step-Up-Token must carry a
+        verified-channel account.sessions_revoke_all assertion bound to the
+        current Carbon principal. Browser-cookie authentication additionally
+        requires X-CSRF-Token to exactly match the token bound into the signed
+        session cookie; bearer authentication does not. The operation fails
+        atomically if any active target is younger.
       security: [{ iamBearer: [] }, { sessionCookie: [] }]
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - name: X-Step-Up-Token
+          in: header
+          required: false
+          description: Required only when all_sessions would revoke another active session.
+          schema: { type: string, pattern: '^sup_[A-Za-z0-9_-]{43}$' }
+        - name: X-CSRF-Token
+          in: header
+          required: false
+          description: Required only with sessionCookie authentication; it must exactly match the cookie-bound CSRF token.
+          schema: { type: string, minLength: 32, maxLength: 512 }
       requestBody:
         required: false
         content:
           application/json:
             schema: { $ref: '#/components/schemas/LogoutRequest' }
       responses:
-        '204': { description: Selected families revoked and application logout events queued. }
+        '204':
+          description: Selected families revoked and application logout events queued.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
 
   /api/v1/me:
     get:
@@ -614,7 +568,9 @@ paths:
       responses:
         '200':
           description: Profile updated.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CarbonSelf' }
@@ -622,20 +578,6 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '428': { $ref: '#/components/responses/PreconditionRequired' }
-    delete:
-      tags: [Carbon account]
-      operationId: requestCurrentCarbonDeletion
-      security: [{ iamBearer: [], stepUpToken: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-        - { $ref: '#/components/parameters/IfMatch' }
-      responses:
-        '202': { description: Authority disabled immediately and deletion workflow queued. }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '412': { $ref: '#/components/responses/PreconditionFailed' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
   /api/v1/me/sessions:
     get:
@@ -652,92 +594,34 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SessionPage' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-  /api/v1/me/passkeys:
-    get:
-      tags: [Carbon account, Carbon authentication]
-      operationId: listCurrentCarbonPasskeys
-      security: [{ iamBearer: [] }]
-      responses:
-        '200':
-          description: Passkey metadata; credential public keys and credential material are not returned.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [items]
-                properties:
-                  items: { type: array, items: { $ref: '#/components/schemas/Passkey' } }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-  /api/v1/me/passkeys/registration-options:
-    post:
-      tags: [Carbon account, Carbon authentication]
-      operationId: createPasskeyRegistrationOptions
-      security: [{ iamBearer: [], stepUpToken: [] }]
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
-      responses:
-        '201':
-          description: Short-lived WebAuthn registration ceremony bound to current Carbon, session, RP ID, and origin.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/PasskeyRegistrationOptions' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/me/passkeys/registrations:
-    post:
-      tags: [Carbon account, Carbon authentication]
-      operationId: completePasskeyRegistration
-      security: [{ iamBearer: [], stepUpToken: [] }]
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/PasskeyRegistrationVerify' }
-      responses:
-        '201':
-          description: Attested WebAuthn credential registered after challenge, origin, RP ID, flags, and counter validation.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Passkey' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '410': { $ref: '#/components/responses/Gone' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-  /api/v1/me/passkeys/{credential_id}:
+  /api/v1/me/sessions/{session_id}:
     delete:
-      tags: [Carbon account, Carbon authentication]
-      operationId: deleteCurrentCarbonPasskey
+      tags: [Carbon account]
+      operationId: revokeCurrentCarbonSession
+      description: >-
+        Revokes one active session after it is at least 12 hours old. Revoking a
+        different session also requires the authenticating session to be at
+        least 12 hours old. X-Step-Up-Token must carry a verified-channel
+        account.session_revoke assertion bound to session_id. Immediate
+        current-session logout remains available through POST /api/v1/logout.
       security: [{ iamBearer: [], stepUpToken: [] }]
       parameters:
-        - { $ref: '#/components/parameters/PasskeyCredentialIdPath' }
+        - { $ref: '#/components/parameters/SessionId' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
       responses:
-        '204': { description: Credential revoked; a platform administrator cannot remove their last active passkey. }
+        '204':
+          description: Session family revoked.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
-  /api/v1/me/sessions/{session_id}:
-    delete:
-      tags: [Carbon account]
-      operationId: revokeCurrentCarbonSession
-      security: [{ iamBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/SessionId' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-      responses:
-        '204': { description: Session family revoked. }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/me/login-history:
     get:
-      tags: [Carbon account, Audit]
+      tags: [Carbon account]
       operationId: listCurrentCarbonLoginHistory
       security: [{ iamBearer: [] }]
       parameters:
@@ -750,95 +634,6 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/LoginEventPage' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-  /api/v1/me/email-change/sessions:
-    post:
-      tags: [Carbon account]
-      operationId: createEmailChangeSession
-      security: [{ iamBearer: [], stepUpToken: [] }]
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/EmailInput' }
-      responses:
-        '201':
-          description: Verification dispatched without disclosing identity conflicts.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AuthSession' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/me/email-change/sessions/{session_id}/verify:
-    post:
-      tags: [Carbon account]
-      operationId: verifyEmailChange
-      security: [{ iamBearer: [], stepUpToken: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/SessionId' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-        - { $ref: '#/components/parameters/IfMatch' }
-      requestBody: { $ref: '#/components/requestBodies/VerificationCode' }
-      responses:
-        '200':
-          description: Email replaced atomically and other sessions revoked.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/CarbonSelf' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '410': { $ref: '#/components/responses/Gone' }
-        '412': { $ref: '#/components/responses/PreconditionFailed' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '428': { $ref: '#/components/responses/PreconditionRequired' }
-  /api/v1/me/phone-change/sessions:
-    post:
-      tags: [Carbon account]
-      operationId: createPhoneChangeSession
-      security: [{ iamBearer: [], stepUpToken: [] }]
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/PhoneInput' }
-      responses:
-        '201':
-          description: Verification dispatched to the proposed phone number.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AuthSession' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/me/phone-change/sessions/{session_id}/verify:
-    post:
-      tags: [Carbon account]
-      operationId: verifyPhoneChange
-      security: [{ iamBearer: [], stepUpToken: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/SessionId' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-        - { $ref: '#/components/parameters/IfMatch' }
-      requestBody: { $ref: '#/components/requestBodies/VerificationCode' }
-      responses:
-        '200':
-          description: Phone replaced atomically and other sessions revoked.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/CarbonSelf' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '410': { $ref: '#/components/responses/Gone' }
-        '412': { $ref: '#/components/responses/PreconditionFailed' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '428': { $ref: '#/components/responses/PreconditionRequired' }
-
   /api/v1/silicon-auth/token:
     post:
       tags: [Carbon authentication, Silicons]
@@ -853,6 +648,8 @@ paths:
       responses:
         '200':
           description: Independently generated Silicon access and refresh tokens.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/IamTokenResponse' }
@@ -904,7 +701,9 @@ paths:
       responses:
         '201':
           description: Organization and sole owner membership created atomically.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Organization' }
@@ -945,7 +744,9 @@ paths:
       responses:
         '200':
           description: Organization updated; org_id is immutable.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Organization' }
@@ -973,7 +774,9 @@ paths:
       responses:
         '200':
           description: Owner swapped atomically; the previous owner becomes an admin with no delegated capabilities.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Organization' }
@@ -1038,8 +841,10 @@ paths:
             schema: { $ref: '#/components/schemas/MembershipDirectoryPatch' }
       responses:
         '200':
-          description: Tags, first Silicon, extra Silicons, profile data, or reporting line updated; job_role is excluded.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          description: First Silicon, extra Silicons, profile data, or reporting line updated; tags and job_role use governed request workflows.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Membership' }
@@ -1063,7 +868,10 @@ paths:
           description: Required replacement Silicon membership when removing a Silicon with direct reports.
           schema: { type: string, format: uuid }
       responses:
-        '204': { description: Authority revoked immediately; membership identity and history are retained. }
+        '204':
+          description: Authority revoked immediately; membership identity and history are retained.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1102,7 +910,9 @@ paths:
       responses:
         '200':
           description: Active Carbon member promoted to admin with no implicit capabilities.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MembershipAuthorization' }
@@ -1126,7 +936,9 @@ paths:
       responses:
         '200':
           description: Admin demoted to member and all organization capabilities revoked.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MembershipAuthorization' }
@@ -1155,7 +967,9 @@ paths:
       responses:
         '200':
           description: Explicit organization capabilities replaced without changing org_role.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MembershipAuthorization' }
@@ -1166,35 +980,63 @@ paths:
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
-  /api/v1/organizations/{org_id}/members/{membership_id}/machine-capabilities:
-    put:
-      tags: [Memberships, Governance]
-      operationId: replaceSiliconMachineCapabilities
-      security: [{ iamBearer: [], stepUpToken: [] }]
+  /api/v1/organizations/{org_id}/directory/self:
+    get:
+      tags: [Memberships]
+      operationId: getOrganizationDirectorySelf
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrgIdPath' }
+        - { $ref: '#/components/parameters/DirectoryFields' }
+      responses:
+        '200':
+          description: The requester's active organization-directory projection. Trust is evaluated only for Carbon-to-Silicon or Silicon-to-Silicon and is null for rows with no defined direction.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DirectoryMember' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/organizations/{org_id}/directory/members:
+    get:
+      tags: [Memberships]
+      operationId: listOrganizationDirectoryMembers
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrgIdPath' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/DirectoryFields' }
+      responses:
+        '200':
+          description: Active team members projected from the requester's point of view; trust is null for Carbon rows because Carbon-to-Carbon and Silicon-to-Carbon are undefined.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DirectoryPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/organizations/{org_id}/directory/members/{membership_id}:
+    get:
+      tags: [Memberships]
+      operationId: getOrganizationDirectoryMember
+      security: [{ iamBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/OrgIdPath' }
         - { $ref: '#/components/parameters/MembershipIdPath' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-        - { $ref: '#/components/parameters/IfMatch' }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/MachineCapabilitiesReplace' }
+        - { $ref: '#/components/parameters/DirectoryFields' }
       responses:
         '200':
-          description: Silicon-only machine capabilities replaced without changing org_role.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          description: One active team member projected from the requester's point of view; trust is null when the requester-to-row direction is undefined.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/MembershipAuthorization' }
+              schema: { $ref: '#/components/schemas/DirectoryMember' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '428': { $ref: '#/components/responses/PreconditionRequired' }
 
   /api/v1/organizations/{org_id}/carbon-invites:
     get:
@@ -1230,6 +1072,8 @@ paths:
       responses:
         '201':
           description: 48-hour invitation created for an existing Carbon; org_role is always member.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Invite' }
@@ -1265,7 +1109,10 @@ paths:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/IfMatch' }
       responses:
-        '204': { description: Pending invitation and its OTP challenges revoked. }
+        '204':
+          description: Pending invitation and its OTP challenges revoked.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1273,22 +1120,45 @@ paths:
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/organizations/{org_id}/carbon-invites/{invite_id}/verification-code:
+  /api/v1/organizations/{org_id}/join/email-verification-code:
     post:
       tags: [Invitations]
-      operationId: sendInvitationVerificationCode
+      operationId: initiateEmailInvitationJoin
+      description: >-
+        An authenticated direct Carbon submits the invited email. The service
+        verifies that it is the exact active verified address immutably bound
+        when that Carbon's invitation was created and that a pending unexpired
+        invitation exists for this active email-join organization, then sends
+        or replaces the six-digit Postmark OTP. The
+        response exposes only the invitation ID needed by the join request and
+        the code lifetime, never contact data. Ten attempts per Carbon and
+        organization, including misses and varied emails, start a complete
+        60-second cooldown. A successful idempotent replay does not consume an
+        additional attempt.
       security: [{ iamBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/OrgIdPath' }
-        - { $ref: '#/components/parameters/InviteIdPath' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailInput' }
       responses:
-        '202': { $ref: '#/components/responses/CodeDispatchAccepted' }
+        '202':
+          description: Matching invitation resolved and its replacement code dispatched.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InvitationEmailCodeResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
+        '404':
+          description: The authenticated Carbon has no matching usable invitation (`not_invited`).
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
         '409': { $ref: '#/components/responses/Conflict' }
-        '410': { $ref: '#/components/responses/Gone' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/organizations/{org_id}/join:
     post:
@@ -1305,8 +1175,10 @@ paths:
             schema: { $ref: '#/components/schemas/InvitationAcceptance' }
       responses:
         '200':
-          description: Membership created or deliberately reactivated with reset directory defaults.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          description: Membership created or deliberately reactivated with the invitation directory and trust snapshot applied atomically.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Membership' }
@@ -1352,7 +1224,7 @@ paths:
             schema: { $ref: '#/components/schemas/SiliconCreate' }
       responses:
         '201':
-          description: Silicon and 256-bit raw token created; Hook provisioning is queued.
+          description: Active Silicon profile and 32-hex-character raw token created; webhook configuration is independent.
           headers:
             Cache-Control: { schema: { const: no-store } }
             Pragma: { schema: { const: no-cache } }
@@ -1376,7 +1248,7 @@ paths:
       security: [{ iamBearer: [] }]
       responses:
         '200':
-          description: Silicon directory identity and hierarchy level.
+          description: Silicon profile, immutable directory identity, and hierarchy level.
           headers: { ETag: { $ref: '#/components/headers/ETag' } }
           content:
             application/json:
@@ -1398,8 +1270,10 @@ paths:
             schema: { $ref: '#/components/schemas/SiliconPatch' }
       responses:
         '200':
-          description: Non-role directory fields updated; hierarchy cycles are rejected.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          description: Mutable profile or hierarchy fields updated; public IDs and job role remain unchanged.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Silicon' }
@@ -1423,7 +1297,10 @@ paths:
           description: Required replacement Silicon when direct reports exist.
           schema: { type: string, format: uuid }
       responses:
-        '204': { description: 'Silicon disabled, credentials revoked, reports reassigned, and events queued.' }
+        '204':
+          description: 'Silicon disabled, credentials revoked, reports reassigned, and events queued.'
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1431,37 +1308,167 @@ paths:
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
-  /api/v1/organizations/{org_id}/silicons/{silicon_id}/iam-hook:
+  /api/v1/organizations/{org_id}/silicons/{silicon_id}/webhook:
+    parameters:
+      - { $ref: '#/components/parameters/OrgIdPath' }
+      - { $ref: '#/components/parameters/SiliconIdPath' }
     get:
       tags: [Silicons, Webhooks]
-      operationId: getSiliconIamHookStatus
+      operationId: getSiliconWebhook
       security: [{ iamBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/OrgIdPath' }
-        - { $ref: '#/components/parameters/SiliconIdPath' }
       responses:
         '200':
-          description: Provisioning and initial snapshot delivery status; secret URL is masked.
+          description: Active subscriber-managed endpoint. The signing secret is never returned by GET.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/SiliconHookStatus' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-    post:
-      tags: [Silicons, Webhooks]
-      operationId: retrySiliconIamHookProvisioning
-      security: [{ iamBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/OrgIdPath' }
-        - { $ref: '#/components/parameters/SiliconIdPath' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-      responses:
-        '202': { description: Idempotent provisioning or initial-delivery retry queued. }
+              schema: { $ref: '#/components/schemas/SiliconWebhook' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+    put:
+      tags: [Silicons, Webhooks]
+      operationId: replaceSiliconWebhook
+      description: >-
+        Configures or replaces the HTTPS endpoint and rotates its signing secret.
+        A Carbon manager must also present verified-channel step-up. If an active
+        endpoint already exists, If-Match is required; initial creation has no
+        existing representation and may omit it.
+      x-carbon-step-up-assurance: verified_channel
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - name: If-Match
+          in: header
+          required: false
+          description: Strong current endpoint ETag; required when replacing an existing endpoint.
+          schema: { type: string, pattern: '^"[0-9]+"$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SiliconWebhookReplace' }
+      responses:
+        '200':
+          description: Endpoint active; the new HMAC secret is shown only in this no-store response.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { schema: { const: no-store } }
+            Pragma: { schema: { const: no-cache } }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SiliconWebhookConfigured' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    delete:
+      tags: [Silicons, Webhooks]
+      operationId: deleteSiliconWebhook
+      description: Disables the endpoint, retires its signing keys, and removes its subscription.
+      x-carbon-step-up-assurance: verified_channel
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      responses:
+        '204':
+          description: Endpoint disabled and subscription removed.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+
+  /api/v1/organizations/{org_id}/silicons/{silicon_id}/webhook/subscription:
+    parameters:
+      - { $ref: '#/components/parameters/OrgIdPath' }
+      - { $ref: '#/components/parameters/SiliconIdPath' }
+    get:
+      tags: [Silicons, Webhooks]
+      operationId: getSiliconWebhookSubscription
+      security: [{ iamBearer: [] }]
+      responses:
+        '200':
+          description: Active topic and tag-filter subscription.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SiliconWebhookSubscription' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    put:
+      tags: [Silicons, Webhooks]
+      operationId: replaceSiliconWebhookSubscription
+      description: >-
+        Creates or replaces the subscription. An active endpoint must already
+        exist. A Carbon manager must also present verified-channel step-up. If a
+        subscription already exists, If-Match is required; initial creation may
+        omit it.
+      x-carbon-step-up-assurance: verified_channel
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - name: If-Match
+          in: header
+          required: false
+          description: Strong current subscription ETag; required when replacing an existing subscription.
+          schema: { type: string, pattern: '^"[0-9]+"$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SiliconWebhookSubscriptionReplace' }
+      responses:
+        '200':
+          description: Canonical subscription created or replaced.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SiliconWebhookSubscription' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    delete:
+      tags: [Silicons, Webhooks]
+      operationId: deleteSiliconWebhookSubscription
+      description: Removes the subscription without changing the configured endpoint.
+      x-carbon-step-up-assurance: verified_channel
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      responses:
+        '204':
+          description: Subscription removed; delivery stops.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
   /api/v1/organizations/{org_id}/silicons/{silicon_id}/token-rotation-requests:
     post:
       tags: [Silicons, Governance]
@@ -1474,6 +1481,8 @@ paths:
       responses:
         '201':
           description: Immutable owner-approval request created.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApprovalRequest' }
@@ -1542,7 +1551,9 @@ paths:
       responses:
         '201':
           description: Tag created.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Tag' }
@@ -1585,30 +1596,12 @@ paths:
       responses:
         '200':
           description: Tag renamed without changing its stable identifier.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Tag' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '412': { $ref: '#/components/responses/PreconditionFailed' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '428': { $ref: '#/components/responses/PreconditionRequired' }
-    delete:
-      tags: [Tags]
-      operationId: deleteOrganizationTag
-      security: [{ iamBearer: [], stepUpToken: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-        - { $ref: '#/components/parameters/IfMatch' }
-        - name: cascade
-          in: query
-          required: false
-          schema: { type: boolean, default: false }
-      responses:
-        '204': { description: 'Unreferenced tag deleted, or explicit audited cascade completed.' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1669,7 +1662,9 @@ paths:
       responses:
         '200':
           description: Advisory default replaced.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TrustValue' }
@@ -1714,7 +1709,9 @@ paths:
       responses:
         '201':
           description: Advisory rule created.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TrustRule' }
@@ -1758,7 +1755,9 @@ paths:
       responses:
         '200':
           description: Trust rule updated.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TrustRule' }
@@ -1778,7 +1777,10 @@ paths:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/IfMatch' }
       responses:
-        '204': { description: Rule deleted. }
+        '204':
+          description: Rule deleted.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1790,6 +1792,9 @@ paths:
     post:
       tags: [Trust]
       operationId: evaluateEffectiveTrust
+      description: >-
+        Uses a Carbon subject's membership-wide default or the organization
+        default for a Silicon subject, then applies tag and exact-Silicon rules.
       security: [{ iamBearer: [] }]
       parameters: [{ $ref: '#/components/parameters/OrgIdPath' }]
       requestBody:
@@ -1825,6 +1830,8 @@ paths:
       responses:
         '201':
           description: Immutable approval request created with target-specific quorum.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApprovalRequest' }
@@ -1891,7 +1898,9 @@ paths:
       responses:
         '200':
           description: Unique decision recorded; terminal job-role change is applied exactly once.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApprovalRequest' }
@@ -1906,7 +1915,7 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/organizations/{org_id}/members/{membership_id}/job-role-history:
     get:
-      tags: [Governance, Audit]
+      tags: [Governance]
       operationId: listMemberJobRoleHistory
       security: [{ iamBearer: [] }]
       parameters:
@@ -1924,6 +1933,59 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /api/v1/organizations/{org_id}/members/{membership_id}/tag-change-requests:
+    post:
+      tags: [Governance]
+      operationId: createMemberTagChangeRequest
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrgIdPath' }
+        - { $ref: '#/components/parameters/MembershipIdPath' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TagChangeRequestCreate' }
+      responses:
+        '201':
+          description: >-
+            Immutable tag-change request created. Carbon targets require the
+            affected Carbon and an eligible owner/admin; Silicon targets
+            require an eligible owner/admin.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApprovalRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/v1/organizations/{org_id}/members/{membership_id}/tag-history:
+    get:
+      tags: [Governance]
+      operationId: listMemberTagHistory
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrgIdPath' }
+        - { $ref: '#/components/parameters/MembershipIdPath' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Applied membership tag sets with their requester and approvers.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TagHistoryPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /api/v1/organizations/{org_id}/sso:
     get:
       tags: [SSO]
@@ -1932,7 +1994,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgIdPath' }]
       responses:
         '200':
-          description: Non-secret WorkOS mapping, entitlement, connection, and admission-policy state.
+          description: Non-secret WorkOS mapping, entitlement, connection, and join-method state.
           headers: { ETag: { $ref: '#/components/headers/ETag' } }
           content:
             application/json:
@@ -1949,7 +2011,10 @@ paths:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/IfMatch' }
       responses:
-        '204': { description: Connection disabled after join_method is safely changed away from sso. }
+        '204':
+          description: Connection disabled after join_method is safely changed away from sso.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1966,7 +2031,9 @@ paths:
         - { $ref: '#/components/parameters/IdempotencyKey' }
       responses:
         '201':
-          description: Five-minute WorkOS Admin Portal setup link; platform entitlement must already be enabled.
+          description: Five-minute WorkOS Admin Portal setup link. The idempotency reservation commits before provider I/O; an in-flight identical key returns a retryable conflict and a completed response is replayable for five minutes.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SsoSetupLink' }
@@ -1977,34 +2044,6 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '502': { $ref: '#/components/responses/BadGateway' }
         '504': { $ref: '#/components/responses/GatewayTimeout' }
-  /api/v1/organizations/{org_id}/sso/policy:
-    put:
-      tags: [SSO]
-      operationId: replaceSsoAdmissionPolicy
-      security: [{ iamBearer: [], stepUpToken: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/OrgIdPath' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-        - { $ref: '#/components/parameters/IfMatch' }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/SsoAdmissionPolicy' }
-      responses:
-        '200':
-          description: Admission policy for existing Carbons replaced.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/SsoAdmissionPolicy' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '412': { $ref: '#/components/responses/PreconditionFailed' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '428': { $ref: '#/components/responses/PreconditionRequired' }
   /api/v1/organizations/{org_id}/sso/authorize:
     get:
       tags: [SSO]
@@ -2034,7 +2073,7 @@ paths:
         - { name: state, in: query, required: true, schema: { type: string, minLength: 16, maxLength: 512 } }
       responses:
         '302':
-          description: Existing Carbon admitted or linked, then redirected only to the stored validated return URI.
+          description: Existing Carbon admitted or linked through the active tenant-bound WorkOS connection, using fixed conservative member defaults on admission or reactivation, then redirected only to the stored validated return URI.
           headers: { Location: { schema: { type: string, format: uri } } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -2053,7 +2092,9 @@ paths:
         - { $ref: '#/components/parameters/IdempotencyKey' }
       responses:
         '200':
-          description: Read-only provider configuration test.
+          description: Reads the exact provider organization and connection; succeeds only when the connection is active and belongs to the permanently mapped organization.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TestResult' }
@@ -2082,20 +2123,6 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
-  /api/v1/application-ids/{app_id}/availability:
-    get:
-      tags: [Applications]
-      operationId: checkApplicationIdAvailability
-      security: [{ iamBearer: [] }]
-      parameters: [{ $ref: '#/components/parameters/AppIdPath' }]
-      responses:
-        '200':
-          description: Current immutable handle availability.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Availability' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/applications:
     get:
       tags: [Applications]
@@ -2107,7 +2134,7 @@ paths:
         - { name: status, in: query, schema: { $ref: '#/components/schemas/ApplicationStatus' } }
       responses:
         '200':
-          description: Applications owned by or shared with the Carbon.
+          description: Applications owned by the authenticated Carbon.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApplicationPage' }
@@ -2171,7 +2198,9 @@ paths:
       responses:
         '200':
           description: Non-sensitive metadata updated; scope or redirect changes enter review before activation.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Application' }
@@ -2183,114 +2212,6 @@ paths:
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
-    delete:
-      tags: [Applications]
-      operationId: deleteApplication
-      x-platform-admin-step-up-assurance: phishing_resistant
-      security:
-        - { iamBearer: [], stepUpToken: [] }
-        - { platformAdminBearer: [], stepUpToken: [] }
-      parameters:
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-        - { $ref: '#/components/parameters/IfMatch' }
-      responses:
-        '204': { description: 'App disabled, identifiers tombstoned, and every token/proof/delivery revoked.' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '412': { $ref: '#/components/responses/PreconditionFailed' }
-        '428': { $ref: '#/components/responses/PreconditionRequired' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/applications/{app_id}/collaborators:
-    get:
-      tags: [Applications]
-      operationId: listApplicationCollaborators
-      security: [{ iamBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/AppIdPath' }
-        - { $ref: '#/components/parameters/Cursor' }
-        - { $ref: '#/components/parameters/Limit' }
-      responses:
-        '200':
-          description: Carbon collaborators and application-management roles.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ApplicationCollaboratorPage' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-    post:
-      tags: [Applications]
-      operationId: addApplicationCollaborator
-      security: [{ iamBearer: [], stepUpToken: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/AppIdPath' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ApplicationCollaboratorCreate' }
-      responses:
-        '201':
-          description: Existing Carbon added with an explicit management role.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ApplicationCollaborator' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/applications/{app_id}/collaborators/{principal_id}:
-    delete:
-      tags: [Applications]
-      operationId: removeApplicationCollaborator
-      security: [{ iamBearer: [], stepUpToken: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/AppIdPath' }
-        - { $ref: '#/components/parameters/PrincipalIdPath' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-      responses:
-        '204': { description: Collaborator authority revoked. }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/applications/{app_id}/secret-rotations:
-    post:
-      tags: [Applications]
-      operationId: rotateApplicationSecret
-      security: [{ iamBearer: [], stepUpToken: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/AppIdPath' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/SecretRotationRequest' }
-      responses:
-        '201':
-          description: New version activated according to requested overlap; secret shown once.
-          headers:
-            Cache-Control: { schema: { const: no-store } }
-            Pragma: { schema: { const: no-cache } }
-            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ApplicationSecretRotated' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-
   /api/v1/applications/{app_id}/webhook:
     get:
       tags: [Applications, Webhooks]
@@ -2299,7 +2220,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/AppIdPath' }]
       responses:
         '200':
-          description: One active destination plus any pending reviewed replacement.
+          description: One active destination plus any pending reviewed replacement. The body version and ETag are the same application aggregate version.
           headers: { ETag: { $ref: '#/components/headers/ETag' } }
           content:
             application/json:
@@ -2323,8 +2244,10 @@ paths:
             schema: { $ref: '#/components/schemas/ApplicationWebhookReplace' }
       responses:
         '202':
-          description: HTTPS destination passed SSRF validation and awaits platform review; active destination is unchanged.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          description: HTTPS destination passed SSRF validation and awaits platform review; the active destination and existing signing secret are unchanged, and no secret is returned. The body version and ETag are the same application aggregate version.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApplicationWebhook' }
@@ -2336,92 +2259,9 @@ paths:
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/applications/{app_id}/webhook/secret-rotations:
-    post:
-      tags: [Applications, Webhooks]
-      operationId: rotateApplicationWebhookSecret
-      security: [{ iamBearer: [], stepUpToken: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/AppIdPath' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/SecretRotationRequest' }
-      responses:
-        '201':
-          description: Signing-secret version rotated and raw secret shown once.
-          headers:
-            Cache-Control: { schema: { const: no-store } }
-            Pragma: { schema: { const: no-cache } }
-            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/WebhookSecretRotated' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/applications/{app_id}/webhook-deliveries:
-    get:
-      tags: [Applications, Webhooks]
-      operationId: listApplicationWebhookDeliveries
-      security: [{ iamBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/AppIdPath' }
-        - { $ref: '#/components/parameters/Cursor' }
-        - { $ref: '#/components/parameters/Limit' }
-        - { name: status, in: query, schema: { $ref: '#/components/schemas/DeliveryStatus' } }
-      responses:
-        '200':
-          description: Delivery metadata and redacted event summary.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/WebhookDeliveryPage' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/applications/{app_id}/webhook-deliveries/{delivery_id}:
-    get:
-      tags: [Applications, Webhooks]
-      operationId: getApplicationWebhookDelivery
-      security: [{ iamBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/AppIdPath' }
-        - { $ref: '#/components/parameters/DeliveryIdPath' }
-      responses:
-        '200':
-          description: Delivery attempts without response secrets or full contact data.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/WebhookDelivery' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/applications/{app_id}/webhook-deliveries/{delivery_id}/replays:
-    post:
-      tags: [Applications, Webhooks]
-      operationId: replayApplicationWebhookDelivery
-      security: [{ iamBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/AppIdPath' }
-        - { $ref: '#/components/parameters/DeliveryIdPath' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-      responses:
-        '202': { description: Failed or dead-letter delivery replay queued with the same event ID. }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/applications/{app_id}/login-history:
     get:
-      tags: [Applications, Audit]
+      tags: [Applications]
       operationId: listApplicationLoginHistory
       security: [{ iamBearer: [] }]
       parameters:
@@ -2454,10 +2294,11 @@ paths:
             schema: { $ref: '#/components/schemas/OboExchangeRequest' }
       responses:
         '201':
-          description: Random single-use, audience/action/resource-bound proof valid for at most 60 seconds.
+          description: Random single-use proof bound to source, audience, subject token, registered endpoint, and exact metadata; valid for at most 60 seconds.
           headers:
             Cache-Control: { schema: { const: no-store } }
             Pragma: { schema: { const: no-cache } }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OboProofResponse' }
@@ -2482,7 +2323,9 @@ paths:
             schema: { $ref: '#/components/schemas/OboVerifyRequest' }
       responses:
         '200':
-          description: Proof consumed exactly once; target app must still authorize the resource action.
+          description: Proof consumed exactly once; returns its bound endpoint and exact metadata for audience-side authorization.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OboAccessResult' }
@@ -2494,29 +2337,6 @@ paths:
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
-  /api/v1/organizations/{org_id}/audit-events:
-    get:
-      tags: [Audit]
-      operationId: listOrganizationAuditEvents
-      security: [{ iamBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/OrgIdPath' }
-        - { $ref: '#/components/parameters/Cursor' }
-        - { $ref: '#/components/parameters/Limit' }
-        - { name: action, in: query, schema: { type: string, maxLength: 200 } }
-        - { name: target_principal_id, in: query, schema: { type: string, format: uuid } }
-        - { name: from, in: query, schema: { type: string, format: date-time } }
-        - { name: to, in: query, schema: { type: string, format: date-time } }
-      responses:
-        '200':
-          description: Append-only, redacted organization audit history.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AuditEventPage' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-
   /api/v1/admin/applications:
     get:
       tags: [Platform administration]
@@ -2526,13 +2346,12 @@ paths:
         - { $ref: '#/components/parameters/Cursor' }
         - { $ref: '#/components/parameters/Limit' }
         - { name: status, in: query, schema: { $ref: '#/components/schemas/ApplicationStatus' } }
-        - { name: has_pending_changes, in: query, schema: { type: boolean } }
       responses:
         '200':
           description: Platform review queue and application inventory.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApplicationPage' }
+              schema: { $ref: '#/components/schemas/AdminApplicationPage' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
@@ -2540,7 +2359,7 @@ paths:
     post:
       tags: [Platform administration]
       operationId: adminDecideApplication
-      x-required-step-up-assurance: phishing_resistant
+      x-required-step-up-assurance: verified_channel
       security: [{ platformAdminBearer: [], stepUpToken: [] }]
       parameters:
         - { $ref: '#/components/parameters/AppIdPath' }
@@ -2553,11 +2372,13 @@ paths:
             schema: { $ref: '#/components/schemas/ApplicationAdminDecision' }
       responses:
         '200':
-          description: Review, suspension, reactivation, consent setting, or pending configuration decision applied.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          description: Review, suspension, reactivation, deletion, consent setting, or pending configuration decision applied.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Application' }
+              schema: { $ref: '#/components/schemas/AdminApplication' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -2570,7 +2391,7 @@ paths:
     put:
       tags: [Platform administration, SSO]
       operationId: adminReplaceSsoEntitlement
-      x-required-step-up-assurance: phishing_resistant
+      x-required-step-up-assurance: verified_channel
       security: [{ platformAdminBearer: [], stepUpToken: [] }]
       parameters:
         - { $ref: '#/components/parameters/OrgIdPath' }
@@ -2584,7 +2405,9 @@ paths:
       responses:
         '200':
           description: Backend-only SSO entitlement changed.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SsoEntitlement' }
@@ -2594,146 +2417,6 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
-  /api/v1/admin/platform-administrators:
-    get:
-      tags: [Platform administration]
-      operationId: listPlatformAdministrators
-      security: [{ platformAdminBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/Cursor' }
-        - { $ref: '#/components/parameters/Limit' }
-      responses:
-        '200':
-          description: Active platform administrators.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/PlatformAdministratorPage' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-    post:
-      tags: [Platform administration]
-      operationId: createPlatformAdministrator
-      x-required-step-up-assurance: phishing_resistant
-      security: [{ platformAdminBearer: [], stepUpToken: [] }]
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/PlatformAdministratorCreate' }
-      responses:
-        '201':
-          description: Existing Carbon granted platform administrator authority.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/PlatformAdministrator' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '412': { $ref: '#/components/responses/PreconditionFailed' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '428': { $ref: '#/components/responses/PreconditionRequired' }
-  /api/v1/admin/platform-administrators/{principal_id}:
-    delete:
-      tags: [Platform administration]
-      operationId: removePlatformAdministrator
-      x-required-step-up-assurance: phishing_resistant
-      security: [{ platformAdminBearer: [], stepUpToken: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/PrincipalIdPath' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-      responses:
-        '204': { description: Administrator authority revoked; the last active administrator cannot be removed. }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '412': { $ref: '#/components/responses/PreconditionFailed' }
-        '428': { $ref: '#/components/responses/PreconditionRequired' }
-  /api/v1/admin/audit-events:
-    get:
-      tags: [Platform administration, Audit]
-      operationId: adminListAuditEvents
-      security: [{ platformAdminBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/Cursor' }
-        - { $ref: '#/components/parameters/Limit' }
-        - { name: action, in: query, schema: { type: string, maxLength: 200 } }
-        - { name: from, in: query, schema: { type: string, format: date-time } }
-        - { name: to, in: query, schema: { type: string, format: date-time } }
-      responses:
-        '200':
-          description: Cross-tenant redacted audit history.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AuditEventPage' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-  /api/v1/admin/carbons/{carbon_id}/status:
-    put:
-      tags: [Platform administration, Carbon account]
-      operationId: adminReplaceCarbonStatus
-      x-required-step-up-assurance: phishing_resistant
-      security: [{ platformAdminBearer: [], stepUpToken: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/CarbonIdPath' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-        - { $ref: '#/components/parameters/IfMatch' }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/CarbonStatusReplace' }
-      responses:
-        '200':
-          description: Carbon suspended or reactivated; suspension revokes every session and delegated grant.
-          headers: { ETag: { $ref: '#/components/headers/ETag' } }
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/CarbonAdminStatus' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '412': { $ref: '#/components/responses/PreconditionFailed' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '428': { $ref: '#/components/responses/PreconditionRequired' }
-  /api/v1/admin/delivery-failures:
-    get:
-      tags: [Platform administration, Webhooks]
-      operationId: adminListDeliveryFailures
-      security: [{ platformAdminBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/Cursor' }
-        - { $ref: '#/components/parameters/Limit' }
-        - { name: destination_type, in: query, schema: { type: string, enum: [application, silicon_hook] } }
-      responses:
-        '200':
-          description: Failed and dead-letter outbound deliveries.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/WebhookDeliveryPage' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-  /api/v1/admin/delivery-failures/{delivery_id}/replays:
-    post:
-      tags: [Platform administration, Webhooks]
-      operationId: adminReplayDeliveryFailure
-      x-required-step-up-assurance: phishing_resistant
-      security: [{ platformAdminBearer: [], stepUpToken: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/DeliveryIdPath' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-      responses:
-        '202': { description: Dead-letter replay queued. }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '412': { $ref: '#/components/responses/PreconditionFailed' }
-        '428': { $ref: '#/components/responses/PreconditionRequired' }
-
 webhooks:
   applicationEvent:
     post:
@@ -2755,15 +2438,16 @@ webhooks:
         '200': { description: Event accepted idempotently. }
         '202': { description: Event accepted for asynchronous local processing. }
         '204': { description: Event accepted with no response body. }
-  siliconIamEvent:
+  siliconEvent:
     post:
       tags: [Webhooks]
-      operationId: deliverSiliconIamEvent
-      summary: IAM delivers initialization and organization changes to the provisioned Silicon IAM Hook.
+      operationId: deliverSiliconWebhookEvent
+      summary: IAM delivers subscribed organization changes to a Silicon's configured HTTPS endpoint.
       security: []
       parameters:
         - { name: X-Silicon-IAM-Event-ID, in: header, required: true, schema: { type: string, format: uuid } }
         - { name: X-Silicon-IAM-Timestamp, in: header, required: true, schema: { type: integer } }
+        - { name: X-Silicon-IAM-Key-Version, in: header, required: true, schema: { type: integer, minimum: 1 } }
         - { name: X-Silicon-IAM-Signature, in: header, required: true, schema: { type: string, pattern: '^v1=[a-f0-9]{64}$' } }
       requestBody:
         required: true
@@ -2859,11 +2543,6 @@ components:
       required: true
       description: Global Silicon handle including the organization suffix.
       schema: { $ref: '#/components/schemas/SiliconGlobalId' }
-    PrincipalIdPath:
-      name: principal_id
-      in: path
-      required: true
-      schema: { type: string, format: uuid }
     MembershipIdPath:
       name: membership_id
       in: path
@@ -2871,11 +2550,6 @@ components:
       schema: { type: string, format: uuid }
     InviteIdPath:
       name: invite_id
-      in: path
-      required: true
-      schema: { type: string, format: uuid }
-    GrantIdPath:
-      name: grant_id
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -2894,16 +2568,6 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
-    DeliveryIdPath:
-      name: delivery_id
-      in: path
-      required: true
-      schema: { type: string, format: uuid }
-    PasskeyCredentialIdPath:
-      name: credential_id
-      in: path
-      required: true
-      schema: { type: string, format: uuid }
     Cursor:
       name: cursor
       in: query
@@ -2915,6 +2579,15 @@ components:
       in: query
       required: false
       schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    DirectoryFields:
+      name: fields
+      in: query
+      required: false
+      description: Comma-separated sparse projection. Omit it to return every directory field.
+      schema:
+        type: string
+        minLength: 1
+        pattern: '^(name|id|role|org|tags|trust)(,(name|id|role|org|tags|trust))*$'
   headers:
     RequestId:
       description: Trace identifier generated or accepted from X-Request-ID.
@@ -2944,10 +2617,10 @@ components:
         application/json:
           schema:
             type: object
-            required: [verification_code]
+            required: [code]
             additionalProperties: false
             properties:
-              verification_code: { $ref: '#/components/schemas/VerificationCode' }
+              code: { $ref: '#/components/schemas/VerificationCode' }
   responses:
     HealthOk:
       description: Process is healthy for the requested probe.
@@ -2958,14 +2631,20 @@ components:
             required: [ok]
             properties: { ok: { const: true } }
     CodeDispatchAccepted:
-      description: Uniform acceptance; it does not reveal whether an identity exists or a provider message was sent.
+      description: >-
+        Signup contact check completed. If the normalized identity already
+        belongs to a Carbon, no OTP is sent and already_exists is true.
+        Otherwise a ten-minute OTP is dispatched and already_exists is false.
       headers:
         X-Request-ID: { $ref: '#/components/headers/RequestId' }
+        Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/CodeDispatchResult' }
     Verified:
       description: Verification completed and the OTP was consumed atomically.
+      headers:
+        Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
       content:
         application/json:
           schema:
@@ -3005,7 +2684,7 @@ components:
       description: Required Idempotency-Key, If-Match, or step-up precondition is absent.
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
     TooManyRequests:
-      description: One or more distributed rate-limit buckets are exhausted.
+      description: One or more distributed request buckets are exhausted, or an OTP challenge is inside its 60-second cooldown after ten failed verifications.
       headers:
         Retry-After: { $ref: '#/components/headers/RetryAfter' }
         RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
@@ -3045,42 +2724,24 @@ components:
         api_version: { const: v1 }
         build: { type: string }
         commit: { type: string }
-    OpenIdConfiguration:
-      type: object
-      required: [issuer, authorization_endpoint, token_endpoint, userinfo_endpoint, jwks_uri, introspection_endpoint, revocation_endpoint, response_types_supported, grant_types_supported, code_challenge_methods_supported]
-      additionalProperties: true
-      properties:
-        issuer: { type: string, format: uri }
-        authorization_endpoint: { type: string, format: uri }
-        token_endpoint: { type: string, format: uri }
-        userinfo_endpoint: { type: string, format: uri }
-        jwks_uri: { type: string, format: uri }
-        introspection_endpoint: { type: string, format: uri }
-        revocation_endpoint: { type: string, format: uri }
-        response_types_supported: { type: array, items: { const: code } }
-        grant_types_supported: { type: array, items: { type: string, enum: [authorization_code, refresh_token] } }
-        code_challenge_methods_supported: { type: array, items: { const: S256 } }
-    JsonWebKeySet:
-      type: object
-      required: [keys]
-      properties:
-        keys:
-          type: array
-          items:
-            type: object
-            required: [kty, kid, use, alg]
-            additionalProperties: true
-            properties:
-              kty: { type: string }
-              kid: { type: string }
-              use: { const: sig }
-              alg: { type: string }
-    VerificationCode: { type: string, pattern: '^[0-9]{6}$' }
+    VerificationCode:
+      type: string
+      pattern: '^[0-9]{6}$'
+      description: Six-digit code with a ten-minute expiry; ten failed verifications trigger a 60-second reusable-challenge cooldown.
     CarbonId: { type: string, pattern: '^[a-z0-9_-]{3,30}$' }
     OrgId: { type: string, pattern: '^[a-z0-9_-]{3,50}$' }
-    AppId: { type: string, pattern: '^[a-z][a-z0-9_-]{2,79}$' }
-    SiliconLocalId: { type: string, pattern: '^[a-z0-9_-]{3,50}$' }
+    AppId: { type: string, pattern: '^[a-z][a-z0-9_-]{2,62}$' }
+    SiliconHandle:
+      type: string
+      pattern: '^[a-z0-9_-]{3,50}$'
+      description: Client-supplied handle component; only the resulting `{handle}:{org_id}` Silicon ID is public.
     SiliconGlobalId: { type: string, pattern: '^[a-z0-9_-]{3,50}:[a-z0-9_-]{3,50}$' }
+    TimeZoneId:
+      type: string
+      minLength: 1
+      maxLength: 255
+      pattern: '^[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$'
+      description: Exact identifier that must resolve in the IANA Time Zone Database, such as UTC or Asia/Kolkata.
     EmailInput:
       type: object
       required: [email]
@@ -3094,15 +2755,28 @@ components:
     AuthSession:
       type: object
       required: [session_id, expires_at]
+      additionalProperties: false
       properties:
         session_id: { type: string, format: uuid }
         expires_at: { type: string, format: date-time }
+        local_otp:
+          type: string
+          pattern: '^[0-9]{6}$'
+          description: Present only when the explicitly configured local-development provider exposes the generated code.
     CodeDispatchResult:
       type: object
-      required: [accepted, expires_in]
+      required: [already_exists]
+      additionalProperties: false
       properties:
-        accepted: { const: true }
-        expires_in: { type: integer, const: 600 }
+        already_exists: { type: boolean }
+        expires_in:
+          type: integer
+          const: 600
+          description: Present only when a new verification code was sent.
+        local_otp:
+          type: string
+          pattern: '^[0-9]{6}$'
+          description: Present only when the explicitly configured local-development provider exposes the generated code.
     Availability:
       type: object
       required: [available]
@@ -3113,7 +2787,7 @@ components:
       additionalProperties: false
       properties:
         principal_id: { type: string, format: uuid }
-        type: { type: string, enum: [carbon, silicon, application, service] }
+        type: { type: string, enum: [carbon, silicon, application] }
         public_id: { type: string }
     CarbonPublic:
       type: object
@@ -3125,24 +2799,38 @@ components:
         description: { type: [string, 'null'], maxLength: 5000 }
         profile_photo: { type: string, format: uri, maxLength: 2048 }
         created_at: { type: string, format: date-time }
+    CarbonSuggestion:
+      type: object
+      required: [carbon_id]
+      additionalProperties: false
+      properties:
+        carbon_id: { $ref: '#/components/schemas/CarbonId' }
+    CarbonResolution:
+      type: object
+      required: [carbon_id]
+      additionalProperties: false
+      properties:
+        carbon_id: { $ref: '#/components/schemas/CarbonId' }
     CarbonSelf:
       allOf:
         - { $ref: '#/components/schemas/CarbonPublic' }
         - type: object
-          required: [email, phone_number, status, version, updated_at]
+          required: [timezone, email, phone_number, status, version, updated_at]
           properties:
+            timezone: { $ref: '#/components/schemas/TimeZoneId' }
             email: { type: string, format: email }
             phone_number: { type: string }
-            status: { type: string, enum: [active, suspended, deletion_pending] }
+            status: { type: string, enum: [active, suspended] }
             version: { type: integer, minimum: 1 }
             updated_at: { type: string, format: date-time }
     CarbonSignupComplete:
       type: object
-      required: [carbon_id, display_name]
+      required: [carbon_id, display_name, timezone]
       additionalProperties: false
       properties:
         carbon_id: { $ref: '#/components/schemas/CarbonId' }
         display_name: { type: string, minLength: 1, maxLength: 200 }
+        timezone: { $ref: '#/components/schemas/TimeZoneId' }
         description: { type: [string, 'null'], maxLength: 5000 }
         profile_photo: { type: [string, 'null'], format: uri, maxLength: 2048 }
     CarbonProfilePatch:
@@ -3151,23 +2839,9 @@ components:
       additionalProperties: false
       properties:
         display_name: { type: string, minLength: 1, maxLength: 200 }
+        timezone: { $ref: '#/components/schemas/TimeZoneId' }
         description: { type: [string, 'null'], maxLength: 5000 }
         profile_photo: { type: [string, 'null'], format: uri, maxLength: 2048 }
-    CarbonStatusReplace:
-      type: object
-      required: [status, reason]
-      additionalProperties: false
-      properties:
-        status: { type: string, enum: [active, suspended] }
-        reason: { type: string, minLength: 1, maxLength: 2000 }
-    CarbonAdminStatus:
-      type: object
-      required: [principal, status, version, updated_at]
-      properties:
-        principal: { $ref: '#/components/schemas/ActorRef' }
-        status: { type: string, enum: [active, suspended, deletion_pending] }
-        version: { type: integer, minimum: 1 }
-        updated_at: { type: string, format: date-time }
     LoginChallengeCreate:
       type: object
       minProperties: 1
@@ -3183,107 +2857,50 @@ components:
         carbon_id: { $ref: '#/components/schemas/CarbonId' }
     StepUpAction:
       type: string
+      description: >-
+        Closed privileged-action catalog. account.session_revoke binds
+        resource_id to the target session UUID; account.sessions_revoke_all
+        binds it to the current Carbon principal UUID. The Silicon-webhook
+        redirect action binds it to the target Silicon membership UUID. Every
+        action requires one non-null resource_id.
       enum:
-        - account.contact_change
-        - account.delete
+        - account.session_revoke
+        - account.sessions_revoke_all
         - organization.transfer_ownership
         - organization.authorization_change
         - organization.sso_change
+        - organization.silicon_webhook.redirect
         - silicon.rotate_token
-        - application.delete
-        - application.rotate_secret
-        - application.manage_collaborators
-        - platform_admin.manage
+        - platform_admin.sso_entitlement
         - platform_admin.application_review
     StepUpChallengeCreate:
       type: object
-      required: [channel, action]
+      required: [channel, action, resource_id]
       additionalProperties: false
       properties:
         channel: { type: string, enum: [email, phone_number] }
         action: { $ref: '#/components/schemas/StepUpAction' }
-        resource_id: { type: [string, 'null'], format: uuid }
+        resource_id: { type: string, format: uuid }
     StepUpTokenResponse:
       type: object
       required: [step_up_token, action, assurance, expires_in]
       properties:
         step_up_token: { type: string, pattern: '^sup_[A-Za-z0-9_-]{43}$' }
         action: { $ref: '#/components/schemas/StepUpAction' }
-        assurance: { type: string, enum: [verified_channel, phishing_resistant] }
+        assurance: { type: string, enum: [verified_channel] }
         expires_in: { type: integer, const: 300 }
-    Passkey:
-      type: object
-      required: [id, name, transports, backup_eligible, backup_state, created_at, last_used_at]
-      properties:
-        id: { type: string, format: uuid }
-        name: { type: string, minLength: 1, maxLength: 200 }
-        transports: { type: array, uniqueItems: true, items: { type: string, enum: [usb, nfc, ble, internal, hybrid] } }
-        backup_eligible: { type: boolean }
-        backup_state: { type: boolean }
-        created_at: { type: string, format: date-time }
-        last_used_at: { type: [string, 'null'], format: date-time }
-    PasskeyStepUpCreate:
-      type: object
-      required: [action]
-      additionalProperties: false
-      properties:
-        action: { $ref: '#/components/schemas/StepUpAction' }
-        resource_id: { type: [string, 'null'], format: uuid }
-    PasskeyAssertionOptions:
-      type: object
-      required: [ceremony_id, public_key, expires_at]
-      properties:
-        ceremony_id: { type: string, format: uuid }
-        public_key:
-          type: object
-          required: [challenge, rpId, allowCredentials, userVerification]
-          additionalProperties: true
-          properties:
-            challenge: { type: string }
-            rpId: { type: string, format: hostname }
-            allowCredentials: { type: array, items: { type: object, additionalProperties: true } }
-            userVerification: { const: required }
-        expires_at: { type: string, format: date-time }
-    PasskeyAssertionVerify:
-      type: object
-      required: [ceremony_id, credential]
-      additionalProperties: false
-      properties:
-        ceremony_id: { type: string, format: uuid }
-        credential: { type: object, additionalProperties: true }
-    PasskeyRegistrationOptions:
-      type: object
-      required: [ceremony_id, public_key, expires_at]
-      properties:
-        ceremony_id: { type: string, format: uuid }
-        public_key:
-          type: object
-          required: [challenge, rp, user, pubKeyCredParams, attestation]
-          additionalProperties: true
-          properties:
-            challenge: { type: string }
-            rp: { type: object, additionalProperties: true }
-            user: { type: object, additionalProperties: true }
-            pubKeyCredParams: { type: array, items: { type: object, additionalProperties: true } }
-            attestation: { type: string, enum: [none, indirect, direct, enterprise] }
-        expires_at: { type: string, format: date-time }
-    PasskeyRegistrationVerify:
-      type: object
-      required: [ceremony_id, name, credential]
-      additionalProperties: false
-      properties:
-        ceremony_id: { type: string, format: uuid }
-        name: { type: string, minLength: 1, maxLength: 200 }
-        credential: { type: object, additionalProperties: true }
     IamTokenResponse:
       type: object
       required: [access_token, refresh_token, token_type, expires_in, refresh_expires_at, actor, session_id]
       properties:
-        access_token: { type: string, pattern: '^iat_[A-Za-z0-9_-]{43}$' }
+        access_token:
+          type: string
+          pattern: '^(cat|sat)_[A-Za-z0-9_-]{43}$'
+          description: Carbon access tokens use cat_; Silicon access tokens use sat_.
         refresh_token: { type: string, pattern: '^rft_[A-Za-z0-9_-]{43}$' }
         token_type: { const: Bearer }
-        expires_in: { type: integer, const: 900 }
-        refresh_expires_at: { type: string, format: date-time, description: At most 365 days from family creation. }
+        expires_in: { type: integer, const: 1800 }
+        refresh_expires_at: { type: string, format: date-time, description: Exactly 900 days from family creation. }
         actor: { $ref: '#/components/schemas/ActorRef' }
         session_id: { type: string, format: uuid }
     RefreshTokenRequest:
@@ -3292,14 +2909,6 @@ components:
       additionalProperties: false
       properties:
         refresh_token: { type: string, minLength: 32, maxLength: 512 }
-    TokenRevocationRequest:
-      type: object
-      required: [token]
-      additionalProperties: false
-      properties:
-        token: { type: string, minLength: 32, maxLength: 4096 }
-        token_type_hint: { type: string, enum: [access_token, refresh_token] }
-        revoke_family: { type: boolean, default: false }
     TokenIntrospectionRequest:
       type: object
       required: [token]
@@ -3312,7 +2921,7 @@ components:
       properties:
         active: { type: boolean }
         principal_id: { type: string, format: uuid }
-        actor_type: { type: string, enum: [carbon, silicon, application, service] }
+        actor_type: { type: string, enum: [carbon, silicon, application] }
         client_id: { $ref: '#/components/schemas/AppId' }
         org_id: { $ref: '#/components/schemas/OrgId' }
         membership_id: { type: string, format: uuid }
@@ -3342,7 +2951,7 @@ components:
         revoked_at: { type: [string, 'null'], format: date-time }
     PageInfo:
       type: object
-      required: [has_more]
+      required: [next_cursor, has_more]
       properties:
         next_cursor: { type: [string, 'null'] }
         has_more: { type: boolean }
@@ -3378,7 +2987,7 @@ components:
       additionalProperties: false
       properties:
         silicon_id: { $ref: '#/components/schemas/SiliconGlobalId' }
-        silicon_token: { type: string, pattern: '^stk-[a-f0-9]{64}$' }
+        silicon_token: { type: string, pattern: '^stk-[a-f0-9]{32}$' }
     OAuthConsentDecision:
       type: object
       required: [authorization_transaction_id, decision]
@@ -3406,9 +3015,8 @@ components:
       properties:
         access_token: { type: string, pattern: '^oat_[A-Za-z0-9_-]{43}$' }
         refresh_token: { type: string, pattern: '^ort_[A-Za-z0-9_-]{43}$' }
-        id_token: { type: string, description: Signed compact JWT returned only when the effective scopes contain openid. }
         token_type: { const: Bearer }
-        expires_in: { type: integer, const: 900 }
+        expires_in: { type: integer, const: 1800 }
         scope: { type: string }
         actor: { $ref: '#/components/schemas/ActorRef' }
         org_id: { type: [string, 'null'] }
@@ -3418,39 +3026,6 @@ components:
       properties:
         token: { type: string, minLength: 32, maxLength: 4096 }
         token_type_hint: { type: string, enum: [access_token, refresh_token] }
-    UserInfo:
-      type: object
-      required: [sub, actor_type, public_id]
-      properties:
-        sub: { type: string, format: uuid }
-        actor_type: { type: string, enum: [carbon, silicon] }
-        public_id: { type: string }
-        name: { type: string }
-        picture: { type: string, format: uri }
-        email: { type: string, format: email }
-        phone_number: { type: string }
-        org_id: { type: string }
-        membership_id: { type: string, format: uuid }
-        org_role: { type: string, enum: [owner, admin, member] }
-        job_role: { type: string }
-        tags: { type: array, items: { type: string } }
-    ApplicationGrant:
-      type: object
-      required: [id, app_id, actor, scopes, created_at, updated_at]
-      properties:
-        id: { type: string, format: uuid }
-        app_id: { $ref: '#/components/schemas/AppId' }
-        actor: { $ref: '#/components/schemas/ActorRef' }
-        org_id: { type: [string, 'null'] }
-        scopes: { type: array, uniqueItems: true, items: { type: string } }
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
-    ApplicationGrantPage:
-      type: object
-      required: [items, page]
-      properties:
-        items: { type: array, items: { $ref: '#/components/schemas/ApplicationGrant' } }
-        page: { $ref: '#/components/schemas/PageInfo' }
     OrganizationCreate:
       type: object
       required: [org_id, name]
@@ -3516,19 +3091,6 @@ components:
         - admins.create
         - admins.manage
         - sso.manage
-        - audit.read
-    MachineCapability:
-      type: string
-      description: >-
-        Silicon-facing projection of the fixed organization capability catalog.
-        Values persist in the same organization capability-grant table and are
-        restricted to entries whose catalog row allows Silicon principals.
-      enum:
-        - members.update_directory
-        - silicons.update_directory
-        - silicons.manage_hierarchy
-        - trust.manage
-        - roles.request
     Membership:
       type: object
       required: [id, org_id, principal, status, org_role, job_role, tags, extra_silicons, authorization_epoch, version, created_at, updated_at]
@@ -3542,6 +3104,11 @@ components:
         tags: { type: array, uniqueItems: true, items: { $ref: '#/components/schemas/TagSummary' } }
         first_silicon_membership_id: { type: [string, 'null'], format: uuid }
         extra_silicons: { type: array, uniqueItems: true, items: { type: string, format: uuid } }
+        default_trust:
+          description: Carbon-wide advisory trust baseline; null for Silicon memberships.
+          oneOf:
+            - { $ref: '#/components/schemas/TrustValue' }
+            - { type: 'null' }
         reports_to_membership_id: { type: [string, 'null'], format: uuid }
         hierarchy_level: { type: [integer, 'null'], minimum: 1 }
         authorization_epoch: { type: integer, minimum: 0 }
@@ -3560,19 +3127,20 @@ components:
       minProperties: 1
       additionalProperties: false
       properties:
-        tag_ids: { type: array, uniqueItems: true, maxItems: 100, items: { type: string, format: uuid } }
         first_silicon_membership_id: { type: [string, 'null'], format: uuid }
         extra_silicon_membership_ids: { type: array, uniqueItems: true, maxItems: 500, items: { type: string, format: uuid } }
+        default_trust:
+          allOf: [{ $ref: '#/components/schemas/TrustValue' }]
+          description: Carbon-only advisory trust baseline; requires trust.manage.
         reports_to_membership_id: { type: [string, 'null'], format: uuid }
         profile_photo: { type: [string, 'null'], format: uri, maxLength: 2048 }
     MembershipAuthorization:
       type: object
-      required: [membership_id, org_role, capabilities, machine_capabilities, authorization_epoch, version]
+      required: [membership_id, org_role, capabilities, authorization_epoch, version]
       properties:
         membership_id: { type: string, format: uuid }
         org_role: { type: string, enum: [owner, admin, member] }
         capabilities: { type: array, uniqueItems: true, items: { $ref: '#/components/schemas/OrganizationCapability' } }
-        machine_capabilities: { type: array, uniqueItems: true, items: { $ref: '#/components/schemas/MachineCapability' } }
         authorization_epoch: { type: integer, minimum: 0 }
         version: { type: integer, minimum: 1 }
     OrganizationCapabilitiesReplace:
@@ -3581,12 +3149,46 @@ components:
       additionalProperties: false
       properties:
         capabilities: { type: array, uniqueItems: true, items: { $ref: '#/components/schemas/OrganizationCapability' } }
-    MachineCapabilitiesReplace:
+    DirectoryRole:
       type: object
-      required: [machine_capabilities]
+      required: [org_role, job_role]
       additionalProperties: false
       properties:
-        machine_capabilities: { type: array, uniqueItems: true, items: { $ref: '#/components/schemas/MachineCapability' } }
+        org_role: { type: string, enum: [owner, admin, member] }
+        job_role: { type: string, maxLength: 5000 }
+    DirectoryOrganization:
+      type: object
+      required: [id, name]
+      additionalProperties: false
+      properties:
+        id: { $ref: '#/components/schemas/OrgId' }
+        name: { type: string, minLength: 1, maxLength: 200 }
+    DirectoryMember:
+      type: object
+      additionalProperties: false
+      description: >-
+        Sparse organization-directory projection. Omitted fields were not
+        requested. trust is null when no Carbon-to-Silicon or
+        Silicon-to-Carbon/Silicon orientation exists, including Carbon-to-Carbon.
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        id:
+          type: string
+          description: Public Carbon ID or global Silicon ID.
+        role: { $ref: '#/components/schemas/DirectoryRole' }
+        org: { $ref: '#/components/schemas/DirectoryOrganization' }
+        tags: { type: array, uniqueItems: true, items: { $ref: '#/components/schemas/TagSummary' } }
+        trust:
+          oneOf:
+            - { $ref: '#/components/schemas/TrustEvaluation' }
+            - { type: 'null' }
+    DirectoryPage:
+      type: object
+      required: [items, page]
+      additionalProperties: false
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/DirectoryMember' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
     TrustValue:
       type: object
       required: [boundary, level]
@@ -3594,6 +3196,20 @@ components:
       properties:
         boundary: { type: string, enum: [internal, external] }
         level: { type: string, enum: [not_trusted, needs_approval, trusted] }
+    InvitationTagTrustOverride:
+      type: object
+      required: [tag_id, trust]
+      additionalProperties: false
+      properties:
+        tag_id: { type: string, format: uuid }
+        trust: { $ref: '#/components/schemas/TrustValue' }
+    InvitationSiliconTrustOverride:
+      type: object
+      required: [silicon_membership_id, trust]
+      additionalProperties: false
+      properties:
+        silicon_membership_id: { type: string, format: uuid }
+        trust: { $ref: '#/components/schemas/TrustValue' }
     CarbonInviteCreate:
       type: object
       required: [job_role, default_trust]
@@ -3610,11 +3226,23 @@ components:
         first_silicon_membership_id: { type: [string, 'null'], format: uuid }
         extra_silicon_membership_ids: { type: array, uniqueItems: true, maxItems: 500, items: { type: string, format: uuid } }
         default_trust: { $ref: '#/components/schemas/TrustValue' }
+        tag_trust_overrides:
+          type: array
+          maxItems: 100
+          default: []
+          description: At most one override per active organization tag.
+          items: { $ref: '#/components/schemas/InvitationTagTrustOverride' }
+        silicon_trust_overrides:
+          type: array
+          maxItems: 500
+          default: []
+          description: At most one override per active Silicon membership.
+          items: { $ref: '#/components/schemas/InvitationSiliconTrustOverride' }
         redirect_app_id: { type: [string, 'null'] }
     InviteStatus: { type: string, enum: [pending, accepted, revoked, expired] }
     Invite:
       type: object
-      required: [id, org_id, target_carbon, org_role, job_role, tag_ids, extra_silicon_membership_ids, default_trust, invited_by, status, expires_at, version, created_at]
+      required: [id, org_id, target_carbon, org_role, job_role, tag_ids, extra_silicon_membership_ids, default_trust, tag_trust_overrides, silicon_trust_overrides, invited_by, status, expires_at, version, created_at]
       properties:
         id: { type: string, format: uuid }
         org_id: { $ref: '#/components/schemas/OrgId' }
@@ -3626,6 +3254,12 @@ components:
         first_silicon_membership_id: { type: [string, 'null'], format: uuid }
         extra_silicon_membership_ids: { type: array, uniqueItems: true, items: { type: string, format: uuid } }
         default_trust: { $ref: '#/components/schemas/TrustValue' }
+        tag_trust_overrides:
+          type: array
+          items: { $ref: '#/components/schemas/InvitationTagTrustOverride' }
+        silicon_trust_overrides:
+          type: array
+          items: { $ref: '#/components/schemas/InvitationSiliconTrustOverride' }
         invited_by: { $ref: '#/components/schemas/ActorRef' }
         status: { $ref: '#/components/schemas/InviteStatus' }
         expires_at: { type: string, format: date-time }
@@ -3645,40 +3279,60 @@ components:
       properties:
         invite_id: { type: string, format: uuid }
         verification_code: { $ref: '#/components/schemas/VerificationCode' }
+    InvitationEmailCodeResponse:
+      type: object
+      required: [accepted, invite_id, expires_in]
+      additionalProperties: false
+      properties:
+        accepted: { const: true }
+        invite_id: { type: string, format: uuid }
+        expires_in: { type: integer, minimum: 1, maximum: 600 }
     SiliconCreate:
       type: object
       required: [silicon_id, job_role]
       additionalProperties: false
       properties:
-        silicon_id: { $ref: '#/components/schemas/SiliconLocalId' }
+        silicon_id: { $ref: '#/components/schemas/SiliconHandle' }
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Defaults to the immutable local Silicon handle when omitted.
+        timezone:
+          allOf: [{ $ref: '#/components/schemas/TimeZoneId' }]
+          description: Defaults to UTC when omitted.
+        description: { type: [string, 'null'], maxLength: 5000 }
         profile_photo: { type: [string, 'null'], format: uri, maxLength: 2048 }
         job_role: { type: string, maxLength: 5000 }
         reports_to_membership_id: { type: [string, 'null'], format: uuid }
         tag_ids: { type: array, uniqueItems: true, maxItems: 100, items: { type: string, format: uuid } }
-        machine_capabilities: { type: array, uniqueItems: true, items: { $ref: '#/components/schemas/MachineCapability' } }
     SiliconPatch:
       type: object
       minProperties: 1
       additionalProperties: false
       properties:
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        timezone: { $ref: '#/components/schemas/TimeZoneId' }
+        description: { type: [string, 'null'], maxLength: 5000 }
         profile_photo: { type: [string, 'null'], format: uri, maxLength: 2048 }
         reports_to_membership_id: { type: [string, 'null'], format: uuid }
-        tag_ids: { type: array, uniqueItems: true, maxItems: 100, items: { type: string, format: uuid } }
     Silicon:
       type: object
-      required: [principal_id, membership_id, silicon_id, local_id, org_id, profile_photo, job_role, tags, hierarchy_level, hook_status, status, version, created_at, updated_at]
+      required: [principal_id, membership_id, silicon_id, org_id, display_name, timezone, profile_photo, job_role, tags, hierarchy_level, webhook_configured, status, version, created_at, updated_at]
       properties:
         principal_id: { type: string, format: uuid }
         membership_id: { type: string, format: uuid }
         silicon_id: { $ref: '#/components/schemas/SiliconGlobalId' }
-        local_id: { $ref: '#/components/schemas/SiliconLocalId' }
         org_id: { $ref: '#/components/schemas/OrgId' }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        timezone: { $ref: '#/components/schemas/TimeZoneId' }
+        description: { type: [string, 'null'], maxLength: 5000 }
         profile_photo: { type: string, format: uri }
         job_role: { type: string, maxLength: 5000 }
         reports_to_membership_id: { type: [string, 'null'], format: uuid }
         tags: { type: array, items: { $ref: '#/components/schemas/TagSummary' } }
         hierarchy_level: { type: integer, minimum: 1 }
-        hook_status: { type: string, enum: [pending, active, error] }
+        webhook_configured: { type: boolean }
         status: { type: string, enum: [active, removed] }
         version: { type: integer, minimum: 1 }
         created_at: { type: string, format: date-time }
@@ -3688,7 +3342,7 @@ components:
       required: [silicon, silicon_token, secret_replay_expires_at]
       properties:
         silicon: { $ref: '#/components/schemas/Silicon' }
-        silicon_token: { type: string, pattern: '^stk-[a-f0-9]{64}$' }
+        silicon_token: { type: string, pattern: '^stk-[a-f0-9]{32}$' }
         secret_replay_expires_at: { type: string, format: date-time }
     SiliconPage:
       type: object
@@ -3696,14 +3350,76 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/Silicon' } }
         page: { $ref: '#/components/schemas/PageInfo' }
-    SiliconHookStatus:
+    SiliconWebhookReplace:
       type: object
-      required: [status, initialized_event_status, updated_at]
+      required: [url]
+      additionalProperties: false
       properties:
-        status: { type: string, enum: [pending, active, error] }
-        masked_url: { type: [string, 'null'] }
-        initialized_event_status: { type: string, enum: [pending, delivered, error] }
-        last_error_code: { type: [string, 'null'] }
+        url: { type: string, format: uri, pattern: '^https://', maxLength: 2048 }
+    SiliconWebhook:
+      type: object
+      required: [silicon_id, url, status, secret_version, version, created_at, updated_at]
+      properties:
+        silicon_id: { $ref: '#/components/schemas/SiliconGlobalId' }
+        url: { type: string, format: uri, pattern: '^https://', maxLength: 2048 }
+        status: { const: active }
+        secret_version: { type: integer, minimum: 1 }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    SiliconWebhookConfigured:
+      type: object
+      required: [webhook, webhook_signing_secret, secret_replay_expires_at]
+      properties:
+        webhook: { $ref: '#/components/schemas/SiliconWebhook' }
+        webhook_signing_secret: { type: string, pattern: '^swhs_[A-Za-z0-9_-]{43}$' }
+        secret_replay_expires_at: { type: string, format: date-time }
+    SiliconWebhookSubscriptionTopic:
+      type: string
+      enum: [membership_lifecycle, member_updates, trust_updates]
+    SiliconWebhookSubscriptionReplace:
+      type: object
+      required: [mode]
+      additionalProperties: false
+      description: >-
+        all receives every explicitly Silicon-routed organization event, including
+        Full-only metadata, catalog, invitation, governance, credential, and
+        configuration events, and canonicalizes the response to all three topic
+        values. selected requires at least one exact topic: membership_lifecycle is
+        actual creation/reactivation/removal, member_updates is applied existing-member
+        role/tag/profile/hierarchy/authorization/ownership change, and trust_updates is
+        trust state only. own_tags_only remains an orthogonal strict event-time
+        before/after-tag filter; later tag changes never alter an older event's audience.
+      properties:
+        mode: { type: string, enum: [all, selected] }
+        topics:
+          type: array
+          uniqueItems: true
+          maxItems: 3
+          default: []
+          items: { $ref: '#/components/schemas/SiliconWebhookSubscriptionTopic' }
+        own_tags_only: { type: boolean, default: false }
+    SiliconWebhookSubscription:
+      type: object
+      required: [silicon_id, mode, topics, own_tags_only, version, created_at, updated_at]
+      properties:
+        silicon_id: { $ref: '#/components/schemas/SiliconGlobalId' }
+        mode: { type: string, enum: [all, selected] }
+        topics:
+          type: array
+          minItems: 1
+          maxItems: 3
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/SiliconWebhookSubscriptionTopic' }
+        own_tags_only:
+          type: boolean
+          description: >-
+            When true, organization-wide and unattributed events are suppressed;
+            affected tags must intersect the Silicon's tags immediately before or
+            after that mutation. The event-time audience is immutable: a same-event
+            tag loss still matches and a later tag gain does not.
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     SiliconTokenRotated:
       type: object
@@ -3711,7 +3427,7 @@ components:
       properties:
         silicon_id: { $ref: '#/components/schemas/SiliconGlobalId' }
         credential_version: { type: integer, minimum: 1 }
-        silicon_token: { type: string, pattern: '^stk-[a-f0-9]{64}$' }
+        silicon_token: { type: string, pattern: '^stk-[a-f0-9]{32}$' }
         secret_replay_expires_at: { type: string, format: date-time }
     TagCreate:
       type: object
@@ -3747,15 +3463,14 @@ components:
         page: { $ref: '#/components/schemas/PageInfo' }
     TrustSelector:
       type: object
+      additionalProperties: false
       oneOf:
-        - required: [kind]
-          properties: { kind: { const: organization } }
         - required: [kind, tag_id]
           properties: { kind: { const: tag }, tag_id: { type: string, format: uuid } }
         - required: [kind, membership_id]
           properties: { kind: { const: membership }, membership_id: { type: string, format: uuid } }
       properties:
-        kind: { type: string, enum: [organization, tag, membership] }
+        kind: { type: string, enum: [tag, membership] }
         tag_id: { type: string, format: uuid }
         membership_id: { type: string, format: uuid }
     TrustRuleCreate:
@@ -3807,8 +3522,8 @@ components:
         source: { type: string, enum: [organization_default, tag_rule, exact_rule] }
         matching_rule_ids: { type: array, items: { type: string, format: uuid } }
         advisory: { const: true }
-    ApprovalKind: { type: string, enum: [carbon_job_role_change, silicon_job_role_change, silicon_token_rotation] }
-    ApprovalStatus: { type: string, enum: [pending, approved, rejected, expired, completed] }
+    ApprovalKind: { type: string, enum: [carbon_job_role_change, silicon_job_role_change, carbon_tag_change, silicon_tag_change, silicon_token_rotation] }
+    ApprovalStatus: { type: string, enum: [pending, approved, rejected, completed] }
     RoleChangeRequestCreate:
       type: object
       required: [target_membership_id, proposed_job_role]
@@ -3817,6 +3532,24 @@ components:
         target_membership_id: { type: string, format: uuid }
         proposed_job_role: { type: string, maxLength: 5000 }
         reason: { type: [string, 'null'], maxLength: 2000 }
+    TagChangeRequestCreate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        add_tag_ids:
+          type: array
+          uniqueItems: true
+          maxItems: 100
+          default: []
+          items: { type: string, format: uuid }
+        remove_tag_ids:
+          type: array
+          uniqueItems: true
+          maxItems: 100
+          default: []
+          items: { type: string, format: uuid }
+        reason: { type: [string, 'null'], minLength: 1, maxLength: 2000 }
     ApprovalDecisionCreate:
       type: object
       required: [decision]
@@ -3835,7 +3568,7 @@ components:
         decided_at: { type: string, format: date-time }
     ApprovalRequest:
       type: object
-      required: [id, org_id, kind, status, requested_by, target_membership_id, immutable_payload, required_approvals, decisions, expires_at, version, created_at]
+      required: [id, org_id, kind, status, requested_by, target_membership_id, immutable_payload, required_approvals, decisions, version, created_at]
       properties:
         id: { type: string, format: uuid }
         org_id: { $ref: '#/components/schemas/OrgId' }
@@ -3851,7 +3584,6 @@ components:
             target_carbon: { type: integer, minimum: 0, maximum: 1 }
             eligible_owner_or_admin: { type: integer, minimum: 1, maximum: 1 }
         decisions: { type: array, items: { $ref: '#/components/schemas/ApprovalDecision' } }
-        expires_at: { type: string, format: date-time }
         completed_at: { type: [string, 'null'], format: date-time }
         version: { type: integer, minimum: 1 }
         created_at: { type: string, format: date-time }
@@ -3863,7 +3595,7 @@ components:
         page: { $ref: '#/components/schemas/PageInfo' }
     RoleHistory:
       type: object
-      required: [id, membership_id, old_job_role, new_job_role, requested_by, approvers, applied_at]
+      required: [id, membership_id, old_job_role, new_job_role, requested_by, approvers, approval_request_id, applied_at]
       properties:
         id: { type: string, format: uuid }
         membership_id: { type: string, format: uuid }
@@ -3879,6 +3611,33 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/RoleHistory' } }
         page: { $ref: '#/components/schemas/PageInfo' }
+    TagHistory:
+      type: object
+      required: [id, membership_id, previous_tag_ids, applied_tag_ids, requested_by, approvers, approval_request_id, membership_version, applied_at]
+      properties:
+        id: { type: string, format: uuid }
+        membership_id: { type: string, format: uuid }
+        previous_tag_ids:
+          type: array
+          uniqueItems: true
+          maxItems: 100
+          items: { type: string, format: uuid }
+        applied_tag_ids:
+          type: array
+          uniqueItems: true
+          maxItems: 100
+          items: { type: string, format: uuid }
+        requested_by: { $ref: '#/components/schemas/ActorRef' }
+        approvers: { type: array, items: { $ref: '#/components/schemas/ActorRef' } }
+        approval_request_id: { type: string, format: uuid }
+        membership_version: { type: integer, minimum: 1 }
+        applied_at: { type: string, format: date-time }
+    TagHistoryPage:
+      type: object
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/TagHistory' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
     SsoEntitlement:
       type: object
       required: [enabled, version]
@@ -3886,26 +3645,9 @@ components:
         enabled: { type: boolean }
         reason: { type: [string, 'null'], maxLength: 2000 }
         version: { type: integer, minimum: 1 }
-    SsoAdmissionPolicy:
-      type: object
-      required: [mode, default_job_role, default_tag_ids, default_trust]
-      additionalProperties: false
-      properties:
-        mode: { type: string, enum: [invitation_required, verified_identity_policy] }
-        allowed_email_domains: { type: array, uniqueItems: true, maxItems: 100, items: { type: string, format: hostname } }
-        allowed_groups:
-          type: array
-          uniqueItems: true
-          maxItems: 500
-          description: Exact, case-sensitive WorkOS Profile group strings; WorkOS does not expose stable group IDs in this SSO Profile contract.
-          items: { type: string, minLength: 1, maxLength: 512 }
-        default_job_role: { type: string, maxLength: 5000 }
-        default_tag_ids: { type: array, uniqueItems: true, items: { type: string, format: uuid } }
-        first_silicon_membership_id: { type: [string, 'null'], format: uuid }
-        default_trust: { $ref: '#/components/schemas/TrustValue' }
     SsoConfiguration:
       type: object
-      required: [org_id, entitled, status, join_method, policy, version, updated_at]
+      required: [org_id, entitled, status, join_method, version, updated_at]
       properties:
         org_id: { $ref: '#/components/schemas/OrgId' }
         entitled: { type: boolean }
@@ -3913,7 +3655,6 @@ components:
         join_method: { type: string, enum: [email, sso] }
         workos_organization_id: { type: [string, 'null'] }
         connection_id: { type: [string, 'null'] }
-        policy: { $ref: '#/components/schemas/SsoAdmissionPolicy' }
         version: { type: integer, minimum: 1 }
         updated_at: { type: string, format: date-time }
     SsoSetupLink:
@@ -3954,6 +3695,11 @@ components:
           maxItems: 100
           uniqueItems: true
           items: { type: string, pattern: '^[a-z][a-z0-9_.:-]{1,127}$' }
+        obo_endpoints:
+          type: array
+          maxItems: 50
+          default: []
+          items: { $ref: '#/components/schemas/ApplicationOboEndpoint' }
     ApplicationPatch:
       type: object
       minProperties: 1
@@ -3973,9 +3719,14 @@ components:
           maxItems: 100
           uniqueItems: true
           items: { type: string, pattern: '^[a-z][a-z0-9_.:-]{1,127}$' }
+        obo_endpoints:
+          type: array
+          maxItems: 50
+          description: Full replacement. An empty array retires every active endpoint.
+          items: { $ref: '#/components/schemas/ApplicationOboEndpoint' }
     Application:
       type: object
-      required: [id, app_id, owner, redirect_uris, requested_scopes, approved_scopes, status, notify_users, webhook, has_pending_changes, version, created_at, updated_at]
+      required: [id, app_id, owner, redirect_uris, requested_scopes, approved_scopes, obo_endpoints, status, webhook, has_pending_changes, version, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         app_id: { $ref: '#/components/schemas/AppId' }
@@ -3985,8 +3736,11 @@ components:
         redirect_uris: { type: array, uniqueItems: true, items: { type: string, format: uri } }
         requested_scopes: { type: array, uniqueItems: true, items: { type: string } }
         approved_scopes: { type: array, uniqueItems: true, items: { type: string } }
+        obo_endpoints:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/ApplicationOboEndpoint' }
         status: { $ref: '#/components/schemas/ApplicationStatus' }
-        notify_users: { type: boolean }
         webhook: { $ref: '#/components/schemas/ApplicationWebhook' }
         has_pending_changes: { type: boolean }
         version: { type: integer, minimum: 1 }
@@ -4008,43 +3762,21 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/Application' } }
         page: { $ref: '#/components/schemas/PageInfo' }
-    ApplicationCollaboratorRole:
-      type: string
-      enum: [owner_delegate, developer, viewer]
-    ApplicationCollaboratorCreate:
-      type: object
-      required: [carbon_id, role]
-      additionalProperties: false
-      properties:
-        carbon_id: { $ref: '#/components/schemas/CarbonId' }
-        role: { $ref: '#/components/schemas/ApplicationCollaboratorRole' }
-    ApplicationCollaborator:
-      type: object
-      required: [principal, role, created_at]
-      properties:
-        principal: { $ref: '#/components/schemas/ActorRef' }
-        role: { $ref: '#/components/schemas/ApplicationCollaboratorRole' }
-        created_at: { type: string, format: date-time }
-    ApplicationCollaboratorPage:
+    AdminApplication:
+      allOf:
+        - { $ref: '#/components/schemas/Application' }
+        - type: object
+          required: [notify_users]
+          properties:
+            notify_users:
+              type: boolean
+              description: Backend-only consent-screen policy; never serialized by owner application endpoints.
+    AdminApplicationPage:
       type: object
       required: [items, page]
       properties:
-        items: { type: array, items: { $ref: '#/components/schemas/ApplicationCollaborator' } }
+        items: { type: array, items: { $ref: '#/components/schemas/AdminApplication' } }
         page: { $ref: '#/components/schemas/PageInfo' }
-    SecretRotationRequest:
-      type: object
-      additionalProperties: false
-      properties:
-        overlap_seconds: { type: integer, minimum: 0, maximum: 3600, default: 0 }
-    ApplicationSecretRotated:
-      type: object
-      required: [app_id, app_secret, secret_version, previous_valid_until, secret_replay_expires_at]
-      properties:
-        app_id: { $ref: '#/components/schemas/AppId' }
-        app_secret: { type: string, pattern: '^ask_[A-Za-z0-9_-]{43}$' }
-        secret_version: { type: integer, minimum: 1 }
-        previous_valid_until: { type: string, format: date-time }
-        secret_replay_expires_at: { type: string, format: date-time }
     ApplicationWebhook:
       type: object
       required: [active_url, status, secret_version, version]
@@ -4056,57 +3788,17 @@ components:
         pending_url: { type: [string, 'null'], format: uri }
         status: { type: string, enum: [pending_review, active, replacement_under_review, disabled] }
         secret_version: { type: integer, minimum: 1 }
-        version: { type: integer, minimum: 1 }
+        version:
+          type: integer
+          minimum: 1
+          description: Application aggregate version; identical to the response ETag and the value required by If-Match for replacement.
     ApplicationWebhookReplace:
       type: object
       required: [url]
       additionalProperties: false
+      description: Replaces only the reviewed destination candidate; it reuses the existing encrypted application webhook signing secret and never returns that secret.
       properties:
         url: { type: string, format: uri, pattern: '^https://', maxLength: 2048 }
-    WebhookSecretRotated:
-      type: object
-      required: [app_id, webhook_signing_secret, secret_version, previous_valid_until, secret_replay_expires_at]
-      properties:
-        app_id: { $ref: '#/components/schemas/AppId' }
-        webhook_signing_secret: { type: string, pattern: '^whs_[A-Za-z0-9_-]{43}$' }
-        secret_version: { type: integer, minimum: 1 }
-        previous_valid_until: { type: string, format: date-time }
-        secret_replay_expires_at: { type: string, format: date-time }
-    DeliveryStatus:
-      type: string
-      enum: [pending, delivering, delivered, retry_wait, dead_letter, cancelled]
-    WebhookDeliveryAttempt:
-      type: object
-      required: [attempt, started_at, outcome]
-      properties:
-        attempt: { type: integer, minimum: 1 }
-        started_at: { type: string, format: date-time }
-        duration_ms: { type: [integer, 'null'], minimum: 0 }
-        outcome: { type: string, enum: [success, http_error, network_error, timeout, rejected] }
-        response_status: { type: [integer, 'null'], minimum: 100, maximum: 599 }
-        response_body_digest: { type: [string, 'null'] }
-    WebhookDelivery:
-      type: object
-      required: [id, destination_type, destination_id, event_id, event_type, aggregate_id, aggregate_version, status, attempts, created_at, updated_at]
-      properties:
-        id: { type: string, format: uuid }
-        destination_type: { type: string, enum: [application, silicon_hook] }
-        destination_id: { type: string, format: uuid }
-        event_id: { type: string, format: uuid }
-        event_type: { type: string }
-        aggregate_id: { type: string, format: uuid }
-        aggregate_version: { type: integer, minimum: 1 }
-        status: { $ref: '#/components/schemas/DeliveryStatus' }
-        attempts: { type: array, items: { $ref: '#/components/schemas/WebhookDeliveryAttempt' } }
-        next_attempt_at: { type: [string, 'null'], format: date-time }
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
-    WebhookDeliveryPage:
-      type: object
-      required: [items, page]
-      properties:
-        items: { type: array, items: { $ref: '#/components/schemas/WebhookDelivery' } }
-        page: { $ref: '#/components/schemas/PageInfo' }
     WebhookEvent:
       type: object
       required: [spec_version, event_id, event_type, occurred_at, aggregate, data]
@@ -4126,45 +3818,85 @@ components:
             id: { type: string, format: uuid }
             type: { type: string }
             version: { type: integer, minimum: 1 }
-        data: { type: object, additionalProperties: true, description: Event-type-specific minimal projection; never contains credentials or raw provider records. }
+        data:
+          type: object
+          additionalProperties: true
+          description: >-
+            Event-type-specific authorized projection; never contains credentials or raw provider records.
+            For carbon.updated.v1, changed_fields and the complete current state are captured at the
+            aggregate version and filtered per Application by its effective after-change profile, email,
+            and phone consent scopes. The recipient union is authorized Applications immediately before
+            or after the change, so a before-only recipient receives no fields it can no longer read.
+            For the closed organization-member Application vocabulary (organization/ownership, tag,
+            trust, membership/directory/authorization, and Silicon lifecycle or completed credential
+            rotation events), recipient union, complete current state, and exact changed_fields are frozen
+            in the domain transaction and filtered by profile, organizations.read, memberships.read,
+            roles.read, and Carbon-only email/phone scopes. Member events always use
+            current.members as an array; organization.updated uses current.organization and requires
+            organizations.read; tag and trust events use current.resource plus current.members so their
+            independently versioned aggregate is retained. Before-only recipients keep union-scope-filtered
+            changed_fields but receive only stable resource/version authorization tombstones. Workers never
+            hydrate these events from later state. An affected resource is an Application-readable principal
+            or organization projection with an effective data scope; invitations, SSO/webhook configuration,
+            administrative/protocol controls, and an unassigned tag creation have no Application projection.
+            organization.membership.profile_updated.v1 and
+            rotation-request, configuration, subscription, and protocol/control events are excluded from
+            this Application projection vocabulary.
+            organization.membership.profile_updated.v1 is the organization-bound Silicon projection of
+            that mutation: it contains the changed non-contact profile fields, complete current membership
+            state, and before/after affected tags captured at the same Carbon version.
     ApplicationAdminDecision:
       type: object
       required: [decision]
       additionalProperties: false
+      description: >-
+        Backend-admin review transition. delete is terminal, requires all
+        application administration capabilities plus verified-channel step-up,
+        and accepts reason only; notify_users and approved_scopes are rejected.
       properties:
-        decision: { type: string, enum: [approve, reject, suspend, reactivate, approve_pending_changes, reject_pending_changes] }
+        decision: { type: string, enum: [approve, reject, suspend, reactivate, delete, approve_pending_changes, reject_pending_changes] }
         approved_scopes: { type: array, uniqueItems: true, items: { type: string } }
         notify_users: { type: boolean }
         reason: { type: [string, 'null'], maxLength: 2000 }
-    OboAction:
-      type: string
-      enum:
-        - organization.update
-        - members.invite
-        - members.update_directory
-        - members.remove
-        - silicons.create
-        - silicons.update_directory
-        - silicons.manage_hierarchy
-        - silicons.remove
-        - silicons.rotate_token
-        - tags.manage
-        - trust.manage
-        - roles.request
-        - roles.approve
-        - admins.create
-        - admins.manage
-        - sso.manage
-        - audit.read
+    ApplicationOboEndpoint:
+      type: object
+      required: [endpoint_id, path, metadata]
+      additionalProperties: false
+      properties:
+        endpoint_id:
+          type: string
+          minLength: 3
+          maxLength: 128
+          pattern: '^[a-z][a-z0-9_.:-]{2,127}$'
+          description: Stable identifier; an existing identifier cannot be assigned a different path.
+        path:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          pattern: '^/(?!/)(?!.*(?:^|/)\.\.?/)(?!.*[?#\s]).*$'
+          description: Stable absolute audience-application endpoint path.
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Each top-level key is required at exchange. A descriptor may declare type as string, number, integer, boolean, object, array, or null; size, nesting, and node count are bounded.
+    OboEndpointReference:
+      type: object
+      required: [endpoint_id, path]
+      properties:
+        endpoint_id: { type: string, pattern: '^[a-z][a-z0-9_.:-]{2,127}$' }
+        path: { type: string, maxLength: 2048 }
     OboExchangeRequest:
       type: object
-      required: [subject_token, audience, action, org_id]
+      required: [subject_token, audience, endpoint_id, metadata, org_id]
       additionalProperties: false
       properties:
         subject_token: { type: string, minLength: 32, maxLength: 4096, description: Actor-bound application access token issued to the calling app. }
         audience: { $ref: '#/components/schemas/AppId' }
-        action: { $ref: '#/components/schemas/OboAction' }
-        resource: { type: [string, 'null'], maxLength: 1024 }
+        endpoint_id: { type: string, minLength: 3, maxLength: 128, pattern: '^[a-z][a-z0-9_.:-]{2,127}$' }
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Exact metadata bound into the proof. It must contain every registered key, no unregistered keys, and values matching every declared type.
         org_id: { $ref: '#/components/schemas/OrgId' }
     OboProofResponse:
       type: object
@@ -4176,16 +3908,13 @@ components:
         expires_at: { type: string, format: date-time }
     OboVerifyRequest:
       type: object
-      required: [access_proof, audience, action]
+      required: [access_proof]
       additionalProperties: false
       properties:
         access_proof: { type: string, pattern: '^obo_[A-Za-z0-9_-]{43}$' }
-        audience: { $ref: '#/components/schemas/AppId' }
-        action: { $ref: '#/components/schemas/OboAction' }
-        resource: { type: [string, 'null'], maxLength: 1024 }
     OboAccessResult:
       type: object
-      required: [valid, proof_id, issuer_app_id, audience, actor, org_id, action, expires_at, consumed_at]
+      required: [valid, proof_id, issuer_app_id, audience, actor, org_id, endpoint, metadata, expires_at, consumed_at]
       properties:
         valid: { const: true }
         proof_id: { type: string, format: uuid }
@@ -4193,58 +3922,7 @@ components:
         audience: { $ref: '#/components/schemas/AppId' }
         actor: { $ref: '#/components/schemas/ActorRef' }
         org_id: { $ref: '#/components/schemas/OrgId' }
-        action: { $ref: '#/components/schemas/OboAction' }
-        resource: { type: [string, 'null'] }
+        endpoint: { $ref: '#/components/schemas/OboEndpointReference' }
+        metadata: { type: object, additionalProperties: true }
         expires_at: { type: string, format: date-time }
         consumed_at: { type: string, format: date-time }
-    AuditEvent:
-      type: object
-      required: [id, action, actor, target_type, request_id, occurred_at, redacted_diff]
-      properties:
-        id: { type: string, format: uuid }
-        org_id: { type: [string, 'null'] }
-        app_id: { type: [string, 'null'] }
-        actor:
-          oneOf:
-            - { $ref: '#/components/schemas/ActorRef' }
-            - { type: 'null' }
-        effective_actor:
-          oneOf:
-            - { $ref: '#/components/schemas/ActorRef' }
-            - { type: 'null' }
-        action: { type: string }
-        target_type: { type: string }
-        target_id: { type: [string, 'null'], format: uuid }
-        request_id: { type: string }
-        auth_method: { type: [string, 'null'] }
-        ip_prefix: { type: [string, 'null'] }
-        user_agent_summary: { type: [string, 'null'] }
-        redacted_diff: { type: object, additionalProperties: true }
-        occurred_at: { type: string, format: date-time }
-    AuditEventPage:
-      type: object
-      required: [items, page]
-      properties:
-        items: { type: array, items: { $ref: '#/components/schemas/AuditEvent' } }
-        page: { $ref: '#/components/schemas/PageInfo' }
-    PlatformAdministratorCreate:
-      type: object
-      required: [carbon_id]
-      additionalProperties: false
-      properties: { carbon_id: { $ref: '#/components/schemas/CarbonId' } }
-    PlatformAdministrator:
-      type: object
-      required: [principal, created_by, created_at]
-      properties:
-        principal: { $ref: '#/components/schemas/ActorRef' }
-        created_by:
-          oneOf:
-            - { $ref: '#/components/schemas/ActorRef' }
-            - { type: 'null' }
-        created_at: { type: string, format: date-time }
-    PlatformAdministratorPage:
-      type: object
-      required: [items, page]
-      properties:
-        items: { type: array, items: { $ref: '#/components/schemas/PlatformAdministrator' } }
-        page: { $ref: '#/components/schemas/PageInfo' }

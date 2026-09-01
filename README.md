@@ -2,23 +2,22 @@
 
 Silicon IAM is a security-first identity and access-management backend for
 Carbon accounts, organization-scoped Silicon identities, applications,
-OAuth/OIDC, delegated OBO access, governance, WorkOS SSO, audit, and reliable
+OAuth, delegated OBO access, governance, WorkOS SSO, audit, and reliable
 webhook delivery.
 
 The backend is a Rust 2024 modular monolith with two independently scalable
 runtime processes and three one-shot operator binaries:
 
 - `iam-api` serves the public and administrative HTTP contract.
-- `iam-worker` processes durable notifications, Silicon Hook provisioning,
-  outbox expansion, and ordered webhook deliveries.
+- `iam-worker` processes durable notifications, subscription-aware outbox
+  expansion, and ordered application and Silicon webhook deliveries.
 - `iam-migrate` is a privileged one-shot forward migrator.
 - `iam-bootstrap-admin` is a privileged, one-time operator command for granting
   the first platform-administrator role to an existing active Carbon.
 - `iam-activate-key-version` is a narrowly privileged compare-and-swap command
   for activating a runtime key version that every pod has already preloaded.
 
-PostgreSQL 16 or newer is authoritative. Redis/Valkey is optional acceleration;
-the current portable baseline does not depend on it for correctness.
+PostgreSQL 16 or newer is the sole authoritative datastore.
 
 ## Local start
 
@@ -198,8 +197,7 @@ shape trigger, and `service_principals`, read by the invoker-rights deferred
 principal-subtype trigger. Test modules, live-test fixtures, the worker, and
 non-API binaries are excluded from the API derivation explicitly. CI also runs
 the live PostgreSQL protocol regressions, applies migrations and exact runtime
-grants to a fresh database, exercises account-deletion finalization through the
-restricted worker role, starts both worker and API through their non-owner
+grants to a fresh database, starts both worker and API through their non-owner
 roles, checks API readiness, and enforces the locked, all-feature `cargo-deny`
 policy.
 
@@ -220,12 +218,19 @@ provider clients, and browser-session handling live under `src/infrastructure`.
 The worker is under `src/worker`. Migrations are append-only and support
 PostgreSQL 16 and newer.
 
+Carbon and Silicon profiles persist exact IANA TZDB identifiers and validate
+them against both the Rust-bundled time-zone database and PostgreSQL's catalog.
+Legacy rows receive a non-null `UTC` default. Public Carbon and Silicon handles
+remain immutable while presentation fields—display name, description, time
+zone, and profile photo—are independently editable through versioned profile or
+directory operations.
+
 The worker has a separate configuration and cryptographic composition root. It
 receives only its restricted database URL, polling/retry/retention policy,
 shutdown deadline, authentication-frontend URL for invitations, the contact
-AEAD keyring, and Postmark, Twilio, Silicon Hook, and Iris delivery settings.
-Its crypto type exposes authenticated encryption/decryption only. Redis, token
-peppers, contact blind-index keys, browser-cookie keys, JWT signing material,
+AEAD keyring, and Postmark, Twilio, and outbound-webhook delivery settings.
+Its crypto type exposes authenticated encryption/decryption only. Token peppers,
+contact blind-index keys, browser-cookie keys,
 and WorkOS credentials are neither parsed nor held by the worker process. The
 Compose worker service uses an explicit environment map so additions to the API
 environment cannot silently cross this boundary. Contact-AEAD metadata startup
@@ -233,14 +238,15 @@ uses a worker-attested, fixed-purpose wrapper; the worker database role cannot
 execute generic token or blind-index keyring reconciliation. Each delivery stage
 claims at most the smaller of `IAM_WORKER_BATCH_SIZE` and
 `IAM_WORKER_DELIVERY_CONCURRENCY` (default 16, accepted range 1–256), then awaits
-that bounded wave before claiming more. Hook provisioning, notifications, and
-application or Silicon Hook webhook delivery share a process-wide outbound
-stage gate, so the configured delivery concurrency is an aggregate external-I/O
-ceiling for the worker process rather than a per-stage allowance.
+that bounded wave before claiming more. Notifications and application or
+subscriber-configured Silicon webhook delivery share a process-wide outbound
+stage gate, so the configured delivery concurrency is an aggregate
+external-I/O ceiling for the worker process rather than a per-stage allowance.
 
 Important security boundaries include:
 
-- opaque 256-bit credentials with purpose-separated, versioned keyed digests;
+- product-specified 128-bit Silicon credentials and 256-bit session/application
+  credentials with purpose-separated, versioned keyed digests;
 - AES-256-GCM protection and HMAC blind indexes for contact identities;
 - rotating refresh families with replay-family revocation;
 - action- and resource-bound step-up assertions;
@@ -277,9 +283,8 @@ and public endpoints, complete provider credential groups, independent secret
 material, and local providers disabled. The eventual cloud target may replace
 the local secret and process orchestration without changing domain code.
 
-## Contracts and decisions
+## Contracts
 
 - `openapi.yaml` is the normative HTTP contract.
 - `API_DOCS.md` explains endpoint behavior and security semantics.
-- `UNDERSTANDING.md` retains the original product intent.
-- `decisions.md` is the append-only engineering and security decision log.
+- `UNDERSTANDING.md` is the authoritative product-scope source.
