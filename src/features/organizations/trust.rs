@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::BTreeSet};
 
 use axum::{
     Json,
@@ -27,9 +27,10 @@ use super::{
     validation,
 };
 
-const TRUST_DEFAULT_ROUTE: &str = "/api/v1/organizations/{org_id}/trust/default";
-const TRUST_RULE_CREATE_ROUTE: &str = "/api/v1/organizations/{org_id}/trust/rules";
-const TRUST_RULE_ROUTE: &str = "/api/v1/organizations/{org_id}/trust/rules/{rule_id}";
+const TRUST_DEFAULT_ROUTE: &str = "PUT /api/v1/organizations/{org_id}/trust/default";
+const TRUST_RULE_CREATE_ROUTE: &str = "POST /api/v1/organizations/{org_id}/trust/rules";
+const TRUST_RULE_UPDATE_ROUTE: &str = "PATCH /api/v1/organizations/{org_id}/trust/rules/{rule_id}";
+const TRUST_RULE_DELETE_ROUTE: &str = "DELETE /api/v1/organizations/{org_id}/trust/rules/{rule_id}";
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct TrustRuleRow {
@@ -49,12 +50,12 @@ struct TrustRuleRow {
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
-struct MatchRow {
-    id: Uuid,
-    subject_kind: String,
-    target_kind: String,
-    trust_boundary: String,
-    trust_level: String,
+pub(super) struct MatchRow {
+    pub(super) id: Uuid,
+    pub(super) subject_kind: String,
+    pub(super) target_kind: String,
+    pub(super) trust_boundary: String,
+    pub(super) trust_level: String,
 }
 
 pub(super) async fn get_default_trust(
@@ -89,7 +90,6 @@ pub(super) async fn replace_default_trust(
     Json(input): Json<TrustValue>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let expected_version = validation::expected_version(&headers)?;
     let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
     support::require_capability(&scope.access, Capability::TrustManage)?;
     let lease = match support::claim(
@@ -106,6 +106,7 @@ pub(super) async fn replace_default_trust(
         Claim::Replay(response) => return Ok(response),
         Claim::Acquired(lease) => lease,
     };
+    let expected_version = validation::expected_version(&headers)?;
     let before = sqlx::query_as::<_, (String, String)>(
         "SELECT default_trust_boundary::text, default_trust_level::text FROM iam.organizations WHERE id = $1 AND version = $2",
     )
@@ -134,8 +135,9 @@ pub(super) async fn replace_default_trust(
         return Err(precondition_failed());
     }
     let version = expected_version + 1;
-    support::record_mutation(
+    support::record_application_mutation(
         &mut scope.transaction,
+        &state,
         &authenticated,
         scope.access.organization_id,
         MutationEvent {
@@ -207,13 +209,6 @@ pub(super) async fn create_trust_rule(
     let org_id = validation::organization_id(&org_id)?.to_string();
     let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
     support::require_capability(&scope.access, Capability::TrustManage)?;
-    validate_selectors(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        &input.subject,
-        &input.target,
-    )
-    .await?;
     let lease = match support::claim(
         &mut scope.transaction,
         &state,
@@ -228,9 +223,22 @@ pub(super) async fn create_trust_rule(
         Claim::Replay(response) => return Ok(response),
         Claim::Acquired(lease) => lease,
     };
+    validate_selectors(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        &input.subject,
+        &input.target,
+    )
+    .await?;
     let rule_id = Uuid::now_v7();
-    let subject = selector_parts(&input.subject, true)?;
-    let target = selector_parts(&input.target, false)?;
+    let affected_membership_ids = lock_trust_rule_memberships(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        [(&input.subject, true), (&input.target, false)],
+    )
+    .await?;
+    let subject = selector_parts(&input.subject, true);
+    let target = selector_parts(&input.target, false);
     sqlx::query(
         r"
         INSERT INTO iam.trust_rules (
@@ -265,12 +273,14 @@ pub(super) async fn create_trust_rule(
     .await?;
     record_rule(
         &mut scope.transaction,
+        &state,
         &authenticated,
         scope.access.organization_id,
         "trust.rule_created",
         "organization.trust.rule_created.v1",
         None,
         Some(&rule),
+        &affected_membership_ids,
     )
     .await?;
     let body = support::finish_json(
@@ -310,6 +320,10 @@ pub(super) async fn get_trust_rule(
     support::json(StatusCode::OK, &rule, Some(rule.version))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "claim ordering, exact selector capture, mutation, and event persistence are one transaction"
+)]
 pub(super) async fn update_trust_rule(
     State(state): State<ApiState>,
     authenticated: Authenticated,
@@ -319,9 +333,24 @@ pub(super) async fn update_trust_rule(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     validation::trust_rule_patch(&input)?;
-    let expected_version = validation::expected_version(&headers)?;
     let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
     support::require_capability(&scope.access, Capability::TrustManage)?;
+    let lease = match support::claim_resource(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        &headers,
+        TRUST_RULE_UPDATE_ROUTE,
+        &rule_id.to_string(),
+        &input,
+        false,
+    )
+    .await?
+    {
+        Claim::Replay(response) => return Ok(response),
+        Claim::Acquired(lease) => lease,
+    };
+    let expected_version = validation::expected_version(&headers)?;
     let before = fetch_rule(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -340,22 +369,19 @@ pub(super) async fn update_trust_rule(
         target,
     )
     .await?;
-    let lease = match support::claim(
+    let affected_membership_ids = lock_trust_rule_memberships(
         &mut scope.transaction,
-        &state,
-        &authenticated,
-        &headers,
-        TRUST_RULE_ROUTE,
-        &input,
-        false,
+        scope.access.organization_id,
+        [
+            (&before.subject, true),
+            (&before.target, false),
+            (subject, true),
+            (target, false),
+        ],
     )
-    .await?
-    {
-        Claim::Replay(response) => return Ok(response),
-        Claim::Acquired(lease) => lease,
-    };
-    let subject = selector_parts(subject, true)?;
-    let target = selector_parts(target, false)?;
+    .await?;
+    let subject = selector_parts(subject, true);
+    let target = selector_parts(target, false);
     let trust = input.trust.unwrap_or(before.trust);
     let result = sqlx::query(
         r"
@@ -394,12 +420,14 @@ pub(super) async fn update_trust_rule(
     .await?;
     record_rule(
         &mut scope.transaction,
+        &state,
         &authenticated,
         scope.access.organization_id,
         "trust.rule_updated",
         "organization.trust.rule_updated.v1",
         Some(&before),
         Some(&rule),
+        &affected_membership_ids,
     )
     .await?;
     let body =
@@ -419,9 +447,24 @@ pub(super) async fn delete_trust_rule(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let expected_version = validation::expected_version(&headers)?;
     let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
     support::require_capability(&scope.access, Capability::TrustManage)?;
+    let lease = match support::claim_resource(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        &headers,
+        TRUST_RULE_DELETE_ROUTE,
+        &rule_id.to_string(),
+        &json!({ "operation": "delete" }),
+        false,
+    )
+    .await?
+    {
+        Claim::Replay(response) => return Ok(response),
+        Claim::Acquired(lease) => lease,
+    };
+    let expected_version = validation::expected_version(&headers)?;
     let before = fetch_rule(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -431,20 +474,12 @@ pub(super) async fn delete_trust_rule(
     if before.version != expected_version {
         return Err(precondition_failed());
     }
-    let lease = match support::claim(
+    let affected_membership_ids = lock_trust_rule_memberships(
         &mut scope.transaction,
-        &state,
-        &authenticated,
-        &headers,
-        TRUST_RULE_ROUTE,
-        &json!({ "rule_id": rule_id }),
-        false,
+        scope.access.organization_id,
+        [(&before.subject, true), (&before.target, false)],
     )
-    .await?
-    {
-        Claim::Replay(response) => return Ok(response),
-        Claim::Acquired(lease) => lease,
-    };
+    .await?;
     let result = sqlx::query(
         "UPDATE iam.trust_rules SET archived_at = transaction_timestamp(), updated_by_membership_id = $4 WHERE organization_id = $1 AND id = $2 AND version = $3 AND archived_at IS NULL",
     )
@@ -460,12 +495,14 @@ pub(super) async fn delete_trust_rule(
     }
     record_rule(
         &mut scope.transaction,
+        &state,
         &authenticated,
         scope.access.organization_id,
         "trust.rule_archived",
         "organization.trust.rule_archived.v1",
         Some(&before),
         None,
+        &affected_membership_ids,
     )
     .await?;
     support::finish_empty(
@@ -492,13 +529,13 @@ pub(super) async fn evaluate_trust(
     let org_id = validation::organization_id(&org_id)?.to_string();
     let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
     validate_evaluation(&mut scope.transaction, scope.access.organization_id, &input).await?;
-    let (default_boundary, default_level) = sqlx::query_as::<_, (String, String)>(
-        "SELECT default_trust_boundary::text, default_trust_level::text FROM iam.organizations WHERE id = $1",
-    )
-    .bind(scope.access.organization_id)
-    .fetch_one(&mut *scope.transaction)
-    .await
-    .map_err(support::database)?;
+    let (default_boundary, default_level) =
+        sqlx::query_as::<_, (String, String)>(TRUST_DEFAULT_FOR_SUBJECT_SQL)
+            .bind(scope.access.organization_id)
+            .bind(input.subject_membership_id)
+            .fetch_one(&mut *scope.transaction)
+            .await
+            .map_err(support::database)?;
     let matches = sqlx::query_as::<_, MatchRow>(TRUST_MATCH_SQL)
         .bind(scope.access.organization_id)
         .bind(input.subject_membership_id)
@@ -536,22 +573,18 @@ struct SelectorParts {
     tag_id: Option<Uuid>,
 }
 
-fn selector_parts(selector: &TrustSelector, subject: bool) -> Result<SelectorParts, AppError> {
+fn selector_parts(selector: &TrustSelector, subject: bool) -> SelectorParts {
     match selector {
-        TrustSelector::Membership { membership_id } => Ok(SelectorParts {
+        TrustSelector::Membership { membership_id } => SelectorParts {
             kind: if subject { "membership" } else { "silicon" },
             membership_id: Some(*membership_id),
             tag_id: None,
-        }),
-        TrustSelector::Tag { tag_id } => Ok(SelectorParts {
+        },
+        TrustSelector::Tag { tag_id } => SelectorParts {
             kind: "tag",
             membership_id: None,
             tag_id: Some(*tag_id),
-        }),
-        TrustSelector::Organization => Err(validation::field(
-            if subject { "subject" } else { "target" },
-            "organization selectors are represented by the default trust value",
-        )),
+        },
     }
 }
 
@@ -561,8 +594,8 @@ async fn validate_selectors(
     subject: &TrustSelector,
     target: &TrustSelector,
 ) -> Result<(), AppError> {
-    let subject = selector_parts(subject, true)?;
-    let target = selector_parts(target, false)?;
+    let subject = selector_parts(subject, true);
+    let target = selector_parts(target, false);
     if let Some(membership_id) = subject.membership_id {
         validate_active_membership(transaction, organization_id, membership_id, false).await?;
     }
@@ -585,6 +618,142 @@ async fn validate_selectors(
         }
     }
     Ok(())
+}
+
+/// Linearizes a trust-rule mutation with governed tag assignments. The first
+/// pass locks every currently selected membership in identifier order. Tag
+/// rows are then locked in identifier order, which blocks new assignments
+/// because the governed apply function takes a share lock on proposed tags.
+/// A second pass observes any assignment that committed while the tag lock was
+/// being acquired and returns the exact, stable active membership set.
+async fn lock_trust_rule_memberships<'a>(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    selectors: impl IntoIterator<Item = (&'a TrustSelector, bool)>,
+) -> Result<Vec<Uuid>, AppError> {
+    let mut direct_membership_ids = BTreeSet::new();
+    let mut subject_tag_ids = BTreeSet::new();
+    let mut target_tag_ids = BTreeSet::new();
+    for (selector, subject) in selectors {
+        match selector {
+            TrustSelector::Membership { membership_id } => {
+                direct_membership_ids.insert(*membership_id);
+            }
+            TrustSelector::Tag { tag_id } if subject => {
+                subject_tag_ids.insert(*tag_id);
+            }
+            TrustSelector::Tag { tag_id } => {
+                target_tag_ids.insert(*tag_id);
+            }
+        }
+    }
+    let direct_membership_ids = direct_membership_ids.into_iter().collect::<Vec<_>>();
+    let subject_tag_ids = subject_tag_ids.into_iter().collect::<Vec<_>>();
+    let target_tag_ids = target_tag_ids.into_iter().collect::<Vec<_>>();
+
+    let _initial = lock_selected_memberships(
+        transaction,
+        organization_id,
+        &direct_membership_ids,
+        &subject_tag_ids,
+        &target_tag_ids,
+    )
+    .await?;
+
+    let mut tag_ids = subject_tag_ids
+        .iter()
+        .chain(&target_tag_ids)
+        .copied()
+        .collect::<Vec<_>>();
+    tag_ids.sort_unstable();
+    tag_ids.dedup();
+    if !tag_ids.is_empty() {
+        let locked_tags = sqlx::query_scalar::<_, Uuid>(
+            r"
+            SELECT tag.id
+            FROM iam.organization_tags AS tag
+            WHERE tag.organization_id = $1
+              AND tag.id = ANY($2)
+              AND tag.status = 'active'
+            ORDER BY tag.id
+            FOR UPDATE OF tag
+            ",
+        )
+        .bind(organization_id)
+        .bind(&tag_ids)
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(support::database)?;
+        if locked_tags.len() != tag_ids.len() {
+            return Err(AppError::Conflict {
+                code: Cow::Borrowed("trust_selector_inactive"),
+            });
+        }
+    }
+
+    let affected_membership_ids = lock_selected_memberships(
+        transaction,
+        organization_id,
+        &direct_membership_ids,
+        &subject_tag_ids,
+        &target_tag_ids,
+    )
+    .await?;
+    if direct_membership_ids
+        .iter()
+        .any(|membership_id| !affected_membership_ids.contains(membership_id))
+    {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("trust_selector_inactive"),
+        });
+    }
+    Ok(affected_membership_ids)
+}
+
+async fn lock_selected_memberships(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    direct_membership_ids: &[Uuid],
+    subject_tag_ids: &[Uuid],
+    target_tag_ids: &[Uuid],
+) -> Result<Vec<Uuid>, AppError> {
+    sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT membership.id
+        FROM iam.organization_memberships AS membership
+        WHERE membership.organization_id = $1
+          AND membership.status = 'active'
+          AND (
+              membership.id = ANY($2)
+              OR EXISTS (
+                  SELECT 1
+                  FROM iam.membership_tags AS assignment
+                  WHERE assignment.organization_id = membership.organization_id
+                    AND assignment.membership_id = membership.id
+                    AND assignment.tag_id = ANY($3)
+              )
+              OR (
+                  membership.principal_kind = 'silicon'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM iam.membership_tags AS assignment
+                      WHERE assignment.organization_id = membership.organization_id
+                        AND assignment.membership_id = membership.id
+                        AND assignment.tag_id = ANY($4)
+                  )
+              )
+          )
+        ORDER BY membership.id
+        FOR UPDATE OF membership
+        ",
+    )
+    .bind(organization_id)
+    .bind(direct_membership_ids)
+    .bind(subject_tag_ids)
+    .bind(target_tag_ids)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(support::database)
 }
 
 async fn validate_evaluation(
@@ -637,7 +806,7 @@ async fn validate_active_membership(
     Ok(())
 }
 
-fn evaluate_matches(
+pub(super) fn evaluate_matches(
     default_boundary: &str,
     default_level: &str,
     matches: &[MatchRow],
@@ -776,20 +945,27 @@ impl TryFrom<TrustRuleRow> for TrustRuleResponse {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "transaction context and the exact before/after trust-rule event are kept explicit"
+)]
 async fn record_rule(
     transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
     authenticated: &Authenticated,
     organization_id: Uuid,
     action: &'static str,
     event_type: &'static str,
     before: Option<&TrustRuleResponse>,
     after: Option<&TrustRuleResponse>,
+    affected_membership_ids: &[Uuid],
 ) -> Result<(), AppError> {
     let current = after.or(before).ok_or(AppError::Internal {
         category: "trust_audit_state",
     })?;
-    support::record_mutation(
+    support::record_application_mutation(
         transaction,
+        state,
         authenticated,
         organization_id,
         MutationEvent {
@@ -802,10 +978,17 @@ async fn record_rule(
             event_type,
             before_state: before.and_then(|value| serde_json::to_value(value).ok()),
             after_state: after.and_then(|value| serde_json::to_value(value).ok()),
-            metadata: json!({ "trust_rule_id": current.id }),
+            metadata: rule_event_metadata(current.id, affected_membership_ids),
         },
     )
     .await
+}
+
+fn rule_event_metadata(trust_rule_id: Uuid, affected_membership_ids: &[Uuid]) -> serde_json::Value {
+    json!({
+        "trust_rule_id": trust_rule_id,
+        "affected_membership_ids": affected_membership_ids,
+    })
 }
 
 fn take_page(items: &mut Vec<TrustRuleResponse>, limit: i64) -> Result<PageInfo, AppError> {
@@ -884,6 +1067,28 @@ const TRUST_MATCH_SQL: &str = r"
       )
 ";
 
+const TRUST_DEFAULT_FOR_SUBJECT_SQL: &str = r"
+    SELECT
+        COALESCE(
+            carbon_settings.default_trust_boundary,
+            organization.default_trust_boundary
+        )::text AS default_trust_boundary,
+        COALESCE(
+            carbon_settings.default_trust_level,
+            organization.default_trust_level
+        )::text AS default_trust_level
+    FROM iam.organization_memberships AS subject_membership
+    JOIN iam.organizations AS organization
+      ON organization.id = subject_membership.organization_id
+    LEFT JOIN iam.carbon_membership_settings AS carbon_settings
+      ON carbon_settings.organization_id = subject_membership.organization_id
+     AND carbon_settings.membership_id = subject_membership.id
+     AND subject_membership.principal_kind = 'carbon'
+    WHERE subject_membership.organization_id = $1
+      AND subject_membership.id = $2
+      AND subject_membership.status = 'active'
+";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -911,5 +1116,28 @@ mod tests {
             result,
             Ok(value) if matches!(value.trust.level, TrustLevel::NotTrusted)
         ));
+    }
+
+    #[test]
+    fn carbon_evaluation_defaults_are_membership_scoped() {
+        assert!(TRUST_DEFAULT_FOR_SUBJECT_SQL.contains("carbon_membership_settings"));
+        assert!(TRUST_DEFAULT_FOR_SUBJECT_SQL.contains("COALESCE"));
+        assert!(
+            TRUST_DEFAULT_FOR_SUBJECT_SQL.contains("subject_membership.principal_kind = 'carbon'")
+        );
+    }
+
+    #[test]
+    fn trust_rule_event_metadata_carries_the_exact_sorted_member_set() {
+        let rule_id = Uuid::from_u128(10);
+        let first = Uuid::from_u128(20);
+        let second = Uuid::from_u128(30);
+        assert_eq!(
+            rule_event_metadata(rule_id, &[first, second]),
+            json!({
+                "trust_rule_id": rule_id,
+                "affected_membership_ids": [first, second],
+            })
+        );
     }
 }

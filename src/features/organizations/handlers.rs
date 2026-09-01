@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_lines)]
 
-use std::{borrow::Cow, num::NonZeroU32, time::Duration};
+use std::{borrow::Cow, collections::BTreeMap, num::NonZeroU32, time::Duration};
 
 use axum::{
     Json,
@@ -27,7 +27,7 @@ use crate::{
 
 use super::{
     model::{
-        AvailabilityResponse, CascadeQuery, MembershipPage, MembershipResponse, OrganizationCreate,
+        AvailabilityResponse, MembershipPage, MembershipResponse, OrganizationCreate,
         OrganizationPage, OrganizationPatch, OrganizationResponse, OwnershipTransfer, PageInfo,
         PageQuery, SiliconResponse, TagInput, TagPage, TagResponse,
     },
@@ -35,11 +35,15 @@ use super::{
     validation,
 };
 
-const ORGANIZATION_CREATE_ROUTE: &str = "/api/v1/organizations";
-const ORGANIZATION_UPDATE_ROUTE: &str = "/api/v1/organizations/{org_id}";
-const OWNERSHIP_TRANSFER_ROUTE: &str = "/api/v1/organizations/{org_id}/ownership-transfers";
-const TAG_CREATE_ROUTE: &str = "/api/v1/organizations/{org_id}/tags";
-const TAG_UPDATE_ROUTE: &str = "/api/v1/organizations/{org_id}/tags/{tag_id}";
+const ORGANIZATION_CREATE_ROUTE: &str = "POST /api/v1/organizations";
+const ORGANIZATION_UPDATE_ROUTE: &str = "PATCH /api/v1/organizations/{org_id}";
+const OWNERSHIP_TRANSFER_ROUTE: &str = "POST /api/v1/organizations/{org_id}/ownership-transfers";
+const TAG_CREATE_ROUTE: &str = "POST /api/v1/organizations/{org_id}/tags";
+const TAG_UPDATE_ROUTE: &str = "PATCH /api/v1/organizations/{org_id}/tags/{tag_id}";
+
+struct TagWebhookScope {
+    assigned_membership_ids: Vec<Uuid>,
+}
 
 pub(super) async fn organization_id_availability(
     State(state): State<ApiState>,
@@ -133,7 +137,6 @@ pub(super) async fn create_organization(
 ) -> Result<Response, AppError> {
     let carbon_id = support::require_carbon(&authenticated)?;
     validation::organization_create(&mut input, state.settings.environment)?;
-    enforce_actor_rate_limit(&state, &authenticated, "organization_create").await?;
 
     let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
         .await
@@ -152,6 +155,7 @@ pub(super) async fn create_organization(
         Claim::Replay(response) => return Ok(response),
         Claim::Acquired(lease) => lease,
     };
+    enforce_actor_rate_limit(&state, &authenticated, "organization_create").await?;
 
     let organization_id = Uuid::now_v7();
     let owner_membership_id = Uuid::now_v7();
@@ -258,7 +262,6 @@ pub(super) async fn update_organization(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     validation::organization_patch(&mut input, state.settings.environment)?;
-    let expected_version = validation::expected_version(&headers)?;
     let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
     support::require_capability(&scope.access, Capability::OrganizationUpdate)?;
     let lease = match support::claim(
@@ -275,6 +278,7 @@ pub(super) async fn update_organization(
         Claim::Replay(response) => return Ok(response),
         Claim::Acquired(lease) => lease,
     };
+    let expected_version = validation::expected_version(&headers)?;
     let before = fetch_organization(&mut scope.transaction, scope.access.organization_id).await?;
     if before.version != expected_version {
         return Err(precondition_failed());
@@ -288,9 +292,6 @@ pub(super) async fn update_organization(
                 JOIN iam.sso_connections AS connection
                   ON connection.organization_id = config.organization_id
                  AND connection.status = 'active'
-                JOIN iam.sso_membership_policies AS policy
-                  ON policy.organization_id = config.organization_id
-                 AND policy.allow_policy_admission
                 WHERE config.organization_id = $1
                   AND config.platform_enabled
                   AND config.status = 'active'
@@ -333,8 +334,9 @@ pub(super) async fn update_organization(
     }
     let organization =
         fetch_organization(&mut scope.transaction, scope.access.organization_id).await?;
-    support::record_mutation(
+    support::record_application_mutation(
         &mut scope.transaction,
+        &state,
         &authenticated,
         scope.access.organization_id,
         MutationEvent {
@@ -375,8 +377,22 @@ pub(super) async fn transfer_ownership(
     Json(input): Json<OwnershipTransfer>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let expected_version = validation::expected_version(&headers)?;
     let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let lease = match support::claim(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        &headers,
+        OWNERSHIP_TRANSFER_ROUTE,
+        &input,
+        false,
+    )
+    .await?
+    {
+        Claim::Replay(response) => return Ok(response),
+        Claim::Acquired(lease) => lease,
+    };
+    let expected_version = validation::expected_version(&headers)?;
     if scope.access.authority.org_role != OrgRole::Owner {
         return Err(AppError::Forbidden);
     }
@@ -420,20 +436,37 @@ pub(super) async fn transfer_ownership(
         RequiredAssurance::VerifiedChannel,
     )
     .await?;
-    let lease = match support::claim(
+    let ownership_membership_ids = [scope.access.membership_id, input.new_owner_membership_id];
+    let locked_membership_ids = sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT membership.id
+        FROM iam.organization_memberships AS membership
+        WHERE membership.organization_id = $1
+          AND membership.id = ANY($2)
+          AND membership.status = 'active'
+        ORDER BY membership.id
+        FOR UPDATE OF membership
+        ",
+    )
+    .bind(scope.access.organization_id)
+    .bind(ownership_membership_ids)
+    .fetch_all(&mut *scope.transaction)
+    .await
+    .map_err(support::database)?;
+    if locked_membership_ids.len() != ownership_membership_ids.len() {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("new_owner_ineligible"),
+        });
+    }
+    let membership_before = super::directory::fetch_members(
         &mut scope.transaction,
-        &state,
-        &authenticated,
-        &headers,
-        OWNERSHIP_TRANSFER_ROUTE,
-        &input,
-        false,
+        scope.access.organization_id,
+        &ownership_membership_ids,
     )
     .await?
-    {
-        Claim::Replay(response) => return Ok(response),
-        Claim::Acquired(lease) => lease,
-    };
+    .into_iter()
+    .map(|member| (member.id, member))
+    .collect::<BTreeMap<_, _>>();
 
     let bumped = sqlx::query(
         "UPDATE iam.organizations SET updated_at = transaction_timestamp() WHERE id = $1 AND version = $2",
@@ -531,10 +564,36 @@ pub(super) async fn transfer_ownership(
     .await
     .map_err(support::database)?;
 
+    let membership_after = super::directory::fetch_members(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        &ownership_membership_ids,
+    )
+    .await?;
+    for member in &membership_after {
+        let before_member = membership_before
+            .get(&member.id)
+            .ok_or(AppError::Internal {
+                category: "ownership_membership_before_state",
+            })?;
+        super::directory::record_member_mutation(
+            &mut scope.transaction,
+            &state,
+            &authenticated,
+            scope.access.organization_id,
+            "membership.ownership_role_updated",
+            "organization.membership.updated.v1",
+            before_member,
+            member,
+        )
+        .await?;
+    }
+
     let organization =
         fetch_organization(&mut scope.transaction, scope.access.organization_id).await?;
-    support::record_mutation(
+    support::record_application_mutation(
         &mut scope.transaction,
+        &state,
         &authenticated,
         scope.access.organization_id,
         MutationEvent {
@@ -713,19 +772,15 @@ pub(super) async fn update_tag(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let normalized_name = validation::tag(&mut input)?;
-    let expected_version = validation::expected_version(&headers)?;
     let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
     support::require_capability(&scope.access, Capability::TagsManage)?;
-    let before = fetch_tag(&mut scope.transaction, scope.access.organization_id, tag_id).await?;
-    if before.version != expected_version {
-        return Err(precondition_failed());
-    }
-    let lease = match support::claim(
+    let lease = match support::claim_resource(
         &mut scope.transaction,
         &state,
         &authenticated,
         &headers,
         TAG_UPDATE_ROUTE,
+        &tag_id.to_string(),
         &input,
         false,
     )
@@ -734,6 +789,18 @@ pub(super) async fn update_tag(
         Claim::Replay(response) => return Ok(response),
         Claim::Acquired(lease) => lease,
     };
+    let expected_version = validation::expected_version(&headers)?;
+    let before = fetch_tag(&mut scope.transaction, scope.access.organization_id, tag_id).await?;
+    if before.version != expected_version {
+        return Err(precondition_failed());
+    }
+    let webhook_scope = lock_tag_webhook_scope(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        tag_id,
+        expected_version,
+    )
+    .await?;
     let result = sqlx::query(
         r"
         UPDATE iam.organization_tags
@@ -753,8 +820,9 @@ pub(super) async fn update_tag(
         return Err(precondition_failed());
     }
     let tag = fetch_tag(&mut scope.transaction, scope.access.organization_id, tag_id).await?;
-    support::record_mutation(
+    support::record_application_mutation(
         &mut scope.transaction,
+        &state,
         &authenticated,
         scope.access.organization_id,
         MutationEvent {
@@ -767,7 +835,12 @@ pub(super) async fn update_tag(
             event_type: "organization.tag_updated.v1",
             before_state: redacted_value(&before)?,
             after_state: redacted_value(&tag)?,
-            metadata: json!({ "tag_id": tag.id }),
+            metadata: json!({
+                "tag_id": tag.id,
+                "affected_membership_ids": webhook_scope.assigned_membership_ids,
+                "tag_assignment_membership_ids": webhook_scope.assigned_membership_ids,
+                "before_tag_membership_ids": webhook_scope.assigned_membership_ids,
+            }),
         },
     )
     .await?;
@@ -779,91 +852,6 @@ pub(super) async fn update_tag(
         .await
         .map_err(support::database)?;
     support::json_response(StatusCode::OK, body, Some(tag.version), false)
-}
-
-pub(super) async fn delete_tag(
-    State(state): State<ApiState>,
-    authenticated: Authenticated,
-    Path((org_id, tag_id)): Path<(String, Uuid)>,
-    Query(query): Query<CascadeQuery>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    let org_id = validation::organization_id(&org_id)?.to_string();
-    let expected_version = validation::expected_version(&headers)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
-    support::require_capability(&scope.access, Capability::TagsManage)?;
-    let before = fetch_tag(&mut scope.transaction, scope.access.organization_id, tag_id).await?;
-    if before.version != expected_version {
-        return Err(precondition_failed());
-    }
-    support::consume_step_up(
-        &mut scope.transaction,
-        &state,
-        &authenticated,
-        &headers,
-        "organization.authorization_change",
-        Some(tag_id),
-        RequiredAssurance::VerifiedChannel,
-    )
-    .await?;
-    let lease = match support::claim(
-        &mut scope.transaction,
-        &state,
-        &authenticated,
-        &headers,
-        TAG_UPDATE_ROUTE,
-        &query.cascade,
-        false,
-    )
-    .await?
-    {
-        Claim::Replay(response) => return Ok(response),
-        Claim::Acquired(lease) => lease,
-    };
-    let aggregate_version = sqlx::query_scalar::<_, Option<i64>>(
-        r"
-        SELECT iam_private.archive_organization_tag($1, $2, $3, $4)
-        ",
-    )
-    .bind(scope.access.organization_id)
-    .bind(tag_id)
-    .bind(expected_version)
-    .bind(query.cascade)
-    .fetch_one(&mut *scope.transaction)
-    .await
-    .map_err(support::transition_database)?
-    .ok_or(AppError::NotFound)?;
-    support::record_mutation(
-        &mut scope.transaction,
-        &authenticated,
-        scope.access.organization_id,
-        MutationEvent {
-            action: "tag.archived",
-            target_type: "tag",
-            target_id: tag_id,
-            aggregate_type: "organization_tag",
-            aggregate_id: tag_id,
-            aggregate_version,
-            event_type: "organization.tag_archived.v1",
-            before_state: redacted_value(&before)?,
-            after_state: Some(json!({ "status": "archived", "version": aggregate_version })),
-            metadata: json!({ "tag_id": tag_id, "cascade": query.cascade }),
-        },
-    )
-    .await?;
-    support::finish_empty(
-        &mut scope.transaction,
-        &state,
-        lease,
-        StatusCode::NO_CONTENT,
-    )
-    .await?;
-    scope
-        .transaction
-        .commit()
-        .await
-        .map_err(support::database)?;
-    Ok(support::empty(StatusCode::NO_CONTENT))
 }
 
 pub(super) async fn list_tag_members(
@@ -928,6 +916,71 @@ async fn fetch_tag(
     .await
     .map_err(support::database)?
     .ok_or(AppError::NotFound)
+}
+
+async fn lock_tag_webhook_scope(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    tag_id: Uuid,
+    expected_version: i64,
+) -> Result<TagWebhookScope, AppError> {
+    // Match governed tag-assignment lock order: membership rows first, then
+    // tag rows. The second pass captures an assignment that committed before
+    // the tag lock was acquired; later additions block on that tag lock.
+    let _initial_assigned_membership_ids =
+        lock_tag_memberships(transaction, organization_id, tag_id).await?;
+    let locked_tag_id = sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT tag.id
+        FROM iam.organization_tags AS tag
+        WHERE tag.organization_id = $1
+          AND tag.id = $2
+          AND tag.version = $3
+          AND tag.status = 'active'
+        FOR UPDATE OF tag
+        ",
+    )
+    .bind(organization_id)
+    .bind(tag_id)
+    .bind(expected_version)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(support::database)?;
+    if locked_tag_id.is_none() {
+        return Err(precondition_failed());
+    }
+
+    let assigned_membership_ids =
+        lock_tag_memberships(transaction, organization_id, tag_id).await?;
+    Ok(TagWebhookScope {
+        assigned_membership_ids,
+    })
+}
+
+async fn lock_tag_memberships(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    tag_id: Uuid,
+) -> Result<Vec<Uuid>, AppError> {
+    sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT assignment.membership_id
+        FROM iam.membership_tags AS assignment
+        JOIN iam.organization_memberships AS membership
+          ON membership.organization_id = assignment.organization_id
+         AND membership.id = assignment.membership_id
+         AND membership.status = 'active'
+        WHERE assignment.organization_id = $1
+          AND assignment.tag_id = $2
+        ORDER BY assignment.membership_id
+        FOR SHARE OF assignment, membership
+        ",
+    )
+    .bind(organization_id)
+    .bind(tag_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(support::database)
 }
 
 async fn fetch_organization(

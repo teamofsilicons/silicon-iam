@@ -59,7 +59,7 @@ pub enum IdempotencyClaim {
     Replay(ReplayResponse),
 }
 
-/// Transaction-local right to complete one idempotent mutation.
+/// Exclusive right to complete or definitively cancel one idempotent mutation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IdempotencyLease {
     record_id: Uuid,
@@ -159,6 +159,10 @@ impl Default for OneTimeResponseReplayTtl {
 ///
 /// The claim row and domain mutation commit together. A process failure before
 /// commit rolls both back, eliminating a durable ambiguous `processing` row.
+/// Provider-side-effect workflows may instead commit the acquired lease before
+/// external I/O and complete it in a later transaction. That reservation stops
+/// concurrent duplicate calls; a crash after provider success deliberately
+/// remains `processing`/outcome-unknown rather than risking a second effect.
 ///
 /// # Errors
 ///
@@ -239,6 +243,43 @@ pub async fn claim(
     classify_existing(crypto, existing, current.request)
 }
 
+/// Looks up an already committed response without creating a reservation.
+///
+/// This is intended for two-phase workflows that must perform asynchronous
+/// external validation outside a database transaction. The caller must commit
+/// this short lookup transaction, perform the validation, and then call
+/// [`claim`] in the mutation transaction to close the race with a request that
+/// may have completed in between.
+///
+/// # Errors
+///
+/// Returns a conflict for a mismatched, in-progress, failed, or expired prior
+/// request, and a safe internal/database error when its stored replay cannot be
+/// read or decrypted.
+pub async fn replay_if_present(
+    transaction: &mut Transaction<'_, Postgres>,
+    crypto: &CryptoService,
+    request: IdempotencyRequest<'_>,
+) -> Result<Option<ReplayResponse>, AppError> {
+    validate_route(request.route)?;
+    let candidates = digest_candidates(
+        crypto,
+        request.caller_scope,
+        request.key.secret(),
+        request.request_payload,
+    )?;
+    for candidate in candidates {
+        let Some(existing) = find_existing(transaction, request.route, candidate).await? else {
+            continue;
+        };
+        return match classify_existing(crypto, existing, candidate.request)? {
+            IdempotencyClaim::Replay(replay) => Ok(Some(replay)),
+            IdempotencyClaim::Acquired(_) => Err(internal("idempotency_preflight")),
+        };
+    }
+    Ok(None)
+}
+
 /// Stores the exact successful response in the same transaction as a mutation.
 ///
 /// # Errors
@@ -261,6 +302,42 @@ pub async fn complete(
         OneTimeResponseReplayTtl::default(),
     )
     .await
+}
+
+/// Releases an exact, still-processing reservation after an external provider
+/// definitively rejected the request before producing a side effect.
+///
+/// This must not be used for transport failures or post-send response errors,
+/// where the provider outcome is unknown. Keeping those reservations in
+/// `processing` is the fail-closed duplicate-delivery guard.
+///
+/// # Errors
+///
+/// Returns a safe internal error when the lease is no longer the exact pristine
+/// processing record acquired by the caller.
+pub async fn cancel_for_retry(
+    transaction: &mut Transaction<'_, Postgres>,
+    lease: IdempotencyLease,
+) -> Result<(), AppError> {
+    let result = sqlx::query(
+        r"
+        DELETE FROM iam.idempotency_records
+        WHERE id = $1
+          AND status = 'processing'
+          AND response_status IS NULL
+          AND response_ciphertext IS NULL
+          AND response_nonce IS NULL
+          AND encryption_key_version IS NULL
+          AND response_expires_at IS NULL
+        ",
+    )
+    .bind(lease.record_id)
+    .execute(&mut **transaction)
+    .await?;
+    if result.rows_affected() != 1 {
+        return Err(internal("idempotency_lease"));
+    }
+    Ok(())
 }
 
 /// Stores the exact successful response with an explicit bounded replay
@@ -491,14 +568,51 @@ fn advisory_lock_id(route: &'static str, candidate: DigestCandidate) -> i64 {
 }
 
 pub(crate) fn validate_route(route: &'static str) -> Result<(), AppError> {
-    if route.is_empty()
-        || route.len() > 255
-        || !route.starts_with('/')
-        || !route.as_bytes().iter().all(u8::is_ascii_graphic)
+    let Some((method, path)) = route.split_once(' ') else {
+        return Err(internal("idempotency_route"));
+    };
+    if route.len() > 255
+        || !matches!(method, "POST" | "PUT" | "PATCH" | "DELETE")
+        || path.len() < 2
+        || !path.starts_with('/')
+        || path.ends_with('/')
+        || path.split('/').skip(1).any(|segment| {
+            segment.is_empty()
+                || (!is_static_route_segment(segment)
+                    && !is_named_route_segment(segment)
+                    && !is_braced_route_segment(segment))
+        })
     {
         return Err(internal("idempotency_route"));
     }
     Ok(())
+}
+
+fn is_static_route_segment(segment: &str) -> bool {
+    !matches!(segment, "." | "..")
+        && segment.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_' | b'.')
+        })
+}
+
+fn is_named_route_segment(segment: &str) -> bool {
+    segment
+        .strip_prefix(':')
+        .is_some_and(is_route_parameter_name)
+}
+
+fn is_braced_route_segment(segment: &str) -> bool {
+    segment
+        .strip_prefix('{')
+        .and_then(|value| value.strip_suffix('}'))
+        .is_some_and(is_route_parameter_name)
+}
+
+fn is_route_parameter_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase() || byte == b'_' || (index > 0 && byte.is_ascii_digit())
+        })
 }
 
 fn conflict(code: &'static str) -> AppError {
@@ -526,7 +640,7 @@ mod tests {
 
     use crate::config::{KeyringSettings, SecuritySettings};
 
-    const TEST_ROUTE: &str = "/api/v1/test/idempotent-mutation";
+    const TEST_ROUTE: &str = "POST /api/v1/test/idempotent-mutation";
     const TEST_CALLER: &str = "carbon:018f47ac-75c7-7f84-a6b2-9c2a2617c154";
     const TEST_KEY: &str = "018f47ac-75c7-7f84-a6b2-9c2a2617c155";
 
@@ -555,13 +669,11 @@ mod tests {
             blind_index_keys: single_keyring(1, 31),
             encryption_keys: single_keyring(1, 41),
             cookie_key: SecretString::from(URL_SAFE_NO_PAD.encode([51_u8; 32])),
-            jwt_ed25519_private_key: SecretString::from(URL_SAFE_NO_PAD.encode([61_u8; 32])),
-            jwt_key_id: "shared-idempotency-test".to_owned(),
-            access_token_ttl: Duration::from_mins(15),
-            refresh_family_ttl: Duration::from_hours(8_760),
+            access_token_ttl: Duration::from_mins(30),
+            refresh_family_ttl: Duration::from_hours(21_600),
             authorization_code_ttl: Duration::from_secs(120),
             otp_ttl: Duration::from_secs(600),
-            otp_max_attempts: 5,
+            otp_max_attempts: 10,
         };
         let Ok(crypto) = CryptoService::from_settings(&settings) else {
             panic!("valid test keyrings must initialize");
@@ -581,9 +693,24 @@ mod tests {
     }
 
     #[test]
-    fn route_validation_requires_a_bounded_template() {
-        assert!(validate_route("/api/v1/organizations/{organization_id}").is_ok());
-        assert!(validate_route("api/v1/missing-leading-slash").is_err());
+    fn route_validation_requires_a_method_qualified_canonical_template() {
+        assert!(validate_route("PATCH /api/v1/organizations/{organization_id}").is_ok());
+        assert!(validate_route("DELETE /api/v1/me/sessions/:session_id").is_ok());
+        for invalid in [
+            "/api/v1/missing-method",
+            "GET /api/v1/not-a-mutation",
+            "patch /api/v1/lowercase-method",
+            "POST  /api/v1/double-space",
+            "POST https://example.com/api/v1/raw-url",
+            "POST /api/v1/query?value=1",
+            "POST /api/v1/fragment#value",
+            "POST /api//v1/double-slash",
+            "POST /api/v1/trailing-slash/",
+            "POST /api/v1/../not-canonical",
+            "POST /api/v1/{Malformed}",
+        ] {
+            assert!(validate_route(invalid).is_err(), "accepted {invalid}");
+        }
     }
 
     #[test]
@@ -659,6 +786,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn committed_processing_reservation_is_not_reacquired() {
+        let crypto = crypto(1, &[(1, 11)]);
+        let request = SecretString::from("provider-side-effect");
+        let digest = crypto.digest_secret(DigestPurpose::IdempotencyRequest, &request);
+        assert!(digest.is_ok());
+        let Ok(digest) = digest else {
+            unreachable!("valid test keyring must digest the request");
+        };
+        let result = classify_existing(
+            &crypto,
+            ExistingRecord {
+                id: Uuid::now_v7(),
+                request_digest: digest.as_bytes().to_vec(),
+                status: "processing".to_owned(),
+                response_status: None,
+                response_ciphertext: None,
+                response_nonce: None,
+                encryption_key_version: None,
+                response_is_available: false,
+            },
+            digest,
+        );
+        let Err(AppError::Conflict { code }) = result else {
+            panic!("a committed provider reservation must remain exclusively owned");
+        };
+        assert_eq!(code, "idempotency_in_progress");
+    }
+
     #[tokio::test]
     #[ignore = "requires a local Docker daemon"]
     #[allow(
@@ -705,7 +861,8 @@ mod tests {
                 contains_one_time_secret: false,
             },
         )
-        .await?;
+        .await
+        .context("old-pod idempotency claim")?;
         let IdempotencyClaim::Acquired(old_lease) = old_claim else {
             anyhow::bail!("the old pod unexpectedly replayed a fresh request");
         };
@@ -729,7 +886,8 @@ mod tests {
                     contains_one_time_secret: false,
                 },
             )
-            .await?;
+            .await
+            .context("rotated-pod idempotency claim")?;
             let IdempotencyClaim::Replay(replay) = outcome else {
                 anyhow::bail!("the rotated pod created a second versioned record");
             };
@@ -753,7 +911,8 @@ mod tests {
             201,
             br#"{"created":true}"#,
         )
-        .await?;
+        .await
+        .context("old-pod idempotency completion")?;
         old_transaction.commit().await?;
 
         let replay = rotated_task
@@ -793,6 +952,62 @@ mod tests {
         .fetch_one(&pool)
         .await?;
         ensure!(records == (1, Some(1)), "versioned duplicate rows survived");
+
+        // Exercise definitive-failure cleanup through the same restricted API
+        // table capabilities declared by the runtime grant manifest. The
+        // static grant checker separately proves that this exact DELETE target
+        // is neither missing nor broader than production SQL requires.
+        sqlx::query("CREATE ROLE silicon_iam_api NOLOGIN")
+            .execute(&pool)
+            .await?;
+        sqlx::query("GRANT silicon_iam_api TO postgres")
+            .execute(&pool)
+            .await?;
+        sqlx::query("GRANT USAGE ON SCHEMA iam TO silicon_iam_api")
+            .execute(&pool)
+            .await?;
+        sqlx::query(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON iam.idempotency_records TO silicon_iam_api",
+        )
+        .execute(&pool)
+        .await?;
+
+        let mut api_transaction = pool.begin().await?;
+        sqlx::query("SET LOCAL ROLE silicon_iam_api")
+            .execute(&mut *api_transaction)
+            .await?;
+        let retry_key = IdempotencyKey::parse("018f47ac-75c7-7f84-a6b2-9c2a2617c156")?;
+        let retry_payload = SecretString::from("definitively-rejected-provider-request");
+        let retry_claim = claim(
+            &mut api_transaction,
+            &crypto(2, &[(1, 11), (2, 12)]),
+            IdempotencyRequest {
+                route: TEST_ROUTE,
+                caller_scope: &caller,
+                key: &retry_key,
+                request_payload: &retry_payload,
+                contains_one_time_secret: false,
+            },
+        )
+        .await
+        .context("restricted API role idempotency claim")?;
+        let IdempotencyClaim::Acquired(retry_lease) = retry_claim else {
+            anyhow::bail!("the restricted API role did not acquire a fresh retry lease");
+        };
+        cancel_for_retry(&mut api_transaction, retry_lease)
+            .await
+            .context("restricted API role definitive-failure cleanup")?;
+        api_transaction.commit().await?;
+
+        let processing_records = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM iam.idempotency_records WHERE status = 'processing'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        ensure!(
+            processing_records == 0,
+            "definitive-failure reservation survived restricted-role cleanup"
+        );
         Ok(())
     }
 }

@@ -9,15 +9,15 @@ use uuid::Uuid;
 use crate::{
     config::RuntimeEnvironment,
     domain::{
-        directory::{JobRole, OrganizationId, SiliconLocalId},
+        directory::{JobRole, OrganizationId, SiliconHandle},
         organization::Capability,
     },
     error::AppError,
 };
 
 use super::model::{
-    CapabilitiesReplace, MachineCapabilitiesReplace, MembershipDirectoryPatch, OrganizationCreate,
-    OrganizationPatch, PageQuery, SiliconCreate, SiliconPatch, TagInput, TrustRulePatch,
+    CapabilitiesReplace, MembershipDirectoryPatch, OrganizationCreate, OrganizationPatch,
+    PageQuery, SiliconCreate, SiliconPatch, TagChangeRequestCreate, TagInput, TrustRulePatch,
 };
 
 const MAX_CURSOR_BYTES: usize = 128;
@@ -72,9 +72,16 @@ pub(super) fn member_patch(
     input: &mut MembershipDirectoryPatch,
     environment: RuntimeEnvironment,
 ) -> Result<(), AppError> {
+    if input.tag_ids.is_some() {
+        return Err(field(
+            "tag_ids",
+            "must be changed through a tag-change request",
+        ));
+    }
     if input.tag_ids.is_none()
         && input.first_silicon_membership_id.is_none()
         && input.extra_silicon_membership_ids.is_none()
+        && input.default_trust.is_none()
         && input.reports_to_membership_id.is_none()
         && input.profile_photo.is_none()
     {
@@ -95,28 +102,55 @@ pub(super) fn member_patch(
 pub(super) fn silicon_create(
     input: &mut SiliconCreate,
     environment: RuntimeEnvironment,
-) -> Result<SiliconLocalId, AppError> {
-    let local_id = SiliconLocalId::from_str(&input.silicon_id)
+) -> Result<SiliconHandle, AppError> {
+    let handle = SiliconHandle::from_str(&input.silicon_id)
         .map_err(|_| field("silicon_id", "has an invalid format"))?;
-    input.silicon_id = local_id.to_string();
+    input.silicon_id = handle.to_string();
+    input.display_name = Some(match input.display_name.take() {
+        Some(display_name) => bounded_text("display_name", display_name, 1, 200, false)?,
+        None => input.silicon_id.clone(),
+    });
+    input.timezone = Some(match input.timezone.take() {
+        Some(timezone) => {
+            validate_timezone(&timezone)?;
+            timezone
+        }
+        None => "UTC".to_owned(),
+    });
+    input.description = optional_text("description", input.description.take(), 5_000)?;
     input.job_role = job_role(std::mem::take(&mut input.job_role))?;
     input.profile_photo = optional_url("profile_photo", input.profile_photo.take(), environment)?;
     validate_unique_ids("tag_ids", &mut input.tag_ids, 100)?;
-    input.machine_capabilities = machine_capabilities(&MachineCapabilitiesReplace {
-        machine_capabilities: std::mem::take(&mut input.machine_capabilities),
-    })?;
-    Ok(local_id)
+    Ok(handle)
 }
 
 pub(super) fn silicon_patch(
     input: &mut SiliconPatch,
     environment: RuntimeEnvironment,
 ) -> Result<(), AppError> {
-    if input.profile_photo.is_none()
+    if input.tag_ids.is_some() {
+        return Err(field(
+            "tag_ids",
+            "must be changed through a tag-change request",
+        ));
+    }
+    if input.display_name.is_none()
+        && input.timezone.is_none()
+        && input.description.is_none()
+        && input.profile_photo.is_none()
         && input.reports_to_membership_id.is_none()
         && input.tag_ids.is_none()
     {
         return Err(field("body", "must contain at least one mutable field"));
+    }
+    if let Some(display_name) = input.display_name.take() {
+        input.display_name = Some(bounded_text("display_name", display_name, 1, 200, false)?);
+    }
+    if let Some(timezone) = input.timezone.as_deref() {
+        validate_timezone(timezone)?;
+    }
+    if let Some(description) = input.description.take() {
+        input.description = Some(optional_text("description", description, 5_000)?);
     }
     if let Some(profile_photo) = input.profile_photo.take() {
         input.profile_photo = Some(optional_url("profile_photo", profile_photo, environment)?);
@@ -124,6 +158,35 @@ pub(super) fn silicon_patch(
     if let Some(tag_ids) = input.tag_ids.as_mut() {
         validate_unique_ids("tag_ids", tag_ids, 100)?;
     }
+    Ok(())
+}
+
+fn validate_timezone(value: &str) -> Result<(), AppError> {
+    if crate::domain::timezone::is_valid_identifier(value) {
+        Ok(())
+    } else {
+        Err(field("timezone", "must be a valid IANA TZ identifier"))
+    }
+}
+
+pub(super) fn tag_change_request(input: &mut TagChangeRequestCreate) -> Result<(), AppError> {
+    validate_unique_ids("add_tag_ids", &mut input.add_tag_ids, 100)?;
+    validate_unique_ids("remove_tag_ids", &mut input.remove_tag_ids, 100)?;
+    if input.add_tag_ids.is_empty() && input.remove_tag_ids.is_empty() {
+        return Err(field("body", "must add or remove at least one tag"));
+    }
+    if input
+        .add_tag_ids
+        .iter()
+        .any(|tag_id| input.remove_tag_ids.binary_search(tag_id).is_ok())
+    {
+        return Err(field("body", "cannot add and remove the same tag"));
+    }
+    input.reason = input
+        .reason
+        .take()
+        .map(|value| bounded_text("reason", value, 1, 2_000, true))
+        .transpose()?;
     Ok(())
 }
 
@@ -163,32 +226,6 @@ pub(super) fn capabilities(input: &CapabilitiesReplace) -> Result<Vec<String>, A
     }
     capabilities.sort_unstable();
     Ok(capabilities)
-}
-
-pub(super) fn machine_capabilities(
-    input: &MachineCapabilitiesReplace,
-) -> Result<Vec<String>, AppError> {
-    const ALLOWED: [&str; 5] = [
-        "members.update_directory",
-        "roles.request",
-        "silicons.manage_hierarchy",
-        "silicons.update_directory",
-        "trust.manage",
-    ];
-    let mut values = input.machine_capabilities.clone();
-    values.sort_unstable();
-    if values.len() > ALLOWED.len()
-        || values.windows(2).any(|pair| pair[0] == pair[1])
-        || values
-            .iter()
-            .any(|value| ALLOWED.binary_search(&value.as_str()).is_err())
-    {
-        return Err(field(
-            "machine_capabilities",
-            "contains a duplicate or capability not allowed for Silicons",
-        ));
-    }
-    Ok(values)
 }
 
 pub(super) fn trust_rule_patch(input: &TrustRulePatch) -> Result<(), AppError> {
@@ -365,18 +402,42 @@ mod tests {
     }
 
     #[test]
-    fn machine_capabilities_are_a_closed_silicon_subset() {
-        let valid = MachineCapabilitiesReplace {
-            machine_capabilities: vec!["trust.manage".to_owned()],
+    fn silicon_profiles_require_a_real_tzdb_identifier() {
+        let mut input = SiliconCreate {
+            silicon_id: "timezone_test".to_owned(),
+            display_name: Some("Time Zone Test".to_owned()),
+            timezone: Some("Mars/Olympus_Mons".to_owned()),
+            description: None,
+            profile_photo: None,
+            job_role: String::new(),
+            reports_to_membership_id: None,
+            tag_ids: Vec::new(),
         };
-        assert!(matches!(
-            machine_capabilities(&valid),
-            Ok(values) if values == ["trust.manage"]
-        ));
+        assert!(silicon_create(&mut input, RuntimeEnvironment::Test).is_err());
+    }
 
-        let invalid = MachineCapabilitiesReplace {
-            machine_capabilities: vec!["admins.manage".to_owned()],
+    #[test]
+    fn silicon_profile_creation_defaults_are_contract_minimal() {
+        let mut input = SiliconCreate {
+            silicon_id: "default_profile".to_owned(),
+            display_name: None,
+            timezone: None,
+            description: None,
+            profile_photo: None,
+            job_role: "assistant".to_owned(),
+            reports_to_membership_id: None,
+            tag_ids: Vec::new(),
         };
-        assert!(machine_capabilities(&invalid).is_err());
+        assert!(silicon_create(&mut input, RuntimeEnvironment::Test).is_ok());
+        assert_eq!(input.display_name.as_deref(), Some("default_profile"));
+        assert_eq!(input.timezone.as_deref(), Some("UTC"));
+    }
+
+    #[test]
+    fn retired_audit_capability_is_not_publicly_replaceable() {
+        let input = CapabilitiesReplace {
+            capabilities: vec!["audit.read".to_owned()],
+        };
+        assert!(capabilities(&input).is_err());
     }
 }

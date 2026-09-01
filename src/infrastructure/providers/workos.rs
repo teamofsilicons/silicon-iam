@@ -41,6 +41,14 @@ pub(crate) struct WorkOsOrganization {
     pub(crate) external_id: Option<String>,
 }
 
+/// Stable connection fields used to verify the local organization mapping.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct WorkOsConnection {
+    pub(crate) id: String,
+    pub(crate) organization_id: String,
+    pub(crate) state: String,
+}
+
 /// One-time Admin Portal link. The URL is intentionally secret-bearing.
 pub(crate) struct WorkOsPortalLink {
     pub(crate) url: SecretString,
@@ -53,8 +61,6 @@ pub(crate) struct WorkOsProfile {
     pub(crate) organization_id: String,
     pub(crate) connection_id: String,
     pub(crate) email: String,
-    #[serde(default)]
-    pub(crate) groups: Vec<String>,
 }
 
 /// Evidence returned only after the raw webhook request is authenticated.
@@ -220,6 +226,23 @@ impl WorkOsClient {
         decode_success(response)
             .await
             .and_then(validate_organization)
+    }
+
+    /// Fetches a provider connection for an exact local mapping check.
+    pub(crate) async fn connection(
+        &self,
+        connection_id: &str,
+    ) -> Result<WorkOsConnection, WorkOsError> {
+        let endpoint = self.endpoint(&["connections", connection_id])?;
+        let response = self
+            .client
+            .get(endpoint)
+            .bearer_auth(self.api_key.expose_secret())
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|_| WorkOsError::Unavailable)?;
+        decode_success(response).await.and_then(validate_connection)
     }
 
     /// Generates a provider-controlled five-minute SSO Admin Portal link.
@@ -402,17 +425,24 @@ fn validate_organization(
     Ok(organization)
 }
 
+fn validate_connection(connection: WorkOsConnection) -> Result<WorkOsConnection, WorkOsError> {
+    if !valid_provider_id(&connection.id, "conn_")
+        || !valid_provider_id(&connection.organization_id, "org_")
+        || connection.state.is_empty()
+        || connection.state.len() > 100
+        || !connection.state.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(WorkOsError::InvalidResponse);
+    }
+    Ok(connection)
+}
+
 fn validate_profile(profile: WorkOsProfile) -> Result<WorkOsProfile, WorkOsError> {
     if !valid_provider_id(&profile.id, "prof_")
         || !valid_provider_id(&profile.organization_id, "org_")
         || !valid_provider_id(&profile.connection_id, "conn_")
         || profile.email.is_empty()
         || profile.email.len() > 254
-        || profile.groups.len() > 500
-        || profile
-            .groups
-            .iter()
-            .any(|group| group.is_empty() || group.len() > 512)
     {
         return Err(WorkOsError::InvalidResponse);
     }
@@ -498,7 +528,7 @@ mod tests {
     use secrecy::{ExposeSecret as _, SecretString};
     use sha2::Sha256;
 
-    use super::{WorkOsError, verify_webhook_signature};
+    use super::{WorkOsConnection, WorkOsError, validate_connection, verify_webhook_signature};
 
     fn signature(secret: &SecretString, timestamp: i64, body: &[u8]) -> String {
         let result = <Hmac<Sha256> as hmac::Mac>::new_from_slice(secret.expose_secret().as_bytes());
@@ -548,6 +578,23 @@ mod tests {
         assert_eq!(
             verify_webhook_signature(&secret, "v1=00", body, 1_700_000_000_000),
             Err(WorkOsError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn validates_tenant_bound_connection_fields() {
+        let connection = WorkOsConnection {
+            id: "conn_01E4ZCR3C56J083X43JQXF3JK5".to_owned(),
+            organization_id: "org_01EHWNCE74X7JSDV0X3SZ3KJNY".to_owned(),
+            state: "active".to_owned(),
+        };
+        assert!(validate_connection(connection.clone()).is_ok());
+        assert!(
+            validate_connection(WorkOsConnection {
+                organization_id: "tenant-from-another-provider".to_owned(),
+                ..connection
+            })
+            .is_err()
         );
     }
 }

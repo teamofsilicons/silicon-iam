@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use axum::{
     body::Body,
     http::{HeaderMap, HeaderValue, StatusCode},
@@ -15,10 +17,14 @@ use crate::{
         organization::Capability,
     },
     error::AppError,
+    features::application_webhook_projections::{self, OrganizationProjectionEvent},
     infrastructure::postgres::{
         authorization::{self, AuthorizationError, OrganizationAccess},
         context::{self, DatabaseContext},
-        events::{self, AggregateVersion, AuditRecord, OutboxRecord},
+        events::{
+            self, AggregateVersion, AuditRecord, OutboxRecord, SiliconWebhookRouting,
+            SiliconWebhookTopic,
+        },
         idempotency::{self, IdempotencyClaim, IdempotencyKey, IdempotencyLease},
         step_up::{self, RequiredAssurance, StepUpExpectation, StepUpToken},
     },
@@ -145,6 +151,63 @@ pub(super) async fn claim<T: Serialize>(
     request: &T,
     contains_one_time_secret: bool,
 ) -> Result<Claim, AppError> {
+    claim_scoped(
+        transaction,
+        state,
+        authenticated,
+        headers,
+        route,
+        None,
+        request,
+        contains_one_time_secret,
+    )
+    .await
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the tenant/resource-bound idempotency inputs remain explicit at each mutation"
+)]
+pub(super) async fn claim_resource<T: Serialize>(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    authenticated: &Authenticated,
+    headers: &HeaderMap,
+    route: &'static str,
+    resource_scope: &str,
+    request: &T,
+    contains_one_time_secret: bool,
+) -> Result<Claim, AppError> {
+    claim_scoped(
+        transaction,
+        state,
+        authenticated,
+        headers,
+        route,
+        Some(resource_scope),
+        request,
+        contains_one_time_secret,
+    )
+    .await
+}
+
+/// Checks for a completed resource-bound replay without reserving the key.
+/// The caller must commit this short transaction before external I/O and make
+/// a full [`claim_resource`] in the later mutation transaction.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the replay preflight must use the exact same explicit claim inputs"
+)]
+pub(super) async fn replay_resource_if_present<T: Serialize>(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    authenticated: &Authenticated,
+    headers: &HeaderMap,
+    route: &'static str,
+    resource_scope: &str,
+    request: &T,
+    contains_one_time_secret: bool,
+) -> Result<Option<Response>, AppError> {
     let key = headers
         .get("idempotency-key")
         .and_then(|value| value.to_str().ok())
@@ -157,10 +220,75 @@ pub(super) async fn claim<T: Serialize>(
             "must contain 16 to 255 visible ASCII characters",
         )
     })?;
-    let caller_scope = SecretString::from(format!(
-        "{}:{}",
+    let organization_id =
+        sqlx::query_scalar::<_, Option<Uuid>>("SELECT iam_private.current_organization_id()")
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(database)?;
+    let caller_scope = SecretString::from(idempotency_caller_scope(
         authenticated.0.subject.actor_type.as_str(),
-        authenticated.0.subject.id
+        authenticated.0.subject.id,
+        organization_id,
+        Some(resource_scope),
+    ));
+    let request_payload =
+        SecretString::from(
+            serde_json::to_string(request).map_err(|_| AppError::Internal {
+                category: "organization_request_serialize",
+            })?,
+        );
+    idempotency::replay_if_present(
+        transaction,
+        &state.crypto,
+        idempotency::IdempotencyRequest {
+            route,
+            caller_scope: &caller_scope,
+            key: &key,
+            request_payload: &request_payload,
+            contains_one_time_secret,
+        },
+    )
+    .await?
+    .map(|replay| replay_response(replay, contains_one_time_secret))
+    .transpose()
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the organization and concrete resource are explicit idempotency security inputs"
+)]
+async fn claim_scoped<T: Serialize>(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    authenticated: &Authenticated,
+    headers: &HeaderMap,
+    route: &'static str,
+    resource_scope: Option<&str>,
+    request: &T,
+    contains_one_time_secret: bool,
+) -> Result<Claim, AppError> {
+    let key = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| {
+            crate::features::organizations::validation::field("idempotency_key", "is required")
+        })?;
+    let key = IdempotencyKey::parse(key).map_err(|_| {
+        crate::features::organizations::validation::field(
+            "idempotency_key",
+            "must contain 16 to 255 visible ASCII characters",
+        )
+    })?;
+    let organization_id =
+        sqlx::query_scalar::<_, Option<Uuid>>("SELECT iam_private.current_organization_id()")
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(database)?;
+    let caller_scope = SecretString::from(idempotency_caller_scope(
+        authenticated.0.subject.actor_type.as_str(),
+        authenticated.0.subject.id,
+        organization_id,
+        resource_scope,
     ));
     let request_payload =
         SecretString::from(
@@ -187,6 +315,19 @@ pub(super) async fn claim<T: Serialize>(
             contains_one_time_secret,
         )?)),
     }
+}
+
+fn idempotency_caller_scope(
+    actor_type: &str,
+    actor_id: Uuid,
+    organization_id: Option<Uuid>,
+    resource_scope: Option<&str>,
+) -> String {
+    format!(
+        "{actor_type}:{actor_id}:{}:{}",
+        organization_id.map_or_else(|| "global".to_owned(), |id| id.to_string()),
+        resource_scope.unwrap_or("collection")
+    )
 }
 
 pub(super) async fn consume_step_up(
@@ -229,11 +370,61 @@ pub(super) async fn record_mutation(
     organization_id: Uuid,
     event: MutationEvent<'_>,
 ) -> Result<(), AppError> {
+    persist_mutation(transaction, authenticated, organization_id, event)
+        .await
+        .map(|_| ())
+}
+
+/// Records an explicitly allowlisted organization-member event and freezes
+/// every per-Application projection before the domain transaction commits.
+pub(super) async fn record_application_mutation(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    authenticated: &Authenticated,
+    organization_id: Uuid,
+    event: MutationEvent<'_>,
+) -> Result<(), AppError> {
+    let event_type = event.event_type;
+    let aggregate_type = event.aggregate_type;
+    let aggregate_id = event.aggregate_id;
+    let aggregate_version = event.aggregate_version;
+    let before_state = event.before_state.clone();
+    let after_state = event.after_state.clone();
+    let metadata = event.metadata.clone();
+    let outbox_event_id =
+        persist_mutation(transaction, authenticated, organization_id, event).await?;
+    application_webhook_projections::capture_organization_application_projections(
+        transaction,
+        state,
+        OrganizationProjectionEvent {
+            outbox_event_id,
+            organization_id,
+            aggregate_type,
+            aggregate_id,
+            aggregate_version,
+            event_type,
+            before_state: before_state.as_ref(),
+            after_state: after_state.as_ref(),
+            metadata: &metadata,
+        },
+    )
+    .await
+}
+
+async fn persist_mutation(
+    transaction: &mut Transaction<'_, Postgres>,
+    authenticated: &Authenticated,
+    organization_id: Uuid,
+    event: MutationEvent<'_>,
+) -> Result<Uuid, AppError> {
     let aggregate = AggregateVersion {
         aggregate_type: event.aggregate_type,
         aggregate_id: event.aggregate_id,
         version: event.aggregate_version,
     };
+    let silicon_webhook_routing =
+        silicon_webhook_routing(transaction, organization_id, &event).await?;
+    let webhook_payload = webhook_payload(&event);
     events::record_audit(
         transaction,
         AuditRecord {
@@ -264,12 +455,362 @@ pub(super) async fn record_mutation(
             event_ordinal: 1,
             event_type: event.event_type,
             schema_version: 1,
-            payload: event.metadata,
+            payload: webhook_payload,
+            silicon_webhook_routing,
         },
     )
     .await
-    .map_err(database)?;
-    Ok(())
+    .map_err(database)
+}
+
+pub(super) async fn lock_membership_removal_event_scope(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    membership_id: Uuid,
+    reassign_reports_to: Option<Uuid>,
+) -> Result<Vec<Uuid>, AppError> {
+    sqlx::query_scalar::<_, Vec<Uuid>>(
+        "SELECT iam_private.lock_membership_removal_event_scope($1, $2, $3)",
+    )
+    .bind(organization_id)
+    .bind(membership_id)
+    .bind(reassign_reports_to)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(transition_database)
+}
+
+async fn silicon_webhook_routing(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    event: &MutationEvent<'_>,
+) -> Result<Option<SiliconWebhookRouting>, AppError> {
+    let primary_membership_id = if event.target_type == "organization_membership" {
+        Some(event.target_id)
+    } else {
+        value_uuid(&event.metadata, "membership_id")
+            .or_else(|| value_uuid(&event.metadata, "target_membership_id"))
+    };
+    let primary_membership_id = primary_membership_id.or_else(|| {
+        event
+            .after_state
+            .as_ref()
+            .and_then(|value| value_uuid(value, "membership_id"))
+            .or_else(|| {
+                event
+                    .before_state
+                    .as_ref()
+                    .and_then(|value| value_uuid(value, "membership_id"))
+            })
+    });
+    let mut affected_membership_ids = BTreeSet::new();
+    affected_membership_ids.extend(primary_membership_id);
+    collect_membership_ids(&event.metadata, &mut affected_membership_ids);
+    if let Some(before) = event.before_state.as_ref() {
+        collect_membership_ids(before, &mut affected_membership_ids);
+    }
+    if let Some(after) = event.after_state.as_ref() {
+        collect_membership_ids(after, &mut affected_membership_ids);
+    }
+    let Some(topics) = silicon_webhook_topics(event, &affected_membership_ids) else {
+        return Ok(None);
+    };
+
+    let mut tag_ids = BTreeSet::new();
+    collect_tag_ids(&event.metadata, &mut tag_ids);
+    if let Some(before) = event.before_state.as_ref() {
+        collect_tag_ids(before, &mut tag_ids);
+    }
+    if let Some(after) = event.after_state.as_ref() {
+        collect_tag_ids(after, &mut tag_ids);
+    }
+    let mut before_tag_membership_ids = BTreeSet::new();
+    collect_uuid_array(
+        &event.metadata,
+        "before_tag_membership_ids",
+        &mut before_tag_membership_ids,
+    );
+    if let (Some(primary_membership_id), Some(before)) =
+        (primary_membership_id, event.before_state.as_ref())
+    {
+        let mut before_tag_ids = BTreeSet::new();
+        collect_tag_ids(before, &mut before_tag_ids);
+        if !before_tag_ids.is_empty() {
+            before_tag_membership_ids.insert(primary_membership_id);
+        }
+    }
+    if event.target_type == "organization_tag" {
+        tag_ids.insert(event.target_id);
+    }
+    if !affected_membership_ids.is_empty() {
+        let current_tag_ids = sqlx::query_scalar::<_, Uuid>(
+            r"
+            SELECT tag_id
+            FROM iam.membership_tags
+            WHERE organization_id = $1 AND membership_id = ANY($2)
+            ORDER BY tag_id
+            ",
+        )
+        .bind(organization_id)
+        .bind(affected_membership_ids.iter().copied().collect::<Vec<_>>())
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(database)?;
+        tag_ids.extend(current_tag_ids);
+    }
+    let affected_membership_id = if affected_membership_ids.len() == 1 {
+        affected_membership_ids.first().copied()
+    } else {
+        None
+    };
+    let affected_tag_ids = tag_ids.into_iter().collect::<Vec<_>>();
+    let organization_wide = affected_membership_ids.is_empty() && affected_tag_ids.is_empty();
+    Ok(Some(SiliconWebhookRouting {
+        topics,
+        affected_membership_id,
+        affected_tag_ids,
+        before_tag_membership_ids: before_tag_membership_ids.into_iter().collect(),
+        organization_wide,
+    }))
+}
+
+fn silicon_webhook_topics(
+    event: &MutationEvent<'_>,
+    affected_membership_ids: &BTreeSet<Uuid>,
+) -> Option<Vec<SiliconWebhookTopic>> {
+    let mut topics = match event.event_type {
+        "organization.membership.created.v1"
+        | "organization.membership.reactivated.v1"
+        | "organization.silicon.created.v1" => {
+            vec![SiliconWebhookTopic::MembershipLifecycle]
+        }
+        "organization.membership.removed.v1" | "organization.silicon.removed.v1" => {
+            let mut topics = vec![SiliconWebhookTopic::MembershipLifecycle];
+            let removed_membership_id = if event.target_type == "organization_membership" {
+                Some(event.target_id)
+            } else {
+                value_uuid(&event.metadata, "membership_id")
+            };
+            if affected_membership_ids
+                .iter()
+                .any(|membership_id| Some(*membership_id) != removed_membership_id)
+            {
+                topics.push(SiliconWebhookTopic::MemberUpdates);
+            }
+            topics
+        }
+        "organization.trust.default_updated.v1"
+        | "organization.trust.rule_created.v1"
+        | "organization.trust.rule_updated.v1"
+        | "organization.trust.rule_archived.v1" => {
+            vec![SiliconWebhookTopic::TrustUpdates]
+        }
+        "organization.membership.updated.v1" => membership_update_topics(event),
+        "organization.ownership_transferred.v1"
+        | "organization.membership.profile_updated.v1"
+        | "organization.membership.authorization_updated.v1"
+        | "organization.admin.promoted.v1"
+        | "organization.admin.demoted.v1"
+        | "organization.silicon.updated.v1" => vec![SiliconWebhookTopic::MemberUpdates],
+        "organization.tag_updated.v1" => {
+            if metadata_has_uuid_array_value(&event.metadata, "tag_assignment_membership_ids") {
+                vec![SiliconWebhookTopic::MemberUpdates]
+            } else {
+                Vec::new()
+            }
+        }
+        "organization.created.v1"
+        | "organization.updated.v1"
+        | "organization.tag_created.v1"
+        | "organization.invitation.created.v1"
+        | "organization.invitation.accepted.v1"
+        | "organization.invitation.revoked.v1"
+        | "organization.role_change.requested.v1"
+        | "organization.tag_change.requested.v1"
+        | "organization.approval.decided.v1"
+        | "organization.silicon.rotation_requested.v1"
+        | "organization.silicon.credential_rotated.v1"
+        | "organization.silicon.webhook.configured.v1"
+        | "organization.silicon.webhook.deleted.v1"
+        | "organization.silicon.webhook_subscription.updated.v1"
+        | "organization.silicon.webhook_subscription.deleted.v1" => Vec::new(),
+        _ => return None,
+    };
+    topics.sort_unstable();
+    topics.dedup();
+    Some(topics)
+}
+
+fn membership_update_topics(event: &MutationEvent<'_>) -> Vec<SiliconWebhookTopic> {
+    let Some(before) = event
+        .before_state
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+    else {
+        return vec![SiliconWebhookTopic::MemberUpdates];
+    };
+    let Some(after) = event
+        .after_state
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+    else {
+        return vec![SiliconWebhookTopic::MemberUpdates];
+    };
+    let trust_changed = before.get("default_trust") != after.get("default_trust");
+    if !trust_changed {
+        return vec![SiliconWebhookTopic::MemberUpdates];
+    }
+
+    let mut before_member = before.clone();
+    let mut after_member = after.clone();
+    for field in ["default_trust", "version", "updated_at"] {
+        before_member.remove(field);
+        after_member.remove(field);
+    }
+    let mut topics = vec![SiliconWebhookTopic::TrustUpdates];
+    if before_member != after_member {
+        topics.push(SiliconWebhookTopic::MemberUpdates);
+    }
+    topics
+}
+
+fn metadata_has_uuid_array_value(value: &serde_json::Value, key: &str) -> bool {
+    let mut ids = BTreeSet::new();
+    collect_uuid_array(value, key, &mut ids);
+    !ids.is_empty()
+}
+
+fn webhook_payload(event: &MutationEvent<'_>) -> serde_json::Value {
+    let mut payload = event.metadata.as_object().cloned().unwrap_or_default();
+    payload.insert("change".to_owned(), serde_json::json!(event.action));
+    payload.insert(
+        "target".to_owned(),
+        serde_json::json!({ "type": event.target_type, "id": event.target_id }),
+    );
+    payload.insert(
+        "before".to_owned(),
+        event
+            .before_state
+            .clone()
+            .unwrap_or(serde_json::Value::Null),
+    );
+    payload.insert(
+        "after".to_owned(),
+        event.after_state.clone().unwrap_or(serde_json::Value::Null),
+    );
+    serde_json::Value::Object(payload)
+}
+
+fn value_uuid(value: &serde_json::Value, key: &str) -> Option<Uuid> {
+    match value {
+        serde_json::Value::Object(object) => object
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .or_else(|| object.values().find_map(|value| value_uuid(value, key))),
+        serde_json::Value::Array(values) => values.iter().find_map(|value| value_uuid(value, key)),
+        _ => None,
+    }
+}
+
+fn collect_membership_ids(value: &serde_json::Value, membership_ids: &mut BTreeSet<Uuid>) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, value) in object {
+                if key == "membership_id"
+                    && let Some(membership_id) =
+                        value.as_str().and_then(|value| Uuid::parse_str(value).ok())
+                {
+                    membership_ids.insert(membership_id);
+                }
+                if matches!(
+                    key.as_str(),
+                    "membership_ids"
+                        | "affected_membership_ids"
+                        | "before_tag_membership_ids"
+                        | "tag_assignment_membership_ids"
+                ) {
+                    collect_direct_uuids(value, membership_ids);
+                }
+                collect_membership_ids(value, membership_ids);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_membership_ids(value, membership_ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_direct_uuids(value: &serde_json::Value, ids: &mut BTreeSet<Uuid>) {
+    let Some(values) = value.as_array() else {
+        return;
+    };
+    for value in values {
+        if let Some(id) = value.as_str().and_then(|value| Uuid::parse_str(value).ok()) {
+            ids.insert(id);
+        }
+    }
+}
+
+fn collect_uuid_array(value: &serde_json::Value, key: &str, ids: &mut BTreeSet<Uuid>) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (candidate, value) in object {
+                if candidate == key {
+                    collect_direct_uuids(value, ids);
+                }
+                collect_uuid_array(value, key, ids);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_uuid_array(value, key, ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_tag_ids(value: &serde_json::Value, tag_ids: &mut BTreeSet<Uuid>) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, value) in object {
+                if key == "tag_id"
+                    && let Some(tag_id) =
+                        value.as_str().and_then(|value| Uuid::parse_str(value).ok())
+                {
+                    tag_ids.insert(tag_id);
+                }
+                if key == "tag_ids" || key == "tags" {
+                    collect_direct_tag_ids(value, tag_ids);
+                }
+                collect_tag_ids(value, tag_ids);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_tag_ids(value, tag_ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_direct_tag_ids(value: &serde_json::Value, tag_ids: &mut BTreeSet<Uuid>) {
+    let Some(values) = value.as_array() else {
+        return;
+    };
+    for value in values {
+        let candidate = value
+            .as_str()
+            .or_else(|| value.get("id").and_then(serde_json::Value::as_str));
+        if let Some(tag_id) = candidate.and_then(|value| Uuid::parse_str(value).ok()) {
+            tag_ids.insert(tag_id);
+        }
+    }
 }
 
 pub(super) async fn finish_json<T: Serialize>(
@@ -383,14 +924,9 @@ pub(super) fn transition_database(error: sqlx::Error) -> AppError {
         Some("membership_role_transition_invalid") => AppError::Conflict {
             code: "membership_role_transition_invalid".into(),
         },
-        Some("tag_in_use") => AppError::Conflict {
-            code: "tag_in_use".into(),
-        },
-        Some(
-            "membership_removal_forbidden"
-            | "admin_role_transition_forbidden"
-            | "tag_archive_forbidden",
-        ) => AppError::Forbidden,
+        Some("membership_removal_forbidden" | "admin_role_transition_forbidden") => {
+            AppError::Forbidden
+        }
         _ => database(error),
     }
 }
@@ -402,12 +938,28 @@ fn replay_response(
     let status = StatusCode::from_u16(replay.status).map_err(|_| AppError::Internal {
         category: "organization_replay_status",
     })?;
-    let mut response = json_response(status, replay.body, None, contains_one_time_secret)?;
+    let version = replay_etag_version(&replay.body);
+    let mut response = json_response(status, replay.body, version, contains_one_time_secret)?;
     response.headers_mut().insert(
         HeaderNameExt::idempotency_replayed(),
         HeaderValue::from_static("true"),
     );
     Ok(response)
+}
+
+fn replay_etag_version(body: &[u8]) -> Option<i64> {
+    let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    [
+        value.get("version"),
+        value.get("webhook_version"),
+        value
+            .get("webhook")
+            .and_then(|webhook| webhook.get("version")),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(serde_json::Value::as_i64)
+    .filter(|version| *version > 0)
 }
 
 fn map_authorization(error: AuthorizationError) -> AppError {
@@ -429,14 +981,45 @@ impl HeaderNameExt {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use crate::{
         api::authentication::Authenticated,
         domain::actor::{ActorRef, ActorType},
-        infrastructure::postgres::tokens::AccessContext,
+        infrastructure::postgres::{events::SiliconWebhookTopic, tokens::AccessContext},
     };
+    use serde_json::json;
 
-    use super::{DirectIamBinding, direct_iam_binding, require_carbon};
+    use super::{
+        DirectIamBinding, MutationEvent, collect_membership_ids, collect_tag_ids,
+        direct_iam_binding, idempotency_caller_scope, replay_etag_version, require_carbon,
+        silicon_webhook_topics, webhook_payload,
+    };
     use uuid::Uuid;
+
+    fn event_topics(
+        event_type: &'static str,
+        target_type: &'static str,
+        target_id: Uuid,
+        before_state: Option<serde_json::Value>,
+        after_state: Option<serde_json::Value>,
+        metadata: serde_json::Value,
+        affected_membership_ids: impl IntoIterator<Item = Uuid>,
+    ) -> Option<Vec<SiliconWebhookTopic>> {
+        let event = MutationEvent {
+            action: "test.change",
+            target_type,
+            target_id,
+            aggregate_type: "test",
+            aggregate_id: target_id,
+            aggregate_version: 2,
+            event_type,
+            before_state,
+            after_state,
+            metadata,
+        };
+        silicon_webhook_topics(&event, &affected_membership_ids.into_iter().collect())
+    }
 
     fn direct_carbon() -> Authenticated {
         Authenticated(AccessContext {
@@ -490,5 +1073,318 @@ mod tests {
 
         authenticated.0.membership_id = None;
         assert!(direct_iam_binding(&authenticated).is_err());
+    }
+
+    #[test]
+    fn idempotency_scope_binds_tenant_and_concrete_resource() {
+        let actor_id = Uuid::from_u128(1);
+        let first_org = Uuid::from_u128(2);
+        let second_org = Uuid::from_u128(3);
+
+        let first =
+            idempotency_caller_scope("carbon", actor_id, Some(first_org), Some("membership-a"));
+        assert_ne!(
+            first,
+            idempotency_caller_scope("carbon", actor_id, Some(second_org), Some("membership-a"))
+        );
+        assert_ne!(
+            first,
+            idempotency_caller_scope("carbon", actor_id, Some(first_org), Some("membership-b"))
+        );
+        assert_ne!(
+            first,
+            idempotency_caller_scope("carbon", actor_id, Some(first_org), None)
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the table-driven event vocabulary is most reviewable as one exhaustive contract test"
+    )]
+    fn webhook_topic_catalog_keeps_trust_separate_and_fails_closed() {
+        let target_id = Uuid::from_u128(31);
+        assert_eq!(
+            event_topics(
+                "organization.membership.created.v1",
+                "organization_membership",
+                target_id,
+                None,
+                None,
+                json!({}),
+                [target_id],
+            ),
+            Some(vec![SiliconWebhookTopic::MembershipLifecycle])
+        );
+        assert_eq!(
+            event_topics(
+                "organization.membership.updated.v1",
+                "organization_membership",
+                target_id,
+                Some(json!({ "job_role": "Engineer", "version": 1 })),
+                Some(json!({ "job_role": "Staff Engineer", "version": 2 })),
+                json!({}),
+                [target_id],
+            ),
+            Some(vec![SiliconWebhookTopic::MemberUpdates])
+        );
+        assert_eq!(
+            event_topics(
+                "organization.membership.profile_updated.v1",
+                "organization_membership",
+                target_id,
+                None,
+                None,
+                json!({}),
+                [target_id],
+            ),
+            Some(vec![SiliconWebhookTopic::MemberUpdates])
+        );
+        assert_eq!(
+            event_topics(
+                "organization.trust.rule_updated.v1",
+                "trust_rule",
+                target_id,
+                None,
+                None,
+                json!({}),
+                [],
+            ),
+            Some(vec![SiliconWebhookTopic::TrustUpdates])
+        );
+        let other_membership_id = Uuid::from_u128(32);
+        assert_eq!(
+            event_topics(
+                "organization.silicon.removed.v1",
+                "silicon",
+                Uuid::from_u128(33),
+                None,
+                None,
+                json!({ "membership_id": target_id }),
+                [target_id, other_membership_id],
+            ),
+            Some(vec![
+                SiliconWebhookTopic::MembershipLifecycle,
+                SiliconWebhookTopic::MemberUpdates,
+            ])
+        );
+        assert_eq!(
+            event_topics(
+                "organization.silicon.removed.v1",
+                "silicon",
+                Uuid::from_u128(33),
+                None,
+                None,
+                json!({ "membership_id": target_id }),
+                [target_id],
+            ),
+            Some(vec![SiliconWebhookTopic::MembershipLifecycle])
+        );
+        assert_eq!(
+            event_topics(
+                "organization.updated.v1",
+                "organization",
+                target_id,
+                None,
+                None,
+                json!({}),
+                [],
+            ),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            event_topics(
+                "organization.invitation.created.v1",
+                "invitation",
+                target_id,
+                None,
+                None,
+                json!({}),
+                [],
+            ),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            event_topics(
+                "organization.silicon.webhook.configured.v1",
+                "silicon_webhook",
+                target_id,
+                None,
+                None,
+                json!({}),
+                [],
+            ),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            event_topics(
+                "organization.silicon.webhook_subscription.updated.v1",
+                "silicon_webhook_subscription",
+                target_id,
+                None,
+                None,
+                json!({}),
+                [],
+            ),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            event_topics(
+                "authentication.session.revoked.v1",
+                "authentication_session",
+                target_id,
+                None,
+                None,
+                json!({}),
+                [],
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn membership_update_topics_split_trust_only_mixed_and_directory_changes() {
+        let target_id = Uuid::from_u128(34);
+        let before_trust = json!({ "boundary": "internal", "level": "trusted" });
+        let after_trust = json!({ "boundary": "external", "level": "not_trusted" });
+        let topics = |before, after| {
+            event_topics(
+                "organization.membership.updated.v1",
+                "organization_membership",
+                target_id,
+                Some(before),
+                Some(after),
+                json!({ "membership_id": target_id }),
+                [target_id],
+            )
+        };
+
+        assert_eq!(
+            topics(
+                json!({ "job_role": "Engineer", "default_trust": before_trust, "version": 1 }),
+                json!({ "job_role": "Engineer", "default_trust": after_trust, "version": 2 }),
+            ),
+            Some(vec![SiliconWebhookTopic::TrustUpdates])
+        );
+        assert_eq!(
+            topics(
+                json!({ "job_role": "Engineer", "default_trust": before_trust, "version": 1 }),
+                json!({ "job_role": "Lead", "default_trust": after_trust, "version": 2 }),
+            ),
+            Some(vec![
+                SiliconWebhookTopic::MemberUpdates,
+                SiliconWebhookTopic::TrustUpdates,
+            ])
+        );
+    }
+
+    #[test]
+    fn tag_topics_reflect_exact_member_and_trust_rule_effects() {
+        let tag_id = Uuid::from_u128(35);
+        let membership_id = Uuid::from_u128(36);
+        assert_eq!(
+            event_topics(
+                "organization.tag_updated.v1",
+                "tag",
+                tag_id,
+                None,
+                None,
+                json!({
+                    "tag_id": tag_id,
+                    "tag_assignment_membership_ids": [membership_id],
+                }),
+                [membership_id],
+            ),
+            Some(vec![SiliconWebhookTopic::MemberUpdates])
+        );
+        assert_eq!(
+            event_topics(
+                "organization.tag_updated.v1",
+                "tag",
+                tag_id,
+                None,
+                None,
+                json!({ "tag_id": tag_id }),
+                [],
+            ),
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn routing_tag_extraction_keeps_before_and_after_audiences() {
+        let before = Uuid::from_u128(11);
+        let after = Uuid::from_u128(12);
+        let selector = Uuid::from_u128(13);
+        let mut tag_ids = BTreeSet::new();
+
+        collect_tag_ids(
+            &json!({
+                "before": { "tags": [{ "id": before }] },
+                "after": { "tag_ids": [after] },
+                "selector": { "tag_id": selector }
+            }),
+            &mut tag_ids,
+        );
+
+        assert_eq!(tag_ids, BTreeSet::from([before, after, selector]));
+    }
+
+    #[test]
+    fn trust_routing_collects_every_membership_selector() {
+        let subject = Uuid::from_u128(14);
+        let target = Uuid::from_u128(15);
+        let mut membership_ids = BTreeSet::new();
+
+        collect_membership_ids(
+            &json!({
+                "subject": { "kind": "membership", "membership_id": subject },
+                "target": { "kind": "membership", "membership_id": target }
+            }),
+            &mut membership_ids,
+        );
+
+        assert_eq!(membership_ids, BTreeSet::from([subject, target]));
+    }
+
+    #[test]
+    fn webhook_payload_keeps_routing_private_and_exposes_redacted_change_state() {
+        let target_id = Uuid::from_u128(21);
+        let event = MutationEvent {
+            action: "membership.updated",
+            target_type: "organization_membership",
+            target_id,
+            aggregate_type: "organization_membership",
+            aggregate_id: target_id,
+            aggregate_version: 2,
+            event_type: "organization.membership.updated.v1",
+            before_state: Some(json!({ "job_role": "Engineer" })),
+            after_state: Some(json!({ "job_role": "Staff Engineer" })),
+            metadata: json!({ "membership_id": target_id }),
+        };
+
+        let payload = webhook_payload(&event);
+
+        assert_eq!(payload["membership_id"], json!(target_id));
+        assert_eq!(payload["change"], "membership.updated");
+        assert_eq!(payload["target"]["id"], json!(target_id));
+        assert_eq!(payload["before"]["job_role"], "Engineer");
+        assert_eq!(payload["after"]["job_role"], "Staff Engineer");
+        assert!(payload.get("topics").is_none());
+        assert!(payload.get("affected_tag_ids").is_none());
+    }
+
+    #[test]
+    fn idempotent_json_replays_recover_the_original_resource_version() {
+        assert_eq!(replay_etag_version(br#"{"version":7}"#), Some(7));
+        assert_eq!(
+            replay_etag_version(br#"{"webhook":{"version":8}}"#),
+            Some(8)
+        );
+        assert_eq!(
+            replay_etag_version(br#"{"webhook_version":9,"secret_version":2}"#),
+            Some(9)
+        );
+        assert_eq!(replay_etag_version(br#"{"version":0}"#), None);
     }
 }

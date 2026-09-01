@@ -1,83 +1,16 @@
-use std::{collections::HashSet, str::FromStr as _};
+use std::str::FromStr as _;
 
 use garde::rules::email::parse_email;
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::json;
 use url::Url;
 
-use crate::{
-    config::RuntimeEnvironment,
-    domain::directory::{JobRole, OrganizationId},
-    error::AppError,
-};
+use crate::{config::RuntimeEnvironment, domain::directory::OrganizationId, error::AppError};
 
-use super::model::{
-    AdmissionMode, AuthorizeQuery, CallbackQuery, CorrelationSecret, SsoAdmissionPolicy,
-};
-
-const MAX_POLICY_TAGS: usize = 500;
-const MAX_PROVIDER_ID_BYTES: usize = 512;
+use super::model::{AuthorizeQuery, CallbackQuery, CorrelationSecret};
 
 pub(super) fn organization_id(value: &str) -> Result<OrganizationId, AppError> {
     OrganizationId::from_str(value).map_err(|_| field("org_id", "has an invalid format"))
-}
-
-pub(super) fn policy(mut value: SsoAdmissionPolicy) -> Result<SsoAdmissionPolicy, AppError> {
-    value.default_job_role = JobRole::try_from(value.default_job_role)
-        .map(String::from)
-        .map_err(|_| field("default_job_role", "must contain at most 5000 characters"))?;
-    validate_unique_ids(
-        "default_tag_ids",
-        &mut value.default_tag_ids,
-        MAX_POLICY_TAGS,
-    )?;
-
-    let mut domains = HashSet::with_capacity(value.allowed_email_domains.len());
-    for domain in &mut value.allowed_email_domains {
-        *domain = normalized_domain(domain)?;
-        if !domains.insert(domain.clone()) {
-            return Err(field("allowed_email_domains", "must contain unique values"));
-        }
-    }
-    value.allowed_email_domains.sort_unstable();
-
-    let mut groups = HashSet::with_capacity(value.allowed_groups.len());
-    if value.allowed_groups.len() > 500 {
-        return Err(field("allowed_groups", "must contain at most 500 values"));
-    }
-    for group in &value.allowed_groups {
-        if group.is_empty()
-            || group.len() > MAX_PROVIDER_ID_BYTES
-            || !group.bytes().all(|byte| byte.is_ascii_graphic())
-            || !groups.insert(group.clone())
-        {
-            return Err(field(
-                "allowed_groups",
-                "must contain unique exact WorkOS group strings of 1 to 512 visible ASCII bytes",
-            ));
-        }
-    }
-    value.allowed_groups.sort_unstable();
-
-    match value.mode {
-        AdmissionMode::InvitationRequired
-            if !value.allowed_email_domains.is_empty() || !value.allowed_groups.is_empty() =>
-        {
-            Err(field(
-                "mode",
-                "invitation_required cannot include identity admission rules",
-            ))
-        }
-        AdmissionMode::VerifiedIdentityPolicy
-            if value.allowed_email_domains.is_empty() && value.allowed_groups.is_empty() =>
-        {
-            Err(field(
-                "mode",
-                "verified_identity_policy requires an email domain or group",
-            ))
-        }
-        _ => Ok(value),
-    }
 }
 
 pub(super) fn entitlement_reason(value: Option<String>) -> Result<Option<String>, AppError> {
@@ -189,43 +122,6 @@ fn validate_return_to(
     Ok(())
 }
 
-fn normalized_domain(value: &str) -> Result<String, AppError> {
-    let domain = value.to_ascii_lowercase();
-    if value != domain
-        || domain.is_empty()
-        || domain.len() > 253
-        || domain.ends_with('.')
-        || domain.split('.').any(|label| {
-            label.is_empty()
-                || label.len() > 63
-                || label.starts_with('-')
-                || label.ends_with('-')
-                || !label
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        })
-        || !domain.contains('.')
-    {
-        return Err(field(
-            "allowed_email_domains",
-            "must contain canonical lowercase DNS hostnames",
-        ));
-    }
-    Ok(domain)
-}
-
-fn validate_unique_ids(
-    name: &'static str,
-    values: &mut [uuid::Uuid],
-    maximum: usize,
-) -> Result<(), AppError> {
-    values.sort_unstable();
-    if values.len() > maximum || values.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(field(name, "must contain unique values within the limit"));
-    }
-    Ok(())
-}
-
 pub(super) fn field(name: &'static str, message: &'static str) -> AppError {
     AppError::Validation {
         details: json!({ "field": name, "message": message }),
@@ -237,7 +133,7 @@ mod tests {
     use secrecy::ExposeSecret as _;
     use url::Url;
 
-    use super::{authorize, correlation_from_wire, normalized_domain};
+    use super::{authorize, correlation_from_wire};
     use crate::{config::RuntimeEnvironment, features::sso::model::AuthorizeQuery};
 
     #[test]
@@ -270,16 +166,5 @@ mod tests {
             assert_eq!(parsed.wire_state.expose_secret(), &state);
         }
         assert!(correlation_from_wire(&format!("sss_{}", "A".repeat(43))).is_err());
-    }
-
-    #[test]
-    fn domains_are_canonical_and_not_wildcards() {
-        assert_eq!(
-            normalized_domain("example.com").ok().as_deref(),
-            Some("example.com")
-        );
-        assert!(normalized_domain("Example.com").is_err());
-        assert!(normalized_domain("*.example.com").is_err());
-        assert!(normalized_domain("localhost").is_err());
     }
 }

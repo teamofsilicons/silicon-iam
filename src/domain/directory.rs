@@ -10,10 +10,10 @@ use thiserror::Error;
 #[serde(try_from = "String", into = "String")]
 pub struct OrganizationId(String);
 
-/// Silicon's organization-local immutable handle.
+/// Client-supplied handle component used to construct the global Silicon ID.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct SiliconLocalId(String);
+pub struct SiliconHandle(String);
 
 /// Application's immutable public OAuth client handle.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -80,7 +80,7 @@ macro_rules! impl_handle {
 }
 
 impl_handle!(OrganizationId, 50, false);
-impl_handle!(SiliconLocalId, 50, false);
+impl_handle!(SiliconHandle, 50, false);
 impl_handle!(ApplicationId, 63, true);
 
 impl JobRole {

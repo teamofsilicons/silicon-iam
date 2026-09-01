@@ -2,37 +2,6 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use url::Url;
-use uuid::Uuid;
-
-use crate::domain::organization::{TrustBoundary, TrustLevel};
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum AdmissionMode {
-    InvitationRequired,
-    VerifiedIdentityPolicy,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct TrustValue {
-    pub(super) boundary: TrustBoundary,
-    pub(super) level: TrustLevel,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct SsoAdmissionPolicy {
-    pub(super) mode: AdmissionMode,
-    #[serde(default)]
-    pub(super) allowed_email_domains: Vec<String>,
-    #[serde(default)]
-    pub(super) allowed_groups: Vec<String>,
-    pub(super) default_job_role: String,
-    pub(super) default_tag_ids: Vec<Uuid>,
-    pub(super) first_silicon_membership_id: Option<Uuid>,
-    pub(super) default_trust: TrustValue,
-}
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct SsoConfiguration {
@@ -42,7 +11,6 @@ pub(super) struct SsoConfiguration {
     pub(super) join_method: String,
     pub(super) workos_organization_id: Option<String>,
     pub(super) connection_id: Option<String>,
-    pub(super) policy: SsoAdmissionPolicy,
     pub(super) version: i64,
     #[serde(with = "time::serde::rfc3339")]
     pub(super) updated_at: OffsetDateTime,

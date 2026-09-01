@@ -1,14 +1,21 @@
 //! Organization tenancy, directory, Silicon, and governance HTTP slice.
 
+mod carbon_profile_events;
 mod directory;
+mod directory_views;
 mod governance;
 mod handlers;
 mod invitations;
 mod model;
+mod silicon_webhooks;
 mod silicons;
 mod support;
 mod trust;
 mod validation;
+
+pub(crate) use carbon_profile_events::{
+    capture_carbon_profile_silicon_routes, enqueue_carbon_profile_silicon_events,
+};
 
 use axum::{
     Router,
@@ -52,6 +59,14 @@ pub fn router() -> Router<ApiState> {
             get(directory::get_member_authorization),
         )
         .route(
+            "/api/v1/organizations/{org_id}/members/{membership_id}/tag-change-requests",
+            post(governance::create_tag_change_request),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/members/{membership_id}/tag-history",
+            get(governance::list_tag_history),
+        )
+        .route(
             "/api/v1/organizations/{org_id}/members/{membership_id}/admin-promotions",
             post(directory::promote_admin),
         )
@@ -64,8 +79,16 @@ pub fn router() -> Router<ApiState> {
             put(directory::replace_member_capabilities),
         )
         .route(
-            "/api/v1/organizations/{org_id}/members/{membership_id}/machine-capabilities",
-            put(directory::replace_machine_capabilities),
+            "/api/v1/organizations/{org_id}/directory/self",
+            get(directory_views::get_self),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/directory/members",
+            get(directory_views::list_members),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/directory/members/{membership_id}",
+            get(directory_views::get_member),
         )
         .route(
             "/api/v1/organizations/{org_id}/carbon-invites",
@@ -76,8 +99,8 @@ pub fn router() -> Router<ApiState> {
             get(invitations::get_invitation).delete(invitations::revoke_invitation),
         )
         .route(
-            "/api/v1/organizations/{org_id}/carbon-invites/{invite_id}/verification-code",
-            post(invitations::send_invitation_code),
+            "/api/v1/organizations/{org_id}/join/email-verification-code",
+            post(invitations::send_invitation_email_code),
         )
         .route(
             "/api/v1/organizations/{org_id}/join",
@@ -94,8 +117,16 @@ pub fn router() -> Router<ApiState> {
                 .delete(silicons::remove_silicon),
         )
         .route(
-            "/api/v1/organizations/{org_id}/silicons/{silicon_id}/iam-hook",
-            get(silicons::get_silicon_hook).post(silicons::retry_silicon_hook),
+            "/api/v1/organizations/{org_id}/silicons/{silicon_id}/webhook",
+            get(silicon_webhooks::get_webhook)
+                .put(silicon_webhooks::replace_webhook)
+                .delete(silicon_webhooks::delete_webhook),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/silicons/{silicon_id}/webhook/subscription",
+            get(silicon_webhooks::get_subscription)
+                .put(silicon_webhooks::replace_subscription)
+                .delete(silicon_webhooks::delete_subscription),
         )
         .route(
             "/api/v1/organizations/{org_id}/silicons/{silicon_id}/token-rotation-requests",
@@ -111,9 +142,7 @@ pub fn router() -> Router<ApiState> {
         )
         .route(
             "/api/v1/organizations/{org_id}/tags/{tag_id}",
-            get(handlers::get_tag)
-                .patch(handlers::update_tag)
-                .delete(handlers::delete_tag),
+            get(handlers::get_tag).patch(handlers::update_tag),
         )
         .route(
             "/api/v1/organizations/{org_id}/tags/{tag_id}/members",

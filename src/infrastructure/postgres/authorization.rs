@@ -64,6 +64,7 @@ pub async fn resolve_organization_access(
                 WHERE capability_grant.organization_id = organization.id
                   AND capability_grant.grantee_membership_id = membership.id
                   AND capability_grant.revoked_at IS NULL
+                  AND capability_grant.capability <> 'audit.read'
                 ORDER BY capability_grant.capability
             ) AS capabilities
         FROM iam.organizations AS organization

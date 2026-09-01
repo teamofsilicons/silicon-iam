@@ -15,12 +15,18 @@ use uuid::Uuid;
 use crate::{
     api::ApiState,
     error::AppError,
+    features::application_webhook_projections::{self, OrganizationProjectionEvent},
     infrastructure::{
         crypto::{
             BlindIndexPurpose, DigestPurpose, EncryptedValue, EncryptionContext, ProtectedField,
             SecretDigest, SecretKind,
         },
-        postgres::context::{self, DatabaseContext},
+        postgres::{
+            context::{self, DatabaseContext},
+            events::{
+                self, AggregateVersion, OutboxRecord, SiliconWebhookRouting, SiliconWebhookTopic,
+            },
+        },
     },
 };
 
@@ -56,6 +62,15 @@ struct CompletionRow {
     return_uri_ciphertext: Vec<u8>,
     return_uri_nonce: Vec<u8>,
     return_uri_encryption_key_version: i16,
+}
+
+#[derive(FromRow)]
+struct MembershipActivationState {
+    organization_id: Uuid,
+    membership_id: Option<Uuid>,
+    prior_status: Option<String>,
+    prior_version: Option<i64>,
+    activation_kind: String,
 }
 
 #[allow(
@@ -180,6 +195,146 @@ pub(super) async fn authorize(
 
 #[allow(
     clippy::too_many_lines,
+    reason = "the SSO activation event and its immutable per-recipient projections are one transaction-bound operation"
+)]
+async fn enqueue_membership_activation(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    state: &ApiState,
+    carbon_id: Uuid,
+    organization_id: Uuid,
+    membership_id: Uuid,
+    activation: &MembershipActivationState,
+) -> Result<(), AppError> {
+    let (version, org_role, job_role, status) = sqlx::query_as::<_, (i64, String, String, String)>(
+        r"
+        SELECT version, org_role::text, job_role, status::text
+        FROM iam.organization_memberships
+        WHERE organization_id = $1 AND id = $2 AND principal_id = $3
+          AND principal_kind = 'carbon' AND status = 'active'
+        ",
+    )
+    .bind(organization_id)
+    .bind(membership_id)
+    .bind(carbon_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(support::database)?;
+    let tag_ids = sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT tag_id
+        FROM iam.membership_tags
+        WHERE organization_id = $1 AND membership_id = $2
+        ORDER BY tag_id
+        ",
+    )
+    .bind(organization_id)
+    .bind(membership_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(support::database)?;
+    let event_type = match activation.activation_kind.as_str() {
+        "created" => "organization.membership.created.v1",
+        "reactivated" => "organization.membership.reactivated.v1",
+        _ => return Err(internal("sso_membership_activation_kind")),
+    };
+    let before_state = activation.prior_status.as_ref().map(|prior_status| {
+        json!({
+            "status": prior_status,
+            "version": activation.prior_version,
+        })
+    });
+    let after_state = json!({
+        "org_role": org_role,
+        "job_role": job_role,
+        "tag_ids": tag_ids,
+        "status": status,
+        "version": version,
+    });
+    let metadata = json!({
+        "membership_id": membership_id,
+        "subject_principal_id": carbon_id,
+        "principal_kind": "carbon",
+        "source": "sso",
+    });
+    let outbox_event_id = events::enqueue_outbox(
+        transaction,
+        OutboxRecord {
+            organization_id: Some(organization_id),
+            aggregate: AggregateVersion {
+                aggregate_type: "organization_membership",
+                aggregate_id: membership_id,
+                version,
+            },
+            event_ordinal: 1,
+            event_type,
+            schema_version: 1,
+            payload: json!({
+                "change": format!("membership.{}", activation.activation_kind),
+                "membership_id": membership_id,
+                "subject_principal_id": carbon_id,
+                "principal_kind": "carbon",
+                "source": "sso",
+                "before": before_state.clone(),
+                "after": after_state.clone(),
+            }),
+            silicon_webhook_routing: Some(SiliconWebhookRouting {
+                topics: vec![SiliconWebhookTopic::MembershipLifecycle],
+                affected_membership_id: Some(membership_id),
+                affected_tag_ids: tag_ids.clone(),
+                before_tag_membership_ids: Vec::new(),
+                organization_wide: false,
+            }),
+        },
+    )
+    .await
+    .map_err(support::database)?;
+    application_webhook_projections::capture_organization_application_projections(
+        transaction,
+        state,
+        OrganizationProjectionEvent {
+            outbox_event_id,
+            organization_id,
+            aggregate_type: "organization_membership",
+            aggregate_id: membership_id,
+            aggregate_version: version,
+            event_type,
+            before_state: before_state.as_ref(),
+            after_state: Some(&after_state),
+            metadata: &metadata,
+        },
+    )
+    .await
+}
+
+async fn lock_membership_activation_state(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    browser_session: BrowserSession,
+    candidates: &CorrelationCandidates,
+    provider_organization_id: &str,
+    provider_connection_id: &str,
+) -> Result<MembershipActivationState, AppError> {
+    sqlx::query_as::<_, MembershipActivationState>(
+        r"
+        SELECT organization_id, membership_id, prior_status, prior_version,
+               activation_kind
+        FROM iam_private.lock_sso_membership_activation_state(
+            $1, $2::smallint[], $3::bytea[], $4::bytea[], $5, $6
+        )
+        ",
+    )
+    .bind(browser_session.session_id)
+    .bind(&candidates.versions)
+    .bind(&candidates.state_values)
+    .bind(&candidates.nonce_values)
+    .bind(provider_organization_id)
+    .bind(provider_connection_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(map_completion_database_error)
+}
+
+#[allow(
+    clippy::too_many_lines,
     reason = "callback correlation, provider exchange, admission, audit, and redirect are explicit"
 )]
 pub(super) async fn callback(
@@ -235,6 +390,20 @@ pub(super) async fn callback(
     )
     .await
     .map_err(support::database)?;
+    let activation = lock_membership_activation_state(
+        &mut transaction,
+        browser_session,
+        &candidates,
+        &profile.organization_id,
+        &profile.connection_id,
+    )
+    .await?;
+    if !matches!(
+        activation.activation_kind.as_str(),
+        "created" | "reactivated" | "unchanged"
+    ) {
+        return Err(internal("sso_membership_activation_kind"));
+    }
     let new_membership_id = Uuid::now_v7();
     let new_sso_identity_id = Uuid::now_v7();
     let completion = sqlx::query_as::<_, CompletionRow>(
@@ -252,9 +421,9 @@ pub(super) async fn callback(
         FROM iam_private.complete_sso_authorization(
             $1,
             $2::smallint[], $3::bytea[], $4::bytea[],
-            $5, $6, $7, $8,
-            $9::smallint[], $10::bytea[], $11::text[],
-            $12, $13
+            $5, $6, $7,
+            $8::smallint[], $9::bytea[],
+            $10, $11
         )
         ",
     )
@@ -265,16 +434,22 @@ pub(super) async fn callback(
     .bind(&profile.organization_id)
     .bind(&profile.connection_id)
     .bind(&profile.id)
-    .bind(&normalized_email)
     .bind(&contact_versions)
     .bind(&contact_values)
-    .bind(&profile.groups)
     .bind(new_membership_id)
     .bind(new_sso_identity_id)
     .fetch_optional(&mut *transaction)
     .await
     .map_err(map_completion_database_error)?
     .ok_or(AppError::Forbidden)?;
+    if activation.organization_id != completion.organization_id
+        || activation
+            .membership_id
+            .is_some_and(|membership_id| membership_id != completion.membership_id)
+        || (completion.membership_created != (activation.activation_kind == "created"))
+    {
+        return Err(internal("sso_membership_activation_state"));
+    }
     let return_to = decrypt_return_uri(&state, &completion)?;
     support::record_browser_mutation(
         &mut transaction,
@@ -292,15 +467,26 @@ pub(super) async fn callback(
             after_state: Some(json!({
                 "membership_id": completion.membership_id,
                 "membership_created": completion.membership_created,
+                "membership_activation": activation.activation_kind,
             })),
             metadata: json!({
                 "sso_identity_id": completion.sso_identity_id,
                 "config_version": completion.config_version,
-                "group_count": profile.groups.len(),
             }),
         },
     )
     .await?;
+    if activation.activation_kind != "unchanged" {
+        enqueue_membership_activation(
+            &mut transaction,
+            &state,
+            browser_session.carbon_id,
+            completion.organization_id,
+            completion.membership_id,
+            &activation,
+        )
+        .await?;
+    }
     transaction.commit().await.map_err(support::database)?;
     redirect(&return_to)
 }
@@ -458,7 +644,7 @@ fn map_authorization_database_error(error: sqlx::Error) -> AppError {
         .map(sqlx::error::DatabaseError::message);
     match message {
         Some("sso_not_entitled") => AppError::Forbidden,
-        Some("sso_not_active" | "sso_policy_missing") => AppError::Conflict {
+        Some("sso_not_active") => AppError::Conflict {
             code: "sso_not_active".into(),
         },
         Some("sso_session_invalid") => AppError::Unauthenticated,
@@ -477,7 +663,7 @@ fn map_completion_database_error(error: sqlx::Error) -> AppError {
         Some("sso_authorization_consumed") => AppError::Gone {
             code: "sso_authorization_consumed".into(),
         },
-        Some("sso_identity_mismatch" | "sso_admission_denied") => AppError::Forbidden,
+        Some("sso_identity_mismatch") => AppError::Forbidden,
         Some("sso_identity_conflict") => AppError::Conflict {
             code: "sso_identity_conflict".into(),
         },

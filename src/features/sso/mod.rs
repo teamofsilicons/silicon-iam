@@ -27,10 +27,6 @@ pub(crate) fn router() -> Router<ApiState> {
             post(configuration::create_setup_link),
         )
         .route(
-            "/api/v1/organizations/{org_id}/sso/policy",
-            put(configuration::replace_policy),
-        )
-        .route(
             "/api/v1/organizations/{org_id}/sso/authorize",
             get(authorization::authorize),
         )
@@ -53,7 +49,6 @@ mod tests {
         for route in [
             "/api/v1/organizations/{org_id}/sso",
             "/api/v1/organizations/{org_id}/sso/setup-link",
-            "/api/v1/organizations/{org_id}/sso/policy",
             "/api/v1/provider-webhooks/workos",
         ] {
             assert!(route.starts_with("/api/v1/"));

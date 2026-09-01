@@ -146,6 +146,7 @@ pub(super) struct MembershipResponse {
     pub(super) tags: sqlx::types::Json<Vec<TagSummary>>,
     pub(super) first_silicon_membership_id: Option<Uuid>,
     pub(super) extra_silicons: Vec<Uuid>,
+    pub(super) default_trust: Option<sqlx::types::Json<TrustValue>>,
     pub(super) reports_to_membership_id: Option<Uuid>,
     pub(super) hierarchy_level: Option<i32>,
     pub(super) authorization_epoch: i64,
@@ -172,6 +173,7 @@ pub(super) struct MembershipDirectoryPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) first_silicon_membership_id: Option<Option<Uuid>>,
     pub(super) extra_silicon_membership_ids: Option<Vec<Uuid>>,
+    pub(super) default_trust: Option<TrustValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) reports_to_membership_id: Option<Option<Uuid>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -183,7 +185,6 @@ pub(super) struct MembershipAuthorizationResponse {
     pub(super) membership_id: Uuid,
     pub(super) org_role: String,
     pub(super) capabilities: Vec<String>,
-    pub(super) machine_capabilities: Vec<String>,
     pub(super) authorization_epoch: i64,
     pub(super) version: i64,
 }
@@ -196,27 +197,26 @@ pub(super) struct CapabilitiesReplace {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct MachineCapabilitiesReplace {
-    pub(super) machine_capabilities: Vec<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct SiliconCreate {
     pub(super) silicon_id: String,
+    pub(super) display_name: Option<String>,
+    pub(super) timezone: Option<String>,
+    pub(super) description: Option<String>,
     pub(super) profile_photo: Option<String>,
     pub(super) job_role: String,
     pub(super) reports_to_membership_id: Option<Uuid>,
     #[serde(default)]
     pub(super) tag_ids: Vec<Uuid>,
-    #[serde(default)]
-    pub(super) machine_capabilities: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(clippy::option_option)]
 pub(super) struct SiliconPatch {
+    pub(super) display_name: Option<String>,
+    pub(super) timezone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) description: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) profile_photo: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -229,14 +229,16 @@ pub(super) struct SiliconResponse {
     pub(super) principal_id: Uuid,
     pub(super) membership_id: Uuid,
     pub(super) silicon_id: String,
-    pub(super) local_id: String,
     pub(super) org_id: String,
+    pub(super) display_name: String,
+    pub(super) timezone: String,
+    pub(super) description: Option<String>,
     pub(super) profile_photo: String,
     pub(super) job_role: String,
     pub(super) reports_to_membership_id: Option<Uuid>,
     pub(super) tags: sqlx::types::Json<Vec<TagSummary>>,
     pub(super) hierarchy_level: i32,
-    pub(super) hook_status: String,
+    pub(super) webhook_configured: bool,
     pub(super) status: String,
     pub(super) version: i64,
     #[serde(with = "time::serde::rfc3339")]
@@ -259,12 +261,92 @@ pub(super) struct SiliconCreatedResponse {
     pub(super) secret_replay_expires_at: OffsetDateTime,
 }
 
-#[derive(Clone, Debug, Serialize, sqlx::FromRow)]
-pub(super) struct SiliconHookResponse {
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SiliconWebhookReplace {
+    pub(super) url: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct SiliconWebhookResponse {
+    pub(super) silicon_id: String,
+    pub(super) url: String,
     pub(super) status: String,
-    pub(super) masked_url: Option<String>,
-    pub(super) initialized_event_status: String,
-    pub(super) last_error_code: Option<String>,
+    pub(super) secret_version: i64,
+    pub(super) version: i64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub(super) created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub(super) updated_at: OffsetDateTime,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct SiliconWebhookConfiguredResponse {
+    pub(super) webhook: SiliconWebhookResponse,
+    pub(super) webhook_signing_secret: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub(super) secret_replay_expires_at: OffsetDateTime,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum SiliconWebhookSubscriptionMode {
+    All,
+    Selected,
+}
+
+impl SiliconWebhookSubscriptionMode {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Selected => "selected",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum SiliconWebhookTopic {
+    MembershipLifecycle,
+    MemberUpdates,
+    TrustUpdates,
+}
+
+impl SiliconWebhookTopic {
+    pub(super) const ALL: [Self; 3] = [
+        Self::MembershipLifecycle,
+        Self::MemberUpdates,
+        Self::TrustUpdates,
+    ];
+
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::MembershipLifecycle => "membership_lifecycle",
+            Self::MemberUpdates => "member_updates",
+            Self::TrustUpdates => "trust_updates",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SiliconWebhookSubscriptionReplace {
+    pub(super) mode: SiliconWebhookSubscriptionMode,
+    #[serde(default)]
+    pub(super) topics: Vec<SiliconWebhookTopic>,
+    #[serde(default)]
+    pub(super) own_tags_only: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct SiliconWebhookSubscriptionResponse {
+    pub(super) silicon_id: String,
+    pub(super) mode: SiliconWebhookSubscriptionMode,
+    pub(super) topics: Vec<SiliconWebhookTopic>,
+    pub(super) own_tags_only: bool,
+    pub(super) version: i64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub(super) created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub(super) updated_at: OffsetDateTime,
 }
@@ -322,7 +404,6 @@ pub(super) struct TrustValue {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
 pub(super) enum TrustSelector {
-    Organization,
     Tag { tag_id: Uuid },
     Membership { membership_id: Uuid },
 }
@@ -389,6 +470,16 @@ pub(super) struct RoleChangeRequestCreate {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub(super) struct TagChangeRequestCreate {
+    #[serde(default)]
+    pub(super) add_tag_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub(super) remove_tag_ids: Vec<Uuid>,
+    pub(super) reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ApprovalDecisionCreate {
     pub(super) decision: String,
     pub(super) comment: Option<String>,
@@ -416,7 +507,25 @@ pub(super) struct CarbonInviteCreate {
     #[serde(default)]
     pub(super) extra_silicon_membership_ids: Vec<Uuid>,
     pub(super) default_trust: TrustValue,
+    #[serde(default)]
+    pub(super) tag_trust_overrides: Vec<InvitationTagTrustOverride>,
+    #[serde(default)]
+    pub(super) silicon_trust_overrides: Vec<InvitationSiliconTrustOverride>,
     pub(super) redirect_app_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InvitationTagTrustOverride {
+    pub(super) tag_id: Uuid,
+    pub(super) trust: TrustValue,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InvitationSiliconTrustOverride {
+    pub(super) silicon_membership_id: Uuid,
+    pub(super) trust: TrustValue,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -424,6 +533,19 @@ pub(super) struct CarbonInviteCreate {
 pub(super) struct InvitationAcceptance {
     pub(super) invite_id: Uuid,
     pub(super) verification_code: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InvitationEmailCodeRequest {
+    pub(super) email: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct InvitationEmailCodeResponse {
+    pub(super) accepted: bool,
+    pub(super) invite_id: Uuid,
+    pub(super) expires_in: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -449,6 +571,8 @@ pub(super) struct InvitationResponse {
     pub(super) first_silicon_membership_id: Option<Uuid>,
     pub(super) extra_silicon_membership_ids: Vec<Uuid>,
     pub(super) default_trust: TrustValue,
+    pub(super) tag_trust_overrides: Vec<InvitationTagTrustOverride>,
+    pub(super) silicon_trust_overrides: Vec<InvitationSiliconTrustOverride>,
     pub(super) invited_by: ActorResponse,
     pub(super) status: String,
     #[serde(with = "time::serde::rfc3339")]
@@ -493,8 +617,6 @@ pub(super) struct ApprovalRequestResponse {
     pub(super) immutable_payload: serde_json::Value,
     pub(super) required_approvals: ApprovalRequirementsResponse,
     pub(super) decisions: Vec<ApprovalDecisionResponse>,
-    #[serde(with = "time::serde::rfc3339")]
-    pub(super) expires_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
     pub(super) completed_at: Option<OffsetDateTime>,
     pub(super) version: i64,
@@ -527,15 +649,28 @@ pub(super) struct RoleHistoryPage {
     pub(super) page: PageInfo,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct RemovalQuery {
-    pub(super) reassign_reports_to: Option<Uuid>,
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct TagHistoryResponse {
+    pub(super) id: Uuid,
+    pub(super) membership_id: Uuid,
+    pub(super) previous_tag_ids: Vec<Uuid>,
+    pub(super) applied_tag_ids: Vec<Uuid>,
+    pub(super) requested_by: ActorResponse,
+    pub(super) approvers: Vec<ActorResponse>,
+    pub(super) approval_request_id: Uuid,
+    pub(super) membership_version: i64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub(super) applied_at: OffsetDateTime,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct TagHistoryPage {
+    pub(super) items: Vec<TagHistoryResponse>,
+    pub(super) page: PageInfo,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct CascadeQuery {
-    #[serde(default)]
-    pub(super) cascade: bool,
+pub(super) struct RemovalQuery {
+    pub(super) reassign_reports_to: Option<Uuid>,
 }

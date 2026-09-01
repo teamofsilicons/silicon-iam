@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_lines)]
 
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::BTreeMap};
 
 use axum::{
     Json,
@@ -22,23 +22,21 @@ use crate::{
 
 use super::{
     model::{
-        CapabilitiesReplace, MachineCapabilitiesReplace, MemberQuery,
-        MembershipAuthorizationResponse, MembershipDirectoryPatch, MembershipPage,
-        MembershipResponse, PageInfo, RemovalQuery,
+        CapabilitiesReplace, MemberQuery, MembershipAuthorizationResponse,
+        MembershipDirectoryPatch, MembershipPage, MembershipResponse, PageInfo, RemovalQuery,
     },
     support::{self, Claim, MutationEvent},
     validation,
 };
 
-const MEMBER_UPDATE_ROUTE: &str = "/api/v1/organizations/{org_id}/members/{membership_id}";
+const MEMBER_UPDATE_ROUTE: &str = "PATCH /api/v1/organizations/{org_id}/members/{membership_id}";
+const MEMBER_REMOVE_ROUTE: &str = "DELETE /api/v1/organizations/{org_id}/members/{membership_id}";
 const MEMBER_PROMOTE_ROUTE: &str =
-    "/api/v1/organizations/{org_id}/members/{membership_id}/admin-promotions";
+    "POST /api/v1/organizations/{org_id}/members/{membership_id}/admin-promotions";
 const MEMBER_DEMOTE_ROUTE: &str =
-    "/api/v1/organizations/{org_id}/members/{membership_id}/admin-demotions";
+    "POST /api/v1/organizations/{org_id}/members/{membership_id}/admin-demotions";
 const MEMBER_CAPABILITIES_ROUTE: &str =
-    "/api/v1/organizations/{org_id}/members/{membership_id}/capabilities";
-const MACHINE_CAPABILITIES_ROUTE: &str =
-    "/api/v1/organizations/{org_id}/members/{membership_id}/machine-capabilities";
+    "PUT /api/v1/organizations/{org_id}/members/{membership_id}/capabilities";
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct MembershipIdentity {
@@ -107,8 +105,23 @@ pub(super) async fn update_member_directory(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     validation::member_patch(&mut input, state.settings.environment)?;
-    let expected_version = validation::expected_version(&headers)?;
     let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let lease = match support::claim_resource(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        &headers,
+        MEMBER_UPDATE_ROUTE,
+        &membership_id.to_string(),
+        &input,
+        false,
+    )
+    .await?
+    {
+        Claim::Replay(response) => return Ok(response),
+        Claim::Acquired(lease) => lease,
+    };
+    let expected_version = validation::expected_version(&headers)?;
     let identity = fetch_membership_identity(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -118,43 +131,46 @@ pub(super) async fn update_member_directory(
     require_active_version(&identity, expected_version)?;
     authorize_directory_patch(&scope.access, &identity, &input)?;
 
-    let lease = match support::claim(
-        &mut scope.transaction,
-        &state,
-        &authenticated,
-        &headers,
-        MEMBER_UPDATE_ROUTE,
-        &input,
-        false,
-    )
-    .await?
-    {
-        Claim::Replay(response) => return Ok(response),
-        Claim::Acquired(lease) => lease,
-    };
-    let before = fetch_member(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        membership_id,
-    )
-    .await?;
-
-    if let Some(tag_ids) = input.tag_ids.as_deref() {
-        validate_active_tags(
-            &mut scope.transaction,
-            scope.access.organization_id,
-            tag_ids,
-        )
-        .await?;
-        replace_membership_tags(
+    let silicon_member = identity.principal_kind == "silicon";
+    let hierarchy_change = silicon_member && input.reports_to_membership_id.is_some();
+    let affected_membership_ids = if silicon_member {
+        super::silicons::lock_hierarchy_subtree(
             &mut scope.transaction,
             scope.access.organization_id,
             membership_id,
-            scope.access.membership_id,
-            tag_ids,
+            hierarchy_change,
         )
-        .await?;
-    }
+        .await?
+    } else {
+        vec![membership_id]
+    };
+    let before_members = fetch_members(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        &affected_membership_ids,
+    )
+    .await?
+    .into_iter()
+    .map(|member| (member.id, member))
+    .collect::<BTreeMap<_, _>>();
+    let profile_base = silicon_member
+        .then(|| super::silicons::silicon_profile_base(&state))
+        .transpose()?;
+    let before_silicons = if let Some(profile_base) = profile_base.as_deref() {
+        super::silicons::fetch_silicons(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            &affected_membership_ids,
+            profile_base,
+        )
+        .await?
+        .into_iter()
+        .map(|silicon| (silicon.membership_id, silicon))
+        .collect::<BTreeMap<_, _>>()
+    } else {
+        BTreeMap::new()
+    };
+
     match identity.principal_kind.as_str() {
         "carbon" => {
             update_carbon_directory(
@@ -186,24 +202,121 @@ pub(super) async fn update_member_directory(
         scope.access.organization_id,
         membership_id,
         expected_version,
+        identity.principal_kind == "carbon" || input.reports_to_membership_id.is_some(),
     )
     .await?;
-    let member = fetch_member(
+    let changed_membership_ids = if let Some(profile_base) = profile_base.as_deref() {
+        let provisional = super::silicons::fetch_silicons(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            &affected_membership_ids,
+            profile_base,
+        )
+        .await?;
+        provisional
+            .iter()
+            .filter_map(|after| {
+                let before = before_silicons.get(&after.membership_id)?;
+                (after.membership_id == membership_id
+                    || super::silicons::hierarchy_projection_changed(before, after))
+                .then_some(after.membership_id)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        vec![membership_id]
+    };
+    if silicon_member {
+        super::silicons::touch_silicon_descendants(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            membership_id,
+            &changed_membership_ids,
+        )
+        .await?;
+        let descendants = changed_membership_ids
+            .iter()
+            .copied()
+            .filter(|affected_id| *affected_id != membership_id)
+            .collect::<Vec<_>>();
+        super::silicons::touch_membership_projections(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            &descendants,
+            None,
+        )
+        .await?;
+    }
+    let after_members = fetch_members(
         &mut scope.transaction,
         scope.access.organization_id,
-        membership_id,
+        &changed_membership_ids,
     )
-    .await?;
-    record_member_mutation(
-        &mut scope.transaction,
-        &authenticated,
-        scope.access.organization_id,
-        "membership.directory_updated",
-        "organization.membership.updated.v1",
-        &before,
-        &member,
-    )
-    .await?;
+    .await?
+    .into_iter()
+    .map(|member| (member.id, member))
+    .collect::<BTreeMap<_, _>>();
+    let after_silicons = if let Some(profile_base) = profile_base.as_deref() {
+        super::silicons::fetch_silicons(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            &changed_membership_ids,
+            profile_base,
+        )
+        .await?
+        .into_iter()
+        .map(|silicon| (silicon.membership_id, silicon))
+        .collect::<BTreeMap<_, _>>()
+    } else {
+        BTreeMap::new()
+    };
+    for affected_id in &changed_membership_ids {
+        record_member_mutation(
+            &mut scope.transaction,
+            &state,
+            &authenticated,
+            scope.access.organization_id,
+            if *affected_id == membership_id {
+                "membership.directory_updated"
+            } else {
+                "membership.hierarchy_projection_updated"
+            },
+            "organization.membership.updated.v1",
+            before_members.get(affected_id).ok_or(AppError::Internal {
+                category: "directory_membership_before_state",
+            })?,
+            after_members.get(affected_id).ok_or(AppError::Internal {
+                category: "directory_membership_after_state",
+            })?,
+        )
+        .await?;
+        if silicon_member {
+            super::silicons::record_silicon_change(
+                &mut scope.transaction,
+                &state,
+                &authenticated,
+                scope.access.organization_id,
+                if *affected_id == membership_id {
+                    "silicon.directory_updated"
+                } else {
+                    "silicon.hierarchy_projection_updated"
+                },
+                "organization.silicon.updated.v1",
+                before_silicons.get(affected_id).ok_or(AppError::Internal {
+                    category: "directory_silicon_before_state",
+                })?,
+                after_silicons.get(affected_id).ok_or(AppError::Internal {
+                    category: "directory_silicon_after_state",
+                })?,
+            )
+            .await?;
+        }
+    }
+    let member = after_members
+        .get(&membership_id)
+        .cloned()
+        .ok_or(AppError::Internal {
+            category: "directory_member_response",
+        })?;
     let body = support::finish_json(
         &mut scope.transaction,
         &state,
@@ -228,8 +341,23 @@ pub(super) async fn remove_member(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let expected_version = validation::expected_version(&headers)?;
     let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let lease = match support::claim_resource(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        &headers,
+        MEMBER_REMOVE_ROUTE,
+        &membership_id.to_string(),
+        &query,
+        false,
+    )
+    .await?
+    {
+        Claim::Replay(response) => return Ok(response),
+        Claim::Acquired(lease) => lease,
+    };
+    let expected_version = validation::expected_version(&headers)?;
     let identity = fetch_membership_identity(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -258,26 +386,28 @@ pub(super) async fn remove_member(
         RequiredAssurance::VerifiedChannel,
     )
     .await?;
-    let lease = match support::claim(
-        &mut scope.transaction,
-        &state,
-        &authenticated,
-        &headers,
-        MEMBER_UPDATE_ROUTE,
-        &query,
-        false,
-    )
-    .await?
-    {
-        Claim::Replay(response) => return Ok(response),
-        Claim::Acquired(lease) => lease,
-    };
-    let before = fetch_member(
+    let affected_membership_ids = support::lock_membership_removal_event_scope(
         &mut scope.transaction,
         scope.access.organization_id,
         membership_id,
+        query.reassign_reports_to,
     )
     .await?;
+    let before_members = fetch_members(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        &affected_membership_ids,
+    )
+    .await?;
+    let before = before_members
+        .iter()
+        .find(|member| member.id == membership_id)
+        .cloned()
+        .ok_or(AppError::NotFound)?;
+    let before_by_id = before_members
+        .into_iter()
+        .map(|member| (member.id, member))
+        .collect::<BTreeMap<_, _>>();
     let expected_silicon_version = if identity.principal_kind == "silicon" {
         Some(
             sqlx::query_scalar::<_, i64>(
@@ -293,6 +423,16 @@ pub(super) async fn remove_member(
     } else {
         None
     };
+    if expected_silicon_version.is_some() {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT iam_private.deactivate_silicon_webhook_for_removal($1, $2)",
+        )
+        .bind(scope.access.organization_id)
+        .bind(before.principal.0.principal_id)
+        .fetch_one(&mut *scope.transaction)
+        .await
+        .map_err(support::database)?;
+    }
     let version = sqlx::query_scalar::<_, i64>(
         r"
         SELECT membership_version
@@ -308,8 +448,9 @@ pub(super) async fn remove_member(
     .await
     .map_err(support::transition_database)?
     .ok_or(AppError::NotFound)?;
-    support::record_mutation(
+    support::record_application_mutation(
         &mut scope.transaction,
+        &state,
         &authenticated,
         scope.access.organization_id,
         MutationEvent {
@@ -322,10 +463,40 @@ pub(super) async fn remove_member(
             event_type: "organization.membership.removed.v1",
             before_state: redacted(&before)?,
             after_state: Some(json!({ "status": "removed", "version": version })),
-            metadata: json!({ "membership_id": membership_id, "principal_kind": identity.principal_kind }),
+            metadata: json!({
+                "membership_id": membership_id,
+                "principal_kind": identity.principal_kind,
+                "reassign_reports_to": query.reassign_reports_to,
+            }),
         },
     )
     .await?;
+    let surviving_membership_ids = affected_membership_ids
+        .into_iter()
+        .filter(|affected_id| *affected_id != membership_id)
+        .collect::<Vec<_>>();
+    let surviving_members = fetch_members(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        &surviving_membership_ids,
+    )
+    .await?;
+    for member in &surviving_members {
+        let before_member = before_by_id.get(&member.id).ok_or(AppError::Internal {
+            category: "membership_removal_before_state",
+        })?;
+        record_member_mutation(
+            &mut scope.transaction,
+            &state,
+            &authenticated,
+            scope.access.organization_id,
+            "membership.removal_side_effect_applied",
+            "organization.membership.updated.v1",
+            before_member,
+            member,
+        )
+        .await?;
+    }
     support::finish_empty(
         &mut scope.transaction,
         &state,
@@ -396,28 +567,6 @@ pub(super) async fn replace_member_capabilities(
         headers,
         &input,
         capabilities,
-        false,
-    )
-    .await
-}
-
-pub(super) async fn replace_machine_capabilities(
-    State(state): State<ApiState>,
-    authenticated: Authenticated,
-    Path((org_id, membership_id)): Path<(String, Uuid)>,
-    headers: HeaderMap,
-    Json(input): Json<MachineCapabilitiesReplace>,
-) -> Result<Response, AppError> {
-    let capabilities = validation::machine_capabilities(&input)?;
-    replace_capabilities(
-        state,
-        authenticated,
-        org_id,
-        membership_id,
-        headers,
-        &input,
-        capabilities,
-        true,
     )
     .await
 }
@@ -484,6 +633,28 @@ pub(super) async fn fetch_member(
         .ok_or(AppError::NotFound)
 }
 
+pub(super) async fn fetch_members(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    membership_ids: &[Uuid],
+) -> Result<Vec<MembershipResponse>, AppError> {
+    if membership_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut statement = QueryBuilder::<Postgres>::new(MEMBERSHIP_PROJECTION);
+    statement
+        .push(" WHERE membership.organization_id = ")
+        .push_bind(organization_id)
+        .push(" AND membership.id = ANY(")
+        .push_bind(membership_ids.to_vec())
+        .push(") ORDER BY membership.id");
+    statement
+        .build_query_as::<MembershipResponse>()
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(support::database)
+}
+
 async fn change_admin_role(
     state: ApiState,
     authenticated: Authenticated,
@@ -493,7 +664,6 @@ async fn change_admin_role(
     promote: bool,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let expected_version = validation::expected_version(&headers)?;
     let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
     support::require_capability(
         &scope.access,
@@ -503,6 +673,27 @@ async fn change_admin_role(
             Capability::AdminsManage
         },
     )?;
+    let route = if promote {
+        MEMBER_PROMOTE_ROUTE
+    } else {
+        MEMBER_DEMOTE_ROUTE
+    };
+    let lease = match support::claim_resource(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        &headers,
+        route,
+        &membership_id.to_string(),
+        &json!({ "promote": promote }),
+        false,
+    )
+    .await?
+    {
+        Claim::Replay(response) => return Ok(response),
+        Claim::Acquired(lease) => lease,
+    };
+    let expected_version = validation::expected_version(&headers)?;
     let identity = fetch_membership_identity(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -528,25 +719,6 @@ async fn change_admin_role(
         RequiredAssurance::VerifiedChannel,
     )
     .await?;
-    let route = if promote {
-        MEMBER_PROMOTE_ROUTE
-    } else {
-        MEMBER_DEMOTE_ROUTE
-    };
-    let lease = match support::claim(
-        &mut scope.transaction,
-        &state,
-        &authenticated,
-        &headers,
-        route,
-        &json!({ "membership_id": membership_id }),
-        false,
-    )
-    .await?
-    {
-        Claim::Replay(response) => return Ok(response),
-        Claim::Acquired(lease) => lease,
-    };
     let before = fetch_authorization(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -575,6 +747,7 @@ async fn change_admin_role(
     debug_assert_eq!(authorization.version, resulting_version);
     record_authorization_mutation(
         &mut scope.transaction,
+        &state,
         &authenticated,
         scope.access.organization_id,
         if promote {
@@ -608,20 +781,34 @@ async fn change_admin_role(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn replace_capabilities<T: Serialize>(
+async fn replace_capabilities(
     state: ApiState,
     authenticated: Authenticated,
     org_id: String,
     membership_id: Uuid,
     headers: HeaderMap,
-    request: &T,
+    request: &CapabilitiesReplace,
     capabilities: Vec<String>,
-    machine: bool,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let expected_version = validation::expected_version(&headers)?;
     let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
     support::require_capability(&scope.access, Capability::AdminsManage)?;
+    let lease = match support::claim_resource(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        &headers,
+        MEMBER_CAPABILITIES_ROUTE,
+        &membership_id.to_string(),
+        request,
+        false,
+    )
+    .await?
+    {
+        Claim::Replay(response) => return Ok(response),
+        Claim::Acquired(lease) => lease,
+    };
+    let expected_version = validation::expected_version(&headers)?;
     let identity = fetch_membership_identity(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -629,23 +816,17 @@ async fn replace_capabilities<T: Serialize>(
     )
     .await?;
     require_active_version(&identity, expected_version)?;
-    if machine != (identity.principal_kind == "silicon") {
+    if identity.principal_kind != "carbon" {
         return Err(AppError::Conflict {
             code: Cow::Borrowed("capability_principal_type_mismatch"),
         });
     }
-    if !machine && identity.org_role == "owner" {
+    if identity.org_role == "owner" {
         return Err(AppError::Conflict {
             code: Cow::Borrowed("owner_capabilities_are_intrinsic"),
         });
     }
-    validate_delegation(
-        &mut scope.transaction,
-        &scope.access,
-        &capabilities,
-        machine,
-    )
-    .await?;
+    validate_delegation(&mut scope.transaction, &scope.access, &capabilities).await?;
     support::consume_step_up(
         &mut scope.transaction,
         &state,
@@ -656,24 +837,6 @@ async fn replace_capabilities<T: Serialize>(
         RequiredAssurance::VerifiedChannel,
     )
     .await?;
-    let lease = match support::claim(
-        &mut scope.transaction,
-        &state,
-        &authenticated,
-        &headers,
-        if machine {
-            MACHINE_CAPABILITIES_ROUTE
-        } else {
-            MEMBER_CAPABILITIES_ROUTE
-        },
-        request,
-        false,
-    )
-    .await?
-    {
-        Claim::Replay(response) => return Ok(response),
-        Claim::Acquired(lease) => lease,
-    };
     let before = fetch_authorization(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -693,6 +856,7 @@ async fn replace_capabilities<T: Serialize>(
         scope.access.organization_id,
         membership_id,
         expected_version,
+        true,
     )
     .await?;
     let authorization = fetch_authorization(
@@ -703,6 +867,7 @@ async fn replace_capabilities<T: Serialize>(
     .await?;
     record_authorization_mutation(
         &mut scope.transaction,
+        &state,
         &authenticated,
         scope.access.organization_id,
         "membership.capabilities_replaced",
@@ -734,24 +899,32 @@ fn authorize_directory_patch(
 ) -> Result<(), AppError> {
     match identity.principal_kind.as_str() {
         "carbon" => {
-            support::require_capability(access, Capability::MembersUpdateDirectory)?;
             if input.reports_to_membership_id.is_some() || input.profile_photo.is_some() {
                 return Err(validation::field(
                     "body",
                     "contains Silicon-only directory fields",
                 ));
             }
+            if input.first_silicon_membership_id.is_some()
+                || input.extra_silicon_membership_ids.is_some()
+            {
+                support::require_capability(access, Capability::MembersUpdateDirectory)?;
+            }
+            if input.default_trust.is_some() {
+                support::require_capability(access, Capability::TrustManage)?;
+            }
         }
         "silicon" => {
             if input.first_silicon_membership_id.is_some()
                 || input.extra_silicon_membership_ids.is_some()
+                || input.default_trust.is_some()
             {
                 return Err(validation::field(
                     "body",
                     "contains Carbon-only directory fields",
                 ));
             }
-            if input.profile_photo.is_some() || input.tag_ids.is_some() {
+            if input.profile_photo.is_some() {
                 support::require_capability(access, Capability::SiliconsUpdateDirectory)?;
             }
             if input.reports_to_membership_id.is_some() {
@@ -763,9 +936,6 @@ fn authorize_directory_patch(
                 category: "membership_kind",
             });
         }
-    }
-    if input.tag_ids.is_some() {
-        support::require_capability(access, Capability::TagsManage)?;
     }
     Ok(())
 }
@@ -822,6 +992,28 @@ async fn update_carbon_directory(
             .map_err(support::database)?;
         }
     }
+    if let Some(default_trust) = input.default_trust {
+        let result = sqlx::query(
+            r"
+            UPDATE iam.carbon_membership_settings
+            SET default_trust_boundary = $3::iam.trust_boundary,
+                default_trust_level = $4::iam.trust_level
+            WHERE organization_id = $1 AND membership_id = $2
+            ",
+        )
+        .bind(organization_id)
+        .bind(membership_id)
+        .bind(default_trust.boundary.as_str())
+        .bind(default_trust.level.as_str())
+        .execute(&mut **transaction)
+        .await
+        .map_err(support::database)?;
+        if result.rows_affected() != 1 {
+            return Err(AppError::Internal {
+                category: "carbon_membership_settings_missing",
+            });
+        }
+    }
     Ok(())
 }
 
@@ -852,27 +1044,6 @@ async fn update_silicon_directory(
         .execute(&mut **transaction)
         .await
         .map_err(|error| support::conflict_from_database(error, "invalid_reporting_hierarchy"))?;
-    }
-    Ok(())
-}
-
-async fn validate_active_tags(
-    transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    tag_ids: &[Uuid],
-) -> Result<(), AppError> {
-    let count = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM iam.organization_tags WHERE organization_id = $1 AND id = ANY($2) AND status = 'active'",
-    )
-    .bind(organization_id)
-    .bind(tag_ids)
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(support::database)?;
-    if usize::try_from(count).ok() != Some(tag_ids.len()) {
-        return Err(AppError::Conflict {
-            code: Cow::Borrowed("directory_reference_inactive"),
-        });
     }
     Ok(())
 }
@@ -915,40 +1086,6 @@ async fn validate_active_silicon(
 ) -> Result<(), AppError> {
     if let Some(membership_id) = membership_id {
         validate_active_silicons(transaction, organization_id, &[membership_id]).await?;
-    }
-    Ok(())
-}
-
-async fn replace_membership_tags(
-    transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
-    actor_membership_id: Uuid,
-    tag_ids: &[Uuid],
-) -> Result<(), AppError> {
-    sqlx::query(
-        "DELETE FROM iam.membership_tags WHERE organization_id = $1 AND membership_id = $2",
-    )
-    .bind(organization_id)
-    .bind(membership_id)
-    .execute(&mut **transaction)
-    .await
-    .map_err(support::database)?;
-    for tag_id in tag_ids {
-        sqlx::query(
-            r"
-            INSERT INTO iam.membership_tags (
-                organization_id, membership_id, tag_id, assigned_by_membership_id
-            ) VALUES ($1, $2, $3, $4)
-            ",
-        )
-        .bind(organization_id)
-        .bind(membership_id)
-        .bind(tag_id)
-        .bind(actor_membership_id)
-        .execute(&mut **transaction)
-        .await
-        .map_err(support::database)?;
     }
     Ok(())
 }
@@ -1006,19 +1143,9 @@ async fn fetch_authorization(
                 WHERE grant_record.organization_id = membership.organization_id
                   AND grant_record.grantee_membership_id = membership.id
                   AND grant_record.revoked_at IS NULL
+                  AND grant_record.capability <> 'audit.read'
                 ORDER BY grant_record.capability
             ) ELSE ARRAY[]::text[] END AS capabilities,
-            CASE WHEN membership.principal_kind = 'silicon' THEN ARRAY(
-                SELECT grant_record.capability
-                FROM iam.organization_capability_grants AS grant_record
-                JOIN iam.organization_capability_catalog AS catalog
-                  ON catalog.capability = grant_record.capability
-                 AND catalog.allowed_for_silicon
-                WHERE grant_record.organization_id = membership.organization_id
-                  AND grant_record.grantee_membership_id = membership.id
-                  AND grant_record.revoked_at IS NULL
-                ORDER BY grant_record.capability
-            ) ELSE ARRAY[]::text[] END AS machine_capabilities,
             membership.authz_epoch AS authorization_epoch,
             membership.version
         FROM iam.organization_memberships AS membership
@@ -1038,19 +1165,17 @@ async fn validate_delegation(
     transaction: &mut Transaction<'_, Postgres>,
     access: &crate::infrastructure::postgres::authorization::OrganizationAccess,
     capabilities: &[String],
-    machine: bool,
 ) -> Result<(), AppError> {
     let allowed = sqlx::query_scalar::<_, i64>(
         r"
         SELECT count(*)
         FROM iam.organization_capability_catalog AS catalog
         WHERE catalog.capability = ANY($1)
-          AND CASE WHEN $2 THEN catalog.allowed_for_silicon ELSE catalog.allowed_for_carbon END
-          AND ($3 OR catalog.delegable)
+          AND catalog.allowed_for_carbon
+          AND ($2 OR catalog.delegable)
         ",
     )
     .bind(capabilities)
-    .bind(machine)
     .bind(access.authority.org_role == OrgRole::Owner)
     .fetch_one(&mut **transaction)
     .await
@@ -1126,17 +1251,20 @@ async fn bump_membership(
     organization_id: Uuid,
     membership_id: Uuid,
     expected_version: i64,
+    bump_authorization: bool,
 ) -> Result<(), AppError> {
     let result = sqlx::query(
         r"
         UPDATE iam.organization_memberships
-        SET authz_epoch = authz_epoch + 1
+        SET authz_epoch = authz_epoch + CASE WHEN $4 THEN 1 ELSE 0 END,
+            updated_at = transaction_timestamp()
         WHERE organization_id = $1 AND id = $2 AND version = $3 AND status = 'active'
         ",
     )
     .bind(organization_id)
     .bind(membership_id)
     .bind(expected_version)
+    .bind(bump_authorization)
     .execute(&mut **transaction)
     .await
     .map_err(support::database)?;
@@ -1146,8 +1274,13 @@ async fn bump_membership(
     Ok(())
 }
 
-async fn record_member_mutation(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "transaction context and the exact before/after member event are kept explicit"
+)]
+pub(super) async fn record_member_mutation(
     transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
     authenticated: &Authenticated,
     organization_id: Uuid,
     action: &'static str,
@@ -1155,8 +1288,9 @@ async fn record_member_mutation(
     before: &MembershipResponse,
     after: &MembershipResponse,
 ) -> Result<(), AppError> {
-    support::record_mutation(
+    support::record_application_mutation(
         transaction,
+        state,
         authenticated,
         organization_id,
         MutationEvent {
@@ -1175,8 +1309,13 @@ async fn record_member_mutation(
     .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "transaction context and the exact before/after authorization event are kept explicit"
+)]
 async fn record_authorization_mutation(
     transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
     authenticated: &Authenticated,
     organization_id: Uuid,
     action: &'static str,
@@ -1184,8 +1323,9 @@ async fn record_authorization_mutation(
     before: &MembershipAuthorizationResponse,
     after: &MembershipAuthorizationResponse,
 ) -> Result<(), AppError> {
-    support::record_mutation(
+    support::record_application_mutation(
         transaction,
+        state,
         authenticated,
         organization_id,
         MutationEvent {
@@ -1301,6 +1441,10 @@ const MEMBERSHIP_PROJECTION: &str = r"
               AND access_grant.revoked_at IS NULL
             ORDER BY access_grant.silicon_membership_id
         ) ELSE ARRAY[]::uuid[] END AS extra_silicons,
+        CASE WHEN carbon_settings.membership_id IS NOT NULL THEN jsonb_build_object(
+            'boundary', carbon_settings.default_trust_boundary::text,
+            'level', carbon_settings.default_trust_level::text
+        ) ELSE NULL END AS default_trust,
         silicon.reports_to_membership_id,
         CASE WHEN silicon.id IS NULL THEN NULL ELSE (
             WITH RECURSIVE ancestors AS (
@@ -1331,3 +1475,82 @@ const MEMBERSHIP_PROJECTION: &str = r"
       ON carbon_settings.organization_id = membership.organization_id
      AND carbon_settings.membership_id = membership.id
 ";
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use crate::{
+        domain::organization::{OrgRole, OrganizationAuthority},
+        infrastructure::postgres::authorization::OrganizationAccess,
+    };
+
+    use super::*;
+    use crate::features::organizations::model::{TrustBoundary, TrustLevel, TrustValue};
+
+    fn access(capabilities: impl IntoIterator<Item = Capability>) -> OrganizationAccess {
+        OrganizationAccess {
+            organization_id: Uuid::from_u128(1),
+            membership_id: Uuid::from_u128(2),
+            authority: OrganizationAuthority {
+                org_role: OrgRole::Member,
+                capabilities: capabilities.into_iter().collect::<HashSet<_>>(),
+            },
+        }
+    }
+
+    fn default_trust_patch() -> MembershipDirectoryPatch {
+        MembershipDirectoryPatch {
+            tag_ids: None,
+            first_silicon_membership_id: None,
+            extra_silicon_membership_ids: None,
+            default_trust: Some(TrustValue {
+                boundary: TrustBoundary::External,
+                level: TrustLevel::NeedsApproval,
+            }),
+            reports_to_membership_id: None,
+            profile_photo: None,
+        }
+    }
+
+    fn identity(principal_kind: &str) -> MembershipIdentity {
+        MembershipIdentity {
+            principal_kind: principal_kind.to_owned(),
+            org_role: "member".to_owned(),
+            status: "active".to_owned(),
+            version: 1,
+        }
+    }
+
+    #[test]
+    fn carbon_default_trust_requires_only_trust_manage_for_that_field() {
+        assert!(
+            authorize_directory_patch(
+                &access([Capability::TrustManage]),
+                &identity("carbon"),
+                &default_trust_patch(),
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            authorize_directory_patch(
+                &access([Capability::MembersUpdateDirectory]),
+                &identity("carbon"),
+                &default_trust_patch(),
+            ),
+            Err(AppError::Forbidden)
+        ));
+    }
+
+    #[test]
+    fn silicon_directory_patch_rejects_carbon_default_trust() {
+        assert!(matches!(
+            authorize_directory_patch(
+                &access([Capability::TrustManage]),
+                &identity("silicon"),
+                &default_trust_patch(),
+            ),
+            Err(AppError::Validation { .. })
+        ));
+    }
+}

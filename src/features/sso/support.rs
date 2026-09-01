@@ -23,7 +23,7 @@ use crate::{
         postgres::{
             authorization::{self, AuthorizationError, OrganizationAccess},
             context::{self, DatabaseContext},
-            events::{self, AggregateVersion, AuditRecord, OutboxRecord},
+            events::{self, AggregateVersion, AuditRecord, OutboxRecord, SiliconWebhookRouting},
             idempotency::{
                 self, IdempotencyClaim, IdempotencyKey, IdempotencyLease, IdempotencyRequest,
                 OneTimeResponseReplayTtl, ReplayResponse,
@@ -39,7 +39,7 @@ use super::security;
 use super::security::BrowserSession;
 
 pub(super) const SSO_CHANGE_ACTION: &str = "organization.sso_change";
-pub(super) const PLATFORM_ADMIN_ACTION: &str = "platform_admin.manage";
+pub(super) const PLATFORM_ADMIN_ACTION: &str = "platform_admin.sso_entitlement";
 
 pub(super) struct OrganizationScope<'a> {
     pub(super) transaction: Transaction<'a, Postgres>,
@@ -149,7 +149,7 @@ pub(super) async fn consume_step_up(
             authentication_session_id: authenticated.0.authentication_session_id,
             action,
             resource_id: Some(resource_id),
-            required_assurance: RequiredAssurance::PhishingResistant,
+            required_assurance: RequiredAssurance::VerifiedChannel,
         },
     )
     .await
@@ -176,17 +176,25 @@ pub(super) fn expected_version(headers: &HeaderMap) -> Result<i64, AppError> {
         })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the transaction, authenticated caller, concrete resource, and exact request form one auditable claim boundary"
+)]
 pub(super) async fn claim<T: Serialize>(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     authenticated: &Authenticated,
     headers: &HeaderMap,
     route: &'static str,
+    resource_scope: &str,
     request: &T,
     contains_one_time_secret: bool,
 ) -> Result<Claim, AppError> {
     let key = idempotency_key(headers)?;
-    let caller_scope = SecretString::from(format!("carbon:{}", authenticated.0.subject.id));
+    let caller_scope = SecretString::from(idempotency_caller_scope(
+        authenticated.0.subject.id,
+        resource_scope,
+    ));
     let request_payload = SecretString::from(
         serde_json::to_string(request).map_err(|_| internal("sso_idempotency_serialize"))?,
     );
@@ -206,6 +214,10 @@ pub(super) async fn claim<T: Serialize>(
         IdempotencyClaim::Acquired(lease) => Ok(Claim::Acquired(lease)),
         IdempotencyClaim::Replay(replay) => Ok(Claim::Replay(replay_response(replay)?)),
     }
+}
+
+fn idempotency_caller_scope(carbon_id: Uuid, resource_scope: &str) -> String {
+    format!("carbon:{carbon_id}:resource:{resource_scope}")
 }
 
 pub(super) async fn complete_json<T: Serialize>(
@@ -252,6 +264,8 @@ pub(super) async fn record_mutation(
         aggregate_id: event.aggregate_id,
         version: event.aggregate_version,
     };
+    let webhook_payload = webhook_payload(&event);
+    let silicon_webhook_routing = silicon_webhook_routing(event.event_type);
     events::record_audit(
         transaction,
         AuditRecord {
@@ -282,7 +296,8 @@ pub(super) async fn record_mutation(
             event_ordinal: 1,
             event_type: event.event_type,
             schema_version: 1,
-            payload: event.metadata,
+            payload: webhook_payload,
+            silicon_webhook_routing,
         },
     )
     .await
@@ -300,6 +315,8 @@ pub(super) async fn record_system_mutation(
         aggregate_id: event.aggregate_id,
         version: event.aggregate_version,
     };
+    let webhook_payload = webhook_payload(&event);
+    let silicon_webhook_routing = silicon_webhook_routing(event.event_type);
     events::record_audit(
         transaction,
         AuditRecord {
@@ -327,7 +344,8 @@ pub(super) async fn record_system_mutation(
             event_ordinal: 1,
             event_type: event.event_type,
             schema_version: 1,
-            payload: event.metadata,
+            payload: webhook_payload,
+            silicon_webhook_routing,
         },
     )
     .await
@@ -346,6 +364,8 @@ pub(super) async fn record_browser_mutation(
         aggregate_id: event.aggregate_id,
         version: event.aggregate_version,
     };
+    let webhook_payload = webhook_payload(&event);
+    let silicon_webhook_routing = silicon_webhook_routing(event.event_type);
     events::record_audit(
         transaction,
         AuditRecord {
@@ -376,12 +396,52 @@ pub(super) async fn record_browser_mutation(
             event_ordinal: 1,
             event_type: event.event_type,
             schema_version: 1,
-            payload: event.metadata,
+            payload: webhook_payload,
+            silicon_webhook_routing,
         },
     )
     .await
     .map_err(database)?;
     Ok(())
+}
+
+fn silicon_webhook_routing(event_type: &str) -> Option<SiliconWebhookRouting> {
+    match event_type {
+        "sso.setup_link.created.v1"
+        | "sso.configuration.disabled.v1"
+        | "sso.entitlement.replaced.v1"
+        | "sso.connection.activated.v1"
+        | "sso.connection.deactivated.v1"
+        | "sso.connection.deleted.v1" => Some(SiliconWebhookRouting {
+            topics: Vec::new(),
+            affected_membership_id: None,
+            affected_tag_ids: Vec::new(),
+            before_tag_membership_ids: Vec::new(),
+            organization_wide: true,
+        }),
+        _ => None,
+    }
+}
+
+fn webhook_payload(event: &MutationEvent<'_>) -> serde_json::Value {
+    let mut payload = event.metadata.as_object().cloned().unwrap_or_default();
+    payload.insert("change".to_owned(), json!(event.action));
+    payload.insert(
+        "target".to_owned(),
+        json!({ "type": event.target_type, "id": event.target_id }),
+    );
+    payload.insert(
+        "before".to_owned(),
+        event
+            .before_state
+            .clone()
+            .unwrap_or(serde_json::Value::Null),
+    );
+    payload.insert(
+        "after".to_owned(),
+        event.after_state.clone().unwrap_or(serde_json::Value::Null),
+    );
+    serde_json::Value::Object(payload)
 }
 
 pub(super) fn workos(state: &ApiState) -> Result<&WorkOsClient, AppError> {
@@ -457,16 +517,6 @@ fn replay_response(replay: ReplayResponse) -> Result<Response, AppError> {
         .and_then(|value| value.get("version").and_then(serde_json::Value::as_i64))
         .filter(|value| *value > 0);
     raw_json_response(status, replay.body, version, true, true)
-}
-
-pub(super) fn insert_etag(response: &mut Response, version: i64) -> Result<(), AppError> {
-    if version <= 0 {
-        return Err(internal("sso_etag"));
-    }
-    let etag =
-        HeaderValue::from_str(&format!("\"{version}\"")).map_err(|_| internal("sso_etag"))?;
-    response.headers_mut().insert(header::ETAG, etag);
-    Ok(())
 }
 
 fn raw_json_response(
@@ -578,7 +628,7 @@ const fn internal(category: &'static str) -> AppError {
 mod tests {
     use axum::http::{HeaderMap, HeaderValue, header};
 
-    use super::expected_version;
+    use super::{expected_version, idempotency_caller_scope, silicon_webhook_routing};
 
     #[test]
     fn etag_requires_one_strong_positive_integer() {
@@ -589,5 +639,31 @@ mod tests {
         assert!(expected_version(&headers).is_err());
         headers.insert(header::IF_MATCH, HeaderValue::from_static("\"7\", \"8\""));
         assert!(expected_version(&headers).is_err());
+    }
+
+    #[test]
+    fn only_external_sso_configuration_events_enter_silicon_routing() {
+        assert!(
+            silicon_webhook_routing("sso.setup_link.created.v1")
+                .is_some_and(|routing| routing.topics.is_empty())
+        );
+        assert!(
+            silicon_webhook_routing("sso.connection.activated.v1")
+                .is_some_and(|routing| routing.topics.is_empty())
+        );
+        assert!(silicon_webhook_routing("sso.authorization.started.v1").is_none());
+        assert!(silicon_webhook_routing("sso.authorization.completed.v1").is_none());
+    }
+
+    #[test]
+    fn idempotency_caller_scope_is_resource_qualified() {
+        let carbon_id = uuid::Uuid::from_u128(1);
+        let first = idempotency_caller_scope(carbon_id, "first-org");
+        assert_eq!(first, idempotency_caller_scope(carbon_id, "first-org"));
+        assert_ne!(first, idempotency_caller_scope(carbon_id, "second-org"));
+        assert_ne!(
+            first,
+            idempotency_caller_scope(uuid::Uuid::from_u128(2), "first-org")
+        );
     }
 }

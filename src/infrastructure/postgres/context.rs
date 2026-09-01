@@ -17,6 +17,18 @@ pub struct DatabaseContext {
 }
 
 impl DatabaseContext {
+    /// Creates an unauthenticated context for a public operation whose
+    /// authority is established by a separate, narrowly scoped credential.
+    #[must_use]
+    pub const fn anonymous() -> Self {
+        Self {
+            principal_id: None,
+            organization_id: None,
+            application_id: None,
+            signup_session_id: None,
+        }
+    }
+
     /// Creates a context for a principal without a selected tenant.
     #[must_use]
     pub const fn principal(principal_id: Uuid) -> Self {
