@@ -84,6 +84,12 @@ pub enum AppError {
     /// A required service dependency is temporarily unavailable.
     #[error("the service is temporarily unavailable")]
     ServiceUnavailable,
+    /// The client and server do not support a common public API version.
+    #[error("the client and server do not support a common API version")]
+    ApiVersionNotAcceptable {
+        /// Server API versions in descending preference order.
+        supported_versions: &'static [&'static str],
+    },
     /// Server admission is at its configured concurrency capacity.
     #[error("server admission capacity is exhausted")]
     Overloaded,
@@ -299,6 +305,14 @@ impl AppError {
                 Cow::Borrowed("service_unavailable"),
                 Cow::Borrowed("The service is temporarily unavailable."),
                 None,
+            ),
+            Self::ApiVersionNotAcceptable { supported_versions } => (
+                StatusCode::NOT_ACCEPTABLE,
+                Cow::Borrowed("api_version_not_acceptable"),
+                Cow::Borrowed("The client and server do not support a common API version."),
+                Some(serde_json::json!({
+                    "supported_api_versions": supported_versions,
+                })),
             ),
             Self::Overloaded => (
                 StatusCode::SERVICE_UNAVAILABLE,

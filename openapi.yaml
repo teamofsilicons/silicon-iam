@@ -60,6 +60,39 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/HealthOk' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/version:
+    get:
+      tags: [System]
+      operationId: negotiateApiVersion
+      summary: Negotiate a public API version before using any versioned route.
+      description: >-
+        The client advertises every API major it implements in descending
+        preference order. IAM selects the highest common version. Official
+        clients fail closed when no common version exists or the response does
+        not match the advertised intersection.
+      security: []
+      parameters:
+        - name: Silicon-IAM-Supported-API-Versions
+          in: header
+          required: true
+          description: Comma-separated API majors in descending client preference order.
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 255
+            pattern: '^v[1-9][0-9]{0,8}(, *v[1-9][0-9]{0,8}){0,15}$'
+      responses:
+        '200':
+          description: The client and server agreed on the highest common API version.
+          headers:
+            Silicon-IAM-API-Version:
+              required: true
+              schema: { type: string, pattern: '^v[1-9][0-9]{0,8}$' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiVersionNegotiation' }
+        '406': { $ref: '#/components/responses/NotAcceptable' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
   /api/v1/version:
     get:
       tags: [System]
@@ -3071,6 +3104,9 @@ components:
     Conflict:
       description: Unique, idempotency, replay, terminal-state, or concurrent-state conflict.
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    NotAcceptable:
+      description: The client and server do not support a common public API version.
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
     Gone:
       description: One-time challenge, authorization code, invitation, proof, or response window expired.
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
@@ -3126,6 +3162,22 @@ components:
       properties:
         service: { const: silicon-iam }
         api_version: { const: v1 }
+        build: { type: string }
+        commit: { type: string }
+    ApiVersionNegotiation:
+      type: object
+      required: [service, selected_api_version, supported_api_versions, build, commit]
+      additionalProperties: false
+      properties:
+        service: { const: silicon-iam }
+        selected_api_version: { type: string, pattern: '^v[1-9][0-9]{0,8}$' }
+        supported_api_versions:
+          type: array
+          minItems: 1
+          maxItems: 16
+          uniqueItems: true
+          description: Server-supported API majors in descending preference order.
+          items: { type: string, pattern: '^v[1-9][0-9]{0,8}$' }
         build: { type: string }
         commit: { type: string }
     VerificationCode:

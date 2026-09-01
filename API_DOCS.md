@@ -11,8 +11,9 @@ The production origin is:
 https://backend.iam.teamofsilicons.com
 ```
 
-JSON APIs are under `/api/v1`. Liveness and readiness remain at `/healthz`
-and `/readyz`.
+Versioned JSON APIs are under `/api/v1`. The compatibility handshake is the
+unversioned `/api/version`; liveness and readiness remain at `/healthz` and
+`/readyz`.
 
 The same origin also serves three HTML surfaces, which are deliberately outside
 the JSON contract and are not described in `openapi.yaml`:
@@ -237,9 +238,26 @@ and complete retry/rate-limit header set.
 | --- | --- | --- |
 | GET | `/healthz` | Process liveness only |
 | GET | `/readyz` | Readiness of required dependencies |
+| GET | `/api/version` | Negotiate the highest mutually supported public API version |
 | GET | `/api/v1/version` | Service, API, build, and commit versions |
 
 Health responses contain no dependency credentials or sensitive topology.
+
+Every official client performs the unversioned `/api/version` handshake before
+making a versioned request. It sends its supported versions in descending
+preference order:
+
+```http
+Silicon-IAM-Supported-API-Versions: v1
+```
+
+IAM selects the highest mutually supported version and returns it in both
+`selected_api_version` and `Silicon-IAM-API-Version`. The response also lists
+the server's supported versions in descending preference order. A client must
+fail closed if the response disagrees with the advertised intersection. When
+there is no common version, IAM returns `406 api_version_not_acceptable` with
+the server's supported version list. `/api/v1/version` remains available as a
+version-specific diagnostic endpoint; it is not the negotiation handshake.
 
 ## Carbon signup
 

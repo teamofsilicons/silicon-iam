@@ -8,6 +8,7 @@ use std::{future::IntoFuture as _, sync::Arc, time::Instant};
 use axum::{
     Json, Router,
     extract::{MatchedPath, Request, State},
+    http::{HeaderMap, HeaderValue},
     middleware::{self, Next},
     response::{IntoResponse as _, Response},
     routing::get,
@@ -59,6 +60,19 @@ struct VersionResponse {
     build: &'static str,
     commit: &'static str,
 }
+
+#[derive(Serialize)]
+struct NegotiatedVersionResponse {
+    service: &'static str,
+    selected_api_version: &'static str,
+    supported_api_versions: &'static [&'static str],
+    build: &'static str,
+    commit: &'static str,
+}
+
+const SUPPORTED_API_VERSIONS: &[&str] = &["v1"];
+const SUPPORTED_API_VERSIONS_HEADER: &str = "silicon-iam-supported-api-versions";
+const SELECTED_API_VERSION_HEADER: &str = "silicon-iam-api-version";
 
 /// Connects dependencies and serves the HTTP API until graceful shutdown.
 ///
@@ -158,6 +172,7 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
             http::HeaderName::from_static("x-org-id"),
             http::HeaderName::from_static("x-request-id"),
             http::HeaderName::from_static("x-step-up-token"),
+            http::HeaderName::from_static(SUPPORTED_API_VERSIONS_HEADER),
         ])
         .expose_headers([
             http::header::ETAG,
@@ -168,6 +183,7 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
             http::HeaderName::from_static("ratelimit-remaining"),
             http::HeaderName::from_static("ratelimit-reset"),
             http::HeaderName::from_static("x-request-id"),
+            http::HeaderName::from_static(SELECTED_API_VERSION_HEADER),
         ])
         .max_age(std::time::Duration::from_mins(10));
 
@@ -176,6 +192,7 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
     let api = Router::new()
         .route("/healthz", get(health))
         .route("/readyz", get(readiness))
+        .route("/api/version", get(negotiate_api_version))
         .route("/api/v1/version", get(version))
         .route("/api/v1/me", get(me::get).patch(me::patch))
         .merge(crate::features::authentication::router())
@@ -276,6 +293,84 @@ async fn version() -> Json<VersionResponse> {
         api_version: "v1",
         build: env!("CARGO_PKG_VERSION"),
         commit: option_env!("SILICON_IAM_GIT_COMMIT").unwrap_or("unknown"),
+    })
+}
+
+async fn negotiate_api_version(headers: HeaderMap) -> Result<Response, AppError> {
+    let advertised = supported_versions_header(&headers)?;
+    let selected = select_api_version(&advertised).ok_or(AppError::ApiVersionNotAcceptable {
+        supported_versions: SUPPORTED_API_VERSIONS,
+    })?;
+    let mut response = Json(NegotiatedVersionResponse {
+        service: "silicon-iam",
+        selected_api_version: selected,
+        supported_api_versions: SUPPORTED_API_VERSIONS,
+        build: env!("CARGO_PKG_VERSION"),
+        commit: option_env!("SILICON_IAM_GIT_COMMIT").unwrap_or("unknown"),
+    })
+    .into_response();
+    response.headers_mut().insert(
+        http::HeaderName::from_static(SELECTED_API_VERSION_HEADER),
+        HeaderValue::from_static("v1"),
+    );
+    Ok(response)
+}
+
+fn select_api_version(advertised: &[&str]) -> Option<&'static str> {
+    SUPPORTED_API_VERSIONS
+        .iter()
+        .copied()
+        .find(|version| advertised.iter().any(|candidate| candidate == version))
+}
+
+fn supported_versions_header(headers: &HeaderMap) -> Result<Vec<&str>, AppError> {
+    let mut values = headers
+        .get_all(http::HeaderName::from_static(SUPPORTED_API_VERSIONS_HEADER))
+        .iter();
+    let value = values
+        .next()
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() <= 255)
+        .ok_or_else(|| AppError::Validation {
+            details: serde_json::json!({
+                "silicon_iam_supported_api_versions": "must be supplied exactly once",
+            }),
+        })?;
+    if values.next().is_some() {
+        return Err(AppError::Validation {
+            details: serde_json::json!({
+                "silicon_iam_supported_api_versions": "must be supplied exactly once",
+            }),
+        });
+    }
+
+    let versions = value
+        .split(',')
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .collect::<Vec<_>>();
+    if versions.is_empty()
+        || versions.len() > 16
+        || versions
+            .iter()
+            .any(|version| !is_valid_api_version(version))
+    {
+        return Err(AppError::Validation {
+            details: serde_json::json!({
+                "silicon_iam_supported_api_versions":
+                    "must contain 1 to 16 comma-separated versions such as v1",
+            }),
+        });
+    }
+    Ok(versions)
+}
+
+fn is_valid_api_version(version: &str) -> bool {
+    version.strip_prefix('v').is_some_and(|major| {
+        !major.is_empty()
+            && major.len() <= 9
+            && !major.starts_with('0')
+            && major.bytes().all(|byte| byte.is_ascii_digit())
     })
 }
 
@@ -395,10 +490,14 @@ fn handle_panic(_panic: Box<dyn std::any::Any + Send + 'static>) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_error_response;
     use axum::{
-        http::{StatusCode, header},
+        http::{HeaderMap, HeaderValue, StatusCode, header},
         response::{IntoResponse as _, Response},
+    };
+
+    use super::{
+        SUPPORTED_API_VERSIONS_HEADER, is_valid_api_version, normalize_error_response,
+        select_api_version, supported_versions_header,
     };
 
     fn plain(status: StatusCode, body: &'static str) -> Response {
@@ -448,5 +547,39 @@ mod tests {
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default();
         assert!(content_type.starts_with("text/html"), "{content_type}");
+    }
+
+    #[test]
+    fn api_version_syntax_is_strict_and_future_compatible() {
+        assert!(is_valid_api_version("v1"));
+        assert!(is_valid_api_version("v27"));
+        for invalid in ["", "1", "v0", "v01", "V1", "v1.1", "v1234567890"] {
+            assert!(!is_valid_api_version(invalid), "accepted {invalid}");
+        }
+    }
+
+    #[test]
+    fn supported_versions_are_trimmed_and_bounded() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            SUPPORTED_API_VERSIONS_HEADER,
+            HeaderValue::from_static("v3, v2,v1"),
+        );
+        let Ok(versions) = supported_versions_header(&headers) else {
+            panic!("a valid version advertisement must parse");
+        };
+        assert_eq!(versions, vec!["v3", "v2", "v1"]);
+
+        headers.insert(
+            SUPPORTED_API_VERSIONS_HEADER,
+            HeaderValue::from_static("v0"),
+        );
+        assert!(supported_versions_header(&headers).is_err());
+    }
+
+    #[test]
+    fn server_selects_only_the_highest_mutually_supported_version() {
+        assert_eq!(select_api_version(&["v3", "v1"]), Some("v1"));
+        assert_eq!(select_api_version(&["v3", "v2"]), None);
     }
 }
