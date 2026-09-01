@@ -286,9 +286,6 @@ I should also be able to invite people into my organisation using the same login
 
 For the backend UI would want to see all the app's not reviewed as of now, enable/disable all the settings. Delete an application, etc. And all such changes must also be displayed in the base IAm profile. 
 
-Make a default backend admin, lords@teamofsilicons.com - `CFkq1^9zgdkh`. 
-
-
 ---
 
 # Design Style to follow
