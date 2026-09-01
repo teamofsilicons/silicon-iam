@@ -1,4 +1,4 @@
-//! At-least-once application and Silicon Hook event delivery.
+//! At-least-once application and Silicon webhook event delivery.
 
 use std::{borrow::Cow, time::Instant};
 
@@ -6,7 +6,6 @@ use futures::{StreamExt as _, stream};
 use secrecy::SecretString;
 use serde::Serialize;
 use serde_json::Value;
-use sha2::{Digest as _, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use url::Url;
 use uuid::Uuid;
@@ -15,6 +14,7 @@ use crate::{
     error::AppError,
     infrastructure::{
         crypto::{EncryptedValue, EncryptionContext, ProtectedField},
+        postgres::events::uses_captured_application_webhook_projection,
         providers::webhook::{self as transport, WebhookError, WebhookReceipt, WebhookRequest},
     },
 };
@@ -28,8 +28,9 @@ struct ClaimedDelivery {
     outbox_event_id: Uuid,
     recipient_kind: String,
     application_webhook_endpoint_id: Option<Uuid>,
-    silicon_hook_id: Option<Uuid>,
+    silicon_webhook_endpoint_id: Option<Uuid>,
     signing_key_id: Option<Uuid>,
+    silicon_webhook_signing_key_id: Option<Uuid>,
     organization_id: Option<Uuid>,
     aggregate_type: String,
     aggregate_id: Uuid,
@@ -57,6 +58,18 @@ struct SiliconMaterial {
     organization_id: Uuid,
     url_ciphertext: Vec<u8>,
     url_nonce: Vec<u8>,
+    url_encryption_key_version: i16,
+    secret_ciphertext: Vec<u8>,
+    secret_nonce: Vec<u8>,
+    secret_encryption_key_version: i16,
+    secret_version: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct ApplicationEventProjection {
+    projection_id: Uuid,
+    payload_ciphertext: Vec<u8>,
+    payload_nonce: Vec<u8>,
     encryption_key_version: i16,
 }
 
@@ -80,13 +93,34 @@ struct AggregateEnvelope<'a> {
 }
 
 struct DeliveryMaterial {
+    application_id: Option<Uuid>,
     destination: Url,
-    signing_secret: Option<SecretString>,
-    signing_key_version: Option<i64>,
-    use_hook_service_token: bool,
-    local_delivery: bool,
+    signing_secret: SecretString,
+    signing_key_version: i64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecipientType {
+    Application,
+    SiliconWebhook,
+}
+
+impl TryFrom<&str> for RecipientType {
+    type Error = WebhookError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "application" => Ok(Self::Application),
+            "silicon_webhook" => Ok(Self::SiliconWebhook),
+            _ => Err(WebhookError::DestinationRejected),
+        }
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the lease-safe claim query and its typed projection are one auditable operation"
+)]
 pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppError> {
     let _outbound_stage = context.outbound_stage_lock.lock().await;
     let claim_limit = delivery_claim_limit(context)?;
@@ -114,6 +148,16 @@ pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppErro
                     AND delivery.lease_expires_at <= transaction_timestamp()
                 )
             )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM iam.outbox_events AS prior_unexpanded_event
+                  WHERE prior_unexpanded_event.organization_id
+                        IS NOT DISTINCT FROM event.organization_id
+                    AND prior_unexpanded_event.aggregate_type = event.aggregate_type
+                    AND prior_unexpanded_event.aggregate_id = event.aggregate_id
+                    AND prior_unexpanded_event.global_sequence < event.global_sequence
+                    AND prior_unexpanded_event.status IN ('pending', 'processing')
+              )
               AND NOT EXISTS (
                   SELECT 1
                   FROM iam.webhook_deliveries AS prior_delivery
@@ -148,8 +192,9 @@ pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppErro
             claimed.outbox_event_id,
             recipient.recipient_kind,
             recipient.application_webhook_endpoint_id,
-            recipient.silicon_hook_id,
+            recipient.silicon_webhook_endpoint_id,
             claimed.signing_key_id,
+            claimed.silicon_webhook_signing_key_id,
             event.organization_id,
             event.aggregate_type,
             event.aggregate_id,
@@ -194,6 +239,13 @@ async fn process_delivery(
             return Ok(());
         }
     };
+    let data = match load_event_data(context, delivery, material.application_id).await {
+        Ok(data) => data,
+        Err(error) => {
+            finish_failure(context, delivery, error.code(), error.retryable(), None).await?;
+            return Ok(());
+        }
+    };
     let occurred_at = delivery
         .created_at
         .format(&Rfc3339)
@@ -212,7 +264,7 @@ async fn process_delivery(
             id: delivery.aggregate_id,
             version: delivery.aggregate_version,
         },
-        data: &delivery.payload,
+        data: &data,
     })
     .map_err(|_| AppError::Internal {
         category: "webhook_event_serialization",
@@ -222,31 +274,16 @@ async fn process_delivery(
         return Ok(());
     };
     let started = Instant::now();
-    let service_token = material
-        .use_hook_service_token
-        .then_some(context.settings.providers.hook_service_token.as_ref())
-        .flatten();
-    let signing_secret = material.signing_secret.as_ref().or(service_token);
-    let result = if material.local_delivery {
-        Ok(WebhookReceipt {
-            http_status: 204,
-            response_digest: Sha256::digest([]).into(),
-        })
-    } else if signing_secret.is_none() {
-        Err(WebhookError::SigningFailed)
-    } else {
-        transport::deliver(WebhookRequest {
-            environment: context.settings.environment,
-            destination: &material.destination,
-            signing_secret,
-            service_bearer: service_token,
-            signing_key_version: material.signing_key_version,
-            event_id: delivery.outbox_event_id,
-            timestamp,
-            body: &body,
-        })
-        .await
-    };
+    let result = transport::deliver(WebhookRequest {
+        environment: context.settings.environment,
+        destination: &material.destination,
+        signing_secret: &material.signing_secret,
+        signing_key_version: material.signing_key_version,
+        event_id: delivery.outbox_event_id,
+        timestamp,
+        body: &body,
+    })
+    .await;
     let duration_ms = i32::try_from(started.elapsed().as_millis()).unwrap_or(i32::MAX);
     match result {
         Ok(receipt) => {
@@ -278,10 +315,9 @@ async fn load_material(
     context: &WorkerContext,
     delivery: &ClaimedDelivery,
 ) -> Result<DeliveryMaterial, WebhookError> {
-    match delivery.recipient_kind.as_str() {
-        "application" => load_application_material(context, delivery).await,
-        "silicon_hook" => load_silicon_material(context, delivery).await,
-        _ => Err(WebhookError::DestinationRejected),
+    match RecipientType::try_from(delivery.recipient_kind.as_str())? {
+        RecipientType::Application => load_application_material(context, delivery).await,
+        RecipientType::SiliconWebhook => load_silicon_material(context, delivery).await,
     }
 }
 
@@ -328,11 +364,10 @@ async fn load_application_material(
         material.secret_ciphertext,
     )?;
     Ok(DeliveryMaterial {
+        application_id: Some(material.application_id),
         destination,
-        signing_secret: Some(signing_secret),
-        signing_key_version: Some(material.secret_version),
-        use_hook_service_token: false,
-        local_delivery: false,
+        signing_secret,
+        signing_key_version: material.secret_version,
     })
 }
 
@@ -340,22 +375,20 @@ async fn load_silicon_material(
     context: &WorkerContext,
     delivery: &ClaimedDelivery,
 ) -> Result<DeliveryMaterial, WebhookError> {
-    let hook_id = delivery
-        .silicon_hook_id
+    let endpoint_id = delivery
+        .silicon_webhook_endpoint_id
         .ok_or(WebhookError::DestinationRejected)?;
+    let signing_key_id = delivery
+        .silicon_webhook_signing_key_id
+        .ok_or(WebhookError::SigningFailed)?;
     let material = sqlx::query_as::<_, SiliconMaterial>(
         r"
-        SELECT
-            organization_id,
-            url_ciphertext,
-            url_nonce,
-            encryption_key_version
-        FROM iam.silicon_hooks
-        WHERE id = $1
-          AND status = 'active'
+        SELECT *
+        FROM iam_private.get_worker_silicon_webhook_material($1, $2)
         ",
     )
-    .bind(hook_id)
+    .bind(endpoint_id)
+    .bind(signing_key_id)
     .fetch_optional(&context.pool)
     .await
     .map_err(|_| WebhookError::Unavailable)?
@@ -363,33 +396,81 @@ async fn load_silicon_material(
     let destination = decrypt_url(
         context,
         EncryptionContext::tenant(
-            ProtectedField::SiliconHookUrl,
+            ProtectedField::SiliconWebhookUrl,
             material.organization_id,
-            hook_id,
+            endpoint_id,
         ),
-        material.encryption_key_version,
+        material.url_encryption_key_version,
         material.url_nonce,
         material.url_ciphertext,
     )?;
-    if destination.scheme() != context.settings.providers.hook_base_url.scheme()
-        || destination.host_str() != context.settings.providers.hook_base_url.host_str()
-        || destination.port_or_known_default()
-            != context
-                .settings
-                .providers
-                .hook_base_url
-                .port_or_known_default()
-    {
+    let signing_secret = decrypt_secret(
+        context,
+        EncryptionContext::tenant(
+            ProtectedField::SiliconWebhookSigningSecret,
+            material.organization_id,
+            signing_key_id,
+        ),
+        material.secret_encryption_key_version,
+        material.secret_nonce,
+        material.secret_ciphertext,
+    )?;
+    Ok(DeliveryMaterial {
+        application_id: None,
+        destination,
+        signing_secret,
+        signing_key_version: material.secret_version,
+    })
+}
+
+async fn load_event_data(
+    context: &WorkerContext,
+    delivery: &ClaimedDelivery,
+    application_id: Option<Uuid>,
+) -> Result<Value, WebhookError> {
+    let Some(application_id) = application_id else {
+        return Ok(delivery.payload.clone());
+    };
+    if !uses_captured_application_webhook_projection(&delivery.event_type) {
+        return Ok(delivery.payload.clone());
+    }
+    let projection = sqlx::query_as::<_, ApplicationEventProjection>(
+        r"
+        SELECT
+            projection_id,
+            payload_ciphertext,
+            payload_nonce,
+            encryption_key_version
+        FROM iam_private.get_worker_application_webhook_event_projection($1, $2)
+        ",
+    )
+    .bind(delivery.outbox_event_id)
+    .bind(application_id)
+    .fetch_optional(&context.pool)
+    .await
+    .map_err(|_| WebhookError::Unavailable)?
+    .ok_or(WebhookError::Unavailable)?;
+    let plaintext = context
+        .encryption
+        .decrypt(
+            EncryptionContext::tenant(
+                ProtectedField::ApplicationWebhookEventPayload,
+                application_id,
+                projection.projection_id,
+            ),
+            &encrypted_value(
+                projection.encryption_key_version,
+                projection.payload_nonce,
+                projection.payload_ciphertext,
+            )?,
+        )
+        .map_err(|_| WebhookError::Unavailable)?;
+    let payload = serde_json::from_slice::<Value>(&plaintext)
+        .map_err(|_| WebhookError::DestinationRejected)?;
+    if !payload.is_object() {
         return Err(WebhookError::DestinationRejected);
     }
-    Ok(DeliveryMaterial {
-        destination,
-        signing_secret: None,
-        signing_key_version: None,
-        use_hook_service_token: true,
-        local_delivery: context.settings.providers.allow_local_providers
-            && context.settings.providers.hook_service_token.is_none(),
-    })
+    Ok(payload)
 }
 
 fn wire_event_type(event_type: &str, schema_version: i16) -> Result<Cow<'_, str>, AppError> {
@@ -644,7 +725,7 @@ async fn finish_failure(
 
 #[cfg(test)]
 mod tests {
-    use super::wire_event_type;
+    use super::{RecipientType, wire_event_type};
 
     #[test]
     fn wire_event_names_have_exactly_one_matching_schema_suffix() {
@@ -660,5 +741,41 @@ mod tests {
         );
         assert!(wire_event_type("organization.updated.v2", 1).is_err());
         assert!(wire_event_type("organization.updated", 0).is_err());
+    }
+
+    #[test]
+    fn recipient_types_fail_closed_after_legacy_hook_retirement() {
+        assert_eq!(
+            RecipientType::try_from("application"),
+            Ok(RecipientType::Application)
+        );
+        assert_eq!(
+            RecipientType::try_from("silicon_webhook"),
+            Ok(RecipientType::SiliconWebhook)
+        );
+        assert!(RecipientType::try_from("silicon_hook").is_err());
+        assert!(RecipientType::try_from("unknown").is_err());
+    }
+
+    #[test]
+    fn claim_waits_for_prior_aggregate_expansion_before_destination_ordering() {
+        let source = include_str!("webhook.rs")
+            .split_once("#[cfg(test)]")
+            .map_or(include_str!("webhook.rs"), |(production, _)| production);
+
+        for predicate in [
+            "FROM iam.outbox_events AS prior_unexpanded_event",
+            "prior_unexpanded_event.organization_id\n                        IS NOT DISTINCT FROM event.organization_id",
+            "prior_unexpanded_event.aggregate_type = event.aggregate_type",
+            "prior_unexpanded_event.aggregate_id = event.aggregate_id",
+            "prior_unexpanded_event.global_sequence < event.global_sequence",
+            "prior_unexpanded_event.status IN ('pending', 'processing')",
+            "prior_recipient.ordering_key = recipient.ordering_key",
+        ] {
+            assert!(
+                source.contains(predicate),
+                "missing claim guard: {predicate}"
+            );
+        }
     }
 }

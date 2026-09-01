@@ -35,6 +35,7 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     crate::infrastructure::postgres::migrate(&pool).await?;
     seed_protocol_rows(&pool).await?;
 
+    application_deletion_revokes_all_client_authority(&pool).await?;
     authorization_code_scope_revocation_fails_closed(&pool).await?;
     application_scope_revocation_contains_existing_access(&pool).await?;
     authorization_code_is_single_use(&pool).await?;
@@ -42,6 +43,119 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     consent_revocation_cascades_to_tokens(&pool).await?;
     obo_proof_is_single_use(&pool).await?;
     committed_application_secret_revocation_wins_authentication(&pool).await?;
+    Ok(())
+}
+
+async fn application_deletion_revokes_all_client_authority(pool: &PgPool) -> anyhow::Result<()> {
+    let mut transaction = pool.begin().await?;
+    let version = sqlx::query_scalar::<_, i64>(
+        r"
+        UPDATE iam.applications
+        SET review_status = 'deleted', deleted_at = transaction_timestamp()
+        WHERE id = $1 AND deleted_at IS NULL
+        RETURNING version
+        ",
+    )
+    .bind(APP_A_ID)
+    .fetch_one(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        UPDATE iam.principals
+        SET status = 'deleted', deleted_at = transaction_timestamp(),
+            auth_epoch = auth_epoch + 1
+        WHERE id = $1 AND kind = 'application'
+        ",
+    )
+    .bind(APP_A_ID)
+    .execute(&mut *transaction)
+    .await?;
+    super::applications::retire_application_credentials(&mut transaction, CARBON_ID, APP_A_ID)
+        .await
+        .map_err(|error| anyhow::anyhow!("credential retirement failed: {error:?}"))?;
+    super::applications::revoke_application_authority(
+        &mut transaction,
+        APP_A_ID,
+        "application_deleted",
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("authority revocation failed: {error:?}"))?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.application_reviews (
+            id, application_id, reviewer_carbon_id, decision, reason, application_version
+        ) VALUES ($1, $2, $3, 'delete', 'operator request', $4)
+        ",
+    )
+    .bind(Uuid::now_v7())
+    .bind(APP_A_ID)
+    .bind(CARBON_ID)
+    .bind(version)
+    .execute(&mut *transaction)
+    .await?;
+
+    let revoked = sqlx::query_scalar::<_, bool>(
+        r"
+        SELECT
+            (SELECT review_status = 'deleted' AND deleted_at IS NOT NULL
+             FROM iam.applications WHERE id = $1)
+            AND (SELECT status = 'deleted' AND deleted_at IS NOT NULL AND auth_epoch = 2
+                 FROM iam.principals WHERE id = $1)
+            AND (SELECT status = 'compromised' AND retired_at IS NOT NULL
+                 FROM iam.application_secrets WHERE id = $2)
+            AND (SELECT status = 'retired'
+                 FROM iam.application_redirect_uris WHERE application_id = $1)
+            AND (SELECT revoked_at IS NOT NULL
+                 FROM iam.application_approved_scopes
+                 WHERE application_id = $1 AND scope = 'organizations.read')
+            AND (SELECT consumed_at IS NOT NULL
+                 FROM iam.oauth_authorization_codes WHERE application_id = $1)
+            AND (SELECT status = 'denied'
+                 FROM iam.oauth_authorization_requests WHERE application_id = $1)
+            AND NOT EXISTS (
+                SELECT 1 FROM iam.refresh_token_families
+                WHERE client_application_id = $1 AND status = 'active'
+            )
+            AND NOT EXISTS (
+                SELECT 1
+                FROM iam.refresh_tokens AS token
+                JOIN iam.refresh_token_families AS family ON family.id = token.family_id
+                WHERE family.client_application_id = $1 AND token.revoked_at IS NULL
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM iam.access_tokens
+                WHERE (client_application_id = $1 OR audience_application_id = $1)
+                  AND revoked_at IS NULL
+            )
+            AND (SELECT revoked_at IS NOT NULL FROM iam.obo_proofs WHERE id = $3)
+            AND (SELECT status = 'disabled'
+                 FROM iam.application_webhook_endpoints WHERE application_id = $1)
+            AND (SELECT status = 'compromised' AND retired_at IS NOT NULL
+                 FROM iam.application_webhook_signing_keys WHERE application_id = $1)
+        ",
+    )
+    .bind(APP_A_ID)
+    .bind(APP_SECRET_ID)
+    .bind(PROOF_ID)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let unrelated_authority_survived = sqlx::query_scalar::<_, bool>(
+        r"
+        SELECT
+            (SELECT revoked_at IS NULL FROM iam.access_tokens
+             WHERE id = '00000000-0000-0000-0000-000000000103')
+            AND (SELECT status = 'active' FROM iam.application_obo_endpoints
+                 WHERE application_id = $1 AND endpoint_id = 'trust.manage')
+        ",
+    )
+    .bind(APP_B_ID)
+    .fetch_one(&mut *transaction)
+    .await?;
+    ensure!(
+        revoked && unrelated_authority_survived,
+        "application deletion missed authority or crossed the client boundary"
+    );
+    transaction.rollback().await?;
     Ok(())
 }
 
@@ -64,7 +178,7 @@ async fn application_scope_revocation_contains_existing_access(
     .fetch_all(&mut *transaction)
     .await?;
     ensure!(
-        removed_scopes == ["openid"],
+        removed_scopes == ["organizations.read"],
         "review did not identify the newly removed scope"
     );
     sqlx::query(super::applications::REVOKE_ACCESS_TOKENS_FOR_REMOVED_SCOPES_QUERY)
@@ -121,14 +235,14 @@ async fn authorization_code_scope_revocation_fails_closed(pool: &PgPool) -> anyh
     .await
     .map_err(|error| anyhow::anyhow!("initial code scope authority failed: {error:?}"))?;
     ensure!(
-        scopes == ["openid"],
+        scopes == ["organizations.read"],
         "initial code scope authority was incomplete"
     );
     sqlx::query(
         r"
         UPDATE iam.application_approved_scopes
         SET revoked_by_carbon_id = $2, revoked_at = transaction_timestamp()
-        WHERE application_id = $1 AND scope = 'openid' AND revoked_at IS NULL
+        WHERE application_id = $1 AND scope = 'organizations.read' AND revoked_at IS NULL
         ",
     )
     .bind(APP_A_ID)
@@ -150,7 +264,7 @@ async fn authorization_code_scope_revocation_fails_closed(pool: &PgPool) -> anyh
 
     let mut transaction = pool.begin().await?;
     sqlx::query(
-        "DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id = $1 AND scope = 'openid'",
+        "DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id = $1 AND scope = 'organizations.read'",
     )
     .bind(CONSENT_ID)
     .execute(&mut *transaction)
@@ -458,7 +572,7 @@ async fn committed_application_secret_revocation_wins_authentication(
 
 async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
     sqlx::raw_sql(
-        r"
+        r#"
         BEGIN;
         INSERT INTO iam.cryptographic_key_versions (purpose, key_version, status)
         VALUES ('token_hmac', 1, 'active'), ('contact_aead', 1, 'active');
@@ -469,6 +583,17 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
           ('00000000-0000-0000-0000-000000000012', 'application', 'active', transaction_timestamp());
         INSERT INTO iam.carbons (id, carbon_id, display_name)
         VALUES ('00000000-0000-0000-0000-000000000001', 'test_carbon', 'Test Carbon');
+        INSERT INTO iam.carbon_contacts (
+            id, carbon_id, kind, ciphertext, nonce, encryption_key_version, verified_at
+        ) VALUES
+          ('00000000-0000-0000-0000-000000000002',
+           '00000000-0000-0000-0000-000000000001', 'email',
+           decode(repeat('02', 17), 'hex'), decode(repeat('12', 12), 'hex'), 1,
+           transaction_timestamp()),
+          ('00000000-0000-0000-0000-000000000003',
+           '00000000-0000-0000-0000-000000000001', 'phone',
+           decode(repeat('03', 17), 'hex'), decode(repeat('13', 12), 'hex'), 1,
+           transaction_timestamp());
         INSERT INTO iam.organizations (id, org_id, created_by_carbon_id, name)
         VALUES ('00000000-0000-0000-0000-000000000021', 'test_org',
                 '00000000-0000-0000-0000-000000000001', 'Test Organization');
@@ -493,6 +618,24 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             decode(repeat('13', 32), 'hex'), 1,
             '00000000-0000-0000-0000-000000000001'
         );
+        INSERT INTO iam.application_webhook_endpoints (
+            id, application_id, url_ciphertext, url_nonce, encryption_key_version,
+            url_digest, status, activated_at
+        ) VALUES (
+            '00000000-0000-0000-0000-000000000141',
+            '00000000-0000-0000-0000-000000000011',
+            decode(repeat('41', 17), 'hex'), decode(repeat('42', 12), 'hex'), 1,
+            decode(repeat('43', 32), 'hex'), 'active', transaction_timestamp()
+        );
+        INSERT INTO iam.application_webhook_signing_keys (
+            id, application_id, endpoint_id, secret_version, key_prefix,
+            secret_ciphertext, secret_nonce, encryption_key_version
+        ) VALUES (
+            '00000000-0000-0000-0000-000000000142',
+            '00000000-0000-0000-0000-000000000011',
+            '00000000-0000-0000-0000-000000000141', 1, 'whs_abcdefgh',
+            decode(repeat('44', 17), 'hex'), decode(repeat('45', 12), 'hex'), 1
+        );
         INSERT INTO iam.authentication_sessions (
             id, subject_principal_id, subject_kind, authentication_method,
             assurance_level, subject_auth_epoch, idle_expires_at, absolute_expires_at
@@ -510,9 +653,9 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             decode(repeat('51', 32), 'hex'), 'active', transaction_timestamp()
         );
         INSERT INTO iam.application_requested_scopes (application_id, scope)
-        VALUES ('00000000-0000-0000-0000-000000000011', 'openid');
+        VALUES ('00000000-0000-0000-0000-000000000011', 'organizations.read');
         INSERT INTO iam.application_approved_scopes (application_id, scope, approved_by_carbon_id)
-        VALUES ('00000000-0000-0000-0000-000000000011', 'openid',
+        VALUES ('00000000-0000-0000-0000-000000000011', 'organizations.read',
                 '00000000-0000-0000-0000-000000000001');
         INSERT INTO iam.oauth_authorization_requests (
             id, application_id, redirect_uri_id, authentication_session_id,
@@ -529,6 +672,12 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             decode(repeat('63', 12), 'hex'), 1, repeat('A', 43), 'approved',
             transaction_timestamp() + interval '2 minutes', transaction_timestamp()
         );
+        INSERT INTO iam.oauth_authorization_request_scopes (
+            authorization_request_id, application_id, scope, approved_at
+        ) VALUES (
+            '00000000-0000-0000-0000-000000000061',
+            '00000000-0000-0000-0000-000000000011', 'organizations.read', transaction_timestamp()
+        );
         INSERT INTO iam.oauth_consent_grants (
             id, application_id, subject_principal_id, subject_kind,
             parent_authentication_session_id
@@ -539,7 +688,7 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             '00000000-0000-0000-0000-000000000041'
         );
         INSERT INTO iam.oauth_consent_grant_scopes (consent_grant_id, scope)
-        VALUES ('00000000-0000-0000-0000-000000000071', 'openid');
+        VALUES ('00000000-0000-0000-0000-000000000071', 'organizations.read');
         INSERT INTO iam.oauth_authorization_codes (
             id, authorization_request_id, application_id, code_digest,
             digest_key_version, code_prefix, expires_at
@@ -566,9 +715,9 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
            '00000000-0000-0000-0000-000000000071', transaction_timestamp() + interval '30 days');
         INSERT INTO iam.oauth_refresh_family_scopes (family_id, consent_grant_id, scope) VALUES
           ('00000000-0000-0000-0000-000000000091',
-           '00000000-0000-0000-0000-000000000071', 'openid'),
+           '00000000-0000-0000-0000-000000000071', 'organizations.read'),
           ('00000000-0000-0000-0000-000000000093',
-           '00000000-0000-0000-0000-000000000071', 'openid');
+           '00000000-0000-0000-0000-000000000071', 'organizations.read');
         INSERT INTO iam.refresh_tokens (
             id, family_id, token_digest, digest_key_version, token_prefix, expires_at
         ) VALUES
@@ -624,24 +773,21 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             transaction_timestamp() + interval '15 minutes'
         );
         INSERT INTO iam.access_token_scopes (access_token_id, scope) VALUES
-          ('00000000-0000-0000-0000-000000000101', 'openid'),
-          ('00000000-0000-0000-0000-000000000102', 'profile'),
-          ('00000000-0000-0000-0000-000000000103', 'openid');
-        INSERT INTO iam.obo_action_catalog (audience_application_id, action, description)
-        VALUES ('00000000-0000-0000-0000-000000000012', 'trust.manage', 'Manage trust');
-        INSERT INTO iam.obo_application_grants (
-            id, issuer_application_id, audience_application_id, action, approved_by_carbon_id
+          ('00000000-0000-0000-0000-000000000101', 'organizations.read'),
+          ('00000000-0000-0000-0000-000000000102', 'memberships.read'),
+          ('00000000-0000-0000-0000-000000000103', 'organizations.read');
+        INSERT INTO iam.application_obo_endpoints (
+            application_id, endpoint_id, path, metadata_definition
         ) VALUES (
-            '00000000-0000-0000-0000-000000000111',
-            '00000000-0000-0000-0000-000000000011',
-            '00000000-0000-0000-0000-000000000012', 'trust.manage',
-            '00000000-0000-0000-0000-000000000001'
+            '00000000-0000-0000-0000-000000000012',
+            'trust.manage', '/v1/trust', '{"reason":{"type":"string"}}'
         );
         INSERT INTO iam.obo_proofs (
             id, proof_digest, digest_key_version, proof_prefix,
             issuer_application_id, audience_application_id,
             subject_principal_id, subject_kind, organization_id, membership_id,
-            parent_access_token_id, action, subject_auth_epoch,
+            parent_access_token_id, endpoint_id, request_metadata, endpoint_version,
+            subject_auth_epoch,
             membership_authz_epoch, issuer_auth_epoch, audience_auth_epoch, expires_at
         ) VALUES (
             '00000000-0000-0000-0000-000000000121',
@@ -651,11 +797,12 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             '00000000-0000-0000-0000-000000000001', 'carbon',
             '00000000-0000-0000-0000-000000000021',
             '00000000-0000-0000-0000-000000000031',
-            '00000000-0000-0000-0000-000000000102', 'trust.manage', 1, 1, 1, 1,
+            '00000000-0000-0000-0000-000000000102', 'trust.manage',
+            '{"reason":"review"}', 1, 1, 1, 1, 1,
             transaction_timestamp() + interval '60 seconds'
         );
         COMMIT;
-        ",
+        "#,
     )
     .execute(pool)
     .await

@@ -65,6 +65,7 @@ pub(super) async fn record(
             event_type: mutation.event_type,
             schema_version: 1,
             payload: mutation.metadata,
+            silicon_webhook_routing: None,
         },
     )
     .await

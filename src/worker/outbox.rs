@@ -1,11 +1,15 @@
 //! Expands committed domain events into immutable recipient deliveries.
 
+use std::collections::BTreeSet;
+
 use futures::{StreamExt as _, stream};
 use serde_json::Value;
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::error::AppError;
+use crate::{
+    error::AppError, infrastructure::postgres::events::uses_captured_application_webhook_projection,
+};
 
 use super::{WorkerContext, delivery_claim_limit, retry_delay_seconds};
 
@@ -15,6 +19,7 @@ struct ClaimedEvent {
     organization_id: Option<Uuid>,
     aggregate_type: String,
     aggregate_id: Uuid,
+    event_type: String,
     payload: Value,
     attempt_count: i32,
     created_at: time::OffsetDateTime,
@@ -28,7 +33,8 @@ struct ApplicationRecipient {
 
 #[derive(sqlx::FromRow)]
 struct SiliconRecipient {
-    hook_id: Uuid,
+    endpoint_id: Uuid,
+    signing_key_id: Uuid,
 }
 
 pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppError> {
@@ -69,6 +75,7 @@ pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppErro
             event.organization_id,
             event.aggregate_type,
             event.aggregate_id,
+            event.event_type,
             event.payload,
             event.attempt_count,
             event.created_at
@@ -159,6 +166,28 @@ async fn expand_application_recipients(
     transaction: &mut Transaction<'_, Postgres>,
     event: &ClaimedEvent,
 ) -> Result<(), sqlx::Error> {
+    if uses_captured_application_webhook_projection(&event.event_type) {
+        let recipients = sqlx::query_as::<_, ApplicationRecipient>(
+            r"
+            SELECT endpoint_id, signing_key_id
+            FROM iam_private.list_worker_captured_application_webhook_recipients($1)
+            ",
+        )
+        .bind(event.id)
+        .fetch_all(&mut **transaction)
+        .await?;
+        for recipient in recipients {
+            insert_application_recipient(
+                transaction,
+                event,
+                recipient.endpoint_id,
+                recipient.signing_key_id,
+            )
+            .await?;
+        }
+        return Ok(());
+    }
+
     let subject_id = payload_uuid(
         &event.payload,
         &[
@@ -201,32 +230,51 @@ async fn expand_silicon_recipients(
     transaction: &mut Transaction<'_, Postgres>,
     event: &ClaimedEvent,
 ) -> Result<(), sqlx::Error> {
-    let Some(organization_id) = event.organization_id else {
+    if event.organization_id.is_none() {
         return Ok(());
-    };
-    let recipients = sqlx::query_as::<_, SiliconRecipient>(
-        r"
-        SELECT hook.id AS hook_id
-        FROM iam.silicon_hooks AS hook
-        JOIN iam.silicons AS silicon
-          ON silicon.organization_id = hook.organization_id
-         AND silicon.id = hook.silicon_id
-        JOIN iam.principals AS principal
-          ON principal.id = silicon.id
-         AND principal.kind = 'silicon'
-        WHERE hook.organization_id = $1
-          AND hook.status = 'active'
-          AND principal.status = 'active'
-        ORDER BY hook.id
-        ",
-    )
-    .bind(organization_id)
-    .fetch_all(&mut **transaction)
-    .await?;
-    for recipient in recipients {
-        insert_silicon_recipient(transaction, event, recipient.hook_id).await?;
+    }
+    let candidates = load_silicon_recipients(transaction, event.id).await?;
+    let candidate_endpoint_ids = candidates
+        .into_iter()
+        .map(|recipient| recipient.endpoint_id)
+        .collect::<BTreeSet<_>>();
+    for endpoint_id in &candidate_endpoint_ids {
+        sqlx::query("SELECT iam_private.lock_silicon_webhook_delivery_scope($1)")
+            .bind(endpoint_id)
+            .execute(&mut **transaction)
+            .await?;
+    }
+
+    // The first read selects the bounded lock set. This second statement gets a
+    // fresh READ COMMITTED snapshot after any concurrent subscription mutation.
+    for recipient in load_silicon_recipients(transaction, event.id).await? {
+        if !candidate_endpoint_ids.contains(&recipient.endpoint_id) {
+            continue;
+        }
+        insert_silicon_recipient(
+            transaction,
+            event,
+            recipient.endpoint_id,
+            recipient.signing_key_id,
+        )
+        .await?;
     }
     Ok(())
+}
+
+async fn load_silicon_recipients(
+    transaction: &mut Transaction<'_, Postgres>,
+    event_id: Uuid,
+) -> Result<Vec<SiliconRecipient>, sqlx::Error> {
+    sqlx::query_as::<_, SiliconRecipient>(
+        r"
+        SELECT endpoint_id, signing_key_id
+        FROM iam_private.list_worker_silicon_webhook_recipients($1)
+        ",
+    )
+    .bind(event_id)
+    .fetch_all(&mut **transaction)
+    .await
 }
 
 async fn insert_application_recipient(
@@ -236,7 +284,7 @@ async fn insert_application_recipient(
     signing_key_id: Uuid,
 ) -> Result<(), sqlx::Error> {
     let recipient_id = Uuid::now_v7();
-    let ordering_key = format!("{}:{}", event.aggregate_type, event.aggregate_id);
+    let ordering_key = recipient_ordering_key("application", endpoint_id, event);
     let insert_result = sqlx::query(
         r"
         INSERT INTO iam.outbox_event_recipients (
@@ -294,23 +342,25 @@ async fn insert_application_recipient(
 async fn insert_silicon_recipient(
     transaction: &mut Transaction<'_, Postgres>,
     event: &ClaimedEvent,
-    hook_id: Uuid,
+    endpoint_id: Uuid,
+    signing_key_id: Uuid,
 ) -> Result<(), sqlx::Error> {
     let recipient_id = Uuid::now_v7();
-    let ordering_key = format!("{}:{}", event.aggregate_type, event.aggregate_id);
+    let ordering_key = recipient_ordering_key("silicon_webhook", endpoint_id, event);
     let insert_result = sqlx::query(
         r"
         INSERT INTO iam.outbox_event_recipients (
-            id, outbox_event_id, recipient_kind, silicon_hook_id, ordering_key
-        ) VALUES ($1, $2, 'silicon_hook', $3, $4)
-        ON CONFLICT (outbox_event_id, silicon_hook_id)
-            WHERE recipient_kind = 'silicon_hook'
+            id, outbox_event_id, recipient_kind,
+            silicon_webhook_endpoint_id, ordering_key
+        ) VALUES ($1, $2, 'silicon_webhook', $3, $4)
+        ON CONFLICT (outbox_event_id, silicon_webhook_endpoint_id)
+            WHERE recipient_kind = 'silicon_webhook'
         DO NOTHING
         ",
     )
     .bind(recipient_id)
     .bind(event.id)
-    .bind(hook_id)
+    .bind(endpoint_id)
     .bind(&ordering_key)
     .execute(&mut **transaction)
     .await?;
@@ -322,13 +372,13 @@ async fn insert_silicon_recipient(
             SELECT id
             FROM iam.outbox_event_recipients
             WHERE outbox_event_id = $1
-              AND recipient_kind = 'silicon_hook'
-              AND silicon_hook_id = $2
+              AND recipient_kind = 'silicon_webhook'
+              AND silicon_webhook_endpoint_id = $2
               AND ordering_key = $3
             ",
         )
         .bind(event.id)
-        .bind(hook_id)
+        .bind(endpoint_id)
         .bind(&ordering_key)
         .fetch_one(&mut **transaction)
         .await?
@@ -337,14 +387,15 @@ async fn insert_silicon_recipient(
     sqlx::query(
         r"
         INSERT INTO iam.webhook_deliveries (
-            id, outbox_event_id, recipient_id
-        ) VALUES ($1, $2, $3)
+            id, outbox_event_id, recipient_id, silicon_webhook_signing_key_id
+        ) VALUES ($1, $2, $3, $4)
         ON CONFLICT (outbox_event_id, recipient_id) DO NOTHING
         ",
     )
     .bind(Uuid::now_v7())
     .bind(event.id)
     .bind(persisted_recipient_id)
+    .bind(signing_key_id)
     .execute(&mut **transaction)
     .await?;
     Ok(())
@@ -395,4 +446,82 @@ fn payload_uuid(payload: &Value, keys: &[&str]) -> Option<Uuid> {
             .and_then(Value::as_str)
             .and_then(|value| Uuid::parse_str(value).ok())
     })
+}
+
+fn recipient_ordering_key(kind: &str, endpoint_id: Uuid, event: &ClaimedEvent) -> String {
+    format!(
+        "{kind}:{endpoint_id}:{}:{}",
+        event.aggregate_type, event.aggregate_id
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use time::OffsetDateTime;
+    use uuid::Uuid;
+
+    use super::{ClaimedEvent, payload_uuid, recipient_ordering_key};
+
+    fn event() -> ClaimedEvent {
+        ClaimedEvent {
+            id: Uuid::from_u128(1),
+            organization_id: Some(Uuid::from_u128(2)),
+            aggregate_type: "organization_membership".to_owned(),
+            aggregate_id: Uuid::from_u128(3),
+            event_type: "organization.membership.updated.v1".to_owned(),
+            payload: json!({}),
+            attempt_count: 1,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn ordering_is_scoped_to_destination_and_aggregate() {
+        let event = event();
+        let first_endpoint = Uuid::from_u128(4);
+        let second_endpoint = Uuid::from_u128(5);
+
+        let application = recipient_ordering_key("application", first_endpoint, &event);
+        let silicon = recipient_ordering_key("silicon_webhook", first_endpoint, &event);
+        let other_endpoint = recipient_ordering_key("silicon_webhook", second_endpoint, &event);
+
+        assert_ne!(application, silicon);
+        assert_ne!(silicon, other_endpoint);
+        assert_eq!(
+            silicon,
+            recipient_ordering_key("silicon_webhook", first_endpoint, &event)
+        );
+        assert!(silicon.len() <= 255);
+    }
+
+    #[test]
+    fn authentication_revocation_payload_routes_by_subject() {
+        let subject_id = Uuid::from_u128(6);
+        let payload = json!({
+            "subject_principal_id": subject_id,
+            "authorized_state": { "authentication_session": { "status": "revoked" } },
+        });
+
+        assert_eq!(
+            payload_uuid(&payload, &["subject_principal_id", "principal_id"]),
+            Some(subject_id)
+        );
+    }
+
+    #[test]
+    fn application_recipient_snapshot_includes_authority_at_the_event_boundary() {
+        let migration = include_str!("../../migrations/0006_audit_outbox_and_rls.sql");
+        let function = migration
+            .split("CREATE FUNCTION iam_private.list_worker_application_webhook_recipients")
+            .nth(1)
+            .and_then(|tail| tail.split("CREATE FUNCTION").next())
+            .unwrap_or_default();
+
+        assert!(function.contains("token.created_at <= p_event_occurred_at"));
+        assert!(function.contains("token.revoked_at >= p_event_occurred_at"));
+        assert!(function.contains("subject_principal.auth_epoch = token.subject_auth_epoch"));
+        assert!(function.contains("token.client_application_id = application.id"));
+        assert!(function.contains("token.subject_principal_id = p_subject_principal_id"));
+    }
 }

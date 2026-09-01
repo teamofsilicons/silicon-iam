@@ -25,6 +25,11 @@ pub(super) enum Claim<T> {
     Replay { status: u16, response: T },
 }
 
+pub(super) struct Replay<T> {
+    pub(super) status: u16,
+    pub(super) response: T,
+}
+
 #[derive(FromRow)]
 struct StoredClaim {
     id: Uuid,
@@ -55,25 +60,7 @@ pub(super) async fn claim<T: DeserializeOwned>(
     canonical_request: &[u8],
     one_time_secret: bool,
 ) -> Result<Claim<T>, ApiError> {
-    let raw_key = headers
-        .get("idempotency-key")
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| ApiError::precondition_required("Idempotency-Key"))?;
-    if !(16..=255).contains(&raw_key.len()) || !raw_key.as_bytes().iter().all(u8::is_ascii_graphic)
-    {
-        return Err(ApiError::validation(
-            "idempotency_key",
-            "must contain 16 to 255 non-whitespace ASCII characters",
-        ));
-    }
-
-    let caller = SecretString::from(caller_scope.to_owned());
-    let key = SecretString::from(raw_key.to_owned());
-    let request = SecretString::from(base64::Engine::encode(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        canonical_request,
-    ));
-    let candidates = digest_candidates(crypto, &caller, &key, &request)?;
+    let candidates = request_candidates(crypto, headers, caller_scope, canonical_request)?;
     acquire_rotation_locks(transaction, route, &candidates).await?;
 
     let record_id = Uuid::now_v7();
@@ -94,6 +81,7 @@ pub(super) async fn claim<T: DeserializeOwned>(
         }
     }
 
+    let caller = SecretString::from(caller_scope.to_owned());
     let current_caller_digest = crypto
         .digest_secret(DigestPurpose::IdempotencyCallerScope, &caller)
         .map_err(|_| ApiError::internal("idempotency_caller_digest"))?;
@@ -150,6 +138,69 @@ pub(super) async fn claim<T: DeserializeOwned>(
     .await
 }
 
+/// Returns a committed replay, conflict, or in-progress outcome without
+/// creating or taking over a reservation. The caller must finish this short
+/// transaction before awaiting external validation, then call [`claim`] in the
+/// mutation transaction to close races with requests that completed meanwhile.
+pub(super) async fn replay_if_present<T: DeserializeOwned>(
+    transaction: &mut Transaction<'_, Postgres>,
+    crypto: &CryptoService,
+    headers: &HeaderMap,
+    caller_scope: &str,
+    route: &'static str,
+    canonical_request: &[u8],
+) -> Result<Option<Replay<T>>, ApiError> {
+    let candidates = request_candidates(crypto, headers, caller_scope, canonical_request)?;
+    for candidate in candidates {
+        let Some(row) = find_existing(transaction, route, candidate).await? else {
+            continue;
+        };
+        if !request_digest_matches(&row, candidate.request) {
+            return Err(ApiError::conflict("idempotency_conflict"));
+        }
+        if row.status == "completed" && row.response_live {
+            let response = decrypt_response(crypto, &row)?;
+            let status = row
+                .response_status
+                .and_then(|value| u16::try_from(value).ok())
+                .ok_or_else(|| ApiError::internal("idempotency_response_shape"))?;
+            return Ok(Some(Replay { status, response }));
+        }
+        if row.status == "completed" || row.status == "expired" {
+            return Err(ApiError::conflict("idempotency_response_expired"));
+        }
+        return Err(ApiError::conflict("idempotency_in_progress"));
+    }
+    Ok(None)
+}
+
+fn request_candidates(
+    crypto: &CryptoService,
+    headers: &HeaderMap,
+    caller_scope: &str,
+    canonical_request: &[u8],
+) -> Result<Vec<DigestCandidate>, ApiError> {
+    let raw_key = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| ApiError::precondition_required("Idempotency-Key"))?;
+    if !(16..=255).contains(&raw_key.len()) || !raw_key.as_bytes().iter().all(u8::is_ascii_graphic)
+    {
+        return Err(ApiError::validation(
+            "idempotency_key",
+            "must contain 16 to 255 non-whitespace ASCII characters",
+        ));
+    }
+
+    let caller = SecretString::from(caller_scope.to_owned());
+    let key = SecretString::from(raw_key.to_owned());
+    let request = SecretString::from(base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        canonical_request,
+    ));
+    digest_candidates(crypto, &caller, &key, &request)
+}
+
 async fn find_existing(
     transaction: &mut Transaction<'_, Postgres>,
     route: &'static str,
@@ -190,11 +241,7 @@ async fn classify_existing<T: DeserializeOwned>(
     lease_owner: &str,
     one_time_secret: bool,
 ) -> Result<Claim<T>, ApiError> {
-    if !bool::from(
-        row.request_digest
-            .as_slice()
-            .ct_eq(request_digest.as_bytes().as_slice()),
-    ) {
+    if !request_digest_matches(&row, request_digest) {
         return Err(ApiError::conflict("idempotency_conflict"));
     }
     if row.status == "completed" && row.response_live {
@@ -232,6 +279,14 @@ async fn classify_existing<T: DeserializeOwned>(
     .await
     .map_err(|_| ApiError::internal("idempotency_reclaim"))?;
     Ok(Claim::Acquired(row.id))
+}
+
+fn request_digest_matches(row: &StoredClaim, request_digest: SecretDigest) -> bool {
+    bool::from(
+        row.request_digest
+            .as_slice()
+            .ct_eq(request_digest.as_bytes().as_slice()),
+    )
 }
 
 fn digest_candidates(
@@ -403,7 +458,7 @@ mod tests {
         infrastructure::crypto::CryptoService,
     };
 
-    use super::{Claim, advisory_lock_id, claim, complete, digest_candidates};
+    use super::{Claim, advisory_lock_id, claim, complete, digest_candidates, replay_if_present};
 
     const ROUTE: &str = "POST /api/v1/obo-access/exchanges";
 
@@ -432,13 +487,11 @@ mod tests {
             blind_index_keys: single_keyring(1, 31),
             encryption_keys: single_keyring(1, 41),
             cookie_key: SecretString::from(URL_SAFE_NO_PAD.encode([51_u8; 32])),
-            jwt_ed25519_private_key: SecretString::from(URL_SAFE_NO_PAD.encode([61_u8; 32])),
-            jwt_key_id: "idempotency-test".to_owned(),
-            access_token_ttl: Duration::from_mins(15),
-            refresh_family_ttl: Duration::from_hours(8_760),
+            access_token_ttl: Duration::from_mins(30),
+            refresh_family_ttl: Duration::from_hours(21_600),
             authorization_code_ttl: Duration::from_secs(120),
             otp_ttl: Duration::from_secs(600),
-            otp_max_attempts: 5,
+            otp_max_attempts: 10,
         };
         let Ok(crypto) = CryptoService::from_settings(&settings) else {
             panic!("valid test keyrings must initialize");
@@ -506,7 +559,8 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a local Docker daemon"]
-    async fn completed_response_replays_after_pepper_rotation() -> anyhow::Result<()> {
+    async fn completed_response_preflight_and_claim_replay_after_pepper_rotation()
+    -> anyhow::Result<()> {
         let container = Postgres::default().with_tag("16-alpine").start().await?;
         let host = container.get_host().await?;
         let port = container.get_host_port_ipv4(5432).await?;
@@ -572,6 +626,24 @@ mod tests {
         )
         .execute(&pool)
         .await?;
+
+        let mut transaction = pool.begin().await?;
+        let Some(preflight) = replay_if_present::<serde_json::Value>(
+            &mut transaction,
+            &rotated,
+            &headers,
+            "application:018f47ac-75c7-7f84-a6b2-9c2a2617c154",
+            ROUTE,
+            original_request,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("rotated preflight failed: {error:?}"))?
+        else {
+            anyhow::bail!("the preflight did not locate the completed response");
+        };
+        assert_eq!(preflight.status, StatusCode::CREATED.as_u16());
+        assert_eq!(preflight.response, response);
+        transaction.commit().await?;
 
         let mut transaction = pool.begin().await?;
         let replay = claim::<serde_json::Value>(

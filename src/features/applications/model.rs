@@ -2,8 +2,6 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::domain::auth::CarbonId;
-
 #[derive(Clone, Debug, Deserialize)]
 pub(super) struct PageQuery {
     pub(super) cursor: Option<String>,
@@ -27,30 +25,8 @@ impl PageInfo {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub(super) struct AvailabilityPath {
-    pub(super) app_id: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
 pub(super) struct AppPath {
     pub(super) app_id: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub(super) struct CollaboratorPath {
-    pub(super) app_id: String,
-    pub(super) principal_id: Uuid,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub(super) struct GrantPath {
-    pub(super) grant_id: Uuid,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub(super) struct DeliveryPath {
-    pub(super) app_id: String,
-    pub(super) delivery_id: Uuid,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -63,6 +39,8 @@ pub(super) struct ApplicationCreate {
     pub(super) redirect_uris: Vec<String>,
     pub(super) webhook_url: String,
     pub(super) requested_scopes: Vec<String>,
+    #[serde(default)]
+    pub(super) obo_endpoints: Vec<ApplicationOboEndpoint>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -75,20 +53,15 @@ pub(super) struct ApplicationPatch {
     pub(super) app_logo_uri: Option<Option<String>>,
     pub(super) redirect_uris: Option<Vec<String>>,
     pub(super) requested_scopes: Option<Vec<String>>,
+    pub(super) obo_endpoints: Option<Vec<ApplicationOboEndpoint>>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]
 #[serde(deny_unknown_fields)]
-pub(super) struct CollaboratorCreate {
-    pub(super) carbon_id: CarbonId,
-    pub(super) role: String,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct SecretRotationRequest {
-    #[serde(default)]
-    pub(super) overlap_seconds: u16,
+pub(super) struct ApplicationOboEndpoint {
+    pub(super) endpoint_id: String,
+    pub(super) path: String,
+    pub(super) metadata: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -129,8 +102,10 @@ pub(super) struct ApplicationDetail {
     pub(super) redirect_uris: Vec<String>,
     pub(super) requested_scopes: Vec<String>,
     pub(super) approved_scopes: Vec<String>,
+    pub(super) obo_endpoints: Vec<ApplicationOboEndpoint>,
     pub(super) status: String,
-    pub(super) notify_users: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) notify_users: Option<bool>,
     pub(super) webhook: WebhookView,
     pub(super) has_pending_changes: bool,
     pub(super) version: i64,
@@ -154,47 +129,10 @@ pub(super) struct ApplicationPage {
     pub(super) page: PageInfo,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub(super) struct CollaboratorView {
-    pub(super) principal: PublicActor,
-    pub(super) role: String,
-    pub(super) created_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct CollaboratorPage {
-    pub(super) items: Vec<CollaboratorView>,
-    pub(super) page: PageInfo,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub(super) struct ApplicationSecretRotated {
-    pub(super) app_id: String,
-    pub(super) app_secret: String,
-    pub(super) secret_version: i64,
-    pub(super) previous_valid_until: OffsetDateTime,
-    pub(super) secret_replay_expires_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub(super) struct WebhookSecretRotated {
-    pub(super) app_id: String,
-    pub(super) webhook_signing_secret: String,
-    pub(super) secret_version: i64,
-    pub(super) previous_valid_until: OffsetDateTime,
-    pub(super) secret_replay_expires_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct Availability {
-    pub(super) available: bool,
-}
-
 #[derive(Clone, Debug)]
 pub(super) struct WebhookEndpointView {
     pub(super) url: String,
     pub(super) status: String,
-    pub(super) version: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -212,38 +150,6 @@ pub(super) struct PublicActor {
     #[serde(rename = "type")]
     pub(super) actor_type: String,
     pub(super) public_id: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct DeliveryView {
-    pub(super) id: Uuid,
-    pub(super) destination_type: String,
-    pub(super) destination_id: Uuid,
-    pub(super) event_id: Uuid,
-    pub(super) event_type: String,
-    pub(super) aggregate_id: Uuid,
-    pub(super) aggregate_version: i64,
-    pub(super) status: String,
-    pub(super) attempts: Vec<DeliveryAttemptView>,
-    pub(super) next_attempt_at: Option<OffsetDateTime>,
-    pub(super) created_at: OffsetDateTime,
-    pub(super) updated_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct DeliveryPage {
-    pub(super) items: Vec<DeliveryView>,
-    pub(super) page: PageInfo,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct DeliveryAttemptView {
-    pub(super) attempt: i32,
-    pub(super) started_at: OffsetDateTime,
-    pub(super) duration_ms: Option<i32>,
-    pub(super) outcome: String,
-    pub(super) response_status: Option<i16>,
-    pub(super) response_body_digest: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, sqlx::FromRow)]
@@ -274,7 +180,6 @@ pub(super) struct AuthorizeQuery {
     pub(super) redirect_uri: String,
     pub(super) scope: String,
     pub(super) state: String,
-    pub(super) nonce: String,
     pub(super) code_challenge: String,
     pub(super) code_challenge_method: String,
     pub(super) org_id: Option<String>,
@@ -304,8 +209,6 @@ pub(super) struct TokenResponse {
     pub(super) token_type: String,
     pub(super) expires_in: u64,
     pub(super) scope: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) id_token: Option<String>,
     pub(super) refresh_token: String,
     pub(super) actor: PublicActor,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -345,56 +248,13 @@ pub(super) struct IntrospectionResponse {
     pub(super) authorization_epoch: Option<i64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct UserInfo {
-    pub(super) sub: Uuid,
-    pub(super) actor_type: String,
-    pub(super) public_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) picture: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) email: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) phone_number: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) org_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) membership_id: Option<Uuid>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) org_role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) job_role: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(super) tags: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, sqlx::FromRow)]
-pub(super) struct GrantView {
-    pub(super) id: Uuid,
-    pub(super) app_id: String,
-    #[sqlx(flatten)]
-    pub(super) actor: PublicActor,
-    pub(super) org_id: Option<String>,
-    pub(super) scopes: Vec<String>,
-    pub(super) created_at: OffsetDateTime,
-    pub(super) updated_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct GrantPage {
-    pub(super) items: Vec<GrantView>,
-    pub(super) page: PageInfo,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct OboExchangeRequest {
     pub(super) subject_token: String,
     pub(super) audience: String,
-    pub(super) action: String,
-    pub(super) resource: Option<String>,
+    pub(super) endpoint_id: String,
+    pub(super) metadata: serde_json::Value,
     pub(super) org_id: String,
 }
 
@@ -410,9 +270,12 @@ pub(super) struct OboProofResponse {
 #[serde(deny_unknown_fields)]
 pub(super) struct OboVerifyRequest {
     pub(super) access_proof: String,
-    pub(super) audience: String,
-    pub(super) action: String,
-    pub(super) resource: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct OboEndpointReference {
+    pub(super) endpoint_id: String,
+    pub(super) path: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -423,32 +286,10 @@ pub(super) struct OboAccessResult {
     pub(super) audience: String,
     pub(super) actor: PublicActor,
     pub(super) org_id: String,
-    pub(super) action: String,
-    pub(super) resource: Option<String>,
+    pub(super) endpoint: OboEndpointReference,
+    pub(super) metadata: serde_json::Value,
     pub(super) expires_at: OffsetDateTime,
     pub(super) consumed_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct DiscoveryDocument {
-    pub(super) issuer: String,
-    pub(super) authorization_endpoint: String,
-    pub(super) token_endpoint: String,
-    pub(super) userinfo_endpoint: String,
-    pub(super) jwks_uri: String,
-    pub(super) revocation_endpoint: String,
-    pub(super) introspection_endpoint: String,
-    pub(super) response_types_supported: Vec<&'static str>,
-    pub(super) grant_types_supported: Vec<&'static str>,
-    pub(super) subject_types_supported: Vec<&'static str>,
-    pub(super) id_token_signing_alg_values_supported: Vec<String>,
-    pub(super) code_challenge_methods_supported: Vec<&'static str>,
-    pub(super) scopes_supported: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct JwkSet {
-    pub(super) keys: Vec<serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -463,6 +304,33 @@ mod tests {
             principal_id: Uuid::nil(),
             actor_type: "carbon".to_owned(),
             public_id: "owner_1".to_owned(),
+        }
+    }
+
+    fn application_detail(notify_users: Option<bool>) -> ApplicationDetail {
+        ApplicationDetail {
+            id: Uuid::nil(),
+            app_id: "example-app".to_owned(),
+            owner: actor(),
+            app_name: Some("Example".to_owned()),
+            app_logo: None,
+            redirect_uris: vec!["https://example.test/callback".to_owned()],
+            requested_scopes: vec!["organizations.read".to_owned()],
+            approved_scopes: Vec::new(),
+            obo_endpoints: Vec::new(),
+            status: "under_review".to_owned(),
+            notify_users,
+            webhook: WebhookView {
+                active_url: None,
+                pending_url: Some("https://example.test/hook".to_owned()),
+                status: "pending_review".to_owned(),
+                secret_version: 1,
+                version: 1,
+            },
+            has_pending_changes: true,
+            version: 1,
+            created_at: datetime!(2026-01-01 0:00 UTC),
+            updated_at: datetime!(2026-01-01 0:00 UTC),
         }
     }
 
@@ -509,55 +377,6 @@ mod tests {
     }
 
     #[test]
-    fn delivery_projection_contains_every_required_contract_field() {
-        let value = serde_json::to_value(DeliveryView {
-            id: Uuid::nil(),
-            destination_type: "application".to_owned(),
-            destination_id: Uuid::nil(),
-            event_id: Uuid::nil(),
-            event_type: "carbon.updated.v1".to_owned(),
-            aggregate_id: Uuid::nil(),
-            aggregate_version: 1,
-            status: "pending".to_owned(),
-            attempts: vec![DeliveryAttemptView {
-                attempt: 1,
-                started_at: datetime!(2026-01-01 0:00 UTC),
-                duration_ms: Some(10),
-                outcome: "success".to_owned(),
-                response_status: Some(204),
-                response_body_digest: None,
-            }],
-            next_attempt_at: Some(datetime!(2026-01-01 0:01 UTC)),
-            created_at: datetime!(2026-01-01 0:00 UTC),
-            updated_at: datetime!(2026-01-01 0:00 UTC),
-        })
-        .unwrap_or(Value::Null);
-        assert_required(
-            value.clone(),
-            &[
-                "id",
-                "destination_type",
-                "destination_id",
-                "event_id",
-                "event_type",
-                "aggregate_id",
-                "aggregate_version",
-                "status",
-                "attempts",
-                "created_at",
-                "updated_at",
-            ],
-        );
-        let attempt = value
-            .get("attempts")
-            .and_then(Value::as_array)
-            .and_then(|attempts| attempts.first())
-            .cloned()
-            .unwrap_or(Value::Null);
-        assert_required(attempt, &["attempt", "started_at", "outcome"]);
-    }
-
-    #[test]
     fn login_history_projection_contains_actor_and_request_outcome() {
         let value = serde_json::to_value(LoginEventView {
             id: Uuid::nil(),
@@ -587,39 +406,12 @@ mod tests {
     }
 
     #[test]
-    fn consent_grant_projection_contains_actor_and_lifecycle_timestamps() {
-        let value = serde_json::to_value(GrantView {
-            id: Uuid::nil(),
-            app_id: "example-app".to_owned(),
-            actor: actor(),
-            org_id: None,
-            scopes: vec!["openid".to_owned()],
-            created_at: datetime!(2026-01-01 0:00 UTC),
-            updated_at: datetime!(2026-01-01 0:00 UTC),
-        })
-        .unwrap_or(Value::Null);
-        assert_required(
-            value.clone(),
-            &[
-                "id",
-                "app_id",
-                "actor",
-                "scopes",
-                "created_at",
-                "updated_at",
-            ],
-        );
-        assert_nested_required(&value, "actor", &["principal_id", "type", "public_id"]);
-    }
-
-    #[test]
     fn oauth_token_projection_always_contains_a_rotating_refresh_token() {
         let value = serde_json::to_value(TokenResponse {
             access_token: format!("oat_{}", "A".repeat(43)),
             token_type: "Bearer".to_owned(),
-            expires_in: 900,
-            scope: "openid".to_owned(),
-            id_token: Some("header.claims.signature".to_owned()),
+            expires_in: 1_800,
+            scope: "organizations.read".to_owned(),
             refresh_token: format!("ort_{}", "B".repeat(43)),
             actor: actor(),
             org_id: None,
@@ -637,5 +429,14 @@ mod tests {
             ],
         );
         assert_nested_required(&value, "actor", &["principal_id", "type", "public_id"]);
+    }
+
+    #[test]
+    fn owner_application_projection_omits_backend_consent_policy() {
+        let owner = serde_json::to_value(application_detail(None)).unwrap_or(Value::Null);
+        assert!(owner.get("notify_users").is_none());
+
+        let admin = serde_json::to_value(application_detail(Some(false))).unwrap_or(Value::Null);
+        assert_eq!(admin.get("notify_users"), Some(&Value::Bool(false)));
     }
 }

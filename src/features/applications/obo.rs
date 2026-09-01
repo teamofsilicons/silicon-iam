@@ -29,7 +29,10 @@ use crate::{
 use super::{
     error::ApiError,
     idempotency::{self, Claim},
-    model::{OboAccessResult, OboExchangeRequest, OboProofResponse, OboVerifyRequest},
+    model::{
+        OboAccessResult, OboEndpointReference, OboExchangeRequest, OboProofResponse,
+        OboVerifyRequest,
+    },
     security::ApplicationClient,
     validation,
 };
@@ -39,6 +42,9 @@ const PROOF_LIFETIME_SECONDS: i64 = 60;
 #[derive(FromRow)]
 struct ExchangeAuthorityRow {
     audience_application_id: Uuid,
+    endpoint_path: String,
+    metadata_definition: sqlx::types::Json<Value>,
+    endpoint_version: i64,
     audience_auth_epoch: i64,
     subject_auth_epoch: i64,
     membership_authz_epoch: i64,
@@ -57,9 +63,10 @@ struct ProofRow {
     organization_id: Uuid,
     membership_id: Uuid,
     parent_access_token_id: Uuid,
-    action: String,
-    resource_digest: Option<Vec<u8>>,
-    resource_digest_key_version: Option<i16>,
+    endpoint_id: String,
+    endpoint_path: String,
+    endpoint_version: i64,
+    request_metadata: sqlx::types::Json<Value>,
     subject_auth_epoch: i64,
     membership_authz_epoch: i64,
     issuer_auth_epoch: i64,
@@ -77,8 +84,7 @@ struct CurrentProofContext {
     issuer_auth_epoch: i64,
     audience_auth_epoch: i64,
     parent_active: bool,
-    delegation_active: bool,
-    actor_authorized: bool,
+    endpoint_active: bool,
 }
 
 pub(super) async fn exchange(
@@ -88,6 +94,37 @@ pub(super) async fn exchange(
     Json(input): Json<OboExchangeRequest>,
 ) -> Result<Response, ApiError> {
     validate_exchange(&input, &headers)?;
+    let canonical = exchange_canonical(&input)?;
+    let mut transaction = context::begin(
+        &state.pool,
+        DatabaseContext::application(client.application_id, client.application_id),
+    )
+    .await
+    .map_err(|_| ApiError::internal("obo_exchange_context"))?;
+    let caller_scope = format!("application:{}", client.application_id);
+    let claim = idempotency::claim::<OboProofResponse>(
+        &mut transaction,
+        &state.crypto,
+        &headers,
+        &caller_scope,
+        "POST /api/v1/obo-access/exchanges",
+        &canonical,
+        true,
+    )
+    .await?;
+    if let Claim::Replay { status, response } = claim {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("obo_exchange_replay_commit"))?;
+        let status = StatusCode::from_u16(status)
+            .map_err(|_| ApiError::internal("obo_exchange_replay_status"))?;
+        return Ok(proof_response(status, response, true));
+    }
+    let Claim::Acquired(idempotency_id) = claim else {
+        return Err(ApiError::internal("obo_exchange_idempotency"));
+    };
+
     let subject_token = SecretString::from(input.subject_token.clone());
     let access = match tokens::authenticate(&state.pool, &state.crypto, &subject_token).await {
         Ok(Some(access)) => access,
@@ -118,53 +155,20 @@ pub(super) async fn exchange(
     let membership_id = access
         .membership_id
         .ok_or_else(|| ApiError::forbidden("obo_membership_required"))?;
-    let canonical = serde_json::to_vec(&json!({
-        "subject_token_id": access.token_id,
-        "audience": input.audience,
-        "action": input.action,
-        "resource": input.resource,
-        "org_id": input.org_id,
-    }))
-    .map_err(|_| ApiError::internal("obo_exchange_canonical"))?;
-    let mut transaction = context::begin(
-        &state.pool,
-        DatabaseContext {
-            principal_id: Some(access.subject.id),
-            organization_id: Some(organization_id),
-            application_id: Some(client.application_id),
-            signup_session_id: None,
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal("obo_exchange_context"))?;
-    let caller_scope = format!("application:{}", client.application_id);
-    let claim = idempotency::claim::<OboProofResponse>(
+    install_subject_context(
         &mut transaction,
-        &state.crypto,
-        &headers,
-        &caller_scope,
-        "POST /api/v1/obo-access/exchanges",
-        &canonical,
-        true,
+        access.subject.id,
+        organization_id,
+        client.application_id,
     )
     .await?;
-    if let Claim::Replay { response, .. } = claim {
-        if response.expires_at <= OffsetDateTime::now_utc() {
-            return Err(ApiError::conflict("idempotency_response_expired"));
-        }
-        transaction
-            .commit()
-            .await
-            .map_err(|_| ApiError::internal("obo_exchange_replay_commit"))?;
-        return Ok(proof_response(response, true));
-    }
-    let Claim::Acquired(idempotency_id) = claim else {
-        return Err(ApiError::internal("obo_exchange_idempotency"));
-    };
 
     let authority = sqlx::query_as::<_, ExchangeAuthorityRow>(
         r"
         SELECT audience.id AS audience_application_id,
+               endpoint.path AS endpoint_path,
+               endpoint.metadata_definition,
+               endpoint.version AS endpoint_version,
                audience_principal.auth_epoch AS audience_auth_epoch,
                subject_principal.auth_epoch AS subject_auth_epoch,
                membership.authz_epoch AS membership_authz_epoch
@@ -187,38 +191,28 @@ pub(super) async fn exchange(
           ON subject_principal.id = membership.principal_id
          AND subject_principal.kind = membership.principal_kind
          AND subject_principal.status = 'active'
+        JOIN iam.application_obo_endpoints AS endpoint
+          ON endpoint.application_id = audience.id
+         AND endpoint.endpoint_id = $2
+         AND endpoint.status = 'active'
         WHERE audience.app_id = $1
           AND audience.review_status = 'verified'
           AND audience.deleted_at IS NULL
-          AND EXISTS (
-              SELECT 1
-              FROM iam.obo_action_catalog AS action_catalog
-              JOIN iam.obo_application_grants AS application_grant
-                ON application_grant.audience_application_id = action_catalog.audience_application_id
-               AND application_grant.action = action_catalog.action
-               AND application_grant.status = 'active'
-              WHERE action_catalog.audience_application_id = audience.id
-                AND action_catalog.action = $2
-                AND action_catalog.status = 'active'
-                AND application_grant.issuer_application_id = $8
-          )
-          AND iam_private.has_organization_capability(organization.id, membership.principal_id, $2)
         ",
     )
     .bind(&input.audience)
-    .bind(&input.action)
+    .bind(&input.endpoint_id)
     .bind(organization_id)
     .bind(&input.org_id)
     .bind(membership_id)
     .bind(access.subject.id)
     .bind(access.subject.actor_type.as_str())
-    .bind(client.application_id)
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|_| ApiError::internal("obo_exchange_authority"))?
     .ok_or_else(|| ApiError::forbidden("obo_exchange_forbidden"))?;
+    validation::obo_request_metadata(&authority.metadata_definition.0, &input.metadata)?;
 
-    let resource_digest = digest_resource(&state, input.resource.as_deref())?;
     let proof_id = Uuid::now_v7();
     let raw_proof = state
         .crypto
@@ -234,8 +228,8 @@ pub(super) async fn exchange(
             id, proof_digest, digest_key_version, proof_prefix,
             issuer_application_id, audience_application_id,
             subject_principal_id, subject_kind, organization_id, membership_id,
-            parent_access_token_id, action, resource_digest,
-            resource_digest_key_version, subject_auth_epoch,
+            parent_access_token_id, endpoint_id, request_metadata, endpoint_version,
+            subject_auth_epoch,
             membership_authz_epoch, issuer_auth_epoch, audience_auth_epoch,
             expires_at
         ) VALUES (
@@ -257,13 +251,9 @@ pub(super) async fn exchange(
     .bind(organization_id)
     .bind(membership_id)
     .bind(access.token_id)
-    .bind(&input.action)
-    .bind(
-        resource_digest
-            .as_ref()
-            .map(|digest| digest.as_bytes().as_slice()),
-    )
-    .bind(resource_digest.as_ref().map(SecretDigest::key_version))
+    .bind(&input.endpoint_id)
+    .bind(sqlx::types::Json(&input.metadata))
+    .bind(authority.endpoint_version)
     .bind(authority.subject_auth_epoch)
     .bind(authority.membership_authz_epoch)
     .bind(client.auth_epoch)
@@ -295,8 +285,9 @@ pub(super) async fn exchange(
             "issuer_application_id": client.application_id,
             "audience_application_id": authority.audience_application_id,
             "subject": access.subject,
-            "action": input.action,
-            "resource_bound": input.resource.is_some(),
+            "endpoint_id": input.endpoint_id,
+            "endpoint_path": authority.endpoint_path,
+            "metadata_bound": true,
             "expires_at": expires_at,
         }),
     )
@@ -314,7 +305,7 @@ pub(super) async fn exchange(
         .commit()
         .await
         .map_err(|_| ApiError::internal("obo_exchange_commit"))?;
-    Ok(proof_response(response, false))
+    Ok(proof_response(StatusCode::CREATED, response, false))
 }
 
 pub(super) async fn verify(
@@ -323,7 +314,7 @@ pub(super) async fn verify(
     headers: HeaderMap,
     Json(input): Json<OboVerifyRequest>,
 ) -> Result<Response, ApiError> {
-    validate_verify(&input, &headers, &client)?;
+    validate_verify(&input, &headers)?;
     let proof = SecretString::from(input.access_proof.clone());
     let lookup_digests = state
         .crypto
@@ -339,9 +330,6 @@ pub(super) async fn verify(
         .collect::<Vec<_>>();
     let canonical = serde_json::to_vec(&json!({
         "proof_digest": sha2::Sha256::digest(input.access_proof.as_bytes()).as_slice(),
-        "audience": input.audience,
-        "action": input.action,
-        "resource": input.resource,
         "org_context": org_context(&headers)?,
     }))
     .map_err(|_| ApiError::internal("obo_verify_canonical"))?;
@@ -362,12 +350,14 @@ pub(super) async fn verify(
         false,
     )
     .await?;
-    if let Claim::Replay { response, .. } = claim {
+    if let Claim::Replay { status, response } = claim {
         transaction
             .commit()
             .await
             .map_err(|_| ApiError::internal("obo_verify_replay_commit"))?;
-        return Ok(json_response(StatusCode::OK, response, true));
+        let status = StatusCode::from_u16(status)
+            .map_err(|_| ApiError::internal("obo_verify_replay_status"))?;
+        return Ok(json_response(status, response, true));
     }
     let Claim::Acquired(idempotency_id) = claim else {
         return Err(ApiError::internal("obo_verify_idempotency"));
@@ -383,8 +373,9 @@ pub(super) async fn verify(
                proof.subject_kind::text AS subject_kind,
                COALESCE(carbon.carbon_id, silicon.global_silicon_id) AS subject_public_id,
                proof.organization_id,
-               proof.membership_id, proof.parent_access_token_id, proof.action,
-               proof.resource_digest, proof.resource_digest_key_version,
+               proof.membership_id, proof.parent_access_token_id, proof.endpoint_id,
+               endpoint.path AS endpoint_path, proof.endpoint_version,
+               proof.request_metadata,
                proof.subject_auth_epoch, proof.membership_authz_epoch,
                proof.issuer_auth_epoch, proof.audience_auth_epoch,
                proof.expires_at, proof.consumed_at, proof.revoked_at
@@ -393,6 +384,9 @@ pub(super) async fn verify(
           ON proof.digest_key_version = supplied_digest.key_version
          AND proof.proof_digest = supplied_digest.digest
         JOIN iam.applications AS issuer ON issuer.id = proof.issuer_application_id
+        JOIN iam.application_obo_endpoints AS endpoint
+          ON endpoint.application_id = proof.audience_application_id
+         AND endpoint.endpoint_id = proof.endpoint_id
         LEFT JOIN iam.carbons AS carbon
           ON carbon.id = proof.subject_principal_id AND proof.subject_kind = 'carbon'
         LEFT JOIN iam.silicons AS silicon
@@ -423,10 +417,6 @@ pub(super) async fn verify(
     if row.revoked_at.is_some() || row.expires_at <= OffsetDateTime::now_utc() {
         return Err(ApiError::gone("obo_proof_expired"));
     }
-    if row.action != input.action || !resource_matches(&state, &row, input.resource.as_deref())? {
-        return Err(ApiError::forbidden("obo_constraints_mismatch"));
-    }
-
     install_subject_context(
         &mut transaction,
         row.subject_principal_id,
@@ -448,7 +438,7 @@ pub(super) async fn verify(
     {
         return Err(ApiError::gone("obo_proof_revoked"));
     }
-    if !current.delegation_active || !current.actor_authorized {
+    if !current.endpoint_active {
         return Err(ApiError::forbidden("obo_authority_revoked"));
     }
     let consumed_at = sqlx::query_scalar::<_, OffsetDateTime>(
@@ -478,8 +468,11 @@ pub(super) async fn verify(
             public_id: row.subject_public_id,
         },
         org_id: current.org_id,
-        action: row.action,
-        resource: input.resource,
+        endpoint: OboEndpointReference {
+            endpoint_id: row.endpoint_id,
+            path: row.endpoint_path,
+        },
+        metadata: row.request_metadata.0,
         expires_at: row.expires_at,
         consumed_at,
     };
@@ -500,8 +493,9 @@ pub(super) async fn verify(
             "issuer_application_id": row.issuer_application_id,
             "audience_application_id": client.application_id,
             "subject": response.actor,
-            "action": response.action,
-            "resource_bound": response.resource.is_some(),
+            "endpoint_id": response.endpoint.endpoint_id,
+            "endpoint_path": response.endpoint.path,
+            "metadata_bound": true,
         }),
     )
     .await?;
@@ -523,8 +517,8 @@ pub(super) async fn verify(
 
 fn validate_exchange(input: &OboExchangeRequest, headers: &HeaderMap) -> Result<(), ApiError> {
     validation::app_id(&input.audience)?;
-    validation::action(&input.action)?;
-    validation::resource(input.resource.as_deref())?;
+    validation::obo_endpoint_id(&input.endpoint_id)?;
+    validation::obo_metadata("metadata", &input.metadata)?;
     validation::org_id(&input.org_id)?;
     if !(32..=4_096).contains(&input.subject_token.len()) {
         return Err(ApiError::validation(
@@ -543,17 +537,11 @@ fn validate_exchange(input: &OboExchangeRequest, headers: &HeaderMap) -> Result<
     Ok(())
 }
 
-fn validate_verify(
-    input: &OboVerifyRequest,
-    headers: &HeaderMap,
-    client: &ApplicationClient,
-) -> Result<(), ApiError> {
-    validation::app_id(&input.audience)?;
-    validation::action(&input.action)?;
-    validation::resource(input.resource.as_deref())?;
-    if input.audience != client.app_id {
-        return Err(ApiError::forbidden("obo_audience_mismatch"));
-    }
+fn exchange_canonical(input: &OboExchangeRequest) -> Result<Vec<u8>, ApiError> {
+    serde_json::to_vec(input).map_err(|_| ApiError::internal("obo_exchange_canonical"))
+}
+
+fn validate_verify(input: &OboVerifyRequest, headers: &HeaderMap) -> Result<(), ApiError> {
     if input.access_proof.len() != 47 || !input.access_proof.starts_with("obo_") {
         return Err(ApiError::bad_request(
             "invalid_proof",
@@ -576,50 +564,6 @@ fn org_context(headers: &HeaderMap) -> Result<Option<String>, ApiError> {
                 .map_err(|_| ApiError::validation("X-Org-ID", "must be valid ASCII"))
         })
         .transpose()
-}
-
-fn digest_resource(
-    state: &ApiState,
-    resource: Option<&str>,
-) -> Result<Option<SecretDigest>, ApiError> {
-    resource
-        .map(|resource| {
-            state
-                .crypto
-                .digest_secret(
-                    DigestPurpose::OboResource,
-                    &SecretString::from(resource.to_owned()),
-                )
-                .map_err(|_| ApiError::internal("obo_resource_digest"))
-        })
-        .transpose()
-}
-
-fn resource_matches(
-    state: &ApiState,
-    row: &ProofRow,
-    supplied: Option<&str>,
-) -> Result<bool, ApiError> {
-    match (
-        supplied,
-        row.resource_digest.as_deref(),
-        row.resource_digest_key_version,
-    ) {
-        (None, None, None) => Ok(true),
-        (Some(supplied), Some(stored), Some(key_version)) => {
-            let expected = SecretDigest::from_parts(key_version, stored)
-                .ok_or_else(|| ApiError::internal("obo_resource_shape"))?;
-            state
-                .crypto
-                .verify_secret(
-                    DigestPurpose::OboResource,
-                    &SecretString::from(supplied.to_owned()),
-                    expected,
-                )
-                .map_err(|_| ApiError::internal("obo_resource_verify"))
-        }
-        _ => Ok(false),
-    }
 }
 
 async fn install_subject_context(
@@ -679,23 +623,18 @@ async fn load_current_context(
                ) AS parent_active,
                EXISTS (
                    SELECT 1
-                   FROM iam.obo_action_catalog AS action_catalog
-                   JOIN iam.obo_application_grants AS application_grant
-                     ON application_grant.audience_application_id = action_catalog.audience_application_id
-                    AND application_grant.action = action_catalog.action
-                    AND application_grant.status = 'active'
-                   WHERE action_catalog.audience_application_id = $5
-                     AND action_catalog.action = $7
-                     AND action_catalog.status = 'active'
-                     AND application_grant.issuer_application_id = $4
-               ) AS delegation_active,
-               iam_private.has_organization_capability($2, $1, $7) AS actor_authorized
+                   FROM iam.application_obo_endpoints AS endpoint
+                   WHERE endpoint.application_id = $5
+                     AND endpoint.endpoint_id = $7
+                     AND endpoint.version = $8
+                     AND endpoint.status = 'active'
+               ) AS endpoint_active
         FROM iam.organizations AS organization
         JOIN iam.organization_memberships AS membership
           ON membership.organization_id = organization.id
          AND membership.id = $3
          AND membership.principal_id = $1
-         AND membership.principal_kind = $8::iam.principal_kind
+         AND membership.principal_kind = $9::iam.principal_kind
          AND membership.status = 'active'
         JOIN iam.principals AS subject
           ON subject.id = membership.principal_id
@@ -726,7 +665,8 @@ async fn load_current_context(
     .bind(proof.issuer_application_id)
     .bind(audience_application_id)
     .bind(proof.parent_access_token_id)
-    .bind(&proof.action)
+    .bind(&proof.endpoint_id)
+    .bind(proof.endpoint_version)
     .bind(&proof.subject_kind)
     .fetch_optional(&mut **transaction)
     .await
@@ -780,6 +720,7 @@ async fn record_protocol_event(
             event_type,
             schema_version: 1,
             payload: metadata,
+            silicon_webhook_routing: None,
         },
     )
     .await
@@ -795,8 +736,8 @@ fn actor_type(value: &str) -> Result<ActorType, ApiError> {
     }
 }
 
-fn proof_response(response: OboProofResponse, replayed: bool) -> Response {
-    let mut response = (StatusCode::CREATED, Json(response)).into_response();
+fn proof_response(status: StatusCode, response: OboProofResponse, replayed: bool) -> Response {
+    let mut response = (status, Json(response)).into_response();
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -829,11 +770,52 @@ fn secret_prefix(secret: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::secret_prefix;
+    use axum::http::HeaderMap;
+    use serde_json::json;
+
+    use super::{exchange_canonical, secret_prefix, validate_verify};
+    use crate::features::applications::model::{OboExchangeRequest, OboVerifyRequest};
 
     #[test]
     fn proofs_disclose_only_the_wire_prefix_in_storage() {
         let proof = format!("obo_{}", "A".repeat(43));
         assert_eq!(secret_prefix(&proof), "obo_AAAAAAAA");
+    }
+
+    #[test]
+    fn audience_verification_accepts_only_the_bound_proof() {
+        let proof = format!("obo_{}", "A".repeat(43));
+        let Ok(request) = serde_json::from_value::<OboVerifyRequest>(json!({
+            "access_proof": proof,
+        })) else {
+            panic!("proof-only request must deserialize");
+        };
+        assert!(validate_verify(&request, &HeaderMap::new()).is_ok());
+        assert!(
+            serde_json::from_value::<OboVerifyRequest>(json!({
+                "access_proof": format!("obo_{}", "A".repeat(43)),
+                "endpoint_id": "caller.substitution",
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn exchange_idempotency_is_bound_to_the_exact_subject_token() {
+        let request = |subject_token: &str| OboExchangeRequest {
+            subject_token: subject_token.to_owned(),
+            audience: "documents".to_owned(),
+            endpoint_id: "documents.read".to_owned(),
+            metadata: json!({ "document_id": "doc-123" }),
+            org_id: "acme".to_owned(),
+        };
+        let Ok(first) = exchange_canonical(&request(&format!("oat_{}", "A".repeat(43)))) else {
+            panic!("a valid request must serialize");
+        };
+        let Ok(second) = exchange_canonical(&request(&format!("oat_{}", "B".repeat(43)))) else {
+            panic!("a valid request must serialize");
+        };
+
+        assert_ne!(first, second);
     }
 }

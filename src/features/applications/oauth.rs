@@ -8,7 +8,6 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{Html, IntoResponse as _, Response},
 };
-use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -35,20 +34,28 @@ use crate::{
 };
 
 use super::{
-    cursor,
     error::ApiError,
     events,
     idempotency::{self, Claim},
     model::{
-        AuthorizeQuery, ConsentDecision, DiscoveryDocument, GrantPage, GrantPath, GrantView,
-        IntrospectionResponse, JwkSet, PageInfo, PageQuery, PublicActor, TokenForm, TokenInput,
-        TokenResponse, UserInfo,
+        AuthorizeQuery, ConsentDecision, IntrospectionResponse, PublicActor, TokenForm, TokenInput,
+        TokenResponse,
     },
-    security::{ApplicationClient, Bearer, BrowserSession, require_carbon, require_csrf},
+    security::{ApplicationClient, BrowserSession, require_csrf},
     validation,
 };
 
 const AUTHORIZATION_REQUEST_SECONDS: i64 = 600;
+
+const OAUTH_REFRESH_INSERT_QUERY: &str = r"
+    INSERT INTO iam.refresh_tokens (
+        id, family_id, parent_token_id, token_digest,
+        digest_key_version, token_prefix, expires_at
+    ) VALUES (
+        $1, $2, $3, $4, $5, $6,
+        (SELECT absolute_expires_at FROM iam.refresh_token_families WHERE id = $2)
+    )
+";
 
 const CURRENT_APPLICATION_CLIENT_LOCK_QUERY: &str = r"
     SELECT application.id
@@ -74,11 +81,9 @@ const AUTHORIZATION_CODE_LOOKUP_QUERY: &str = r"
            request.subject_principal_id, request.subject_kind::text AS subject_kind,
            request.organization_id, request.membership_id,
            grant.id AS consent_grant_id,
-           request.pkce_code_challenge, request.oidc_nonce_ciphertext,
-           request.oidc_nonce_encryption_nonce, request.encryption_key_version,
+           request.pkce_code_challenge,
            principal.auth_epoch AS subject_auth_epoch,
-           membership.authz_epoch AS membership_authz_epoch,
-           session.authenticated_at
+           membership.authz_epoch AS membership_authz_epoch
     FROM supplied_digest
     JOIN iam.oauth_authorization_codes AS code
       ON code.digest_key_version = supplied_digest.key_version
@@ -170,8 +175,7 @@ const REFRESH_TOKEN_CANDIDATE_QUERY: &str = r"
 ";
 
 const REFRESH_SESSION_AUTHORITY_LOCK_QUERY: &str = r"
-    SELECT principal.auth_epoch AS subject_auth_epoch,
-           session.authenticated_at
+    SELECT principal.auth_epoch AS subject_auth_epoch
     FROM iam.principals AS principal
     JOIN iam.authentication_sessions AS session
       ON session.id = $2
@@ -293,12 +297,8 @@ struct AuthorizationCodeRow {
     membership_id: Option<Uuid>,
     consent_grant_id: Uuid,
     pkce_code_challenge: String,
-    oidc_nonce_ciphertext: Option<Vec<u8>>,
-    oidc_nonce_encryption_nonce: Option<Vec<u8>>,
-    encryption_key_version: i16,
     subject_auth_epoch: i64,
     membership_authz_epoch: Option<i64>,
-    authenticated_at: OffsetDateTime,
 }
 
 #[derive(FromRow)]
@@ -329,7 +329,6 @@ struct LockedRefreshCredentialRow {
 #[derive(FromRow)]
 struct RefreshSessionAuthorityRow {
     subject_auth_epoch: i64,
-    authenticated_at: OffsetDateTime,
 }
 
 #[derive(FromRow)]
@@ -341,25 +340,6 @@ struct RefreshGrantAuthorityRow {
     membership_id: Option<Uuid>,
     parent_authentication_session_id: Uuid,
     status: String,
-}
-
-#[derive(FromRow)]
-struct ActiveSigningKey {
-    id: Uuid,
-    key_id: String,
-    algorithm: String,
-    private_key_ciphertext: Vec<u8>,
-    private_key_nonce: Vec<u8>,
-    encryption_key_version: i16,
-}
-
-#[derive(FromRow)]
-struct ContactRow {
-    id: Uuid,
-    kind: String,
-    ciphertext: Vec<u8>,
-    nonce: Vec<u8>,
-    encryption_key_version: i16,
 }
 
 #[derive(FromRow)]
@@ -405,84 +385,6 @@ enum TokenIdempotencyResult {
 enum RefreshExchange {
     Issued(Box<TokenResponse>),
     ReuseDetected,
-}
-
-#[derive(Serialize)]
-struct IdTokenClaims {
-    iss: String,
-    sub: String,
-    aud: String,
-    exp: i64,
-    iat: i64,
-    auth_time: i64,
-    sid: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    nonce: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    org_id: Option<String>,
-}
-
-pub(super) async fn discovery(
-    State(state): State<ApiState>,
-) -> Result<Json<DiscoveryDocument>, ApiError> {
-    let issuer = base_url(&state);
-    let scopes_supported =
-        sqlx::query_scalar::<_, String>("SELECT scope FROM iam.oauth_scope_catalog ORDER BY scope")
-            .fetch_all(&state.pool)
-            .await
-            .map_err(|_| ApiError::internal("oidc_discovery_scopes"))?;
-    let signing_algorithms = sqlx::query_scalar::<_, String>(
-        r"
-        SELECT DISTINCT algorithm
-        FROM iam.oidc_signing_keys
-        WHERE status = 'active'
-          AND not_before <= transaction_timestamp()
-        ORDER BY algorithm
-        ",
-    )
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|_| ApiError::internal("oidc_discovery_algorithms"))?;
-    if signing_algorithms.is_empty() {
-        return Err(ApiError::internal("oidc_signing_key_missing"));
-    }
-    Ok(Json(DiscoveryDocument {
-        issuer: issuer.clone(),
-        authorization_endpoint: format!("{issuer}/api/v1/oauth/authorize"),
-        token_endpoint: format!("{issuer}/api/v1/oauth/token"),
-        userinfo_endpoint: format!("{issuer}/api/v1/oauth/userinfo"),
-        jwks_uri: format!("{issuer}/.well-known/jwks.json"),
-        revocation_endpoint: format!("{issuer}/api/v1/oauth/revoke"),
-        introspection_endpoint: format!("{issuer}/api/v1/oauth/introspect"),
-        response_types_supported: vec!["code"],
-        grant_types_supported: vec!["authorization_code", "refresh_token"],
-        subject_types_supported: vec!["public"],
-        id_token_signing_alg_values_supported: signing_algorithms,
-        code_challenge_methods_supported: vec!["S256"],
-        scopes_supported,
-    }))
-}
-
-pub(super) async fn jwks(State(state): State<ApiState>) -> Result<Response, ApiError> {
-    let keys = sqlx::query_scalar::<_, Value>(
-        r"
-        SELECT public_jwk
-        FROM iam.oidc_signing_keys
-        WHERE status IN ('active', 'retiring')
-          AND not_before <= transaction_timestamp()
-          AND (retires_at IS NULL OR retires_at > transaction_timestamp())
-        ORDER BY (status = 'active') DESC, created_at DESC
-        ",
-    )
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|_| ApiError::internal("oidc_jwks"))?;
-    let mut response = Json(JwkSet { keys }).into_response();
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=300"),
-    );
-    Ok(response)
 }
 
 pub(super) async fn authorize(
@@ -574,28 +476,17 @@ pub(super) async fn authorize(
             query.state.as_bytes(),
         )
         .map_err(|_| ApiError::internal("oauth_state_encrypt"))?;
-    let encrypted_nonce = state
-        .crypto
-        .encrypt(
-            EncryptionContext::global(ProtectedField::ProviderCredential, request_id),
-            query.nonce.as_bytes(),
-        )
-        .map_err(|_| ApiError::internal("oauth_nonce_encrypt"))?;
-    if encrypted_state.key_version != encrypted_nonce.key_version {
-        return Err(ApiError::internal("oauth_encryption_key_mismatch"));
-    }
     sqlx::query(
         r"
         INSERT INTO iam.oauth_authorization_requests (
             id, application_id, redirect_uri_id, authentication_session_id,
             subject_principal_id, subject_kind, organization_id, membership_id,
             state_digest, state_ciphertext, state_encryption_nonce,
-            oidc_nonce_ciphertext, oidc_nonce_encryption_nonce,
             encryption_key_version, pkce_code_challenge, expires_at
         ) VALUES (
             $1, $2, $3, $4, $5, 'carbon', $6, $7, $8, $9, $10,
-            $11, $12, $13, $14,
-            transaction_timestamp() + ($15::bigint * interval '1 second')
+            $11, $12,
+            transaction_timestamp() + ($13::bigint * interval '1 second')
         )
         ",
     )
@@ -609,8 +500,6 @@ pub(super) async fn authorize(
     .bind(Sha256::digest(query.state.as_bytes()).as_slice())
     .bind(encrypted_state.ciphertext)
     .bind(encrypted_state.nonce.as_slice())
-    .bind(encrypted_nonce.ciphertext)
-    .bind(encrypted_nonce.nonce.as_slice())
     .bind(encrypted_state.key_version)
     .bind(&query.code_challenge)
     .bind(AUTHORIZATION_REQUEST_SECONDS)
@@ -660,7 +549,7 @@ pub(super) async fn authorize(
             .commit()
             .await
             .map_err(|_| ApiError::internal("oauth_authorize_commit"))?;
-        return redirect_response(&location);
+        return redirect_response(StatusCode::FOUND, &location, false);
     }
     transaction
         .commit()
@@ -734,12 +623,14 @@ pub(super) async fn decide_consent(
         true,
     )
     .await?;
-    if let Claim::Replay { response, .. } = claim {
+    if let Claim::Replay { status, response } = claim {
         transaction
             .commit()
             .await
             .map_err(|_| ApiError::internal("oauth_decision_replay"))?;
-        return redirect_response(&response.location);
+        let status = StatusCode::from_u16(status)
+            .map_err(|_| ApiError::internal("oauth_decision_replay_status"))?;
+        return redirect_response(status, &response.location, true);
     }
     let Claim::Acquired(idempotency_id) = claim else {
         return Err(ApiError::internal("oauth_decision_idempotency"));
@@ -815,7 +706,7 @@ pub(super) async fn decide_consent(
         .commit()
         .await
         .map_err(|_| ApiError::internal("oauth_decision_commit"))?;
-    redirect_response(&location)
+    redirect_response(StatusCode::FOUND, &location, false)
 }
 
 pub(super) async fn token(
@@ -1036,8 +927,7 @@ async fn introspect_refresh_token(
                LEAST(token.expires_at, family.absolute_expires_at,
                      session.absolute_expires_at) AS expires_at,
                principal.auth_epoch AS subject_auth_epoch,
-               membership.authz_epoch AS membership_authz_epoch,
-               session.authenticated_at
+               membership.authz_epoch AS membership_authz_epoch
         FROM supplied_digest
         JOIN iam.refresh_tokens AS token
           ON token.digest_key_version = supplied_digest.key_version
@@ -1174,12 +1064,14 @@ pub(super) async fn revoke(
         false,
     )
     .await?;
-    if matches!(claim, Claim::Replay { .. }) {
+    if let Claim::Replay { status, .. } = claim {
         transaction
             .commit()
             .await
             .map_err(|_| ApiError::internal("oauth_revoke_replay"))?;
-        return Ok(StatusCode::OK.into_response());
+        let status = StatusCode::from_u16(status)
+            .map_err(|_| ApiError::internal("oauth_revoke_replay_status"))?;
+        return Ok(empty_idempotent_response(status, true));
     }
     let Claim::Acquired(idempotency_id) = claim else {
         return Err(ApiError::internal("oauth_revoke_idempotency"));
@@ -1216,360 +1108,7 @@ pub(super) async fn revoke(
         .commit()
         .await
         .map_err(|_| ApiError::internal("oauth_revoke_commit"))?;
-    Ok(StatusCode::OK.into_response())
-}
-
-pub(super) async fn userinfo(
-    State(state): State<ApiState>,
-    Bearer(access): Bearer,
-) -> Result<Json<UserInfo>, ApiError> {
-    if access.client_application_id.is_none()
-        || !access.scopes.iter().any(|scope| scope == "openid")
-    {
-        return Err(ApiError::forbidden("insufficient_scope"));
-    }
-    let mut transaction = context::begin(
-        &state.pool,
-        DatabaseContext {
-            principal_id: Some(access.subject.id),
-            organization_id: access.organization_id,
-            application_id: access.client_application_id,
-            signup_session_id: None,
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal("userinfo_context"))?;
-    if access.subject.actor_type != ActorType::Carbon {
-        return Err(ApiError::forbidden("unsupported_subject"));
-    }
-    let (public_id, name, picture) = sqlx::query_as::<_, (String, String, Option<String>)>(
-        r"
-        SELECT carbon_id, display_name, profile_photo_uri
-        FROM iam.carbons WHERE id = $1 AND deleted_at IS NULL
-        ",
-    )
-    .bind(access.subject.id)
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("userinfo_profile"))?;
-    let contacts = sqlx::query_as::<_, ContactRow>(
-        r"
-        SELECT id, kind::text AS kind, ciphertext, nonce, encryption_key_version
-        FROM iam.carbon_contacts
-        WHERE carbon_id = $1 AND status = 'active' AND is_primary
-        ",
-    )
-    .bind(access.subject.id)
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("userinfo_contacts"))?;
-    let mut email = None;
-    let mut phone_number = None;
-    for contact in contacts {
-        let wanted = (contact.kind == "email"
-            && access.scopes.iter().any(|scope| scope == "email"))
-            || (contact.kind == "phone" && access.scopes.iter().any(|scope| scope == "phone"));
-        if !wanted {
-            continue;
-        }
-        let nonce = <[u8; 12]>::try_from(contact.nonce.as_slice())
-            .map_err(|_| ApiError::internal("userinfo_contact_nonce"))?;
-        let field = if contact.kind == "email" {
-            ProtectedField::CarbonEmail
-        } else {
-            ProtectedField::CarbonPhone
-        };
-        let plaintext = state
-            .crypto
-            .decrypt(
-                EncryptionContext::global(field, contact.id),
-                &EncryptedValue {
-                    key_version: contact.encryption_key_version,
-                    nonce,
-                    ciphertext: contact.ciphertext,
-                },
-            )
-            .map_err(|_| ApiError::internal("userinfo_contact_decrypt"))?;
-        let value = String::from_utf8(plaintext.to_vec())
-            .map_err(|_| ApiError::internal("userinfo_contact_utf8"))?;
-        if contact.kind == "email" {
-            email = Some(value);
-        } else {
-            phone_number = Some(value);
-        }
-    }
-    let organization = if let (Some(organization_id), Some(membership_id)) =
-        (access.organization_id, access.membership_id)
-    {
-        sqlx::query_as::<_, (String, String, String)>(
-            r"
-            SELECT organization.org_id, membership.org_role::text, membership.job_role
-            FROM iam.organizations AS organization
-            JOIN iam.organization_memberships AS membership
-              ON membership.organization_id = organization.id
-            WHERE organization.id = $1 AND membership.id = $2
-              AND membership.status = 'active'
-            ",
-        )
-        .bind(organization_id)
-        .bind(membership_id)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(|_| ApiError::internal("userinfo_organization"))?
-        .map(|(org_id, role, job_role)| (org_id, membership_id, role, job_role))
-    } else {
-        None
-    };
-    let tags = if access
-        .scopes
-        .iter()
-        .any(|scope| scope == "memberships.read")
-    {
-        if let Some(membership_id) = access.membership_id {
-            sqlx::query_scalar::<_, String>(
-                r"
-                SELECT tag.name
-                FROM iam.membership_tags AS assigned
-                JOIN iam.organization_tags AS tag
-                  ON tag.organization_id = assigned.organization_id AND tag.id = assigned.tag_id
-                WHERE assigned.membership_id = $1 AND tag.archived_at IS NULL
-                ORDER BY tag.name
-                ",
-            )
-            .bind(membership_id)
-            .fetch_all(&mut *transaction)
-            .await
-            .map_err(|_| ApiError::internal("userinfo_tags"))?
-        } else {
-            Vec::new()
-        }
-    } else {
-        Vec::new()
-    };
-    transaction
-        .commit()
-        .await
-        .map_err(|_| ApiError::internal("userinfo_commit"))?;
-    let profile_allowed = access.scopes.iter().any(|scope| scope == "profile");
-    let membership_allowed = access
-        .scopes
-        .iter()
-        .any(|scope| scope == "memberships.read");
-    Ok(Json(UserInfo {
-        sub: access.subject.id,
-        actor_type: "carbon".to_owned(),
-        public_id,
-        name: profile_allowed.then_some(name),
-        picture: profile_allowed.then_some(picture).flatten(),
-        email,
-        phone_number,
-        org_id: membership_allowed
-            .then(|| organization.as_ref().map(|value| value.0.clone()))
-            .flatten(),
-        membership_id: membership_allowed
-            .then(|| organization.as_ref().map(|value| value.1))
-            .flatten(),
-        org_role: membership_allowed
-            .then(|| organization.as_ref().map(|value| value.2.clone()))
-            .flatten(),
-        job_role: access
-            .scopes
-            .iter()
-            .any(|scope| scope == "roles.read")
-            .then(|| organization.as_ref().map(|value| value.3.clone()))
-            .flatten(),
-        tags,
-    }))
-}
-
-pub(super) async fn list_grants(
-    State(state): State<ApiState>,
-    Bearer(access): Bearer,
-    Query(query): Query<PageQuery>,
-) -> Result<Json<GrantPage>, ApiError> {
-    let carbon_id = require_carbon(&access)?;
-    let cursor = cursor::decode(query.cursor.as_deref())?;
-    let limit = cursor::limit(query.limit);
-    let (at, id) = cursor.map_or((None, None), |cursor| (Some(cursor.at), Some(cursor.id)));
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
-        .await
-        .map_err(|_| ApiError::internal("grant_list_context"))?;
-    let mut items = sqlx::query_as::<_, GrantView>(
-        r"
-        SELECT grant.id, application.app_id,
-               grant.subject_principal_id AS principal_id,
-               grant.subject_kind::text AS actor_type,
-               carbon.carbon_id AS public_id,
-               organization.org_id,
-               ARRAY(
-                   SELECT scope FROM iam.oauth_consent_grant_scopes
-                   WHERE consent_grant_id = grant.id ORDER BY scope
-               ) AS scopes,
-               grant.granted_at AS created_at,
-               grant.updated_at
-        FROM iam.oauth_consent_grants AS grant
-        JOIN iam.applications AS application ON application.id = grant.application_id
-        JOIN iam.carbons AS carbon
-          ON carbon.id = grant.subject_principal_id AND grant.subject_kind = 'carbon'
-        LEFT JOIN iam.organizations AS organization ON organization.id = grant.organization_id
-        WHERE grant.subject_principal_id = $1 AND grant.subject_kind = 'carbon'
-          AND ($2::timestamptz IS NULL OR (grant.granted_at, grant.id) < ($2, $3))
-        ORDER BY grant.granted_at DESC, grant.id DESC
-        LIMIT $4
-        ",
-    )
-    .bind(carbon_id)
-    .bind(at)
-    .bind(id)
-    .bind(limit + 1)
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("grant_list"))?;
-    transaction
-        .commit()
-        .await
-        .map_err(|_| ApiError::internal("grant_list_commit"))?;
-    let next_cursor = if i64::try_from(items.len()).unwrap_or(i64::MAX) > limit {
-        items.pop();
-        items
-            .last()
-            .map(|item| cursor::encode(item.created_at, item.id))
-            .transpose()?
-    } else {
-        None
-    };
-    Ok(Json(GrantPage {
-        items,
-        page: PageInfo::from_next_cursor(next_cursor),
-    }))
-}
-
-pub(super) async fn revoke_grant(
-    State(state): State<ApiState>,
-    Bearer(access): Bearer,
-    axum::extract::Path(path): axum::extract::Path<GrantPath>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    let carbon_id = require_carbon(&access)?;
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
-        .await
-        .map_err(|_| ApiError::internal("grant_revoke_context"))?;
-    let caller_scope = format!("carbon:{carbon_id}");
-    let claim = idempotency::claim::<Value>(
-        &mut transaction,
-        &state.crypto,
-        &headers,
-        &caller_scope,
-        "DELETE /api/v1/me/application-grants/{grant_id}",
-        path.grant_id.as_bytes(),
-        false,
-    )
-    .await?;
-    if matches!(claim, Claim::Replay { .. }) {
-        transaction
-            .commit()
-            .await
-            .map_err(|_| ApiError::internal("grant_revoke_replay"))?;
-        return Ok(StatusCode::NO_CONTENT.into_response());
-    }
-    let Claim::Acquired(idempotency_id) = claim else {
-        return Err(ApiError::internal("grant_revoke_idempotency"));
-    };
-    let row = sqlx::query_as::<_, (Uuid, Option<Uuid>, i64)>(
-        r"
-        UPDATE iam.oauth_consent_grants
-        SET status = 'revoked', revoked_at = transaction_timestamp()
-        WHERE id = $1 AND subject_principal_id = $2 AND subject_kind = 'carbon'
-          AND status = 'active'
-        RETURNING application_id, organization_id, version
-        ",
-    )
-    .bind(path.grant_id)
-    .bind(carbon_id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("grant_revoke"))?
-    .ok_or_else(ApiError::not_found)?;
-    sqlx::query(
-        r"
-        UPDATE iam.refresh_token_families
-        SET status = 'revoked', revoked_at = transaction_timestamp(),
-            revocation_reason = 'consent_revoked'
-        WHERE oauth_consent_grant_id = $1 AND status = 'active'
-        ",
-    )
-    .bind(path.grant_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("grant_refresh_revoke"))?;
-    sqlx::query(
-        r"
-        UPDATE iam.access_tokens
-        SET revoked_at = transaction_timestamp(), revocation_reason = 'consent_revoked'
-        WHERE client_application_id = $1 AND subject_principal_id = $2
-          AND organization_id IS NOT DISTINCT FROM $3 AND revoked_at IS NULL
-        ",
-    )
-    .bind(row.0)
-    .bind(carbon_id)
-    .bind(row.1)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("grant_access_revoke"))?;
-    persistence_events::record_audit(
-        &mut transaction,
-        AuditRecord {
-            actor: Some(access.subject),
-            authentication_session_id: Some(access.authentication_session_id),
-            organization_id: row.1,
-            application_id: Some(row.0),
-            action: "oauth.consent.revoke",
-            target_type: "oauth_consent_grant",
-            target_id: Some(path.grant_id),
-            authentication_method: None,
-            aggregate: Some(AggregateVersion {
-                aggregate_type: "oauth_consent_grant",
-                aggregate_id: path.grant_id,
-                version: row.2,
-            }),
-            before_state: Some(json!({ "status": "active" })),
-            after_state: Some(json!({ "status": "revoked" })),
-            metadata: json!({}),
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal("grant_revoke_audit"))?;
-    persistence_events::enqueue_outbox(
-        &mut transaction,
-        OutboxRecord {
-            organization_id: row.1,
-            aggregate: AggregateVersion {
-                aggregate_type: "oauth_consent_grant",
-                aggregate_id: path.grant_id,
-                version: row.2,
-            },
-            event_ordinal: 1,
-            event_type: "oauth.consent_revoked",
-            schema_version: 1,
-            payload: json!({ "grant_id": path.grant_id, "application_id": row.0 }),
-        },
-    )
-    .await
-    .map_err(|_| ApiError::internal("grant_revoke_outbox"))?;
-    idempotency::complete(
-        &mut transaction,
-        &state.crypto,
-        idempotency_id,
-        204,
-        &Value::Null,
-        false,
-    )
-    .await?;
-    transaction
-        .commit()
-        .await
-        .map_err(|_| ApiError::internal("grant_revoke_commit"))?;
-    Ok(StatusCode::NO_CONTENT.into_response())
+    Ok(empty_idempotent_response(StatusCode::OK, false))
 }
 
 async fn exchange_authorization_code(
@@ -1654,16 +1193,6 @@ async fn exchange_authorization_code(
         .execute(&mut **transaction)
         .await
         .map_err(|_| ApiError::internal("authorization_request_consume"))?;
-    let nonce = match (&row.oidc_nonce_ciphertext, &row.oidc_nonce_encryption_nonce) {
-        (Some(ciphertext), Some(nonce)) => Some(decrypt_protocol_value(
-            state,
-            row.authorization_request_id,
-            row.encryption_key_version,
-            nonce,
-            ciphertext,
-        )?),
-        _ => None,
-    };
     let response = issue_tokens(
         transaction,
         state,
@@ -1677,10 +1206,8 @@ async fn exchange_authorization_code(
             membership_id: row.membership_id,
             membership_authz_epoch: row.membership_authz_epoch,
             consent_grant_id: row.consent_grant_id,
-            authenticated_at: row.authenticated_at,
         },
         &scopes,
-        nonce.as_deref(),
         None,
         None,
     )
@@ -1843,10 +1370,8 @@ async fn exchange_refresh_token(
             membership_id: candidate.membership_id,
             membership_authz_epoch: membership_authority.authz_epoch,
             consent_grant_id: candidate.consent_grant_id,
-            authenticated_at: session_authority.authenticated_at,
         },
         &scopes,
-        None,
         Some(candidate.family_id),
         Some(candidate.token_id),
     )
@@ -2005,7 +1530,6 @@ struct TokenSubject {
     membership_id: Option<Uuid>,
     membership_authz_epoch: Option<i64>,
     consent_grant_id: Uuid,
-    authenticated_at: OffsetDateTime,
 }
 
 async fn issue_tokens(
@@ -2014,7 +1538,6 @@ async fn issue_tokens(
     client: &ApplicationClient,
     subject: TokenSubject,
     scopes: &[String],
-    nonce: Option<&str>,
     existing_family_id: Option<Uuid>,
     parent_refresh_id: Option<Uuid>,
 ) -> Result<TokenResponse, ApiError> {
@@ -2131,35 +1654,22 @@ async fn issue_tokens(
         .crypto
         .digest_secret(DigestPurpose::OAuthRefreshToken, &raw_refresh)
         .map_err(|_| ApiError::internal("oauth_refresh_digest"))?;
-    sqlx::query(
-        r"
-        INSERT INTO iam.refresh_tokens (
-            id, family_id, parent_token_id, token_digest,
-            digest_key_version, token_prefix, expires_at
-        ) VALUES (
-            $1, $2, $3, $4, $5, $6,
-            LEAST(
-                transaction_timestamp() + interval '30 days',
-                (SELECT absolute_expires_at FROM iam.refresh_token_families WHERE id = $2)
-            )
+    sqlx::query(OAUTH_REFRESH_INSERT_QUERY)
+        .bind(refresh_id)
+        .bind(family_id)
+        .bind(parent_refresh_id)
+        .bind(refresh_digest.as_bytes().as_slice())
+        .bind(refresh_digest.key_version())
+        .bind(
+            raw_refresh
+                .expose_secret()
+                .chars()
+                .take(12)
+                .collect::<String>(),
         )
-        ",
-    )
-    .bind(refresh_id)
-    .bind(family_id)
-    .bind(parent_refresh_id)
-    .bind(refresh_digest.as_bytes().as_slice())
-    .bind(refresh_digest.key_version())
-    .bind(
-        raw_refresh
-            .expose_secret()
-            .chars()
-            .take(12)
-            .collect::<String>(),
-    )
-    .execute(&mut **transaction)
-    .await
-    .map_err(|_| ApiError::internal("oauth_refresh_insert"))?;
+        .execute(&mut **transaction)
+        .await
+        .map_err(|_| ApiError::internal("oauth_refresh_insert"))?;
     if let Some(parent_id) = parent_refresh_id {
         let result = sqlx::query(
             r"
@@ -2184,21 +1694,6 @@ async fn issue_tokens(
             .fetch_optional(&mut **transaction)
             .await
             .map_err(|_| ApiError::internal("oauth_token_org_id"))?
-    } else {
-        None
-    };
-    let id_token = if scopes.iter().any(|scope| scope == "openid") {
-        Some(
-            sign_id_token(
-                transaction,
-                state,
-                client,
-                &subject,
-                nonce,
-                org_id.as_deref(),
-            )
-            .await?,
-        )
     } else {
         None
     };
@@ -2239,9 +1734,8 @@ async fn issue_tokens(
     Ok(TokenResponse {
         access_token: raw_access.expose_secret().to_owned(),
         token_type: "Bearer".to_owned(),
-        expires_in: u64::try_from(access_seconds).unwrap_or(900),
+        expires_in: u64::try_from(access_seconds).unwrap_or(1_800),
         scope: scopes.join(" "),
-        id_token,
         refresh_token,
         actor: PublicActor {
             principal_id: subject.principal_id,
@@ -2257,82 +1751,6 @@ fn refresh_reuse_error() -> ApiError {
         "invalid_grant",
         "Refresh-token reuse was detected and the family was revoked.",
     )
-}
-
-async fn sign_id_token(
-    transaction: &mut Transaction<'_, Postgres>,
-    state: &ApiState,
-    client: &ApplicationClient,
-    subject: &TokenSubject,
-    nonce: Option<&str>,
-    org_id: Option<&str>,
-) -> Result<String, ApiError> {
-    let key = sqlx::query_as::<_, ActiveSigningKey>(
-        r"
-        SELECT id, key_id, algorithm, private_key_ciphertext,
-               private_key_nonce, encryption_key_version
-        FROM iam.oidc_signing_keys
-        WHERE status = 'active' AND not_before <= transaction_timestamp()
-        ORDER BY created_at DESC LIMIT 1
-        ",
-    )
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(|_| ApiError::internal("oidc_signing_key_read"))?
-    .ok_or_else(|| ApiError::internal("oidc_signing_key_missing"))?;
-    let nonce_bytes = <[u8; 12]>::try_from(key.private_key_nonce.as_slice())
-        .map_err(|_| ApiError::internal("oidc_signing_key_nonce"))?;
-    let private = state
-        .crypto
-        .decrypt(
-            EncryptionContext::global(ProtectedField::OidcSigningPrivateKey, key.id),
-            &EncryptedValue {
-                key_version: key.encryption_key_version,
-                nonce: nonce_bytes,
-                ciphertext: key.private_key_ciphertext,
-            },
-        )
-        .map_err(|_| ApiError::internal("oidc_signing_key_decrypt"))?;
-    let (algorithm, encoding_key) = match key.algorithm.as_str() {
-        "EdDSA" => (Algorithm::EdDSA, EncodingKey::from_ed_der(&private)),
-        "ES256" => (Algorithm::ES256, EncodingKey::from_ec_der(&private)),
-        "RS256" => (Algorithm::RS256, EncodingKey::from_rsa_der(&private)),
-        _ => return Err(ApiError::internal("oidc_signing_algorithm")),
-    };
-    let now = OffsetDateTime::now_utc().unix_timestamp();
-    let claims = build_id_token_claims(
-        base_url(state),
-        client.app_id.clone(),
-        subject,
-        nonce,
-        org_id,
-        now,
-    );
-    let mut header = Header::new(algorithm);
-    header.kid = Some(key.key_id);
-    header.typ = Some("JWT".to_owned());
-    encode(&header, &claims, &encoding_key).map_err(|_| ApiError::internal("oidc_id_token_sign"))
-}
-
-fn build_id_token_claims(
-    issuer: String,
-    audience: String,
-    subject: &TokenSubject,
-    nonce: Option<&str>,
-    org_id: Option<&str>,
-    now: i64,
-) -> IdTokenClaims {
-    IdTokenClaims {
-        iss: issuer,
-        sub: subject.principal_id.to_string(),
-        aud: audience,
-        exp: now + 900,
-        iat: now,
-        auth_time: subject.authenticated_at.unix_timestamp(),
-        sid: subject.session_id.to_string(),
-        nonce: nonce.map(ToOwned::to_owned),
-        org_id: org_id.map(ToOwned::to_owned),
-    }
 }
 
 async fn approve_request(
@@ -2797,6 +2215,7 @@ async fn protocol_event(
             event_type,
             schema_version: 1,
             payload,
+            silicon_webhook_routing: None,
         },
     )
     .await
@@ -2838,8 +2257,12 @@ fn append_redirect_parameters(base: &str, values: &[(&str, &str)]) -> Result<Str
     Ok(url.into())
 }
 
-fn redirect_response(location: &str) -> Result<Response, ApiError> {
-    let mut response = StatusCode::FOUND.into_response();
+fn redirect_response(
+    status: StatusCode,
+    location: &str,
+    replayed: bool,
+) -> Result<Response, ApiError> {
+    let mut response = status.into_response();
     response.headers_mut().insert(
         header::LOCATION,
         HeaderValue::from_str(location)
@@ -2848,6 +2271,12 @@ fn redirect_response(location: &str) -> Result<Response, ApiError> {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if replayed {
+        response.headers_mut().insert(
+            http::HeaderName::from_static("idempotency-replayed"),
+            HeaderValue::from_static("true"),
+        );
+    }
     Ok(response)
 }
 
@@ -2859,6 +2288,17 @@ fn token_response(response: TokenResponse, replayed: bool) -> Response {
     response
         .headers_mut()
         .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    if replayed {
+        response.headers_mut().insert(
+            http::HeaderName::from_static("idempotency-replayed"),
+            HeaderValue::from_static("true"),
+        );
+    }
+    response
+}
+
+fn empty_idempotent_response(status: StatusCode, replayed: bool) -> Response {
+    let mut response = status.into_response();
     if replayed {
         response.headers_mut().insert(
             http::HeaderName::from_static("idempotency-replayed"),
@@ -2896,16 +2336,6 @@ fn validate_token_type_hint(token_type_hint: Option<&str>) -> Result<(), ApiErro
     }
 }
 
-fn base_url(state: &ApiState) -> String {
-    state
-        .settings
-        .server
-        .public_base_url
-        .as_str()
-        .trim_end_matches('/')
-        .to_owned()
-}
-
 fn escape_html(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -2918,17 +2348,15 @@ fn escape_html(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use axum::http::header;
-    use time::macros::datetime;
-    use uuid::Uuid;
 
     use super::{
         AUTHORIZATION_CODE_LOOKUP_QUERY, CODE_EXCHANGE_ACTIVE_SCOPES_QUERY,
-        CURRENT_APPLICATION_CLIENT_LOCK_QUERY, REFRESH_CREDENTIAL_LOCK_QUERY,
-        REFRESH_GRANT_AUTHORITY_LOCK_QUERY, REFRESH_ISSUANCE_SCOPES_QUERY,
-        REFRESH_MEMBERSHIP_AUTHORITY_LOCK_QUERY, REFRESH_REUSE_ACCESS_REVOCATION_QUERY,
-        REFRESH_SESSION_AUTHORITY_LOCK_QUERY, REFRESH_TOKEN_CANDIDATE_QUERY, TokenSubject,
-        append_redirect_parameters, build_id_token_claims, consent_html_response, escape_html,
-        scopes_retain_exact_authority,
+        CURRENT_APPLICATION_CLIENT_LOCK_QUERY, OAUTH_REFRESH_INSERT_QUERY,
+        REFRESH_CREDENTIAL_LOCK_QUERY, REFRESH_GRANT_AUTHORITY_LOCK_QUERY,
+        REFRESH_ISSUANCE_SCOPES_QUERY, REFRESH_MEMBERSHIP_AUTHORITY_LOCK_QUERY,
+        REFRESH_REUSE_ACCESS_REVOCATION_QUERY, REFRESH_SESSION_AUTHORITY_LOCK_QUERY,
+        REFRESH_TOKEN_CANDIDATE_QUERY, append_redirect_parameters, consent_html_response,
+        empty_idempotent_response, escape_html, scopes_retain_exact_authority,
     };
 
     #[test]
@@ -2980,32 +2408,16 @@ mod tests {
     }
 
     #[test]
-    fn id_token_auth_time_comes_from_the_parent_authentication_session() {
-        let authenticated_at = datetime!(2026-01-01 12:00 UTC);
-        let subject = TokenSubject {
-            session_id: Uuid::now_v7(),
-            principal_id: Uuid::now_v7(),
-            subject_kind: "carbon".to_owned(),
-            subject_auth_epoch: 1,
-            organization_id: None,
-            membership_id: None,
-            membership_authz_epoch: None,
-            consent_grant_id: Uuid::now_v7(),
-            authenticated_at,
-        };
-        let issuance_time = datetime!(2026-01-01 12:05 UTC).unix_timestamp();
-        let claims = build_id_token_claims(
-            "https://iam.example".to_owned(),
-            "example-app".to_owned(),
-            &subject,
-            Some("nonce"),
-            None,
-            issuance_time,
+    fn empty_idempotent_response_marks_only_replays() {
+        let initial = empty_idempotent_response(http::StatusCode::OK, false);
+        assert!(initial.headers().get("idempotency-replayed").is_none());
+
+        let replay = empty_idempotent_response(http::StatusCode::ACCEPTED, true);
+        assert_eq!(replay.status(), http::StatusCode::ACCEPTED);
+        assert_eq!(
+            replay.headers().get("idempotency-replayed"),
+            Some(&http::HeaderValue::from_static("true"))
         );
-        assert_eq!(claims.auth_time, authenticated_at.unix_timestamp());
-        assert_ne!(claims.auth_time, claims.iat);
-        assert_eq!(claims.sid, subject.session_id.to_string());
-        assert_eq!(claims.nonce.as_deref(), Some("nonce"));
     }
 
     #[test]
@@ -3023,7 +2435,6 @@ mod tests {
             );
         }
         for required_fragment in [
-            "session.authenticated_at",
             "session.subject_principal_id = request.subject_principal_id",
             "session.subject_kind = request.subject_kind",
             "session.subject_auth_epoch = principal.auth_epoch",
@@ -3041,14 +2452,17 @@ mod tests {
 
     #[test]
     fn authorization_code_scopes_require_exact_current_authority() {
-        let requested = vec!["openid".to_owned(), "profile".to_owned()];
+        let requested = vec![
+            "organizations.read".to_owned(),
+            "memberships.read".to_owned(),
+        ];
         assert!(scopes_retain_exact_authority(&requested, &requested));
         assert!(!scopes_retain_exact_authority(
             &requested,
-            &["openid".to_owned()]
+            &["organizations.read".to_owned()]
         ));
         assert!(!scopes_retain_exact_authority(
-            &["openid".to_owned()],
+            &["organizations.read".to_owned()],
             &requested
         ));
         for required_fragment in [
@@ -3149,5 +2563,14 @@ mod tests {
                 "refresh scope lock is missing `{required_fragment}`"
             );
         }
+    }
+
+    #[test]
+    fn oauth_refresh_credentials_use_the_family_absolute_deadline() {
+        assert!(
+            OAUTH_REFRESH_INSERT_QUERY
+                .contains("SELECT absolute_expires_at FROM iam.refresh_token_families")
+        );
+        assert!(!OAUTH_REFRESH_INSERT_QUERY.contains("30 days"));
     }
 }

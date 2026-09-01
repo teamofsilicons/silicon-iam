@@ -35,9 +35,8 @@ pub(crate) struct WebhookReceipt {
 pub(crate) struct WebhookRequest<'a> {
     pub(crate) environment: RuntimeEnvironment,
     pub(crate) destination: &'a Url,
-    pub(crate) signing_secret: Option<&'a SecretString>,
-    pub(crate) service_bearer: Option<&'a SecretString>,
-    pub(crate) signing_key_version: Option<i64>,
+    pub(crate) signing_secret: &'a SecretString,
+    pub(crate) signing_key_version: i64,
     pub(crate) event_id: Uuid,
     pub(crate) timestamp: i64,
     pub(crate) body: &'a [u8],
@@ -110,7 +109,6 @@ pub(crate) async fn deliver(request: WebhookRequest<'_>) -> Result<WebhookReceip
         environment,
         destination,
         signing_secret,
-        service_bearer,
         signing_key_version,
         event_id,
         timestamp,
@@ -143,19 +141,12 @@ pub(crate) async fn deliver(request: WebhookRequest<'_>) -> Result<WebhookReceip
         .header("X-Silicon-IAM-Event-ID", event_id.to_string())
         .header("X-Silicon-IAM-Timestamp", timestamp.to_string())
         .body(body.to_vec());
-    if let Some(version) = signing_key_version {
-        request = request.header("X-Silicon-IAM-Key-Version", version.to_string());
-    }
-    if let Some(secret) = signing_secret {
-        request = request.header(
+    request = request
+        .header("X-Silicon-IAM-Key-Version", signing_key_version.to_string())
+        .header(
             "X-Silicon-IAM-Signature",
-            signature(secret, timestamp, body)?,
+            signature(signing_secret, timestamp, body)?,
         );
-    }
-    if let Some(token) = service_bearer {
-        request = request.bearer_auth(token.expose_secret());
-    }
-
     let response = request
         .send()
         .await
@@ -263,7 +254,7 @@ fn has_final_label(domain: &str, label: &str) -> bool {
         .is_some_and(|(_, final_label)| final_label == label)
 }
 
-fn is_public_destination(ip: IpAddr) -> bool {
+pub(crate) fn is_public_destination(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(address) => is_public_ipv4(address),
         IpAddr::V6(address) => address
@@ -291,6 +282,10 @@ fn is_public_ipv4(address: Ipv4Addr) -> bool {
 
 fn is_public_ipv6(address: Ipv6Addr) -> bool {
     let segments = address.segments();
+    // Public IPv6 delivery is allowlisted to IANA's global-unicast allocation.
+    // This fails closed for reserved space instead of relying on an exhaustive
+    // list of ranges that must not be routed.
+    let global_unicast = (segments[0] & 0xe000) == 0x2000;
     let ipv4_compatible = segments[..6].iter().all(|segment| *segment == 0);
     let well_known_nat64 = segments[0] == 0x0064
         && segments[1] == 0xff9b
@@ -305,19 +300,20 @@ fn is_public_ipv6(address: Ipv6Addr) -> bool {
     let deprecated_site_local = (segments[0] & 0xffc0) == 0xfec0;
     let multicast = (segments[0] & 0xff00) == 0xff00;
 
-    !(ipv4_compatible
-        || well_known_nat64
-        || local_nat64
-        || discard_only
-        || ietf_protocol_assignment
-        || documentation
-        || extended_documentation
-        || segments[0] == 0x2002
-        || segments[0] == 0x5f00
-        || unique_local
-        || link_local
-        || deprecated_site_local
-        || multicast)
+    global_unicast
+        && !(ipv4_compatible
+            || well_known_nat64
+            || local_nat64
+            || discard_only
+            || ietf_protocol_assignment
+            || documentation
+            || extended_documentation
+            || segments[0] == 0x2002
+            || segments[0] == 0x5f00
+            || unique_local
+            || link_local
+            || deprecated_site_local
+            || multicast)
 }
 
 fn signature(secret: &SecretString, timestamp: i64, body: &[u8]) -> Result<String, WebhookError> {
@@ -384,7 +380,10 @@ mod tests {
             "fe80::1",
             "ff02::1",
             "2001:db8::1",
+            "4000::1",
+            "6000::1",
             "64:ff9b:1::1",
+            "fe00::1",
             "::ffff:127.0.0.1",
         ] {
             let parsed = address.parse::<IpAddr>();

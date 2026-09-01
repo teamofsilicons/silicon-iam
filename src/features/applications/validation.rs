@@ -8,25 +8,10 @@ use super::{error::ApiError, model};
 
 const MAX_REDIRECT_URIS: usize = 20;
 const MAX_SCOPES: usize = 100;
-pub(super) const OBO_ACTIONS: [&str; 17] = [
-    "organization.update",
-    "members.invite",
-    "members.update_directory",
-    "members.remove",
-    "silicons.create",
-    "silicons.update_directory",
-    "silicons.manage_hierarchy",
-    "silicons.remove",
-    "silicons.rotate_token",
-    "tags.manage",
-    "trust.manage",
-    "roles.request",
-    "roles.approve",
-    "admins.create",
-    "admins.manage",
-    "sso.manage",
-    "audit.read",
-];
+const MAX_OBO_ENDPOINTS: usize = 50;
+const MAX_OBO_METADATA_BYTES: usize = 16_384;
+const MAX_OBO_METADATA_DEPTH: usize = 8;
+const MAX_OBO_METADATA_NODES: usize = 512;
 
 pub(super) fn app_id(value: &str) -> Result<(), ApiError> {
     if !(3..=80).contains(&value.len())
@@ -50,6 +35,7 @@ pub(super) fn application_create(input: &model::ApplicationCreate) -> Result<(),
     redirect_uris(&input.redirect_uris)?;
     webhook_url(&input.webhook_url)?;
     scopes(&input.requested_scopes)?;
+    obo_endpoints(&input.obo_endpoints)?;
     Ok(())
 }
 
@@ -58,6 +44,7 @@ pub(super) fn application_patch(input: &model::ApplicationPatch) -> Result<(), A
         && input.app_logo_uri.is_none()
         && input.redirect_uris.is_none()
         && input.requested_scopes.is_none()
+        && input.obo_endpoints.is_none()
     {
         return Err(ApiError::validation(
             "body",
@@ -80,29 +67,10 @@ pub(super) fn application_patch(input: &model::ApplicationPatch) -> Result<(), A
     if let Some(values) = &input.requested_scopes {
         scopes(values)?;
     }
+    if let Some(values) = &input.obo_endpoints {
+        obo_endpoints(values)?;
+    }
     Ok(())
-}
-
-pub(super) fn collaborator_role(value: &str) -> Result<(), ApiError> {
-    if matches!(value, "owner_delegate" | "developer" | "viewer") {
-        Ok(())
-    } else {
-        Err(ApiError::validation(
-            "role",
-            "must be owner_delegate, developer, or viewer",
-        ))
-    }
-}
-
-pub(super) fn overlap(seconds: u16) -> Result<(), ApiError> {
-    if seconds <= 3_600 {
-        Ok(())
-    } else {
-        Err(ApiError::validation(
-            "overlap_seconds",
-            "must be between 0 and 3600",
-        ))
-    }
 }
 
 pub(super) fn redirect_uris(values: &[String]) -> Result<(), ApiError> {
@@ -142,24 +110,8 @@ pub(super) fn redirect_uris(values: &[String]) -> Result<(), ApiError> {
 }
 
 pub(super) fn webhook_url(value: &str) -> Result<Url, ApiError> {
-    let parsed = Url::parse(value)
-        .map_err(|_| ApiError::validation("webhook_url", "must be a valid HTTPS URL"))?;
-    if value.len() > 2_048
-        || parsed.scheme() != "https"
-        || parsed.host_str().is_none()
-        || matches!(parsed.host(), Some(url::Host::Domain(domain)) if domain.ends_with('.'))
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.fragment().is_some()
-        || is_local_host(parsed.host_str().unwrap_or_default())
-        || parsed.as_str() != value
-    {
-        return Err(ApiError::validation(
-            "webhook_url",
-            "must be a canonical public HTTPS URL without credentials or fragments",
-        ));
-    }
-    Ok(parsed)
+    crate::features::webhook_url::parse(value)
+        .map_err(|message| ApiError::validation("webhook_url", message))
 }
 
 pub(super) fn scopes(values: &[String]) -> Result<(), ApiError> {
@@ -190,12 +142,6 @@ pub(super) fn scopes(values: &[String]) -> Result<(), ApiError> {
             ));
         }
     }
-    if !unique.contains("openid") {
-        return Err(ApiError::validation(
-            "requested_scopes",
-            "must include openid",
-        ));
-    }
     Ok(())
 }
 
@@ -213,8 +159,7 @@ pub(super) fn authorize(query: &model::AuthorizeQuery) -> Result<Vec<String>, Ap
             "PKCE-S256 is required.",
         ));
     }
-    bounded_protocol_secret("state", &query.state)?;
-    bounded_protocol_secret("nonce", &query.nonce)?;
+    bounded_oauth_state(&query.state)?;
     let requested_scopes = query
         .scope
         .split(' ')
@@ -247,23 +192,209 @@ pub(super) fn pkce_matches(verifier: &str, challenge: &str) -> bool {
     subtle::ConstantTimeEq::ct_eq(calculated.as_bytes(), challenge.as_bytes()).into()
 }
 
-pub(super) fn action(value: &str) -> Result<(), ApiError> {
-    if OBO_ACTIONS.contains(&value) {
-        Ok(())
-    } else {
-        Err(ApiError::validation(
-            "action",
-            "must be a supported organization capability",
-        ))
+pub(super) fn obo_endpoint_id(value: &str) -> Result<(), ApiError> {
+    if !(3..=128).contains(&value.len())
+        || !value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase()
+                || (index > 0
+                    && (byte.is_ascii_digit() || matches!(byte, b'_' | b'.' | b':' | b'-')))
+        })
+    {
+        return Err(ApiError::validation(
+            "endpoint_id",
+            "must be 3-128 characters, start with a lowercase letter, and contain only lowercase ASCII letters, digits, '_', '.', ':', or '-'",
+        ));
     }
+    Ok(())
 }
 
-pub(super) fn resource(value: Option<&str>) -> Result<(), ApiError> {
-    if value.is_some_and(|value| value.is_empty() || value.len() > 1_024) {
+pub(super) fn obo_metadata(field: &'static str, value: &serde_json::Value) -> Result<(), ApiError> {
+    if !value.is_object() {
+        return Err(ApiError::validation(field, "must be a JSON object"));
+    }
+    let encoded =
+        serde_json::to_vec(value).map_err(|_| ApiError::validation(field, "must be valid JSON"))?;
+    if encoded.len() > MAX_OBO_METADATA_BYTES {
         return Err(ApiError::validation(
-            "resource",
-            "must contain 1 to 1024 characters",
+            field,
+            "must serialize to at most 16384 bytes",
         ));
+    }
+    let mut nodes = 0;
+    validate_json_shape(value, 0, &mut nodes, field)
+}
+
+fn obo_endpoints(values: &[model::ApplicationOboEndpoint]) -> Result<(), ApiError> {
+    if values.len() > MAX_OBO_ENDPOINTS {
+        return Err(ApiError::validation(
+            "obo_endpoints",
+            "must contain at most 50 endpoints",
+        ));
+    }
+    let mut identifiers = BTreeSet::new();
+    let mut paths = BTreeSet::new();
+    for endpoint in values {
+        obo_endpoint_id(&endpoint.endpoint_id)?;
+        if !identifiers.insert(endpoint.endpoint_id.as_str()) {
+            return Err(ApiError::validation(
+                "obo_endpoints",
+                "contains duplicate endpoint_id values",
+            ));
+        }
+        if endpoint.path.len() > 2_048
+            || !endpoint.path.starts_with('/')
+            || endpoint.path.starts_with("//")
+            || endpoint.path.contains(['?', '#'])
+            || endpoint
+                .path
+                .bytes()
+                .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+            || endpoint
+                .path
+                .split('/')
+                .any(|segment| matches!(segment, "." | ".."))
+        {
+            return Err(ApiError::validation(
+                "obo_endpoints",
+                "contains an invalid absolute endpoint path",
+            ));
+        }
+        if !paths.insert(endpoint.path.as_str()) {
+            return Err(ApiError::validation(
+                "obo_endpoints",
+                "contains duplicate endpoint paths",
+            ));
+        }
+        obo_metadata("obo_endpoints.metadata", &endpoint.metadata)?;
+        validate_obo_metadata_definition(&endpoint.metadata)?;
+    }
+    Ok(())
+}
+
+fn validate_obo_metadata_definition(definition: &serde_json::Value) -> Result<(), ApiError> {
+    let Some(properties) = definition.as_object() else {
+        return Err(ApiError::validation(
+            "obo_endpoints.metadata",
+            "must be a JSON object",
+        ));
+    };
+    for descriptor in properties.values() {
+        let Some(descriptor) = descriptor.as_object() else {
+            continue;
+        };
+        let Some(declared_type) = descriptor.get("type") else {
+            continue;
+        };
+        let Some(declared_type) = declared_type.as_str() else {
+            return Err(ApiError::validation(
+                "obo_endpoints.metadata",
+                "contains a metadata type that is not a string",
+            ));
+        };
+        if !matches!(
+            declared_type,
+            "string" | "number" | "integer" | "boolean" | "object" | "array" | "null"
+        ) {
+            return Err(ApiError::validation(
+                "obo_endpoints.metadata",
+                "contains an unsupported metadata type",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn obo_request_metadata(
+    definition: &serde_json::Value,
+    request: &serde_json::Value,
+) -> Result<(), ApiError> {
+    obo_metadata("metadata", request)?;
+    let Some(definition) = definition.as_object() else {
+        return Err(ApiError::internal("obo_endpoint_metadata_definition"));
+    };
+    let Some(request) = request.as_object() else {
+        return Err(ApiError::validation("metadata", "must be a JSON object"));
+    };
+    if let Some(key) = definition.keys().find(|key| !request.contains_key(*key)) {
+        return Err(ApiError::validation(
+            "metadata",
+            format!("is missing the required '{key}' property"),
+        ));
+    }
+    if let Some(key) = request.keys().find(|key| !definition.contains_key(*key)) {
+        return Err(ApiError::validation(
+            "metadata",
+            format!("contains the unregistered '{key}' property"),
+        ));
+    }
+    for (key, descriptor) in definition {
+        let Some(declared_type) = descriptor
+            .as_object()
+            .and_then(|descriptor| descriptor.get("type"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        let Some(value) = request.get(key) else {
+            return Err(ApiError::validation(
+                "metadata",
+                "is missing a required property",
+            ));
+        };
+        let matches = match declared_type {
+            "string" => value.is_string(),
+            "number" => value.is_number(),
+            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+            "boolean" => value.is_boolean(),
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "null" => value.is_null(),
+            _ => return Err(ApiError::internal("obo_endpoint_metadata_type")),
+        };
+        if !matches {
+            return Err(ApiError::validation(
+                "metadata",
+                format!("property '{key}' must have type '{declared_type}'"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_json_shape(
+    value: &serde_json::Value,
+    depth: usize,
+    nodes: &mut usize,
+    field: &'static str,
+) -> Result<(), ApiError> {
+    *nodes += 1;
+    if depth > MAX_OBO_METADATA_DEPTH || *nodes > MAX_OBO_METADATA_NODES {
+        return Err(ApiError::validation(
+            field,
+            "is too deeply nested or complex",
+        ));
+    }
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, child) in object {
+                if key.is_empty()
+                    || key.len() > 128
+                    || key.bytes().any(|byte| byte.is_ascii_control())
+                {
+                    return Err(ApiError::validation(
+                        field,
+                        "contains an invalid object key",
+                    ));
+                }
+                validate_json_shape(child, depth + 1, nodes, field)?;
+            }
+        }
+        serde_json::Value::Array(array) => {
+            for child in array {
+                validate_json_shape(child, depth + 1, nodes, field)?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -307,40 +438,26 @@ fn optional_https_uri(
     Ok(())
 }
 
-fn bounded_protocol_secret(field: &'static str, value: &str) -> Result<(), ApiError> {
+fn bounded_oauth_state(value: &str) -> Result<(), ApiError> {
     if !(16..=512).contains(&value.len()) || value.bytes().any(|byte| byte.is_ascii_control()) {
         return Err(ApiError::bad_request(
             "invalid_request",
-            match field {
-                "state" => "state must contain 16 to 512 characters.",
-                _ => "nonce must contain 16 to 512 characters.",
-            },
+            "state must contain 16 to 512 characters.",
         ));
     }
     Ok(())
 }
 
-fn is_local_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host.ends_with(".localhost")
-        || host.parse::<std::net::IpAddr>().is_ok_and(|address| {
-            address.is_loopback()
-                || address.is_unspecified()
-                || address.is_multicast()
-                || match address {
-                    std::net::IpAddr::V4(address) => {
-                        address.is_private() || address.is_link_local() || address.is_broadcast()
-                    }
-                    std::net::IpAddr::V6(address) => address.is_unique_local(),
-                }
-        })
-}
-
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
     use sha2::Digest as _;
 
-    use super::{OBO_ACTIONS, action, app_id, pkce_matches, redirect_uris, webhook_url};
+    use super::{
+        app_id, obo_endpoint_id, obo_endpoints, obo_metadata, obo_request_metadata, pkce_matches,
+        redirect_uris, webhook_url,
+    };
+    use crate::features::applications::model::ApplicationOboEndpoint;
 
     #[test]
     fn application_identifiers_match_database_constraints() {
@@ -377,9 +494,90 @@ mod tests {
     }
 
     #[test]
-    fn obo_actions_are_a_closed_capability_vocabulary() {
-        assert!(OBO_ACTIONS.iter().all(|value| action(value).is_ok()));
-        assert!(action("documents.read").is_err());
-        assert!(action("owner-only-action").is_err());
+    fn obo_endpoints_accept_application_owned_identifiers_and_bounded_objects() {
+        assert!(obo_endpoint_id("documents.read").is_ok());
+        assert!(obo_endpoint_id("Owner.read").is_err());
+        assert!(obo_metadata("metadata", &json!({ "document_id": "doc_123" })).is_ok());
+        assert!(obo_metadata("metadata", &json!(["not", "an", "object"])).is_err());
+        assert!(obo_metadata("metadata", &json!({ "value": "x".repeat(16_384) })).is_err());
+    }
+
+    #[test]
+    fn obo_endpoint_registry_requires_unique_stable_absolute_paths() {
+        let endpoint = ApplicationOboEndpoint {
+            endpoint_id: "documents.read".to_owned(),
+            path: "/v1/documents/read".to_owned(),
+            metadata: json!({ "document_id": { "type": "string" } }),
+        };
+        assert!(obo_endpoints(std::slice::from_ref(&endpoint)).is_ok());
+        assert!(obo_endpoints(&[endpoint.clone(), endpoint.clone()]).is_err());
+        assert!(
+            obo_endpoints(&[ApplicationOboEndpoint {
+                path: "/v1/../admin".to_owned(),
+                ..endpoint
+            }])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn obo_request_metadata_matches_the_registered_contract_exactly() {
+        let definition = json!({
+            "reason": { "type": "string" },
+            "attempt": { "type": "integer" },
+            "flags": { "type": "array" },
+            "context": { "type": "object" },
+            "approved": { "type": "boolean" },
+            "weight": { "type": "number" },
+            "empty": { "type": "null" },
+        });
+        assert!(
+            obo_request_metadata(
+                &definition,
+                &json!({
+                    "reason": "support",
+                    "attempt": 2,
+                    "flags": ["urgent"],
+                    "context": { "ticket": "SUP-1" },
+                    "approved": true,
+                    "weight": 1.5,
+                    "empty": null,
+                }),
+            )
+            .is_ok()
+        );
+        assert!(obo_request_metadata(&definition, &json!({})).is_err());
+        assert!(
+            obo_request_metadata(
+                &definition,
+                &json!({
+                    "reason": 7,
+                    "attempt": 2,
+                    "flags": [],
+                    "context": {},
+                    "approved": true,
+                    "weight": 1,
+                    "empty": null,
+                }),
+            )
+            .is_err()
+        );
+        assert!(
+            obo_request_metadata(
+                &json!({ "reason": { "type": "string" } }),
+                &json!({ "reason": "support", "unregistered": true }),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn obo_endpoint_registry_rejects_invalid_declared_types() {
+        let endpoint = ApplicationOboEndpoint {
+            endpoint_id: "documents.read".to_owned(),
+            path: "/v1/documents/read".to_owned(),
+            metadata: json!({ "document_id": { "type": "uuid" } }),
+        };
+        assert!(obo_endpoints(&[endpoint]).is_err());
     }
 }
