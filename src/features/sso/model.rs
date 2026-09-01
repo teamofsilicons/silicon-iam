@@ -1,0 +1,136 @@
+use secrecy::SecretString;
+use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
+use url::Url;
+use uuid::Uuid;
+
+use crate::domain::organization::{TrustBoundary, TrustLevel};
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum AdmissionMode {
+    InvitationRequired,
+    VerifiedIdentityPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TrustValue {
+    pub(super) boundary: TrustBoundary,
+    pub(super) level: TrustLevel,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SsoAdmissionPolicy {
+    pub(super) mode: AdmissionMode,
+    #[serde(default)]
+    pub(super) allowed_email_domains: Vec<String>,
+    #[serde(default)]
+    pub(super) allowed_groups: Vec<String>,
+    pub(super) default_job_role: String,
+    pub(super) default_tag_ids: Vec<Uuid>,
+    pub(super) first_silicon_membership_id: Option<Uuid>,
+    pub(super) default_trust: TrustValue,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct SsoConfiguration {
+    pub(super) org_id: String,
+    pub(super) entitled: bool,
+    pub(super) status: String,
+    pub(super) join_method: String,
+    pub(super) workos_organization_id: Option<String>,
+    pub(super) connection_id: Option<String>,
+    pub(super) policy: SsoAdmissionPolicy,
+    pub(super) version: i64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub(super) updated_at: OffsetDateTime,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SsoEntitlement {
+    pub(super) enabled: bool,
+    pub(super) reason: Option<String>,
+    pub(super) version: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct SsoEntitlementResponse {
+    pub(super) enabled: bool,
+    pub(super) reason: Option<String>,
+    pub(super) version: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct SsoSetupLink {
+    pub(super) url: String,
+    pub(super) expires_in: u64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub(super) expires_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct TestResult {
+    pub(super) ok: bool,
+    pub(super) message: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub(super) checked_at: OffsetDateTime,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AuthorizeQuery {
+    pub(super) return_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CallbackQuery {
+    pub(super) code: String,
+    pub(super) state: String,
+}
+
+pub(super) struct ValidatedAuthorize {
+    pub(super) return_to: Url,
+}
+
+pub(super) struct CorrelationSecret {
+    pub(super) state: SecretString,
+    pub(super) nonce: SecretString,
+    pub(super) wire_state: SecretString,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ProviderConnectionTransition {
+    Activated,
+    Deactivated,
+    Deleted,
+}
+
+impl ProviderConnectionTransition {
+    pub(super) const fn event_name(self) -> &'static str {
+        match self {
+            Self::Activated => "connection.activated",
+            Self::Deactivated => "connection.deactivated",
+            Self::Deleted => "connection.deleted",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct WorkOsWebhookEnvelope {
+    pub(super) id: String,
+    pub(super) event: String,
+    pub(super) data: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct WorkOsConnectionData {
+    pub(super) object: String,
+    pub(super) id: String,
+    pub(super) organization_id: String,
+    pub(super) connection_type: Option<String>,
+    pub(super) state: Option<String>,
+}
