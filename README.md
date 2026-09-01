@@ -19,6 +19,36 @@ runtime processes and three one-shot operator binaries:
 
 PostgreSQL 16 or newer is the sole authoritative datastore.
 
+## HTML surfaces
+
+Alongside the JSON contract the API serves three server-rendered surfaces from
+`src/web`. They are deliberately outside `openapi.yaml` — an interface and a
+document are not contract — and `scripts/check-openapi-routes.rb` enforces that
+boundary in CI.
+
+| Path | What it is |
+| --- | --- |
+| `/docs/api/` | Browsable API documentation, eleven sections, authored in `docs/api/*.html` |
+| `/openapi.yaml` | The normative contract, at a stable cacheable URL |
+| `/admin` | Platform-administration console: application review, consent policy, SSO entitlement |
+
+Everything they need is embedded at compile time — markup, stylesheet, script,
+marks and the IBM Plex latin subsets — so a release image makes no third-party
+request and cannot serve documentation that has drifted from its binary. The
+`/admin` console executes no SQL and holds no credential; it is a thin
+same-origin client over `/api/v1/admin/*`, which already requires a
+platform-administrator bearer, a verified-channel step-up token, an
+`Idempotency-Key` and an `If-Match` on every mutation.
+
+The HTML router is merged outside the JSON router's layer stack. Inside it,
+error normalisation would rewrite the documentation's own 404 into the JSON
+envelope and the `no-store` default would make every asset uncacheable.
+
+The browser frontends — `auth.iam.teamofsilicons.com` and
+`iam.teamofsilicons.com` — live in the sibling `silicon-iam-frontend`
+repository.
+
+
 ## Local start
 
 Prerequisites are Docker with Compose v2 and OpenSSL.
