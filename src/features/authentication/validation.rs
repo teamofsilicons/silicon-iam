@@ -87,8 +87,12 @@ pub(super) fn signup_completion(
     let carbon_id = CarbonId::from_str(&input.carbon_id)
         .map_err(|_| validation("carbon_id", "has an invalid format"))?;
     let display_name = bounded_text("display_name", input.display_name, 1, 200, false)?;
-    if !crate::domain::timezone::is_valid_identifier(&input.timezone) {
-        return Err(validation("timezone", "must be a valid IANA TZ identifier"));
+    let timezone = input.time_zone.unwrap_or_else(|| "UTC".to_owned());
+    if !crate::domain::timezone::is_valid_identifier(&timezone) {
+        return Err(validation(
+            "time_zone",
+            "must be a valid IANA TZ identifier",
+        ));
     }
     let description = input
         .description
@@ -101,7 +105,7 @@ pub(super) fn signup_completion(
     Ok(ValidatedSignupCompletion {
         carbon_id,
         display_name,
-        timezone: input.timezone,
+        timezone,
         description,
         profile_photo,
     })
@@ -205,7 +209,7 @@ mod tests {
         let valid = SignupCompletionInput {
             carbon_id: "timezone_test".to_owned(),
             display_name: "Time Zone Test".to_owned(),
-            timezone: "Asia/Kolkata".to_owned(),
+            time_zone: Some("Asia/Kolkata".to_owned()),
             description: None,
             profile_photo: None,
         };
@@ -217,10 +221,22 @@ mod tests {
         let invalid = SignupCompletionInput {
             carbon_id: "timezone_test".to_owned(),
             display_name: "Time Zone Test".to_owned(),
-            timezone: "Mars/Olympus_Mons".to_owned(),
+            time_zone: Some("Mars/Olympus_Mons".to_owned()),
             description: None,
             profile_photo: None,
         };
         assert!(signup_completion(invalid, false).is_err());
+
+        let defaulted = SignupCompletionInput {
+            carbon_id: "timezone_test".to_owned(),
+            display_name: "Time Zone Test".to_owned(),
+            time_zone: None,
+            description: None,
+            profile_photo: None,
+        };
+        assert!(matches!(
+            signup_completion(defaulted, false),
+            Ok(profile) if profile.timezone == "UTC"
+        ));
     }
 }

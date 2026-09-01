@@ -26,7 +26,7 @@ pub(super) struct VerificationInput {
 pub(super) struct SignupCompletionInput {
     pub(super) carbon_id: String,
     pub(super) display_name: String,
-    pub(super) timezone: String,
+    pub(super) time_zone: Option<String>,
     pub(super) description: Option<String>,
     pub(super) profile_photo: Option<String>,
 }

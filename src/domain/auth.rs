@@ -23,7 +23,7 @@ pub enum CarbonIdError {
     #[error("carbon_id must be between 3 and 30 ASCII characters")]
     Length,
     /// Identifier contains an unsupported character.
-    #[error("carbon_id may contain only lowercase letters, digits, hyphens, and underscores")]
+    #[error("carbon_id may contain only lowercase letters, digits 1-9, hyphens, and underscores")]
     Characters,
 }
 
@@ -61,9 +61,10 @@ impl FromStr for CarbonId {
             return Err(CarbonIdError::Length);
         }
 
-        if !normalized.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
-        }) {
+        if !normalized
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || matches!(byte, b'1'..=b'9' | b'-' | b'_'))
+        {
             return Err(CarbonIdError::Characters);
         }
 
@@ -103,11 +104,16 @@ mod tests {
 
     #[test]
     fn carbon_id_is_normalized() {
-        let carbon_id = CarbonId::from_str("Saket_2103");
+        let carbon_id = CarbonId::from_str("Saket_213");
         assert_eq!(
             carbon_id.map(|value| value.to_string()),
-            Ok("saket_2103".to_owned())
+            Ok("saket_213".to_owned())
         );
+    }
+
+    #[test]
+    fn carbon_id_rejects_zero() {
+        assert_eq!(CarbonId::from_str("saket0"), Err(CarbonIdError::Characters));
     }
 
     #[test]

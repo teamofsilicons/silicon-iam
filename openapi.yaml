@@ -2728,7 +2728,7 @@ components:
       type: string
       pattern: '^[0-9]{6}$'
       description: Six-digit code with a ten-minute expiry; ten failed verifications trigger a 60-second reusable-challenge cooldown.
-    CarbonId: { type: string, pattern: '^[a-z0-9_-]{3,30}$' }
+    CarbonId: { type: string, pattern: '^[a-z1-9_-]{3,30}$' }
     OrgId: { type: string, pattern: '^[a-z0-9_-]{3,50}$' }
     AppId: { type: string, pattern: '^[a-z][a-z0-9_-]{2,62}$' }
     SiliconHandle:
@@ -2825,12 +2825,14 @@ components:
             updated_at: { type: string, format: date-time }
     CarbonSignupComplete:
       type: object
-      required: [carbon_id, display_name, timezone]
+      required: [carbon_id, display_name]
       additionalProperties: false
       properties:
         carbon_id: { $ref: '#/components/schemas/CarbonId' }
         display_name: { type: string, minLength: 1, maxLength: 200 }
-        timezone: { $ref: '#/components/schemas/TimeZoneId' }
+        time_zone:
+          allOf: [{ $ref: '#/components/schemas/TimeZoneId' }]
+          description: Defaults to UTC when omitted.
         description: { type: [string, 'null'], maxLength: 5000 }
         profile_photo: { type: [string, 'null'], format: uri, maxLength: 2048 }
     CarbonProfilePatch:
