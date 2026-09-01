@@ -37,6 +37,7 @@ EXPECTED_DELETE_TABLES = Set.new(%w[
   application_requested_scopes
   idempotency_records
   oauth_consent_grant_scopes
+  silicon_webhook_subscription_extra_tags
   silicon_webhook_subscription_topics
   silicon_webhook_subscriptions
 ]).freeze
@@ -277,6 +278,39 @@ def check_keyring_function_boundary(source, issues)
   end
 end
 
+def check_sso_connection_event_boundary(migration_source, api_source, grant_source, issues)
+  api_functions = extract_manifest(grant_source, "api_function_names", issues)
+  unless api_functions.include?("apply_workos_connection_event")
+    issues << "API function manifest is missing apply_workos_connection_event"
+  end
+
+  unless migration_source.match?(
+    /ALTER TABLE iam\.sso_connections[\s\S]*ADD COLUMN version bigint NOT NULL DEFAULT 1/
+  )
+    issues << "sso_connections are missing an independently persisted event version"
+  end
+  unless migration_source.match?(
+    /ADD CONSTRAINT sso_connections_positive_version CHECK \(version > 0\)/
+  )
+    issues << "sso_connections event versions are missing a positive-value constraint"
+  end
+  unless migration_source.match?(
+    /CREATE TRIGGER sso_connections_bump_aggregate_version[\s\S]*BEFORE UPDATE ON iam\.sso_connections[\s\S]*iam_private\.bump_aggregate_version\(\)/
+  )
+    issues << "sso_connections are missing the aggregate-version bump trigger"
+  end
+  unless migration_source.match?(
+    /DROP FUNCTION iam_private\.apply_workos_connection_event\([\s\S]*CREATE FUNCTION iam_private\.apply_workos_connection_event\([\s\S]*RETURNS TABLE \([\s\S]*connection_version bigint[\s\S]*SECURITY DEFINER/
+  )
+    issues << "WorkOS connection mutation boundary must return per-connection versions"
+  end
+  unless api_source.match?(
+    /aggregate_type: "sso_connection"[\s\S]*aggregate_id: connection_id[\s\S]*aggregate_version: connection_version/
+  )
+    issues << "WorkOS connection events must use their independently versioned aggregate"
+  end
+end
+
 issues = []
 required_paths = [
   RUNTIME_GRANTS_PATH,
@@ -398,6 +432,7 @@ end
 
 check_shared_migration_table_grants(runtime_grants, issues)
 check_keyring_function_boundary(runtime_grants, issues)
+check_sso_connection_event_boundary(migration_source, api_source, runtime_grants, issues)
 
 unless issues.empty?
   issues.each { |issue| warn issue }

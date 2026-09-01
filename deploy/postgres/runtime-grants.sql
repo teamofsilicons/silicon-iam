@@ -126,6 +126,7 @@ DECLARE
         'silicon_token_rotation_requests',
         'silicon_webhook_endpoints',
         'silicon_webhook_signing_keys',
+        'silicon_webhook_subscription_extra_tags',
         'silicon_webhook_subscription_topics',
         'silicon_webhook_subscriptions',
         'silicons',
@@ -199,6 +200,7 @@ DECLARE
         'silicon_token_rotation_requests',
         'silicon_webhook_endpoints',
         'silicon_webhook_signing_keys',
+        'silicon_webhook_subscription_extra_tags',
         'silicon_webhook_subscription_topics',
         'silicon_webhook_subscriptions',
         'silicons',
@@ -237,6 +239,7 @@ DECLARE
         'organization_sso_configs',
         'organization_tags',
         'organizations',
+        'outbox_event_recipients',
         'principals',
         'rate_limit_buckets',
         'refresh_token_families',
@@ -262,6 +265,7 @@ DECLARE
         'application_requested_scopes',
         'idempotency_records',
         'oauth_consent_grant_scopes',
+        'silicon_webhook_subscription_extra_tags',
         'silicon_webhook_subscription_topics',
         'silicon_webhook_subscriptions'
     ];
@@ -526,6 +530,8 @@ DECLARE
         'list_organization_member_webhook_projection_sources',
         'list_profile_webhook_authorization_scopes',
         'lock_membership_removal_event_scope',
+        'replace_membership_tags_direct',
+        'replace_membership_job_role_direct',
         'lock_sso_membership_activation_state',
         'lock_silicon_webhook_delivery_scope',
         'lock_silicon_webhook_own_tag_audience',
@@ -542,6 +548,7 @@ DECLARE
         'resolve_organization_invitation_tenant',
         'resolve_pending_email_join_invitation',
         'resolve_platform_sso_organization',
+        'resolve_silicon_webhook_replay_target',
         'set_organization_admin_role'
     ];
     non_api_definer_names text[] := ARRAY[
@@ -643,6 +650,8 @@ ALTER POLICY silicon_webhook_subscriptions_manage
     ON iam.silicon_webhook_subscriptions TO silicon_iam_api;
 ALTER POLICY silicon_webhook_subscription_topics_manage
     ON iam.silicon_webhook_subscription_topics TO silicon_iam_api;
+ALTER POLICY silicon_webhook_subscription_extra_tags_manage
+    ON iam.silicon_webhook_subscription_extra_tags TO silicon_iam_api;
 ALTER POLICY tag_change_requests_member_select
     ON iam.tag_change_requests TO silicon_iam_api;
 ALTER POLICY tag_change_requests_create
