@@ -75,7 +75,7 @@ paths:
         - name: Silicon-IAM-Supported-API-Versions
           in: header
           required: true
-          description: Comma-separated API majors in descending client preference order.
+          description: Comma-separated distinct API majors in descending client preference order.
           schema:
             type: string
             minLength: 2

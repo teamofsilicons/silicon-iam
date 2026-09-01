@@ -244,8 +244,8 @@ and complete retry/rate-limit header set.
 Health responses contain no dependency credentials or sensitive topology.
 
 Every official client performs the unversioned `/api/version` handshake before
-making a versioned request. It sends its supported versions in descending
-preference order:
+making a versioned request. It sends its distinct supported versions in
+descending preference order:
 
 ```http
 Silicon-IAM-Supported-API-Versions: v1

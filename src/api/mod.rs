@@ -311,7 +311,7 @@ async fn negotiate_api_version(headers: HeaderMap) -> Result<Response, AppError>
     .into_response();
     response.headers_mut().insert(
         http::HeaderName::from_static(SELECTED_API_VERSION_HEADER),
-        HeaderValue::from_static("v1"),
+        HeaderValue::from_static(selected),
     );
     Ok(response)
 }
@@ -344,16 +344,16 @@ fn supported_versions_header(headers: &HeaderMap) -> Result<Vec<&str>, AppError>
         });
     }
 
-    let versions = value
-        .split(',')
-        .map(str::trim)
-        .filter(|version| !version.is_empty())
-        .collect::<Vec<_>>();
+    let versions = value.split(',').map(str::trim).collect::<Vec<_>>();
     if versions.is_empty()
         || versions.len() > 16
         || versions
             .iter()
             .any(|version| !is_valid_api_version(version))
+        || versions
+            .iter()
+            .enumerate()
+            .any(|(index, version)| versions[..index].contains(version))
     {
         return Err(AppError::Validation {
             details: serde_json::json!({
@@ -573,6 +573,18 @@ mod tests {
         headers.insert(
             SUPPORTED_API_VERSIONS_HEADER,
             HeaderValue::from_static("v0"),
+        );
+        assert!(supported_versions_header(&headers).is_err());
+
+        headers.insert(
+            SUPPORTED_API_VERSIONS_HEADER,
+            HeaderValue::from_static("v1,"),
+        );
+        assert!(supported_versions_header(&headers).is_err());
+
+        headers.insert(
+            SUPPORTED_API_VERSIONS_HEADER,
+            HeaderValue::from_static("v1,v1"),
         );
         assert!(supported_versions_header(&headers).is_err());
     }
