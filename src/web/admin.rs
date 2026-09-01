@@ -101,7 +101,7 @@ const SIGN_IN_VIEW: &str = r#"
           <h1 class="label">Sign in</h1>
         </div>
 
-        <div class="panel" style="max-width: 420px">
+        <div class="panel panel-narrow">
           <div class="panel-body stack">
             <p class="small muted">
               Platform administration requires a Silicon IAM account holding a current
@@ -121,9 +121,8 @@ const SIGN_IN_VIEW: &str = r#"
             <form id="form-code" class="stack" novalidate hidden>
               <div class="field">
                 <label for="code">Verification code</label>
-                <input id="code" class="mono" type="text" inputmode="numeric" pattern="[0-9]{6}"
-                       maxlength="6" autocomplete="one-time-code" required
-                       style="font-size:1.25rem; letter-spacing:0.35em; text-align:center">
+                <input id="code" class="mono otp-input" type="text" inputmode="numeric"
+                       pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
                 <p class="micro">
                   Six digits, valid for 10 minutes. After 10 incorrect attempts there is a
                   60-second pause; requesting a new code does not clear it.
@@ -133,8 +132,7 @@ const SIGN_IN_VIEW: &str = r#"
               <button class="btn btn-sm" type="button" id="code-back"><span>Start over</span></button>
             </form>
 
-            <p id="signin-error" class="small" role="alert" hidden
-               style="border-inline-start:3px solid var(--ink); padding-inline-start:8px"></p>
+            <p id="signin-error" class="small form-error" role="alert" hidden></p>
           </div>
         </div>
 "#;
@@ -209,7 +207,7 @@ const CONSOLE_VIEW: &str = r#"
           <h1 class="label">SSO entitlement</h1>
         </div>
 
-        <div class="panel" style="max-width: 560px">
+        <div class="panel panel-medium">
           <div class="panel-body stack">
             <p class="small muted">
               Single sign-on is locked by default and can only be unlocked here. An entitled

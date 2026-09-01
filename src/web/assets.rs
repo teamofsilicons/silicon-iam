@@ -55,6 +55,27 @@ pub(crate) const FAVICON: Asset = Asset {
     etag: "\"favicon-1\"",
 };
 
+pub(crate) const PLEX_SANS: Asset = Asset {
+    path: "plex-sans.woff2",
+    content_type: "font/woff2",
+    body: include_bytes!("static/fonts/plex-sans-latin.woff2"),
+    etag: "\"plex-sans-1\"",
+};
+
+pub(crate) const PLEX_MONO: Asset = Asset {
+    path: "plex-mono.woff2",
+    content_type: "font/woff2",
+    body: include_bytes!("static/fonts/plex-mono-400-latin.woff2"),
+    etag: "\"plex-mono-1\"",
+};
+
+pub(crate) const PLEX_MONO_SEMIBOLD: Asset = Asset {
+    path: "plex-mono-semibold.woff2",
+    content_type: "font/woff2",
+    body: include_bytes!("static/fonts/plex-mono-600-latin.woff2"),
+    etag: "\"plex-mono-600-1\"",
+};
+
 pub(crate) const MARK: Asset = Asset {
     path: "mark.svg",
     content_type: "image/svg+xml",
@@ -62,7 +83,15 @@ pub(crate) const MARK: Asset = Asset {
     etag: "\"mark-1\"",
 };
 
-const ASSETS: &[&Asset] = &[&STYLESHEET, &ADMIN_SCRIPT, &FAVICON, &MARK];
+const ASSETS: &[&Asset] = &[
+    &STYLESHEET,
+    &ADMIN_SCRIPT,
+    &FAVICON,
+    &MARK,
+    &PLEX_SANS,
+    &PLEX_MONO,
+    &PLEX_MONO_SEMIBOLD,
+];
 
 /// Serves one embedded asset, honouring `If-None-Match`.
 ///

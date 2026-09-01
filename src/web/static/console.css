@@ -11,23 +11,39 @@
  * carried by hatch pitch and by words, never by colour alone.
  */
 
+/*
+ * Self-hosted, latin subset only. The earlier draft pointed at Google Fonts
+ * and the URLs were wrong — a fabricated hash 404s silently and the page
+ * quietly falls back, which is exactly the kind of failure nobody notices.
+ *
+ * Serving them from this origin also means the documentation and the admin
+ * console make no third-party request at all, which matters more on a
+ * security product's own surfaces than the bytes saved by a shared CDN.
+ */
 @font-face {
   font-family: 'IBM Plex Sans';
   font-style: normal;
   font-weight: 400 600;
   font-display: swap;
-  src: url('https://fonts.gstatic.com/s/ibmplexsans/v22/zYX-KVElMYYaJe8bpLHnCwDKhdHeFQ.woff2')
-    format('woff2');
+  src: url('/_static/plex-sans.woff2') format('woff2');
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+2000-206F, U+2122, U+2212;
 }
 
 @font-face {
   font-family: 'IBM Plex Mono';
   font-style: normal;
-  font-weight: 400 600;
+  font-weight: 400;
   font-display: swap;
-  src: url('https://fonts.gstatic.com/s/ibmplexmono/v20/-F6qfjptAgt5VM-kVkqdyU8n1ioSblU.woff2')
-    format('woff2');
+  src: url('/_static/plex-mono.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+2000-206F, U+2122, U+2212;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/_static/plex-mono-semibold.woff2') format('woff2');
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+2000-206F, U+2122, U+2212;
 }
 
@@ -72,6 +88,19 @@
 *::before,
 *::after {
   box-sizing: border-box;
+}
+
+/*
+ * `hidden` has to win.
+ *
+ * The attribute's UA rule is `display: none`, which any later `display`
+ * declaration silently beats — and this stylesheet sets `display` on .btn,
+ * .stack and .row, all of which the admin console toggles with `hidden`.
+ * Without this the sign-out button, the code form and the loading row all
+ * render at once on first paint. It is the one `!important` in the file.
+ */
+[hidden] {
+  display: none !important;
 }
 
 * {
@@ -1066,4 +1095,78 @@ dl.kv dd {
 .consent-foot {
   padding: 16px 20px 32px;
   text-align: center;
+}
+
+/* --------------------------------------------------------------------- *
+ * Page-specific classes                                                  *
+ *                                                                        *
+ * These exist because the CSP is `style-src 'self'` with no              *
+ * `unsafe-inline`: a `style=""` attribute on these surfaces is silently   *
+ * dropped by the browser, so there are none anywhere and every rule a     *
+ * page needs lives here. An earlier draft used inline styles and the      *
+ * documentation index rendered as an unstyled bulleted list.              *
+ * --------------------------------------------------------------------- */
+
+/* Documentation contents grid. */
+.docs-cards {
+  list-style: none;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+
+.docs-card {
+  display: block;
+  padding: 16px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.docs-card:hover {
+  background: var(--paper-2);
+  color: inherit;
+  border-color: var(--ink);
+}
+
+.docs-card h2 {
+  font-size: 1.1875rem;
+  margin-block: 4px;
+}
+
+.docs-card:hover h2 {
+  color: var(--blue);
+}
+
+.section-head-flush {
+  margin-block-start: 0;
+}
+
+/* Previous / next between documentation sections. */
+.docs-pager {
+  margin-block-start: 48px;
+  padding-block-start: 16px;
+  border-block-start: 1px solid var(--rule);
+}
+
+/* Admin console. */
+.panel-narrow {
+  max-width: 420px;
+}
+
+.panel-medium {
+  max-width: 560px;
+}
+
+/* The verification-code field. Wide tracking so six digits read as six. */
+.otp-input {
+  font-family: var(--font-mono);
+  font-size: 1.25rem;
+  letter-spacing: 0.35em;
+  text-align: center;
+}
+
+/* Form-level failures carry a 3px selection bar, never colour alone. */
+.form-error {
+  border-inline-start: 3px solid var(--ink);
+  padding-inline-start: 8px;
 }

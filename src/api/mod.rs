@@ -205,6 +205,17 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
      */
     let router = api
         .merge(crate::web::router())
+        /*
+         * A path that matches no route at all.
+         *
+         * `normalize_errors` sits on the API router, so it never sees a request
+         * that failed to match anything — that lands on the composed router's
+         * fallback instead. Without this, an unknown path would answer with
+         * Axum's bare empty 404 and break the contract's promise that every
+         * JSON error looks the same. The HTML surfaces are unaffected: their
+         * own handlers own their 404s.
+         */
+        .fallback(|| async { AppError::NotFound })
         .with_state(state)
         .layer(
             ServiceBuilder::new()
@@ -380,4 +391,62 @@ fn handle_panic(_panic: Box<dyn std::any::Any + Send + 'static>) -> Response {
         category: "request_handler_panic",
     }
     .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_error_response;
+    use axum::{
+        http::{StatusCode, header},
+        response::{IntoResponse as _, Response},
+    };
+
+    fn plain(status: StatusCode, body: &'static str) -> Response {
+        (status, body).into_response()
+    }
+
+    #[test]
+    fn a_non_json_client_error_is_rewritten_into_the_envelope() {
+        // Axum's own rejections are plain text. A client promised one error
+        // shape everywhere should get it for those too.
+        let response = normalize_error_response(plain(StatusCode::NOT_FOUND, "not found"));
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            content_type.starts_with("application/json"),
+            "{content_type}"
+        );
+    }
+
+    #[test]
+    fn a_json_error_is_left_alone() {
+        let mut response = plain(StatusCode::CONFLICT, "{}");
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("application/json"),
+        );
+        let normalized = normalize_error_response(response);
+        assert_eq!(normalized.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn a_success_is_never_rewritten() {
+        // The HTML surfaces answer 200 with text/html and must survive intact.
+        let mut response = plain(StatusCode::OK, "<!doctype html>");
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        let normalized = normalize_error_response(response);
+        let content_type = normalized
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert!(content_type.starts_with("text/html"), "{content_type}");
+    }
 }

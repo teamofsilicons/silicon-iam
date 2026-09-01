@@ -656,7 +656,7 @@ fn consent_html_response(html: String) -> Response {
             "default-src 'none'; ",
             "style-src 'self'; ",
             "img-src 'self' data:; ",
-            "font-src 'self' https://fonts.gstatic.com; ",
+            "font-src 'self'; ",
             "form-action 'self'; ",
             "frame-ancestors 'none'; ",
             "base-uri 'none'",

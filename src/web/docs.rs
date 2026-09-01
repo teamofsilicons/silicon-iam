@@ -123,10 +123,9 @@ pub(crate) async fn index() -> Document {
         let _ = write!(
             cards,
             r#"          <li>
-            <a class="panel" href="/docs/api/{slug}"
-               style="display:block; padding:16px; text-decoration:none; color:inherit">
+            <a class="panel docs-card" href="/docs/api/{slug}">
               <span class="label">{ordinal}</span>
-              <h2 style="font-size:1.1875rem; margin-block:4px">{title}</h2>
+              <h2>{title}</h2>
               <p class="small muted">{summary}</p>
             </a>
           </li>
@@ -159,8 +158,7 @@ pub(crate) async fn index() -> Document {
           </div>
         </div>
 
-        <ul style="list-style:none; display:grid; gap:16px;
-                   grid-template-columns:repeat(auto-fill, minmax(320px, 1fr))">
+        <ul class="docs-cards">
 {cards}        </ul>
       </div>
     </main>
@@ -197,8 +195,7 @@ pub(crate) async fn section(axum::extract::Path(slug): axum::extract::Path<Strin
 
     let mut pager = String::new();
     if previous.is_some() || next.is_some() {
-        pager.push_str(r#"          <nav class="row-between" style="margin-block-start:48px; padding-block-start:16px; border-block-start:1px solid var(--rule)" aria-label="Section">
-"#);
+        pager.push_str("          <nav class=\"row-between docs-pager\" aria-label=\"Section\">\n");
         match previous {
             Some(entry) => {
                 let _ = writeln!(
@@ -230,7 +227,7 @@ pub(crate) async fn section(axum::extract::Path(slug): axum::extract::Path<Strin
       <div class="docs">
 {nav}
         <article class="prose">
-          <div class="section-head" style="margin-block-start:0">
+          <div class="section-head section-head-flush">
             <span class="ordinal" aria-hidden="true">{ordinal}</span>
             <h1 class="label">{title}</h1>
           </div>

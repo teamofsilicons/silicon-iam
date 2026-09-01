@@ -241,6 +241,112 @@ mod tests {
         }
     }
 
+    /// The CSP is `style-src 'self'` with no `unsafe-inline`, so a `style=""`
+    /// attribute is silently dropped by the browser. An earlier draft used them
+    /// and the documentation index rendered as an unstyled bulleted list — the
+    /// kind of break that no status code reports.
+    #[tokio::test]
+    async fn no_surface_relies_on_an_inline_style() {
+        for path in [
+            "/admin",
+            "/docs/api/",
+            "/docs/api/overview",
+            "/docs/api/errors",
+            "/docs/api/nope",
+        ] {
+            let body = body_of(get(path).await).await;
+            assert!(!body.contains("style=\""), "{path} carries an inline style");
+            assert!(
+                !body.contains("<style"),
+                "{path} carries an inline style block"
+            );
+        }
+    }
+
+    /// Everything the surfaces reference must actually be served.
+    ///
+    /// A fabricated font URL 404s silently and the page falls back without
+    /// complaint, which is exactly how the first draft shipped three dead
+    /// requests.
+    #[tokio::test]
+    async fn every_referenced_asset_exists() {
+        let mut referenced = std::collections::BTreeSet::new();
+        for path in ["/admin", "/docs/api/", "/docs/api/overview"] {
+            let body = body_of(get(path).await).await;
+            let mut rest = body.as_str();
+            while let Some(start) = rest.find("/_static/") {
+                let tail = &rest[start + "/_static/".len()..];
+                let end = tail.find(['"', '\'']).unwrap_or(tail.len());
+                referenced.insert(tail[..end].to_owned());
+                rest = &tail[end..];
+            }
+        }
+        assert!(!referenced.is_empty(), "no assets were referenced at all");
+
+        for asset in referenced {
+            let response = get(&format!("/_static/{asset}")).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{asset} is referenced but not served"
+            );
+        }
+    }
+
+    /// The stylesheet's own `url()` references, which no page links directly.
+    #[tokio::test]
+    async fn every_font_the_stylesheet_declares_is_served() {
+        let css = body_of(get("/_static/console.css").await).await;
+        let mut rest = css.as_str();
+        let mut fonts = 0_usize;
+        while let Some(start) = rest.find("url('/_static/") {
+            let tail = &rest[start + "url('/_static/".len()..];
+            let end = tail.find('\'').unwrap_or(tail.len());
+            let asset = &tail[..end];
+            let response = get(&format!("/_static/{asset}")).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{asset} is declared but not served"
+            );
+            fonts += 1;
+            rest = &tail[end..];
+        }
+        assert_eq!(fonts, 3, "expected three self-hosted font faces");
+    }
+
+    /// `hidden` must beat this stylesheet's own `display` declarations.
+    ///
+    /// The attribute's UA rule is `display: none`, which a later `display` on
+    /// `.btn`, `.stack` or `.row` silently wins against. Without the override
+    /// the admin console paints its sign-out button, its verification-code
+    /// form and its loading row all at once.
+    #[tokio::test]
+    async fn the_stylesheet_forces_hidden_to_win() {
+        let css = body_of(get("/_static/console.css").await).await;
+        assert!(
+            css.contains("[hidden]") && css.contains("display: none !important"),
+            "the hidden override is missing",
+        );
+    }
+
+    /// A second `class` on one element is dropped by the parser, so the styling
+    /// it carried disappears without any error anywhere.
+    #[tokio::test]
+    async fn no_element_declares_class_twice() {
+        for path in ["/admin", "/docs/api/", "/docs/api/overview"] {
+            let body = body_of(get(path).await).await;
+            for tag in body.split('<').skip(1) {
+                let Some(end) = tag.find('>') else { continue };
+                let attributes = &tag[..end];
+                assert!(
+                    attributes.matches("class=\"").count() <= 1,
+                    "{path} has an element with two class attributes: <{attributes}>",
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn html_surfaces_refuse_to_be_framed() {
         for path in ["/admin", "/docs/api/", "/docs/api/overview"] {

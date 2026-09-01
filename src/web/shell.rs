@@ -42,7 +42,7 @@ impl Surface {
                 "script-src 'self'; ",
                 "connect-src 'self'; ",
                 "img-src 'self' data:; ",
-                "font-src 'self' https://fonts.gstatic.com; ",
+                "font-src 'self'; ",
                 "form-action 'none'; ",
                 "frame-ancestors 'none'; ",
                 "base-uri 'none'",
@@ -51,7 +51,7 @@ impl Surface {
                 "default-src 'none'; ",
                 "style-src 'self'; ",
                 "img-src 'self' data:; ",
-                "font-src 'self' https://fonts.gstatic.com; ",
+                "font-src 'self'; ",
                 "form-action 'none'; ",
                 "frame-ancestors 'none'; ",
                 "base-uri 'none'",
@@ -165,8 +165,8 @@ pub(crate) fn render(page: &Page<'_>) -> String {
     <meta name="theme-color" content="{paper}">{description}
     <title>{title} · Silicon IAM</title>
     <link rel="icon" href="/_static/{favicon}" type="image/svg+xml">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="/_static/{stylesheet}">
+    <link rel="preload" href="/_static/plex-sans.woff2" as="font" type="font/woff2" crossorigin>
 {head}  </head>
   <body>
     <a class="si-skip-link" href="#main">Skip to content</a>
