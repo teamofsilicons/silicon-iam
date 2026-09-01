@@ -46,7 +46,7 @@ Cross-tenant resources return `404 not_found` rather than disclose existence.
 | Public | no credential | Signup, login initiation/verification, availability, and callbacks |
 | IAM bearer | `Authorization: Bearer …` | Carbon or Silicon API access |
 | Browser session | secure `iam_session` cookie | Interactive OAuth consent and SSO navigation |
-| Application | HTTP Basic, app ID and app secret | OAuth token operations, introspection, OBO |
+| Application | HTTP Basic, app ID and app secret | OAuth token operations, introspection, and same-organization OBO |
 | Platform admin | IAM bearer whose Carbon is a current platform admin | `/api/v1/admin/*` |
 | Step-up | `X-Step-Up-Token` in addition to bearer | Ownership, credentials, SSO, deletion, and privileged grants |
 | WorkOS | verified `WorkOS-Signature` | WorkOS webhook receiver |
@@ -102,6 +102,12 @@ include `Idempotency-Replayed: true`; changing any canonical request field under
 the same key returns `409 idempotency_conflict`. JSON whitespace and object-key
 ordering are not semantically significant.
 
+OBO proof verification is the deliberate single-use exception: it does not
+accept an `Idempotency-Key`, never stores or replays a successful verification
+response, and every attempt after the proof has been consumed returns `409`.
+An OBO exchange remains idempotent, but its replay envelope expires no later
+than the proof itself.
+
 Versioned aggregate mutations require a strong `If-Match: "{version}"` header.
 Non-versioned commands, such as deleting the authenticated session, do not.
 Successful aggregate reads and mutations expose their version as `ETag`; when
@@ -111,9 +117,10 @@ precondition returns `428 precondition_required`. Every externally visible
 aggregate mutation increments the version by exactly one.
 
 `X-Request-ID` is accepted when valid and otherwise generated. On errors it is
-returned as `error.request_id`. `X-Org-ID` may be sent to introspection or OBO
-operations, but it must agree with the path, credential, and grant; it can never
-expand authority.
+returned as `error.request_id`. `X-Org-ID` may be sent to introspection, but it
+must agree with the credential and grant; it can never expand authority. OBO
+does not accept `X-Org-ID`; IAM derives its organization from the authenticated
+Applications and rejects cross-organization use.
 
 ### Pagination
 
@@ -818,20 +825,28 @@ invalid upstream response is `502`; temporary dependency loss is `503`.
 
 ## Applications
 
-Applications are owned by an existing Carbon. There is no separate developer
-email/password identity. Only the owning Carbon manages the application.
+Applications are owned by organizations, not individual Carbons. There is no
+separate developer email/password identity. Registration requires `org_id`, and
+the creating Carbon must be a current active owner or admin of that
+organization. The creator is retained as immutable `created_by` provenance;
+ownership and management authority remain with the organization. Any current
+active owner or admin of that organization can manage its Applications.
 
-Application-management, webhook-management, and platform-review routes
-that act as a Carbon require a direct `silicon-iam` bearer with `iam.self`, no
-client application, and no organization/membership binding. A delegated OAuth
-`oat_` cannot become a confused deputy for the Carbon subject. Client-secret
-authentication locks the matching secret, rechecks its active/retiring window
-and active verified application principal, and records usage in one transaction
-so concurrent revocation cannot authenticate after it commits.
+Organization-facing Application and webhook management routes require a direct
+`silicon-iam` bearer with `iam.self`, no client Application, and a current active
+owner/admin membership in the target Application's organization. Promotion,
+demotion, removal, or ownership transfer therefore changes Application
+management authority immediately. `/api/v1/admin/applications*` review routes
+instead require current platform-administrator authority and do not depend on
+tenant membership. A delegated OAuth `oat_` cannot become a confused deputy for
+the Carbon subject. Client-secret authentication locks the matching secret,
+rechecks its active/retiring window and active verified Application principal,
+and records usage in one transaction so concurrent revocation cannot
+authenticate after it commits.
 
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
-| GET/POST | `/api/v1/applications` | List owned apps or submit registration |
+| GET/POST | `/api/v1/applications` | List apps in organizations the Carbon owns/administers, or submit registration |
 | GET/PATCH | `/api/v1/applications/{app_id}` | Read/update |
 | POST | `.../client-secret-rotations` | Rotate and reveal a new client secret once |
 | GET/POST | `.../redirect-uris` | List complete URI history or add a new current URI |
@@ -841,11 +856,14 @@ so concurrent revocation cannot authenticate after it commits.
 | POST | `.../webhook/dead-letters/replays` | Replay one or an ordered batch of dead letters |
 | GET | `.../login-history` | App-specific authorization/login history |
 
-Registration requires an immutable app ID, exactly one redirect URI, one
-HTTPS webhook URL, requested scopes, and may include the application's callable
-OBO endpoint registry. It returns an `under_review`
-application plus one-time application and webhook signing secrets. The app
-cannot authorize users, introspect tokens, or issue OBO proofs until verified.
+Registration requires an immutable app ID and `org_id`, exactly one redirect
+URI, one HTTPS webhook URL, requested scopes, and may include the Application's
+callable OBO endpoint registry. IAM rechecks current organization owner/admin
+authority before claiming or replaying the request. It returns an
+`under_review` Application plus one-time Application and webhook signing
+secrets. Application representations expose `org_id` and the Carbon
+`created_by`; they never model that Carbon as the owner. The Application cannot
+authorize users, introspect tokens, or issue OBO proofs until verified.
 `notify_users` defaults to `true`.
 
 Requested scopes and approved scopes are separate. Scope changes remain
@@ -853,9 +871,10 @@ pending and do not replace the active reviewed configuration until a platform
 administrator approves them. Adding a redirect URI immediately retires every
 previous current URI, retains those rows as versioned history, and creates the
 new URI as `pending_review`; no retired URI remains usable while review is
-pending. The paginated history exposes each URI's status and lifecycle
-timestamps. Explicit retirement is idempotent, versioned, and audited. An
-application webhook replacement also
+pending. A current organization owner/admin can inspect the paginated history,
+including each URI's status and lifecycle timestamps, and explicitly retire a
+URI. Explicit retirement is idempotent, versioned, and audited. An Application
+webhook replacement also
 keeps the previous endpoint active until review; v1 exposes exactly one active
 destination. During initial registration there is truthfully no active
 destination: `active_url` is `null`, `pending_url` contains the submitted URL,
@@ -865,8 +884,8 @@ The webhook representation's `version` is the application aggregate version,
 not an endpoint-row version; it is identical to the response `ETag` and is the
 value required by `If-Match`. Replacement reuses the application's existing
 encrypted webhook signing secret and does not return secret material.
-`notify_users` is absent from every owner-facing response and mutation and is
-configurable only by platform administrators.
+`notify_users` is absent from every organization-management response and
+mutation and is configurable only by platform administrators.
 
 Initial application and webhook secrets are versioned credentials. Permanent
 deletion is available only through the backend-admin decision workflow. It
@@ -902,35 +921,103 @@ retain only the reduced current-scope intersection.
 
 ## OBO Access
 
-OBO Access never hashes an access token together with an app secret.
+OBO is available only between verified Applications owned by the same
+organization. IAM derives this organization from the authenticated Application
+credentials; neither the exchange nor verification API accepts caller-supplied
+`org_id` or `X-Org-ID` context. Cross-organization and nonexistent target
+Applications are indistinguishable as `404 not_found`.
 
-`POST /api/v1/obo-access/exchanges` authenticates App A and accepts an
-actor-bound application access token as `subject_token`, plus audience App B,
-organization, a callable endpoint registered by App B, and the exact JSON
-metadata object for that call. IAM confirms:
+An authenticated Application can discover another verified Application's
+active callable endpoints and metadata contract with
+`GET /api/v1/obo-access/applications/{app_id}/endpoints`. Discovery is limited
+to the caller's organization and returns the target Application's `{app_id,
+org_id}` plus at most 50 endpoint definitions in deterministic `endpoint_id`
+order. Only a current organization owner/admin can configure those definitions
+through Application registration or update. Endpoint identifiers and paths are
+stable. Metadata definitions and exchange metadata must be JSON objects no
+larger than 16 KiB, with bounded nesting and complexity. Every top-level
+registered key is required, unregistered keys are rejected, and a descriptor
+may enforce `string`, `number`, `integer`, `boolean`, `object`, `array`, or
+`null`.
 
-1. App A is verified and its secret is current.
-2. The subject token was issued to App A and is active.
-3. The actor and organization membership are active.
-4. App A's reviewed scopes permit OBO issuance.
-5. App B is verified and the selected endpoint is active.
+`POST /api/v1/obo-access/exchanges` authenticates App A with HTTP Basic and
+requires these additional headers:
 
-IAM returns a random `obo_` proof with a unique ID and at most 60 seconds of
-life. It is bound to the source app, audience app, subject token, actor,
-organization, registered endpoint and exact request metadata object. Endpoint
-identifiers and paths are stable. An application may register at most 50;
-metadata definitions and request metadata must be JSON objects no larger than
-16 KiB, with bounded nesting and complexity. Every top-level key in the
-registered definition is required at exchange, unregistered request keys are
-rejected, and a descriptor may enforce `string`, `number`, `integer`,
-`boolean`, `object`, `array`, or `null`.
+```http
+Idempotency-Key: <16-255 character key>
+X-OBO-Timestamp: <canonical Unix seconds>
+X-OBO-Signature: <64 lowercase hexadecimal characters>
+```
 
-App B authenticates to `POST /api/v1/obo-access/verify` and submits only the
-proof. Audience identity comes from App B's authenticated credential. A
-successful transaction atomically consumes the proof and returns the represented
-actor, bound endpoint identifier/path, and exact metadata object. Replay returns
-a conflict. App B must interpret and authorize its own endpoint and metadata;
-proof validity alone does not authorize the underlying business operation.
+`X-OBO-Timestamp` must be within 60 seconds of IAM's clock. App A computes the
+signature with its current Application secret and IAM verifies it in constant
+time:
+
+```text
+HMAC-SHA256(
+  app_secret,
+  timestamp + "." + method + "." + registered_path + "." +
+  body_sha256 + "." + Idempotency-Key
+)
+```
+
+The method is the canonical uppercase method from `request.method`,
+`registered_path` is loaded from App B's selected endpoint rather than accepted
+from the exchange body, and `body_sha256` is the 64-character lowercase SHA-256
+hex digest of the exact downstream body bytes. App A sends only that digest and
+the endpoint's JSON metadata to IAM—never the actual downstream body or file.
+The exchange request is:
+
+```json
+{
+  "subject_token": "oat_...",
+  "audience": "application-b-id",
+  "endpoint_id": "files.upload",
+  "metadata": {
+    "filename": "report.pdf",
+    "content_type": "application/pdf"
+  },
+  "request": {
+    "method": "POST",
+    "body_sha256": "<64 lowercase hexadecimal characters>"
+  }
+}
+```
+
+IAM confirms that App A and App B are verified and belong to the same
+organization; the subject token was issued to App A and is active; its actor
+has an active membership in that same organization; App A's reviewed scopes
+permit OBO issuance; and the selected App B endpoint and metadata are current
+and valid. It returns a random `obo_` proof with a unique ID and at most 60
+seconds of life. The proof is bound to the source Application, audience
+Application, subject token, actor, organization, registered endpoint, method,
+path, exact body digest, and metadata. An exact exchange replay can recover the
+same response only while the proof remains valid; its idempotency response
+never outlives `expires_at`.
+
+App A sends the proof alongside the actual downstream request to App B. Before
+executing it, App B authenticates to `POST /api/v1/obo-access/verify` with HTTP
+Basic and submits the proof plus details calculated from the actual request:
+
+```json
+{
+  "access_proof": "obo_...",
+  "request": {
+    "method": "POST",
+    "path": "/v1/files",
+    "body_sha256": "<64 lowercase hexadecimal characters>"
+  }
+}
+```
+
+Audience identity comes from App B's authenticated credential. IAM verifies
+the exact method, registered path, and body digest before atomically consuming
+the proof and returning the represented actor, endpoint, and metadata. Exactly
+one concurrent verification can succeed. Verification is intentionally not
+idempotently replayable: a consumed proof always returns `409`, and an expired
+proof returns `410`. App B executes the underlying operation only after a
+successful verification and must still apply its own endpoint and business
+authorization.
 
 ## Outbound events and webhooks
 
@@ -940,12 +1027,12 @@ transaction. Workers claim outbox rows with bounded leases, deliver at least
 once, use capped exponential backoff with jitter, and retain dead-letter state
 under the configured retention policy.
 
-Application owners and authorized Silicon webhook managers can list dead
-letters at their recipient-specific routes and replay one or a batch of at most
-100 by submitting `delivery_ids` with an idempotency key. Replay preserves the
-original `event_id`, payload, `occurred_at`, aggregate version, and complete
-attempt history; it resets only the cycle attempt counter and increments the
-manual replay count. The transaction rechecks current Application
+Current organization owners/admins and authorized Silicon webhook managers can
+list dead letters at their recipient-specific routes and replay one or a batch
+of at most 100 by submitting `delivery_ids` with an idempotency key. Replay
+preserves the original `event_id`, payload, `occurred_at`, aggregate version,
+and complete attempt history; it resets only the cycle attempt counter and
+increments the manual replay count. The transaction rechecks current Application
 authorization or the current Silicon endpoint/subscription, then targets the
 currently configured URL and signing-key version. `session.logout.v1` is the
 narrow exception: because the event itself revokes delegated Application
@@ -1178,9 +1265,9 @@ They exclude secrets, tokens, OTPs, complete contact details, and raw provider
 payloads. The reserved IP and user-agent history fields remain null until a
 deployment defines trusted ingress metadata and allowlisted proxy hops; IAM
 never derives them from arbitrary forwarding headers. Login history is
-separately available to the Carbon and relevant application owner. Job-role
-history includes requester, approvers, immutable
-request ID, old/new text, and application time.
+separately available to the Carbon and current owner/admin of the relevant
+Application's organization. Job-role history includes requester, approvers,
+immutable request ID, old/new text, and application time.
 
 The worker applies configurable retention as one independently committed
 database phase per maintenance tick, selected round-robin from a closed

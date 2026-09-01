@@ -31,8 +31,15 @@ tags:
   - { name: Trust }
   - { name: Governance }
   - { name: SSO }
-  - { name: Applications }
-  - { name: OBO Access }
+  - name: Applications
+    description: >-
+      Applications are organization-owned. Non-platform Application management
+      requires a direct Carbon IAM bearer and current active owner/admin
+      membership in the Application's organization.
+  - name: OBO Access
+    description: >-
+      Strictly same-organization Application discovery, request-bound proof
+      exchange, and single-use audience verification.
   - { name: Webhooks }
   - { name: Platform administration }
 
@@ -2295,7 +2302,7 @@ paths:
         - { name: status, in: query, schema: { $ref: '#/components/schemas/ApplicationStatus' } }
       responses:
         '200':
-          description: Applications owned by the authenticated Carbon.
+          description: Applications owned by organizations in which the authenticated Carbon is a current active owner/admin.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApplicationPage' }
@@ -2314,7 +2321,7 @@ paths:
             schema: { $ref: '#/components/schemas/ApplicationCreate' }
       responses:
         '201':
-          description: Under-review app; app and webhook secrets are each shown once.
+          description: Organization-owned under-review app; app and webhook secrets are each shown once. Current owner/admin authority is rechecked before creation or secret replay.
           headers:
             Cache-Control: { schema: { const: no-store } }
             Pragma: { schema: { const: no-cache } }
@@ -2324,6 +2331,7 @@ paths:
               schema: { $ref: '#/components/schemas/ApplicationCreated' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
@@ -2335,7 +2343,7 @@ paths:
       security: [{ iamBearer: [] }]
       responses:
         '200':
-          description: Manageable application without raw secrets.
+          description: Organization-owned manageable application without raw secrets.
           headers: { ETag: { $ref: '#/components/headers/ETag' } }
           content:
             application/json:
@@ -2607,14 +2615,45 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
+  /api/v1/obo-access/applications/{app_id}/endpoints:
+    get:
+      tags: [OBO Access]
+      operationId: discoverApplicationOboEndpoints
+      description: >-
+        Returns the active callable endpoint catalog of a verified Application
+        in the authenticated Application's organization. Nonexistent,
+        unverified, and cross-organization targets all return the same 404.
+      security: [{ applicationBasic: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AppIdPath' }
+      responses:
+        '200':
+          description: Same-organization Application reference and its active endpoints in endpoint_id order.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OboEndpointCatalog' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/obo-access/exchanges:
     post:
       tags: [OBO Access]
       operationId: exchangeOboAccessProof
+      description: >-
+        Authenticates App A with HTTP Basic and a fresh request HMAC. IAM
+        derives the tenant from App A, requires audience App B and the subject
+        membership to belong to that same organization, loads registered_path
+        from the selected active endpoint, and verifies X-OBO-Signature in
+        constant time over
+        timestamp.method.registered_path.body_sha256.Idempotency-Key. The
+        request carries only metadata and the body digest, never the downstream
+        body or file. Exact idempotent replay expires no later than the proof.
       security: [{ applicationBasic: [] }]
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
-        - { $ref: '#/components/parameters/OrgContext' }
+        - { $ref: '#/components/parameters/OboTimestamp' }
+        - { $ref: '#/components/parameters/OboSignature' }
       requestBody:
         required: true
         content:
@@ -2622,7 +2661,7 @@ paths:
             schema: { $ref: '#/components/schemas/OboExchangeRequest' }
       responses:
         '201':
-          description: Random single-use proof bound to source, audience, subject token, registered endpoint, and exact metadata; valid for at most 60 seconds.
+          description: Random single-use proof bound to same-organization source, audience, subject token, actor, registered endpoint, method, path, body digest, and exact metadata; valid for at most 60 seconds.
           headers:
             Cache-Control: { schema: { const: no-store } }
             Pragma: { schema: { const: no-cache } }
@@ -2633,17 +2672,22 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/obo-access/verify:
     post:
       tags: [OBO Access]
       operationId: consumeOboAccessProof
+      description: >-
+        App B submits the proof and the method, path, and body digest calculated
+        from the actual downstream request. IAM verifies every binding before
+        atomically consuming the proof. Successful verification is never stored
+        or replayed; exactly one concurrent call succeeds and later use returns
+        409. No Idempotency-Key, X-Org-ID, or actual request body is accepted.
       security: [{ applicationBasic: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-        - { $ref: '#/components/parameters/OrgContext' }
       requestBody:
         required: true
         content:
@@ -2651,9 +2695,7 @@ paths:
             schema: { $ref: '#/components/schemas/OboVerifyRequest' }
       responses:
         '200':
-          description: Proof consumed exactly once; returns its bound endpoint and exact metadata for audience-side authorization.
-          headers:
-            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          description: Proof consumed exactly once; returns its bound actor, endpoint, and exact metadata for audience-side authorization.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OboAccessResult' }
@@ -2828,6 +2870,21 @@ components:
       required: true
       description: Opaque caller-generated key. Reuse with different bytes returns idempotency_conflict.
       schema: { type: string, minLength: 16, maxLength: 255 }
+    OboTimestamp:
+      name: X-OBO-Timestamp
+      in: header
+      required: true
+      description: Canonical positive Unix timestamp in seconds; accepted only within 60 seconds of IAM's clock.
+      schema: { type: string, pattern: '^(0|[1-9][0-9]{0,18})$' }
+    OboSignature:
+      name: X-OBO-Signature
+      in: header
+      required: true
+      description: >-
+        Exactly 64 lowercase hexadecimal characters: HMAC-SHA256 using App A's
+        current Application secret over
+        timestamp.method.registered_path.body_sha256.Idempotency-Key.
+      schema: { type: string, pattern: '^[0-9a-f]{64}$' }
     IfMatch:
       name: If-Match
       in: header
@@ -2843,7 +2900,7 @@ components:
       name: X-Org-ID
       in: header
       required: false
-      description: Explicit downstream organization context; it must agree with the token, path, and grant.
+      description: Optional introspection organization context; it must agree with the token and grant. OBO never accepts this header.
       schema: { $ref: '#/components/schemas/OrgId' }
     SessionId:
       name: session_id
@@ -4064,10 +4121,12 @@ components:
       enum: [under_review, verified, rejected, suspended, deleted]
     ApplicationCreate:
       type: object
-      required: [app_id, redirect_uris, webhook_url, requested_scopes]
+      required: [app_id, org_id, redirect_uris, webhook_url, requested_scopes]
       additionalProperties: false
+      description: Requires the authenticated Carbon to be a current active owner/admin of org_id.
       properties:
         app_id: { $ref: '#/components/schemas/AppId' }
+        org_id: { $ref: '#/components/schemas/OrgId' }
         app_name: { type: [string, 'null'], maxLength: 200 }
         app_logo: { type: [string, 'null'], format: uri, maxLength: 2048 }
         redirect_uris:
@@ -4114,11 +4173,13 @@ components:
           items: { $ref: '#/components/schemas/ApplicationOboEndpoint' }
     Application:
       type: object
-      required: [id, app_id, owner, redirect_uris, requested_scopes, approved_scopes, obo_endpoints, status, webhook, has_pending_changes, version, created_at, updated_at]
+      required: [id, app_id, org_id, created_by, redirect_uris, requested_scopes, approved_scopes, obo_endpoints, status, webhook, has_pending_changes, version, created_at, updated_at]
+      description: Organization-owned Application. created_by is immutable provenance and does not confer management authority.
       properties:
         id: { type: string, format: uuid }
         app_id: { $ref: '#/components/schemas/AppId' }
-        owner: { $ref: '#/components/schemas/ActorRef' }
+        org_id: { $ref: '#/components/schemas/OrgId' }
+        created_by: { $ref: '#/components/schemas/ActorRef' }
         app_name: { type: [string, 'null'] }
         app_logo: { type: [string, 'null'], format: uri }
         redirect_uris: { type: array, uniqueItems: true, items: { type: string, format: uri } }
@@ -4201,7 +4262,7 @@ components:
           properties:
             notify_users:
               type: boolean
-              description: Backend-only consent-screen policy; never serialized by owner application endpoints.
+              description: Backend-only consent-screen policy; never serialized by organization Application-management endpoints.
     AdminApplicationPage:
       type: object
       required: [items, page]
@@ -4390,6 +4451,7 @@ components:
       type: object
       required: [endpoint_id, path, metadata]
       additionalProperties: false
+      description: Callable endpoint definition configurable only by a current owner/admin of the Application's organization.
       properties:
         endpoint_id:
           type: string
@@ -4401,7 +4463,7 @@ components:
           type: string
           minLength: 1
           maxLength: 2048
-          pattern: '^/(?!/)(?!.*(?:^|/)\.\.?/)(?!.*[?#\s]).*$'
+          pattern: '^/(?!/)(?!.*(?:^|/)\.\.?(?:/|$))(?!.*[?#\s]).*$'
           description: Stable absolute audience-application endpoint path.
         metadata:
           type: object
@@ -4410,13 +4472,63 @@ components:
     OboEndpointReference:
       type: object
       required: [endpoint_id, path]
+      additionalProperties: false
       properties:
         endpoint_id: { type: string, pattern: '^[a-z][a-z0-9_.:-]{2,127}$' }
         path: { type: string, maxLength: 2048 }
+    OboApplicationReference:
+      type: object
+      required: [app_id, org_id]
+      additionalProperties: false
+      properties:
+        app_id: { $ref: '#/components/schemas/AppId' }
+        org_id: { $ref: '#/components/schemas/OrgId' }
+    OboEndpointCatalog:
+      type: object
+      required: [application, endpoints]
+      additionalProperties: false
+      properties:
+        application: { $ref: '#/components/schemas/OboApplicationReference' }
+        endpoints:
+          type: array
+          maxItems: 50
+          description: Active definitions ordered by endpoint_id.
+          items: { $ref: '#/components/schemas/ApplicationOboEndpoint' }
+    OboRequestMethod:
+      type: string
+      minLength: 1
+      maxLength: 32
+      pattern: "^[A-Z][A-Z0-9!#$%&'*+.^_`|~-]{0,31}$"
+      description: Canonical uppercase HTTP method included byte-for-byte in the OBO HMAC and proof binding.
+    OboBodySha256:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+      description: Lowercase hexadecimal SHA-256 digest of the exact downstream request body bytes.
+    OboExchangeRequestBinding:
+      type: object
+      required: [method, body_sha256]
+      additionalProperties: false
+      properties:
+        method: { $ref: '#/components/schemas/OboRequestMethod' }
+        body_sha256: { $ref: '#/components/schemas/OboBodySha256' }
+    OboVerifyRequestBinding:
+      type: object
+      required: [method, path, body_sha256]
+      additionalProperties: false
+      properties:
+        method: { $ref: '#/components/schemas/OboRequestMethod' }
+        path:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          pattern: '^/(?!/)(?!.*(?:^|/)\.\.?/)(?!.*[?#\s]).*$'
+          description: Exact registered path of the downstream request.
+        body_sha256: { $ref: '#/components/schemas/OboBodySha256' }
     OboExchangeRequest:
       type: object
-      required: [subject_token, audience, endpoint_id, metadata, org_id]
+      required: [subject_token, audience, endpoint_id, metadata, request]
       additionalProperties: false
+      description: Organization is derived from App A and App B; org_id and X-Org-ID are not accepted.
       properties:
         subject_token: { type: string, minLength: 32, maxLength: 4096, description: Actor-bound application access token issued to the calling app. }
         audience: { $ref: '#/components/schemas/AppId' }
@@ -4425,21 +4537,25 @@ components:
           type: object
           additionalProperties: true
           description: Exact metadata bound into the proof. It must contain every registered key, no unregistered keys, and values matching every declared type.
-        org_id: { $ref: '#/components/schemas/OrgId' }
+        request: { $ref: '#/components/schemas/OboExchangeRequestBinding' }
     OboProofResponse:
       type: object
       required: [access_proof, proof_id, expires_in, expires_at]
+      additionalProperties: false
+      description: The idempotency replay envelope for this secret response expires no later than expires_at.
       properties:
         access_proof: { type: string, pattern: '^obo_[A-Za-z0-9_-]{43}$' }
         proof_id: { type: string, format: uuid }
-        expires_in: { type: integer, maximum: 60, default: 60 }
+        expires_in: { type: integer, minimum: 1, maximum: 60, default: 60 }
         expires_at: { type: string, format: date-time }
     OboVerifyRequest:
       type: object
-      required: [access_proof]
+      required: [access_proof, request]
       additionalProperties: false
+      description: Exact actual-request binding; successful verification is strictly single-use and not idempotently replayable.
       properties:
         access_proof: { type: string, pattern: '^obo_[A-Za-z0-9_-]{43}$' }
+        request: { $ref: '#/components/schemas/OboVerifyRequestBinding' }
     OboAccessResult:
       type: object
       required: [valid, proof_id, issuer_app_id, audience, actor, org_id, endpoint, metadata, expires_at, consumed_at]
