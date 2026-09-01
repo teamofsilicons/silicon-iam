@@ -252,8 +252,9 @@ Silicon-IAM-Supported-API-Versions: v1
 ```
 
 IAM selects the highest mutually supported version and returns it in both
-`selected_api_version` and `Silicon-IAM-API-Version`. The response also lists
-the server's supported versions in descending preference order. A client must
+`selected_api_version` and `Silicon-IAM-API-Version`; `Vary` identifies the
+advertisement header for intermediary caches. The response also lists the
+server's supported versions in descending preference order. A client must
 fail closed if the response disagrees with the advertised intersection. When
 there is no common version, IAM returns `406 api_version_not_acceptable` with
 the server's supported version list. `/api/v1/version` remains available as a

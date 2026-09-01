@@ -313,6 +313,10 @@ async fn negotiate_api_version(headers: HeaderMap) -> Result<Response, AppError>
         http::HeaderName::from_static(SELECTED_API_VERSION_HEADER),
         HeaderValue::from_static(selected),
     );
+    response.headers_mut().insert(
+        http::header::VARY,
+        HeaderValue::from_static("Silicon-IAM-Supported-API-Versions"),
+    );
     Ok(response)
 }
 
@@ -496,8 +500,9 @@ mod tests {
     };
 
     use super::{
-        SUPPORTED_API_VERSIONS_HEADER, is_valid_api_version, normalize_error_response,
-        select_api_version, supported_versions_header,
+        SELECTED_API_VERSION_HEADER, SUPPORTED_API_VERSIONS_HEADER, is_valid_api_version,
+        negotiate_api_version, normalize_error_response, select_api_version,
+        supported_versions_header,
     };
 
     fn plain(status: StatusCode, body: &'static str) -> Response {
@@ -593,5 +598,31 @@ mod tests {
     fn server_selects_only_the_highest_mutually_supported_version() {
         assert_eq!(select_api_version(&["v3", "v1"]), Some("v1"));
         assert_eq!(select_api_version(&["v3", "v2"]), None);
+    }
+
+    #[tokio::test]
+    async fn negotiation_response_identifies_its_selected_varying_version() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            SUPPORTED_API_VERSIONS_HEADER,
+            HeaderValue::from_static("v2,v1"),
+        );
+        let Ok(response) = negotiate_api_version(headers).await else {
+            panic!("v1 must be mutually supported");
+        };
+        assert_eq!(
+            response
+                .headers()
+                .get(SELECTED_API_VERSION_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some("v1")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::VARY)
+                .and_then(|value| value.to_str().ok()),
+            Some("Silicon-IAM-Supported-API-Versions")
+        );
     }
 }
