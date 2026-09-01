@@ -26,6 +26,16 @@ SET delivery_status = CASE
         ELSE superseded_at
     END;
 
+-- A legacy successful replay was stored before the provider call and can no
+-- longer truthfully represent delivery once its unconsumed challenge is
+-- retired above. Remove only this endpoint's bounded replay metadata so an
+-- exact retry performs the corrected flow instead of replaying a false 202.
+DELETE FROM iam.idempotency_records
+WHERE route IN (
+    '/api/v1/organizations/{org_id}/join/email-verification-code',
+    'POST /api/v1/organizations/{org_id}/join/email-verification-code'
+);
+
 ALTER TABLE iam.invitation_verification_challenges
     ALTER COLUMN delivery_status SET NOT NULL,
     ALTER COLUMN delivery_status SET DEFAULT 'pending',
@@ -53,4 +63,5 @@ COMMENT ON COLUMN iam.invitation_verification_challenges.delivered_at IS
     'Time IAM durably confirmed the provider-accepted invitation OTP delivery.';
 COMMENT ON COLUMN iam.invitation_verification_challenges.delivery_failed_at IS
     'Time a definitive provider rejection retired the invitation OTP; null for ambiguous pending outcomes.';
-
+COMMENT ON TABLE iam.invitation_verification_challenges IS
+    'Target-bound organization join OTP digests prepared pending before provider I/O and usable only after confirmed delivery.';

@@ -1969,6 +1969,7 @@ mod tests {
 
         assert!(migration.contains("ALTER COLUMN delivery_status SET DEFAULT 'pending'"));
         assert!(migration.contains("consumed_at IS NULL OR delivery_status = 'delivered'"));
+        assert!(migration.contains("DELETE FROM iam.idempotency_records"));
         assert!(migration.contains(
             "WHEN consumed_at IS NULL THEN COALESCE(superseded_at, transaction_timestamp())"
         ));
