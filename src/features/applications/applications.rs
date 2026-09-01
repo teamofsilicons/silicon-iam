@@ -1,5 +1,7 @@
 #![allow(clippy::too_many_lines)]
 
+use std::collections::BTreeSet;
+
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -92,7 +94,7 @@ async fn resolve_creation_organization(
     .ok_or_else(ApiError::not_found)
 }
 
-async fn lock_current_application_manager(
+pub(super) async fn lock_current_application_manager(
     transaction: &mut Transaction<'_, Postgres>,
     organization_id: Uuid,
     carbon_id: Uuid,
@@ -157,8 +159,9 @@ pub(super) async fn list(
             application.review_status, application.version,
             application.created_at, application.updated_at
         FROM iam.applications AS application
-        JOIN iam.organizations AS organization
-          ON organization.id = application.organization_id
+        JOIN LATERAL iam_private.resolve_authorized_application_organization(
+            application.id
+        ) AS organization ON TRUE
         WHERE application.deleted_at IS NULL
           AND iam_private.can_read_application(application.id, $1)
           AND ($2::text IS NULL OR application.review_status = $2)
@@ -186,6 +189,13 @@ pub(super) async fn list(
     } else {
         None
     };
+    let organization_ids = rows
+        .iter()
+        .map(|application| application.organization_id)
+        .collect::<BTreeSet<_>>();
+    for organization_id in organization_ids {
+        lock_current_application_manager(&mut transaction, organization_id, carbon_id).await?;
+    }
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
         items.push(load_detail(&mut transaction, &state, row.id, false).await?);
@@ -1124,8 +1134,9 @@ pub(super) async fn admin_list(
                application.review_status, application.version,
                application.created_at, application.updated_at
         FROM iam.applications AS application
-        JOIN iam.organizations AS organization
-          ON organization.id = application.organization_id
+        JOIN LATERAL iam_private.resolve_authorized_application_organization(
+            application.id
+        ) AS organization ON TRUE
         WHERE ($1::text IS NULL OR application.review_status = $1)
           AND ($2::timestamptz IS NULL
                OR (application.created_at, application.id) < ($2, $3))
@@ -1421,8 +1432,9 @@ async fn resolve_admin_app_for_claim(
                application.review_status, application.version,
                application.created_at, application.updated_at
         FROM iam.applications AS application
-        JOIN iam.organizations AS organization
-          ON organization.id = application.organization_id
+        JOIN LATERAL iam_private.resolve_authorized_application_organization(
+            application.id
+        ) AS organization ON TRUE
         WHERE application.app_id = $1
         ",
     )
@@ -1469,8 +1481,9 @@ async fn resolve_app(
                    application.review_status, application.version,
                    application.created_at, application.updated_at
             FROM iam.applications AS application
-            JOIN iam.organizations AS organization
-              ON organization.id = application.organization_id
+            JOIN LATERAL iam_private.resolve_authorized_application_organization(
+                application.id
+            ) AS organization ON TRUE
             WHERE application.app_id = $1 AND application.deleted_at IS NULL
               AND CASE $3::text
                     WHEN 'read' THEN iam_private.can_read_application(application.id, $2)
@@ -1496,8 +1509,9 @@ async fn resolve_app(
                    application.review_status, application.version,
                    application.created_at, application.updated_at
             FROM iam.applications AS application
-            JOIN iam.organizations AS organization
-              ON organization.id = application.organization_id
+            JOIN LATERAL iam_private.resolve_authorized_application_organization(
+                application.id
+            ) AS organization ON TRUE
             WHERE application.app_id = $1 AND application.deleted_at IS NULL
               AND CASE $3::text
                     WHEN 'read' THEN iam_private.can_read_application(application.id, $2)
@@ -1547,8 +1561,9 @@ pub(super) async fn load_detail(
                application.review_status, application.version,
                application.created_at, application.updated_at
         FROM iam.applications AS application
-        JOIN iam.organizations AS organization
-          ON organization.id = application.organization_id
+        JOIN LATERAL iam_private.resolve_authorized_application_organization(
+            application.id
+        ) AS organization ON TRUE
         WHERE application.id = $1
         ",
     )
@@ -2268,8 +2283,11 @@ async fn replace_obo_endpoints(
         let result = sqlx::query(
             r"
             INSERT INTO iam.application_obo_endpoints (
-                application_id, endpoint_id, path, metadata_definition
-            ) VALUES ($1, $2, $3, $4)
+                organization_id, application_id, endpoint_id, path, metadata_definition
+            )
+            SELECT application.organization_id, application.id, $2, $3, $4
+            FROM iam.applications AS application
+            WHERE application.id = $1
             ON CONFLICT (application_id, endpoint_id) DO UPDATE
             SET metadata_definition = EXCLUDED.metadata_definition,
                 status = 'active',

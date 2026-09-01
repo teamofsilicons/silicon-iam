@@ -180,17 +180,7 @@ fn request_candidates(
     caller_scope: &str,
     canonical_request: &[u8],
 ) -> Result<Vec<DigestCandidate>, ApiError> {
-    let raw_key = headers
-        .get("idempotency-key")
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| ApiError::precondition_required("Idempotency-Key"))?;
-    if !(16..=255).contains(&raw_key.len()) || !raw_key.as_bytes().iter().all(u8::is_ascii_graphic)
-    {
-        return Err(ApiError::validation(
-            "idempotency_key",
-            "must contain 16 to 255 non-whitespace ASCII characters",
-        ));
-    }
+    let raw_key = required_key(headers)?;
 
     let caller = SecretString::from(caller_scope.to_owned());
     let key = SecretString::from(raw_key.to_owned());
@@ -199,6 +189,30 @@ fn request_candidates(
         canonical_request,
     ));
     digest_candidates(crypto, &caller, &key, &request)
+}
+
+/// Returns the one canonical client idempotency key used by request binding.
+pub(super) fn required_key(headers: &HeaderMap) -> Result<&str, ApiError> {
+    let mut values = headers.get_all("idempotency-key").iter();
+    let raw_key = values
+        .next()
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| ApiError::precondition_required("Idempotency-Key"))?;
+    if values.next().is_some() {
+        return Err(ApiError::validation(
+            "idempotency_key",
+            "must be supplied exactly once",
+        ));
+    }
+    if !(16..=255).contains(&raw_key.len()) || !raw_key.as_bytes().iter().all(u8::is_ascii_graphic)
+    {
+        return Err(ApiError::validation(
+            "idempotency_key",
+            "must contain 16 to 255 non-whitespace ASCII characters",
+        ));
+    }
+
+    Ok(raw_key)
 }
 
 async fn find_existing(
@@ -367,6 +381,50 @@ pub(super) async fn complete<T: Serialize>(
     response: &T,
     one_time_secret: bool,
 ) -> Result<(), ApiError> {
+    complete_inner(
+        transaction,
+        crypto,
+        record_id,
+        response_status,
+        response,
+        one_time_secret,
+        None,
+    )
+    .await
+}
+
+/// Completes an idempotent mutation while ensuring its encrypted replay
+/// envelope cannot outlive the authority represented by `replay_deadline`.
+pub(super) async fn complete_no_later_than<T: Serialize>(
+    transaction: &mut Transaction<'_, Postgres>,
+    crypto: &CryptoService,
+    record_id: Uuid,
+    response_status: u16,
+    response: &T,
+    one_time_secret: bool,
+    replay_deadline: OffsetDateTime,
+) -> Result<(), ApiError> {
+    complete_inner(
+        transaction,
+        crypto,
+        record_id,
+        response_status,
+        response,
+        one_time_secret,
+        Some(replay_deadline),
+    )
+    .await
+}
+
+async fn complete_inner<T: Serialize>(
+    transaction: &mut Transaction<'_, Postgres>,
+    crypto: &CryptoService,
+    record_id: Uuid,
+    response_status: u16,
+    response: &T,
+    one_time_secret: bool,
+    replay_deadline: Option<OffsetDateTime>,
+) -> Result<(), ApiError> {
     let plaintext =
         serde_json::to_vec(response).map_err(|_| ApiError::internal("idempotency_serialize"))?;
     let encrypted = crypto
@@ -390,7 +448,8 @@ pub(super) async fn complete<T: Serialize>(
             encryption_key_version = $5,
             response_expires_at = LEAST(
                 transaction_timestamp() + ($6::bigint * interval '1 second'),
-                created_at + ($6::bigint * interval '1 second')
+                created_at + ($6::bigint * interval '1 second'),
+                COALESCE($7, 'infinity'::timestamptz)
             )
         WHERE id = $1 AND status = 'processing'
         ",
@@ -401,6 +460,7 @@ pub(super) async fn complete<T: Serialize>(
     .bind(encrypted.nonce.as_slice())
     .bind(encrypted.key_version)
     .bind(ttl)
+    .bind(replay_deadline)
     .execute(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("idempotency_complete"))?;
@@ -458,7 +518,10 @@ mod tests {
         infrastructure::crypto::CryptoService,
     };
 
-    use super::{Claim, advisory_lock_id, claim, complete, digest_candidates, replay_if_present};
+    use super::{
+        Claim, advisory_lock_id, claim, complete, digest_candidates, replay_if_present,
+        required_key,
+    };
 
     const ROUTE: &str = "POST /api/v1/obo-access/exchanges";
 
@@ -503,6 +566,21 @@ mod tests {
     fn canonical_request_bytes_are_not_logged_or_reformatted() {
         let value = SecretString::from("secret request".to_owned());
         assert_eq!(value.expose_secret().len(), 14);
+    }
+
+    #[test]
+    fn idempotency_key_must_have_one_unambiguous_wire_value() {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            "idempotency-key",
+            HeaderValue::from_static("018f47ac-75c7-7f84-a6b2-9c2a2617c155"),
+        );
+        assert!(required_key(&headers).is_ok());
+        headers.append(
+            "idempotency-key",
+            HeaderValue::from_static("018f47ac-75c7-7f84-a6b2-9c2a2617c156"),
+        );
+        assert!(required_key(&headers).is_err());
     }
 
     #[test]

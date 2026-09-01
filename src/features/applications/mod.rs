@@ -1,4 +1,4 @@
-//! Carbon-owned applications, authorization-code login, webhooks, and delegated OBO access.
+//! Organization-owned applications, authorization-code login, webhooks, and delegated OBO access.
 #![allow(clippy::module_inception)]
 
 mod applications;
@@ -39,6 +39,10 @@ pub fn router() -> Router<ApiState> {
         .route("/api/v1/oauth/revoke", post(oauth::revoke))
         .route("/api/v1/obo-access/exchanges", post(obo::exchange))
         .route("/api/v1/obo-access/verify", post(obo::verify))
+        .route(
+            "/api/v1/obo-access/applications/{app_id}/endpoints",
+            get(obo::discover_endpoints),
+        )
         .route(
             "/api/v1/applications",
             get(applications::list).post(applications::create),

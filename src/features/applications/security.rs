@@ -40,11 +40,13 @@ pub(super) struct BrowserSession {
     pub(super) csrf_token: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct ApplicationClient {
     pub(crate) application_id: Uuid,
     pub(crate) app_id: String,
+    pub(crate) organization_id: Uuid,
     pub(crate) auth_epoch: i64,
+    pub(crate) authenticated_secret: SecretString,
 }
 
 #[derive(FromRow)]
@@ -255,9 +257,10 @@ impl FromRequestParts<ApiState> for ApplicationClient {
             .execute(&mut *transaction)
             .await
             .map_err(|_| ApiError::internal("application_client_rls_context"))?;
-            let resolved = sqlx::query_as::<_, (Uuid, String, i64)>(
+            let resolved = sqlx::query_as::<_, (Uuid, String, Uuid, i64)>(
                 r"
-                SELECT application.id, application.app_id, principal.auth_epoch
+                SELECT application.id, application.app_id,
+                       application.organization_id, principal.auth_epoch
                 FROM iam.applications AS application
                 JOIN iam.principals AS principal
                   ON principal.id = application.id
@@ -288,7 +291,7 @@ impl FromRequestParts<ApiState> for ApplicationClient {
             .fetch_optional(&mut *transaction)
             .await
             .map_err(|_| ApiError::internal("application_client_read"))?;
-            let Some((application_id, app_id, auth_epoch)) = resolved else {
+            let Some((application_id, app_id, organization_id, auth_epoch)) = resolved else {
                 transaction
                     .rollback()
                     .await
@@ -317,7 +320,9 @@ impl FromRequestParts<ApiState> for ApplicationClient {
             return Ok(Self {
                 application_id,
                 app_id,
+                organization_id,
                 auth_epoch,
+                authenticated_secret: supplied,
             });
         }
         transaction

@@ -546,6 +546,7 @@ DECLARE
         'resolve_active_carbon_by_contact_digest',
         'resolve_active_carbon_by_handle',
         'resolve_active_silicon_credential',
+        'resolve_authorized_application_organization',
         'resolve_organization_invitation_tenant',
         'resolve_pending_email_join_invitation',
         'resolve_platform_sso_organization',

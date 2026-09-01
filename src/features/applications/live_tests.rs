@@ -39,6 +39,7 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     crate::infrastructure::postgres::migrate(&pool).await?;
     seed_protocol_rows(&pool).await?;
 
+    authorized_application_organization_projection_is_exact(&pool).await?;
     application_lifecycle_and_manual_replay_are_atomic(&pool).await?;
     application_deletion_revokes_all_client_authority(&pool).await?;
     authorization_code_scope_revocation_fails_closed(&pool).await?;
@@ -47,9 +48,187 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     refresh_reuse_compromises_the_complete_family(&pool).await?;
     consent_revocation_cascades_to_tokens(&pool).await?;
     obo_proof_is_single_use(&pool).await?;
+    expired_obo_proof_cannot_be_consumed_after_transaction_wait(&pool).await?;
+    stale_obo_parent_authority_is_rejected(&pool).await?;
     committed_application_secret_revocation_wins_authentication(&pool).await?;
     organization_management_authority_tracks_current_roles(&pool).await?;
+    application_list_authority_lock_blocks_concurrent_demotion(&pool).await?;
     application_tenancy_and_creator_are_immutable(&pool).await?;
+    Ok(())
+}
+
+async fn authorized_application_organization_projection_is_exact(
+    pool: &PgPool,
+) -> anyhow::Result<()> {
+    let reviewer_id = Uuid::from_u128(3);
+    let other_organization_id = Uuid::from_u128(0x22);
+    let other_application_id = Uuid::from_u128(0x13);
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.principals (id, kind, status, activated_at) VALUES
+          ($1, 'carbon', 'active', transaction_timestamp()),
+          ($2, 'application', 'active', transaction_timestamp())
+        ",
+    )
+    .bind(reviewer_id)
+    .bind(other_application_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, 'test_reviewer', 'Test Reviewer')",
+    )
+    .bind(reviewer_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.platform_role_grants (id, carbon_id, role, grant_source)
+        VALUES ('00000000-0000-0000-0000-000000000181', $1,
+                'application_reviewer', 'bootstrap')
+        ",
+    )
+    .bind(reviewer_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.organizations (id, org_id, created_by_carbon_id, name)
+        VALUES ($1, 'other_org', $2, 'Other Organization')
+        ",
+    )
+    .bind(other_organization_id)
+    .bind(reviewer_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.applications (
+            id, app_id, organization_id, created_by_carbon_id, review_status
+        ) VALUES ($1, 'app-gamma', $2, $3, 'verified')
+        ",
+    )
+    .bind(other_application_id)
+    .bind(other_organization_id)
+    .bind(reviewer_id)
+    .execute(&mut *transaction)
+    .await?;
+
+    set_application_projection_context(&mut transaction, CARBON_ID, None).await?;
+    let owner_org = projected_organization(&mut transaction, APP_A_ID).await?;
+    ensure!(
+        owner_org.as_deref() == Some("test_org"),
+        "current organization owner could not project an Application tenant"
+    );
+
+    set_application_projection_context(&mut transaction, reviewer_id, None).await?;
+    let reviewer_org = projected_organization(&mut transaction, APP_A_ID).await?;
+    ensure!(
+        reviewer_org.as_deref() == Some("test_org"),
+        "Application reviewer could not project an Application tenant"
+    );
+
+    set_application_projection_context(&mut transaction, APP_A_ID, Some(APP_A_ID)).await?;
+    let same_org = projected_organization(&mut transaction, APP_B_ID).await?;
+    let cross_org = projected_organization(&mut transaction, other_application_id).await?;
+    ensure!(
+        same_org.as_deref() == Some("test_org") && cross_org.is_none(),
+        "Application projection did not enforce the exact same-organization boundary"
+    );
+
+    sqlx::query(
+        r"
+        UPDATE iam.principals
+        SET status = 'suspended', suspended_at = transaction_timestamp()
+        WHERE id = $1
+        ",
+    )
+    .bind(APP_A_ID)
+    .execute(&mut *transaction)
+    .await?;
+    let suspended_caller = projected_organization(&mut transaction, APP_B_ID).await?;
+    ensure!(
+        suspended_caller.is_none(),
+        "suspended Application caller retained organization discovery authority"
+    );
+    transaction.rollback().await?;
+    Ok(())
+}
+
+async fn set_application_projection_context(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    principal_id: Uuid,
+    application_id: Option<Uuid>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r"
+        SELECT set_config('iam.principal_id', $1, true),
+               set_config('iam.application_id', $2, true)
+        ",
+    )
+    .bind(principal_id.to_string())
+    .bind(application_id.map_or_else(String::new, |id| id.to_string()))
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn projected_organization(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    application_id: Uuid,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar::<_, String>(
+        r"
+        SELECT org_id
+        FROM iam_private.resolve_authorized_application_organization($1)
+        ",
+    )
+    .bind(application_id)
+    .fetch_optional(&mut **transaction)
+    .await
+}
+
+async fn application_list_authority_lock_blocks_concurrent_demotion(
+    pool: &PgPool,
+) -> anyhow::Result<()> {
+    let mut list_transaction = pool.begin().await?;
+    super::applications::lock_current_application_manager(
+        &mut list_transaction,
+        ORGANIZATION_ID,
+        ADMIN_CARBON_ID,
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!("failed to lock the current Application manager for list consistency")
+    })?;
+
+    let mut demotion_transaction = pool.begin().await?;
+    sqlx::query("SET LOCAL lock_timeout = '250ms'")
+        .execute(&mut *demotion_transaction)
+        .await?;
+    let Err(demotion_error) = sqlx::query(
+        r"
+        UPDATE iam.organization_memberships
+        SET org_role = 'member', role_granted_by_membership_id = NULL
+        WHERE id = $1
+        ",
+    )
+    .bind(ADMIN_MEMBERSHIP_ID)
+    .execute(&mut *demotion_transaction)
+    .await
+    else {
+        anyhow::bail!("concurrent demotion bypassed the Application list authority lock");
+    };
+    ensure!(
+        demotion_error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref()
+            == Some("55P03"),
+        "concurrent demotion failed for an unexpected reason: {demotion_error}"
+    );
+    demotion_transaction.rollback().await?;
+    list_transaction.commit().await?;
     Ok(())
 }
 
@@ -116,13 +295,15 @@ async fn organization_management_authority_tracks_current_roles(
 }
 
 async fn application_tenancy_and_creator_are_immutable(pool: &PgPool) -> anyhow::Result<()> {
-    let organization_change =
+    let Err(organization_change) =
         sqlx::query("UPDATE iam.applications SET organization_id = $2 WHERE id = $1")
             .bind(APP_B_ID)
             .bind(Uuid::from_u128(0x22))
             .execute(pool)
             .await
-            .expect_err("Application organization mutation unexpectedly succeeded");
+    else {
+        anyhow::bail!("Application organization mutation unexpectedly succeeded");
+    };
     ensure!(
         organization_change
             .as_database_error()
@@ -132,13 +313,15 @@ async fn application_tenancy_and_creator_are_immutable(pool: &PgPool) -> anyhow:
         "Application organization mutation did not fail through the immutable identity guard"
     );
 
-    let creator_change =
+    let Err(creator_change) =
         sqlx::query("UPDATE iam.applications SET created_by_carbon_id = $2 WHERE id = $1")
             .bind(APP_B_ID)
             .bind(ADMIN_CARBON_ID)
             .execute(pool)
             .await
-            .expect_err("Application creator mutation unexpectedly succeeded");
+    else {
+        anyhow::bail!("Application creator mutation unexpectedly succeeded");
+    };
     ensure!(
         creator_change
             .as_database_error()
@@ -940,6 +1123,134 @@ async fn obo_proof_is_single_use(pool: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn stale_obo_parent_authority_is_rejected(pool: &PgPool) -> anyhow::Result<()> {
+    let parent_id = Uuid::from_u128(0x102);
+    let parent_is_current = sqlx::query_scalar::<_, bool>(
+        r"
+        SELECT parent.membership_authz_epoch = membership.authz_epoch
+        FROM iam.access_tokens AS parent
+        JOIN iam.organization_memberships AS membership
+          ON membership.organization_id = parent.organization_id
+         AND membership.id = parent.membership_id
+         AND membership.principal_id = parent.subject_principal_id
+         AND membership.principal_kind = parent.subject_kind
+        JOIN iam.access_token_scopes AS token_scope
+          ON token_scope.access_token_id = parent.id
+         AND token_scope.scope = 'obo.issue'
+        WHERE parent.id = $1
+        ",
+    )
+    .bind(parent_id)
+    .fetch_one(pool)
+    .await?;
+    ensure!(parent_is_current, "seeded OBO parent token was not current");
+
+    sqlx::query(
+        r"
+        UPDATE iam.organization_memberships
+        SET authz_epoch = authz_epoch + 1
+        WHERE id = $1
+        ",
+    )
+    .bind(OWNER_MEMBERSHIP_ID)
+    .execute(pool)
+    .await?;
+    let stale_parent_is_accepted = sqlx::query_scalar::<_, bool>(
+        r"
+        SELECT EXISTS (
+            SELECT 1
+            FROM iam.access_tokens AS parent
+            JOIN iam.organization_memberships AS membership
+              ON membership.organization_id = parent.organization_id
+             AND membership.id = parent.membership_id
+             AND membership.principal_id = parent.subject_principal_id
+             AND membership.principal_kind = parent.subject_kind
+             AND parent.membership_authz_epoch = membership.authz_epoch
+            JOIN iam.access_token_scopes AS token_scope
+              ON token_scope.access_token_id = parent.id
+             AND token_scope.scope = 'obo.issue'
+            WHERE parent.id = $1
+        )
+        ",
+    )
+    .bind(parent_id)
+    .fetch_one(pool)
+    .await?;
+    ensure!(
+        !stale_parent_is_accepted,
+        "an OBO parent token survived a membership authorization epoch change"
+    );
+    Ok(())
+}
+
+async fn expired_obo_proof_cannot_be_consumed_after_transaction_wait(
+    pool: &PgPool,
+) -> anyhow::Result<()> {
+    let expiring_proof_id = Uuid::from_u128(0x122);
+    sqlx::query(
+        r"
+        WITH wall_clock AS MATERIALIZED (
+            SELECT clock_timestamp() AS value
+        )
+        INSERT INTO iam.obo_proofs (
+            id, proof_digest, digest_key_version, proof_prefix,
+            issuer_application_id, audience_application_id,
+            subject_principal_id, subject_kind, organization_id, membership_id,
+            parent_access_token_id, endpoint_id, request_metadata, endpoint_version,
+            request_method, request_path, request_body_sha256, request_signed_at,
+            subject_auth_epoch, membership_authz_epoch,
+            issuer_auth_epoch, audience_auth_epoch, created_at, expires_at
+        )
+        SELECT $1, decode(repeat('22', 32), 'hex'), digest_key_version, 'obo_expiring',
+               issuer_application_id, audience_application_id,
+               subject_principal_id, subject_kind, organization_id, membership_id,
+               parent_access_token_id, endpoint_id, request_metadata, endpoint_version,
+               request_method, request_path, request_body_sha256, wall_clock.value,
+               subject_auth_epoch, membership_authz_epoch,
+               issuer_auth_epoch, audience_auth_epoch, wall_clock.value,
+               wall_clock.value + interval '100 milliseconds'
+        FROM iam.obo_proofs AS template
+        CROSS JOIN wall_clock
+        WHERE template.id = $2
+        ",
+    )
+    .bind(expiring_proof_id)
+    .bind(PROOF_ID)
+    .execute(pool)
+    .await?;
+
+    let mut verification = pool.begin().await?;
+    sqlx::query("SELECT transaction_timestamp()")
+        .execute(&mut *verification)
+        .await?;
+    sqlx::query("SELECT pg_sleep(0.2)")
+        .execute(&mut *verification)
+        .await?;
+    let consumed = sqlx::query_scalar::<_, Uuid>(
+        r"
+        WITH wall_clock AS MATERIALIZED (
+            SELECT clock_timestamp() AS value
+        )
+        UPDATE iam.obo_proofs
+        SET consumed_at = wall_clock.value, consumed_by_application_id = $2
+        FROM wall_clock
+        WHERE id = $1 AND consumed_at IS NULL AND revoked_at IS NULL
+          AND expires_at > wall_clock.value
+        RETURNING id
+        ",
+    )
+    .bind(expiring_proof_id)
+    .bind(APP_B_ID)
+    .fetch_optional(&mut *verification)
+    .await?;
+    ensure!(
+        consumed.is_none(),
+        "an OBO proof was consumed after wall-clock expiry"
+    );
+    verification.rollback().await?;
+    Ok(())
+}
+
 async fn consume_obo_proof(pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
     sqlx::query_scalar::<_, Uuid>(
         r"
@@ -1224,11 +1535,12 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
         );
         INSERT INTO iam.access_token_scopes (access_token_id, scope) VALUES
           ('00000000-0000-0000-0000-000000000101', 'organizations.read'),
-          ('00000000-0000-0000-0000-000000000102', 'memberships.read'),
+          ('00000000-0000-0000-0000-000000000102', 'obo.issue'),
           ('00000000-0000-0000-0000-000000000103', 'organizations.read');
         INSERT INTO iam.application_obo_endpoints (
-            application_id, endpoint_id, path, metadata_definition
+            organization_id, application_id, endpoint_id, path, metadata_definition
         ) VALUES (
+            '00000000-0000-0000-0000-000000000021',
             '00000000-0000-0000-0000-000000000012',
             'trust.manage', '/v1/trust', '{"reason":{"type":"string"}}'
         );
@@ -1237,6 +1549,7 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             issuer_application_id, audience_application_id,
             subject_principal_id, subject_kind, organization_id, membership_id,
             parent_access_token_id, endpoint_id, request_metadata, endpoint_version,
+            request_method, request_path, request_body_sha256, request_signed_at,
             subject_auth_epoch,
             membership_authz_epoch, issuer_auth_epoch, audience_auth_epoch, expires_at
         ) VALUES (
@@ -1248,7 +1561,9 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             '00000000-0000-0000-0000-000000000021',
             '00000000-0000-0000-0000-000000000031',
             '00000000-0000-0000-0000-000000000102', 'trust.manage',
-            '{"reason":"review"}', 1, 1, 1, 1, 1,
+            '{"reason":"review"}', 1, 'POST', '/v1/trust',
+            decode(repeat('00', 32), 'hex'), transaction_timestamp(),
+            1, 1, 1, 1,
             transaction_timestamp() + interval '60 seconds'
         );
         COMMIT;

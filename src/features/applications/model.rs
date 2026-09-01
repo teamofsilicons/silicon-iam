@@ -347,7 +347,14 @@ pub(super) struct OboExchangeRequest {
     pub(super) audience: String,
     pub(super) endpoint_id: String,
     pub(super) metadata: serde_json::Value,
-    pub(super) org_id: String,
+    pub(super) request: OboExchangeRequestBinding,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OboExchangeRequestBinding {
+    pub(super) method: String,
+    pub(super) body_sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -362,6 +369,15 @@ pub(super) struct OboProofResponse {
 #[serde(deny_unknown_fields)]
 pub(super) struct OboVerifyRequest {
     pub(super) access_proof: String,
+    pub(super) request: OboVerifyRequestBinding,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OboVerifyRequestBinding {
+    pub(super) method: String,
+    pub(super) path: String,
+    pub(super) body_sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
