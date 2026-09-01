@@ -510,7 +510,10 @@ paths:
         current Carbon principal. Browser-cookie authentication additionally
         requires X-CSRF-Token to exactly match the token bound into the signed
         session cookie; bearer authentication does not. The operation fails
-        atomically if any active target is younger.
+        atomically if any active target is younger. A Carbon OAuth bearer may
+        also trigger logout only when its client is its audience; that form
+        revokes every IAM and Application authority bound to the parent session
+        across configured Applications and cannot select all_sessions.
       security: [{ iamBearer: [] }, { sessionCookie: [] }]
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
@@ -538,6 +541,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
 
   /api/v1/me:
@@ -1128,8 +1132,10 @@ paths:
         An authenticated direct Carbon submits the invited email. The service
         verifies that it is the exact active verified address immutably bound
         when that Carbon's invitation was created and that a pending unexpired
-        invitation exists for this active email-join organization, then sends
-        or replaces the six-digit Postmark OTP. The
+        invitation exists for this active email-join organization, then creates
+        a pending challenge and sends the six-digit Postmark OTP outside the
+        database transaction. The challenge becomes deliverable and the
+        endpoint succeeds only after provider confirmation. The
         response exposes only the invitation ID needed by the join request and
         the code lifetime, never contact data. Ten attempts per Carbon and
         organization, including misses and varied emails, start a complete
@@ -1146,7 +1152,7 @@ paths:
             schema: { $ref: '#/components/schemas/EmailInput' }
       responses:
         '202':
-          description: Matching invitation resolved and its replacement code dispatched.
+          description: Matching invitation resolved and Postmark confirmed delivery acceptance for its replacement code.
           headers:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
@@ -1160,6 +1166,8 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '504': { $ref: '#/components/responses/GatewayTimeout' }
   /api/v1/organizations/{org_id}/join:
     post:
       tags: [Invitations, Memberships]
@@ -1390,6 +1398,64 @@ paths:
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
 
+  /api/v1/organizations/{org_id}/silicons/{silicon_id}/webhook/dead-letters:
+    get:
+      tags: [Silicons, Webhooks]
+      operationId: listSiliconWebhookDeadLetters
+      description: Lists only dead letters currently visible to this Silicon recipient or its authorized Carbon manager.
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrgIdPath' }
+        - { $ref: '#/components/parameters/SiliconIdPath' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Recipient-scoped dead-letter page in reverse dead-letter order.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookDeadLetterPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/organizations/{org_id}/silicons/{silicon_id}/webhook/dead-letters/replays:
+    post:
+      tags: [Silicons, Webhooks]
+      operationId: replaySiliconWebhookDeadLetters
+      description: >-
+        Reauthorizes the current endpoint and subscription, then requeues up to
+        100 exact deliveries in original event order using the current URL and
+        signing secret. Original event identity, payload, occurrence time,
+        aggregate version, and attempt history are preserved.
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrgIdPath' }
+        - { $ref: '#/components/parameters/SiliconIdPath' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookReplayRequest' }
+      responses:
+        '202':
+          description: Authorized dead letters were reset for ordered redelivery.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookReplayResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
   /api/v1/organizations/{org_id}/silicons/{silicon_id}/webhook/subscription:
     parameters:
       - { $ref: '#/components/parameters/OrgIdPath' }
@@ -1482,6 +1548,7 @@ paths:
         '201':
           description: Immutable owner-approval request created.
           headers:
+            ETag: { $ref: '#/components/headers/ETag' }
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
@@ -1490,6 +1557,9 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/organizations/{org_id}/silicons/{silicon_id}/token-rotation-requests/{request_id}/complete:
     post:
@@ -1503,7 +1573,10 @@ paths:
         - { $ref: '#/components/parameters/IdempotencyKey' }
       responses:
         '200':
-          description: Approved rotation applied; old credential and sessions revoked; secret shown once.
+          description: >-
+            Generates and reveals the replacement credential after approval has
+            already invalidated the old credential and revoked its session and
+            token authority.
           headers:
             Cache-Control: { schema: { const: no-store } }
             Pragma: { schema: { const: no-cache } }
@@ -1516,7 +1589,10 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /api/v1/organizations/{org_id}/tags:
     get:
@@ -1818,6 +1894,7 @@ paths:
     post:
       tags: [Governance]
       operationId: createRoleChangeRequest
+      description: Only an active Silicon may create this governed request; regular Carbons use no request path.
       security: [{ iamBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/OrgIdPath' }
@@ -1831,6 +1908,7 @@ paths:
         '201':
           description: Immutable approval request created with target-specific quorum.
           headers:
+            ETag: { $ref: '#/components/headers/ETag' }
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
@@ -1890,6 +1968,11 @@ paths:
         - { $ref: '#/components/parameters/ApprovalRequestIdPath' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/IfMatch' }
+        - name: X-Step-Up-Token
+          in: header
+          required: false
+          description: Required with verified-channel assurance when deciding a Silicon token-rotation request.
+          schema: { type: string, pattern: '^sup_[A-Za-z0-9_-]{43}$' }
       requestBody:
         required: true
         content:
@@ -1897,7 +1980,11 @@ paths:
             schema: { $ref: '#/components/schemas/ApprovalDecisionCreate' }
       responses:
         '200':
-          description: Unique decision recorded; terminal job-role change is applied exactly once.
+          description: >-
+            Unique decision recorded. Terminal job-role/tag changes apply
+            exactly once. Approval of a Silicon credential rotation immediately
+            invalidates the old credential and its token/session authority but
+            does not generate the replacement secret.
           headers:
             ETag: { $ref: '#/components/headers/ETag' }
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
@@ -1909,6 +1996,42 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/organizations/{org_id}/members/{membership_id}/job-role:
+    put:
+      tags: [Governance]
+      operationId: replaceMemberJobRole
+      description: >-
+        A Carbon owner, or an admin with roles.approve, directly replaces the
+        descriptive job role for any active Carbon or Silicon and appends
+        immutable direct-actor history.
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrgIdPath' }
+        - { $ref: '#/components/parameters/MembershipIdPath' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DirectJobRoleReplace' }
+      responses:
+        '200':
+          description: Job role replaced directly and history appended.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Membership' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
@@ -1937,6 +2060,7 @@ paths:
     post:
       tags: [Governance]
       operationId: createMemberTagChangeRequest
+      description: Only an active Silicon may request this tag-set change for an active Carbon or Silicon target.
       security: [{ iamBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/OrgIdPath' }
@@ -1964,6 +2088,43 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/v1/organizations/{org_id}/members/{membership_id}/tags:
+    put:
+      tags: [Governance, Tags]
+      operationId: replaceMemberTags
+      description: >-
+        A Carbon owner, or an admin with tags.manage, atomically replaces the
+        complete active tag set for any active Carbon or Silicon, advances its
+        authorization epoch, and appends immutable direct-actor history.
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrgIdPath' }
+        - { $ref: '#/components/parameters/MembershipIdPath' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DirectTagSetReplace' }
+      responses:
+        '200':
+          description: Complete membership tag set replaced directly.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Membership' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /api/v1/organizations/{org_id}/members/{membership_id}/tag-history:
@@ -2212,6 +2373,118 @@ paths:
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/applications/{app_id}/client-secret-rotations:
+    post:
+      tags: [Applications]
+      operationId: rotateApplicationClientSecret
+      description: >-
+        Atomically retires every prior usable client secret and reveals exactly
+        one active successor. Step-up action application.client_secret.rotate
+        is bound to the internal Application UUID. Exact idempotent replay may
+        recover the no-store response for ten minutes.
+      x-required-step-up-assurance: verified_channel
+      security: [{ iamBearer: [], stepUpToken: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AppIdPath' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      responses:
+        '200':
+          description: Client secret rotated and shown once.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { schema: { const: no-store } }
+            Pragma: { schema: { const: no-cache } }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationSecretRotated' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/applications/{app_id}/redirect-uris:
+    parameters: [{ $ref: '#/components/parameters/AppIdPath' }]
+    get:
+      tags: [Applications]
+      operationId: listApplicationRedirectUris
+      description: Lists current and retired redirect URI history with per-row lifecycle status and version.
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Complete redirect URI lifecycle page.
+          headers: { ETag: { $ref: '#/components/headers/ETag' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationRedirectUriPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    post:
+      tags: [Applications]
+      operationId: addApplicationRedirectUri
+      description: Retires every previous current URI and creates one pending-review successor while retaining history.
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApplicationRedirectUriCreate' }
+      responses:
+        '201':
+          description: Previous current URI retired and pending-review URI created.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationRedirectUriMutation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/applications/{app_id}/redirect-uris/{redirect_uri_id}:
+    delete:
+      tags: [Applications]
+      operationId: retireApplicationRedirectUri
+      description: Explicitly retires the selected current or pending redirect URI and retains its history.
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AppIdPath' }
+        - { $ref: '#/components/parameters/RedirectUriIdPath' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      responses:
+        '200':
+          description: Redirect URI retired.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationRedirectUriMutation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/applications/{app_id}/webhook:
     get:
       tags: [Applications, Webhooks]
@@ -2256,6 +2529,61 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/applications/{app_id}/webhook/dead-letters:
+    get:
+      tags: [Applications, Webhooks]
+      operationId: listApplicationWebhookDeadLetters
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AppIdPath' }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Application-recipient dead-letter page in reverse dead-letter order.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookDeadLetterPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/applications/{app_id}/webhook/dead-letters/replays:
+    post:
+      tags: [Applications, Webhooks]
+      operationId: replayApplicationWebhookDeadLetters
+      description: >-
+        Reauthorizes current Application access, then requeues up to 100 exact
+        deliveries in original event order using the current endpoint and
+        signing secret while preserving immutable event and attempt history.
+        The secret-free session.logout.v1 revocation-control event instead
+        requires the exact persisted dead-letter recipient to remain bound to
+        this Application because logout itself revoked the delegated authority.
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AppIdPath' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookReplayRequest' }
+      responses:
+        '202':
+          description: Authorized dead letters were reset for ordered redelivery.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookReplayResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
@@ -2453,7 +2781,7 @@ webhooks:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/WebhookEvent' }
+            schema: { $ref: '#/components/schemas/SiliconWebhookEvent' }
       responses:
         '200': { description: Event accepted idempotently. }
         '202': { description: Event accepted for asynchronous local processing. }
@@ -2537,6 +2865,11 @@ components:
       in: path
       required: true
       schema: { $ref: '#/components/schemas/AppId' }
+    RedirectUriIdPath:
+      name: redirect_uri_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
     SiliconIdPath:
       name: silicon_id
       in: path
@@ -2728,7 +3061,14 @@ components:
       type: string
       pattern: '^[0-9]{6}$'
       description: Six-digit code with a ten-minute expiry; ten failed verifications trigger a 60-second reusable-challenge cooldown.
-    CarbonId: { type: string, pattern: '^[a-z1-9_-]{3,30}$' }
+    CarbonId:
+      type: string
+      pattern: '^[a-z1-9_-]{3,30}$'
+      description: New immutable Carbon ID; zero is not admitted.
+    ExistingCarbonId:
+      type: string
+      pattern: '^[a-z0-9_-]{3,30}$'
+      description: Existing Carbon lookup/projection, including immutable legacy IDs containing zero.
     OrgId: { type: string, pattern: '^[a-z0-9_-]{3,50}$' }
     AppId: { type: string, pattern: '^[a-z][a-z0-9_-]{2,62}$' }
     SiliconHandle:
@@ -2794,7 +3134,7 @@ components:
       required: [principal_id, carbon_id, display_name, profile_photo, created_at]
       properties:
         principal_id: { type: string, format: uuid }
-        carbon_id: { $ref: '#/components/schemas/CarbonId' }
+        carbon_id: { $ref: '#/components/schemas/ExistingCarbonId' }
         display_name: { type: string, minLength: 1, maxLength: 200 }
         description: { type: [string, 'null'], maxLength: 5000 }
         profile_photo: { type: string, format: uri, maxLength: 2048 }
@@ -2804,13 +3144,13 @@ components:
       required: [carbon_id]
       additionalProperties: false
       properties:
-        carbon_id: { $ref: '#/components/schemas/CarbonId' }
+        carbon_id: { $ref: '#/components/schemas/ExistingCarbonId' }
     CarbonResolution:
       type: object
       required: [carbon_id]
       additionalProperties: false
       properties:
-        carbon_id: { $ref: '#/components/schemas/CarbonId' }
+        carbon_id: { $ref: '#/components/schemas/ExistingCarbonId' }
     CarbonSelf:
       allOf:
         - { $ref: '#/components/schemas/CarbonPublic' }
@@ -2856,15 +3196,16 @@ components:
       properties:
         email: { type: string, format: email, maxLength: 320 }
         phone_number: { type: string, pattern: '^\\+[1-9][0-9]{7,14}$' }
-        carbon_id: { $ref: '#/components/schemas/CarbonId' }
+        carbon_id: { $ref: '#/components/schemas/ExistingCarbonId' }
     StepUpAction:
       type: string
       description: >-
         Closed privileged-action catalog. account.session_revoke binds
         resource_id to the target session UUID; account.sessions_revoke_all
         binds it to the current Carbon principal UUID. The Silicon-webhook
-        redirect action binds it to the target Silicon membership UUID. Every
-        action requires one non-null resource_id.
+        redirect action binds it to the target Silicon membership UUID. The
+        Application client-secret rotation action binds it to the internal
+        Application UUID. Every action requires one non-null resource_id.
       enum:
         - account.session_revoke
         - account.sessions_revoke_all
@@ -2872,6 +3213,7 @@ components:
         - organization.authorization_change
         - organization.sso_change
         - organization.silicon_webhook.redirect
+        - application.client_secret.rotate
         - silicon.rotate_token
         - platform_admin.sso_entitlement
         - platform_admin.application_review
@@ -3221,7 +3563,7 @@ components:
         - { required: [email] }
       additionalProperties: false
       properties:
-        carbon_id: { $ref: '#/components/schemas/CarbonId' }
+        carbon_id: { $ref: '#/components/schemas/ExistingCarbonId' }
         email: { type: string, format: email, maxLength: 320 }
         job_role: { type: string, maxLength: 5000 }
         tag_ids: { type: array, uniqueItems: true, maxItems: 100, items: { type: string, format: uuid } }
@@ -3390,8 +3732,9 @@ components:
         values. selected requires at least one exact topic: membership_lifecycle is
         actual creation/reactivation/removal, member_updates is applied existing-member
         role/tag/profile/hierarchy/authorization/ownership change, and trust_updates is
-        trust state only. own_tags_only remains an orthogonal strict event-time
-        before/after-tag filter; later tag changes never alter an older event's audience.
+        trust state only. Optional tag_filter always includes the Silicon's own
+        event-time before/after tag audience and may add active organization tags;
+        later own-tag changes never alter an older event's audience.
       properties:
         mode: { type: string, enum: [all, selected] }
         topics:
@@ -3400,10 +3743,23 @@ components:
           maxItems: 3
           default: []
           items: { $ref: '#/components/schemas/SiliconWebhookSubscriptionTopic' }
-        own_tags_only: { type: boolean, default: false }
+        tag_filter:
+          oneOf:
+            - { $ref: '#/components/schemas/SiliconWebhookTagFilter' }
+            - { type: 'null' }
+    SiliconWebhookTagFilter:
+      type: object
+      additionalProperties: false
+      properties:
+        additional_tag_ids:
+          type: array
+          uniqueItems: true
+          maxItems: 100
+          default: []
+          items: { type: string, format: uuid }
     SiliconWebhookSubscription:
       type: object
-      required: [silicon_id, mode, topics, own_tags_only, version, created_at, updated_at]
+      required: [silicon_id, mode, topics, tag_filter, version, created_at, updated_at]
       properties:
         silicon_id: { $ref: '#/components/schemas/SiliconGlobalId' }
         mode: { type: string, enum: [all, selected] }
@@ -3413,13 +3769,15 @@ components:
           maxItems: 3
           uniqueItems: true
           items: { $ref: '#/components/schemas/SiliconWebhookSubscriptionTopic' }
-        own_tags_only:
-          type: boolean
+        tag_filter:
           description: >-
-            When true, organization-wide and unattributed events are suppressed;
-            affected tags must intersect the Silicon's tags immediately before or
-            after that mutation. The event-time audience is immutable: a same-event
-            tag loss still matches and a later tag gain does not.
+            Null disables tag filtering. When present, organization-wide and
+            unattributed events are suppressed; affected tags must intersect
+            either the Silicon's immutable event-time own-tag audience or a
+            currently configured additional tag.
+          oneOf:
+            - { $ref: '#/components/schemas/SiliconWebhookTagFilter' }
+            - { type: 'null' }
         version: { type: integer, minimum: 1 }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -3537,7 +3895,13 @@ components:
     TagChangeRequestCreate:
       type: object
       additionalProperties: false
-      minProperties: 1
+      anyOf:
+        - required: [add_tag_ids]
+          properties:
+            add_tag_ids: { minItems: 1 }
+        - required: [remove_tag_ids]
+          properties:
+            remove_tag_ids: { minItems: 1 }
       properties:
         add_tag_ids:
           type: array
@@ -3552,6 +3916,22 @@ components:
           default: []
           items: { type: string, format: uuid }
         reason: { type: [string, 'null'], minLength: 1, maxLength: 2000 }
+    DirectJobRoleReplace:
+      type: object
+      required: [job_role]
+      additionalProperties: false
+      properties:
+        job_role: { type: string, maxLength: 5000 }
+    DirectTagSetReplace:
+      type: object
+      required: [tag_ids]
+      additionalProperties: false
+      properties:
+        tag_ids:
+          type: array
+          uniqueItems: true
+          maxItems: 100
+          items: { type: string, format: uuid }
     ApprovalDecisionCreate:
       type: object
       required: [decision]
@@ -3605,7 +3985,10 @@ components:
         new_job_role: { type: string }
         requested_by: { $ref: '#/components/schemas/ActorRef' }
         approvers: { type: array, items: { $ref: '#/components/schemas/ActorRef' } }
-        approval_request_id: { type: string, format: uuid }
+        approval_request_id:
+          type: [string, 'null']
+          format: uuid
+          description: Null for an owner/admin direct change.
         applied_at: { type: string, format: date-time }
     RoleHistoryPage:
       type: object
@@ -3631,7 +4014,10 @@ components:
           items: { type: string, format: uuid }
         requested_by: { $ref: '#/components/schemas/ActorRef' }
         approvers: { type: array, items: { $ref: '#/components/schemas/ActorRef' } }
-        approval_request_id: { type: string, format: uuid }
+        approval_request_id:
+          type: [string, 'null']
+          format: uuid
+          description: Null for an owner/admin direct change.
         membership_version: { type: integer, minimum: 1 }
         applied_at: { type: string, format: date-time }
     TagHistoryPage:
@@ -3687,7 +4073,7 @@ components:
         redirect_uris:
           type: array
           minItems: 1
-          maxItems: 20
+          maxItems: 1
           uniqueItems: true
           items: { type: string, format: uri, maxLength: 2048 }
         webhook_url: { type: string, format: uri, pattern: '^https://', maxLength: 2048 }
@@ -3712,7 +4098,7 @@ components:
         redirect_uris:
           type: array
           minItems: 1
-          maxItems: 20
+          maxItems: 1
           uniqueItems: true
           items: { type: string, format: uri, maxLength: 2048 }
         requested_scopes:
@@ -3758,6 +4144,49 @@ components:
         webhook_signing_secret: { type: string, pattern: '^whs_[A-Za-z0-9_-]{43}$' }
         webhook_secret_version: { type: integer, minimum: 1 }
         secret_replay_expires_at: { type: string, format: date-time }
+    ApplicationSecretRotated:
+      type: object
+      required: [app_id, app_secret, app_secret_version, application_version, secret_replay_expires_at]
+      additionalProperties: false
+      properties:
+        app_id: { $ref: '#/components/schemas/AppId' }
+        app_secret: { type: string, pattern: '^ask_[A-Za-z0-9_-]{43}$' }
+        app_secret_version: { type: integer, minimum: 1 }
+        application_version: { type: integer, minimum: 1 }
+        secret_replay_expires_at: { type: string, format: date-time }
+    ApplicationRedirectUriCreate:
+      type: object
+      required: [redirect_uri]
+      additionalProperties: false
+      properties:
+        redirect_uri: { type: string, format: uri, maxLength: 2048 }
+    ApplicationRedirectUri:
+      type: object
+      required: [id, redirect_uri, status, version, created_at, approved_at, retired_at, updated_at]
+      additionalProperties: false
+      properties:
+        id: { type: string, format: uuid }
+        redirect_uri: { type: string, format: uri, maxLength: 2048 }
+        status: { type: string, enum: [pending_review, active, retired] }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        approved_at: { type: [string, 'null'], format: date-time }
+        retired_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: string, format: date-time }
+    ApplicationRedirectUriPage:
+      type: object
+      required: [items, page]
+      additionalProperties: false
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ApplicationRedirectUri' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    ApplicationRedirectUriMutation:
+      type: object
+      required: [redirect_uri, application_version]
+      additionalProperties: false
+      properties:
+        redirect_uri: { $ref: '#/components/schemas/ApplicationRedirectUri' }
+        application_version: { type: integer, minimum: 1 }
     ApplicationPage:
       type: object
       required: [items, page]
@@ -3801,6 +4230,54 @@ components:
       description: Replaces only the reviewed destination candidate; it reuses the existing encrypted application webhook signing secret and never returns that secret.
       properties:
         url: { type: string, format: uri, pattern: '^https://', maxLength: 2048 }
+    WebhookDeadLetter:
+      type: object
+      required: [delivery_id, event_id, event_type, occurred_at, aggregate_type, aggregate_id, aggregate_version, status, attempt_count, cycle_attempt_count, manual_replay_count, last_http_status, last_error_code, dead_lettered_at, version]
+      additionalProperties: false
+      properties:
+        delivery_id: { type: string, format: uuid }
+        event_id: { type: string, format: uuid }
+        event_type: { type: string }
+        occurred_at: { type: string, format: date-time }
+        aggregate_type: { type: string }
+        aggregate_id: { type: string, format: uuid }
+        aggregate_version: { type: integer, minimum: 1 }
+        status: { type: string, enum: [pending, dead_letter] }
+        attempt_count: { type: integer, minimum: 0 }
+        cycle_attempt_count: { type: integer, minimum: 0 }
+        manual_replay_count: { type: integer, minimum: 0 }
+        last_http_status: { type: [integer, 'null'], minimum: 100, maximum: 599 }
+        last_error_code: { type: [string, 'null'] }
+        dead_lettered_at: { type: [string, 'null'], format: date-time }
+        version: { type: integer, minimum: 1 }
+    WebhookDeadLetterPage:
+      type: object
+      required: [items, page]
+      additionalProperties: false
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/WebhookDeadLetter' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+    WebhookReplayRequest:
+      type: object
+      required: [delivery_ids]
+      additionalProperties: false
+      properties:
+        delivery_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, format: uuid }
+    WebhookReplayResponse:
+      type: object
+      required: [deliveries, replayed_count]
+      additionalProperties: false
+      properties:
+        deliveries:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/WebhookDeadLetter' }
+        replayed_count: { type: integer, minimum: 1, maximum: 100 }
     WebhookEvent:
       type: object
       required: [spec_version, event_id, event_type, occurred_at, aggregate, data]
@@ -3847,6 +4324,55 @@ components:
             organization.membership.profile_updated.v1 is the organization-bound Silicon projection of
             that mutation: it contains the changed non-contact profile fields, complete current membership
             state, and before/after affected tags captured at the same Carbon version.
+    SiliconFullEventType:
+      type: string
+      description: Exact closed 38-event vocabulary delivered by Silicon mode=all subscriptions.
+      enum:
+        - organization.membership.created.v1
+        - organization.membership.reactivated.v1
+        - organization.membership.removed.v1
+        - organization.silicon.created.v1
+        - organization.silicon.removed.v1
+        - organization.membership.updated.v1
+        - organization.membership.profile_updated.v1
+        - organization.membership.authorization_updated.v1
+        - organization.ownership_transferred.v1
+        - organization.admin.promoted.v1
+        - organization.admin.demoted.v1
+        - organization.silicon.updated.v1
+        - organization.tag_updated.v1
+        - organization.trust.default_updated.v1
+        - organization.trust.rule_created.v1
+        - organization.trust.rule_updated.v1
+        - organization.trust.rule_archived.v1
+        - organization.created.v1
+        - organization.updated.v1
+        - organization.tag_created.v1
+        - organization.invitation.created.v1
+        - organization.invitation.accepted.v1
+        - organization.invitation.revoked.v1
+        - organization.role_change.requested.v1
+        - organization.tag_change.requested.v1
+        - organization.approval.decided.v1
+        - organization.silicon.rotation_requested.v1
+        - organization.silicon.credential_rotated.v1
+        - organization.silicon.webhook.configured.v1
+        - organization.silicon.webhook.deleted.v1
+        - organization.silicon.webhook_subscription.updated.v1
+        - organization.silicon.webhook_subscription.deleted.v1
+        - sso.setup_link.created.v1
+        - sso.configuration.disabled.v1
+        - sso.entitlement.replaced.v1
+        - sso.connection.activated.v1
+        - sso.connection.deactivated.v1
+        - sso.connection.deleted.v1
+    SiliconWebhookEvent:
+      allOf:
+        - { $ref: '#/components/schemas/WebhookEvent' }
+        - type: object
+          required: [event_type]
+          properties:
+            event_type: { $ref: '#/components/schemas/SiliconFullEventType' }
     ApplicationAdminDecision:
       type: object
       required: [decision]

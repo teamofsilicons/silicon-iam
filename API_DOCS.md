@@ -27,8 +27,10 @@ There are three public principal types:
 Persistent entities use UUIDv7 primary identifiers. Public handles
 (`carbon_id`, `org_id`, `app_id`, and the global Silicon ID) are
 immutable normalized labels, never foreign keys, and are not reused after
-deletion. Carbon IDs accept lowercase `a-z`, digits `0-9`, `_`, and `-`
-and are 3–30 characters long. A global Silicon ID is
+deletion. New Carbon IDs accept lowercase `a-z`, digits `1-9`, `_`, and `-`
+and are 3–30 characters long. Immutable legacy Carbon IDs containing `0`
+remain addressable for login and existing-account lookup but cannot be newly
+registered. A global Silicon ID is
 `{handle}:{org_id}`; the handle is only creation input and is never an
 independently addressable public ID.
 
@@ -236,9 +238,9 @@ All paths above are under `/api/v1/signup/sessions`.
   one-minute-cooldown verification policy described above.
 - Completion requires both verified identities and atomically rechecks their
   uniqueness before inserting the Carbon.
-- Completion requires `timezone` as an exact IANA TZDB identifier such as
-  `UTC` or `Asia/Kolkata`; unknown identifiers and whitespace variants are
-  rejected.
+- Completion accepts optional `time_zone` as an exact IANA TZDB identifier such
+  as `UTC` or `Asia/Kolkata`; omission defaults it to `UTC`. Unknown identifiers
+  and whitespace variants are rejected.
 - `profile_photo` defaults to
   `https://iris.teamofsilicons.com/pfp/carbon?id={carbon_id}` when omitted.
 - A positive `GET /api/v1/carbon-ids/{carbon_id}/availability` never reserves
@@ -287,6 +289,17 @@ hours old. The request must also include a verified-channel
 `principal_id`; the transaction fails without revoking anything if any target
 is too young. When there are no other active sessions, `all_sessions` safely
 collapses to immediate current-session logout and does not require step-up.
+
+The endpoint also accepts a live Carbon OAuth bearer issued to the Application
+that is triggering logout, provided that Application is both the token client
+and audience. This Application-triggered form always performs global logout for
+the bearer token's parent IAM session: it revokes that session family and all
+IAM/Application access, refresh, consent, authorization-code/request, and OBO
+authority bound to it, then emits the same `session.logout.v1` event to every
+Application authorized immediately before revocation. It cannot request
+account-wide `all_sessions`. Authorization is rechecked under lock, and an
+exact idempotent retry may replay only its already-completed response after the
+triggering credential has been revoked.
 
 `DELETE /api/v1/me/sessions/{session_id}` is the explicit single-session
 revocation flow. The target must be at least 12 hours old, and when it differs
@@ -560,6 +573,15 @@ replay does not consume another send attempt. Acceptance, membership
 creation/reactivation, directory defaults, and trust-rule materialization are
 atomic.
 
+The email-code endpoint returns `202 Accepted` and marks the challenge
+`delivered` only after Postmark confirms delivery acceptance. A definitive
+provider rejection marks the pending challenge failed and returns `503`; an
+ambiguous timeout or transport failure leaves it pending and unverifiable so a
+false-success response can never make an undelivered OTP consumable. Provider
+I/O runs outside database transactions. Exact replays return success only for a
+previously confirmed delivery; an unresolved reservation remains
+`409 idempotency_in_progress` until safely superseded with a new key.
+
 ## Silicons
 
 | Method | Endpoint | Behavior |
@@ -568,6 +590,8 @@ atomic.
 | GET/PATCH/DELETE | `.../silicons/{silicon_id}` | Read/update/remove |
 | GET/PUT/DELETE | `.../silicons/{silicon_id}/webhook` | Inspect, configure/replace, or disable the subscriber-managed endpoint |
 | GET/PUT/DELETE | `.../silicons/{silicon_id}/webhook/subscription` | Inspect, replace, or remove organization-event topics |
+| GET | `.../silicons/{silicon_id}/webhook/dead-letters` | List visible dead-letter deliveries |
+| POST | `.../silicons/{silicon_id}/webhook/dead-letters/replays` | Replay one or an ordered batch of dead letters |
 | POST | `.../silicons/{silicon_id}/token-rotation-requests` | Request owner-approved rotation |
 | POST | `.../token-rotation-requests/{request_id}/complete` | Apply approved rotation and reveal token once |
 
@@ -583,8 +607,8 @@ configured separately when the Silicon needs organization events.
 Silicon reads return the full mutable profile. PATCH may change display name,
 timezone, description, profile photo, or reporting parent with the corresponding
 directory or hierarchy capability and current ETag. It never changes the public
-Silicon ID or the job role; role and tag changes retain their governed
-approval workflows. Profiles predating this contract are backfilled to `UTC`
+Silicon ID or the job role; role and tag changes use their dedicated request or
+direct owner/admin control routes. Profiles predating this contract are backfilled to `UTC`
 and use their stored handle component as the display name.
 
 When no custom photo is provided, IAM generates:
@@ -598,10 +622,12 @@ Reporting edges are Silicon-to-Silicon inside one organization. Self-links,
 cycles, removed targets, and cross-tenant references are rejected.
 
 Token rotation creates an immutable approval request. The current owner must
-approve using step-up authentication. Completion generates the new secret,
-increments the credential/auth epochs, invalidates the old secret, revokes
-Silicon sessions, and returns the raw secret under the ten-minute idempotent
-replay rule.
+approve using step-up authentication. Approval immediately invalidates the old
+credential, advances authorization state, and revokes every Silicon access,
+refresh, and IAM session authority; it does not create a replacement secret.
+After approval, a separate completion request consciously generates and
+reveals the new secret, again advances credential/auth epochs, and returns the
+raw value under the ten-minute idempotent replay rule.
 
 An active Silicon may manage its own webhook and subscription. A Carbon with
 `silicons.update_directory` may manage any active Silicon in the organization
@@ -623,22 +649,26 @@ returns the secret.
 Disabling the endpoint also removes its subscription, and a Silicon cannot
 create a subscription before it has an active endpoint.
 
-A subscription uses `mode=all` with no explicit topics, or `mode=selected`
-with one or more of `membership_lifecycle`, `member_updates`, and
-`trust_updates`. `all` receives every organization event explicitly routed to
+A subscription uses `mode=all`, which ignores any supplied `topics` and
+canonicalizes the response to all three topic values, or `mode=selected` with
+one or more of `membership_lifecycle`, `member_updates`, and `trust_updates`.
+`all` receives every organization event explicitly routed to
 Silicon subscribers, including organization metadata, tag-catalog,
 invitation, governance-control, credential, and configuration events that do
 not belong to a selected topic. For `selected`, `membership_lifecycle` is only
 actual member or Silicon creation, reactivation, and removal;
 `member_updates` covers applied existing-member role, tag, profile, hierarchy,
 authorization, and ownership changes; and `trust_updates` is only trust state.
-`own_tags_only` is an orthogonal filter and may be combined with either mode.
-When enabled, IAM delivers only events whose normalized before/after
-affected-tag union intersected the Silicon membership's tags immediately before
-or after that mutation. This event-time relationship is captured in the domain
-transaction: losing a shared tag does not suppress that event, and
-gaining a tag later cannot expose an older event. Organization-wide,
-unattributed, and disjoint events fail closed and are not delivered.
+Optional `tag_filter` may be combined with either mode. When present, it always
+contains the Silicon's own tag audience and may add up to 100 active
+organization tags through `additional_tag_ids`. IAM then delivers only events
+whose normalized before/after affected-tag union intersects either the
+Silicon's own tags immediately before or after that mutation, or one of those
+explicit extra tags. The own-tag relationship is captured in the domain
+transaction: losing a shared tag does not suppress that event, and gaining a
+tag later cannot expose an older event. Extra-tag authorization is rechecked
+from the current subscription. Organization-wide, unattributed, and disjoint
+events fail closed when filtering is enabled.
 
 ## Tags, visibility, and trust
 
@@ -650,18 +680,20 @@ strings embedded in memberships.
 | GET/POST | `/api/v1/organizations/{org_id}/tags` | List or create tags |
 | GET/PATCH | `.../tags/{tag_id}` | Read or rename |
 | GET | `.../tags/{tag_id}/members` | List attached Carbons and Silicons |
+| PUT | `.../members/{membership_id}/tags` | Owner/admin directly replaces the complete tag set |
 | POST | `.../members/{membership_id}/tag-change-requests` | Request tag additions or removals |
 | GET | `.../members/{membership_id}/tag-history` | List applied tag sets with requester and approvers |
 
 Renaming preserves the tag UUID and therefore does not break references.
 
-Any active Carbon or Silicon may request a tag addition or removal for any
-active Carbon or Silicon membership, including itself. A Carbon target requires
+Only an active Silicon may request a tag addition or removal for any active
+Carbon or Silicon membership, including itself. A Carbon target requires
 approval from the affected Carbon and one eligible owner/admin. A Silicon
-target requires one eligible owner/admin. Existing-membership tag writes are
-applied only by this workflow; creation and admission may still set initial
-tags. Each applied change preserves its requester, approvers, before/after tag
-sets, membership version, and timestamp.
+target requires one eligible owner/admin. A Carbon owner, or an admin with
+`tags.manage`, may instead directly replace any active Carbon or Silicon tag
+set through the versioned PUT route. Creation and admission may still set
+initial tags. Every applied or direct change preserves its initiating actor,
+applicable approvers, before/after tag sets, membership version, and timestamp.
 
 Trust is reliable advisory metadata, never an authorization decision. It has:
 
@@ -697,14 +729,20 @@ Job-role and tag changes never use the membership patch endpoint:
 | GET | `.../approval-requests/{request_id}` | Inspect payload and decisions |
 | POST | `.../approval-requests/{request_id}/decisions` | Approve or reject |
 | GET | `.../members/{membership_id}/job-role-history` | Applied role history |
+| PUT | `.../members/{membership_id}/job-role` | Owner/admin directly replaces the descriptive job role |
 | POST | `.../members/{membership_id}/tag-change-requests` | Create immutable tag request |
+| PUT | `.../members/{membership_id}/tags` | Owner/admin directly replaces the complete tag set |
 | GET | `.../members/{membership_id}/tag-history` | Applied tag history |
 
-A Carbon change requires the affected Carbon and one currently eligible owner
-or admin with `roles.approve`. A Silicon change requires one currently
-eligible owner/admin. A Silicon-token rotation requires the owner and step-up.
-Eligibility is rechecked when a decision is made and when a terminal operation
-is applied.
+Only an active Silicon may create a role- or tag-change request; a regular
+Carbon cannot request either change. A requested Carbon role change requires
+the affected Carbon and one currently eligible owner/admin with
+`roles.approve`; a requested Silicon role change requires one currently
+eligible owner/admin. Carbon owners and admins with the corresponding
+`roles.approve` or `tags.manage` capability may directly control either field
+for any active Carbon or Silicon through the versioned PUT routes. A
+Silicon-token rotation requires the owner and step-up. Eligibility is rechecked
+when a decision is made and when a terminal operation is applied.
 
 A Carbon tag change uses the same affected-Carbon plus owner/admin quorum. A
 Silicon tag change requires owner/admin approval only. The request captures the
@@ -795,19 +833,29 @@ so concurrent revocation cannot authenticate after it commits.
 | --- | --- | --- |
 | GET/POST | `/api/v1/applications` | List owned apps or submit registration |
 | GET/PATCH | `/api/v1/applications/{app_id}` | Read/update |
+| POST | `.../client-secret-rotations` | Rotate and reveal a new client secret once |
+| GET/POST | `.../redirect-uris` | List complete URI history or add a new current URI |
+| DELETE | `.../redirect-uris/{redirect_uri_id}` | Explicitly retire one URI |
 | GET/PUT | `.../webhook` | Inspect active endpoint or propose replacement |
+| GET | `.../webhook/dead-letters` | List dead-letter deliveries |
+| POST | `.../webhook/dead-letters/replays` | Replay one or an ordered batch of dead letters |
 | GET | `.../login-history` | App-specific authorization/login history |
 
-Registration requires an immutable app ID, at least one exact redirect URI, one
+Registration requires an immutable app ID, exactly one redirect URI, one
 HTTPS webhook URL, requested scopes, and may include the application's callable
 OBO endpoint registry. It returns an `under_review`
 application plus one-time application and webhook signing secrets. The app
 cannot authorize users, introspect tokens, or issue OBO proofs until verified.
 `notify_users` defaults to `true`.
 
-Requested scopes and approved scopes are separate. Redirect or scope changes
-remain pending and do not replace the active reviewed configuration until a
-platform administrator approves them. An application webhook replacement also
+Requested scopes and approved scopes are separate. Scope changes remain
+pending and do not replace the active reviewed configuration until a platform
+administrator approves them. Adding a redirect URI immediately retires every
+previous current URI, retains those rows as versioned history, and creates the
+new URI as `pending_review`; no retired URI remains usable while review is
+pending. The paginated history exposes each URI's status and lifecycle
+timestamps. Explicit retirement is idempotent, versioned, and audited. An
+application webhook replacement also
 keeps the previous endpoint active until review; v1 exposes exactly one active
 destination. During initial registration there is truthfully no active
 destination: `active_url` is `null`, `pending_url` contains the submitted URL,
@@ -825,6 +873,13 @@ deletion is available only through the backend-admin decision workflow. It
 immediately disables the client, compromises its credentials, revokes token
 families, access tokens, OBO proofs, consents, and delivery scheduling, and
 tombstones the app ID.
+
+Client-secret rotation requires the current Application ETag, an idempotency
+key, and verified-channel step-up bound to that Application. It atomically
+retires every prior usable client secret, creates exactly one active successor,
+increments the Application version, and returns the raw secret only in a
+`no-store` response. An exact replay may recover that response for ten minutes;
+the secret never appears in ordinary reads, audit diffs, or webhooks.
 
 ### Platform application review
 
@@ -885,6 +940,21 @@ transaction. Workers claim outbox rows with bounded leases, deliver at least
 once, use capped exponential backoff with jitter, and retain dead-letter state
 under the configured retention policy.
 
+Application owners and authorized Silicon webhook managers can list dead
+letters at their recipient-specific routes and replay one or a batch of at most
+100 by submitting `delivery_ids` with an idempotency key. Replay preserves the
+original `event_id`, payload, `occurred_at`, aggregate version, and complete
+attempt history; it resets only the cycle attempt counter and increments the
+manual replay count. The transaction rechecks current Application
+authorization or the current Silicon endpoint/subscription, then targets the
+currently configured URL and signing-key version. `session.logout.v1` is the
+narrow exception: because the event itself revokes delegated Application
+authority, its secret-free revocation notification may be replayed only when
+the exact persisted dead-letter recipient is bound to that Application. Other
+revoked recipients fail closed. Batches are requeued and delivered in original
+global event order, and each replay request records its initiating actor in the
+audit trail.
+
 The OpenAPI `webhooks` section defines application and subscriber-configured
 Silicon deliveries. Event bodies use this envelope:
 
@@ -922,6 +992,69 @@ credential, and other directory transitions use the same versioned naming
 rule. Consumers must deduplicate by `event_id`, process the event types they
 understand, and safely ignore unknown event types so additive events do not
 break delivery.
+
+### Silicon Full event catalog (38)
+
+`mode=all` is a closed set of exactly the following 38 event types.
+
+| Membership lifecycle | Meaning |
+| --- | --- |
+| `organization.membership.created.v1` | A new Carbon membership was created. |
+| `organization.membership.reactivated.v1` | An inactive Carbon membership was restored. |
+| `organization.membership.removed.v1` | A Carbon membership was removed or deactivated. |
+| `organization.silicon.created.v1` | A Silicon identity was added. |
+| `organization.silicon.removed.v1` | A Silicon identity was removed. |
+
+| Member and authorization updates | Meaning |
+| --- | --- |
+| `organization.membership.updated.v1` | Centrally managed membership directory, tag, role, or trust-related state changed. |
+| `organization.membership.profile_updated.v1` | A Carbon profile was projected into this organization. |
+| `organization.membership.authorization_updated.v1` | Explicitly delegated member capabilities changed. |
+| `organization.ownership_transferred.v1` | Organization ownership moved to another Carbon. |
+| `organization.admin.promoted.v1` | A Carbon member became an administrator. |
+| `organization.admin.demoted.v1` | An administrator became a regular member. |
+| `organization.silicon.updated.v1` | Centrally managed Silicon organization attributes changed. |
+| `organization.tag_updated.v1` | A tag definition changed, including effects on assigned members. |
+
+| Trust configuration | Meaning |
+| --- | --- |
+| `organization.trust.default_updated.v1` | The organization default trust value changed. |
+| `organization.trust.rule_created.v1` | A trust rule was created. |
+| `organization.trust.rule_updated.v1` | A trust rule was modified. |
+| `organization.trust.rule_archived.v1` | A trust rule was archived. |
+
+| Organization configuration | Meaning |
+| --- | --- |
+| `organization.created.v1` | The organization was created. |
+| `organization.updated.v1` | Organization-level details changed. |
+| `organization.tag_created.v1` | An organization tag was created. |
+
+| Invitations and governance | Meaning |
+| --- | --- |
+| `organization.invitation.created.v1` | A Carbon invitation was issued. |
+| `organization.invitation.accepted.v1` | Invitation admission completed. |
+| `organization.invitation.revoked.v1` | A pending invitation was revoked. |
+| `organization.role_change.requested.v1` | A governed job-role change was requested. |
+| `organization.tag_change.requested.v1` | A governed tag-set change was requested. |
+| `organization.approval.decided.v1` | A governance request was approved or rejected. |
+
+| Silicon credential and webhook management | Meaning |
+| --- | --- |
+| `organization.silicon.rotation_requested.v1` | Silicon credential rotation was requested. |
+| `organization.silicon.credential_rotated.v1` | A replacement Silicon credential was created. |
+| `organization.silicon.webhook.configured.v1` | A Silicon webhook endpoint/signing secret was configured or replaced. |
+| `organization.silicon.webhook.deleted.v1` | A Silicon webhook endpoint was disabled or deleted. |
+| `organization.silicon.webhook_subscription.updated.v1` | A Silicon subscription mode, topics, or tag filter changed. |
+| `organization.silicon.webhook_subscription.deleted.v1` | A Silicon subscription was removed. |
+
+| SSO configuration | Meaning |
+| --- | --- |
+| `sso.setup_link.created.v1` | A provider setup link was created. |
+| `sso.configuration.disabled.v1` | Organization SSO was disabled. |
+| `sso.entitlement.replaced.v1` | The SSO entitlement/configuration was replaced. |
+| `sso.connection.activated.v1` | An SSO connection became active. |
+| `sso.connection.deactivated.v1` | An SSO connection was disabled without deletion. |
+| `sso.connection.deleted.v1` | An SSO connection was permanently removed. |
 
 Events never contain OTPs, raw tokens/secrets, provider credentials, encrypted
 database records, or unrelated organization state. A Carbon profile change is
