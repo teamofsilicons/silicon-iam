@@ -28,9 +28,16 @@ boundary in CI.
 
 | Path | What it is |
 | --- | --- |
-| `/docs/api/` | Browsable API documentation, eleven sections, authored in `docs/api/*.html` |
+| `/docs` | Chooses between the two manuals |
+| `/docs/api/` | The HTTP contract, eleven sections, authored in `docs/api/*.html` |
+| `/docs/client/` | The official Rust SDK, seven sections, authored in `docs/client/*.html` |
 | `/openapi.yaml` | The normative contract, at a stable cacheable URL |
 | `/admin` | Platform-administration console: application review, consent policy, SSO entitlement |
+
+The client manual documents [`iam-rust-library`](../iam-rust-library), the
+official SDK. It is published here rather than in that repository so a reader
+finds both manuals at one origin, and so the two can cross-reference each
+other without a dead link when either moves.
 
 Everything they need is embedded at compile time — markup, stylesheet, script,
 marks and the IBM Plex latin subsets — so a release image makes no third-party

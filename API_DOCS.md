@@ -20,7 +20,8 @@ the JSON contract and are not described in `openapi.yaml`:
 
 | Path | Surface |
 | --- | --- |
-| `/docs/api/` | Browsable API documentation, in eleven sections |
+| `/docs/api/` | The HTTP contract, in eleven sections |
+| `/docs/client/` | The official Rust SDK, in seven sections |
 | `/openapi.yaml` | The normative contract itself |
 | `/admin` | The platform-administration console |
 
@@ -28,6 +29,11 @@ the JSON contract and are not described in `openapi.yaml`:
 `src/web/mod.rs` must sit under `/admin`, `/docs`, `/_static` or
 `/openapi.yaml`, and must not appear in the specification. Contract routes
 belong in a feature router and in `openapi.yaml`, as they always have.
+
+Applications integrating in Rust should use the official SDK rather than this
+document. It implements the version handshake, PKCE, proof signing, signature
+verification and the retry policy, and fails closed where this contract expects
+a client to. See `/docs/client/`.
 
 The `/admin` console is a thin client over `/api/v1/admin/*`. It performs no
 authentication of its own and executes no SQL; authority stays entirely in the

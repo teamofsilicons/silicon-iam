@@ -1,9 +1,15 @@
-//! The API documentation at `/docs/api/`.
+//! The documentation at `/docs/`.
 //!
-//! Content is authored as HTML fragments under `docs/api/` and embedded at
-//! compile time, so a release image serves documentation that is guaranteed to
-//! match the binary it ships with — a docs site that drifts from its API is
-//! worse than no docs site.
+//! Two manuals share one renderer:
+//!
+//! - `/docs/api/` — the HTTP contract. What every endpoint does, and why.
+//! - `/docs/client/` — the official Rust SDK. How to integrate an Application
+//!   without reimplementing PKCE, proof signing, or signature verification.
+//!
+//! Content is authored as HTML fragments under `docs/` and embedded at compile
+//! time, so a release image serves documentation that is guaranteed to match
+//! the binary it ships with — a docs site that drifts from its API is worse
+//! than no docs site.
 //!
 //! There is no Markdown renderer. That would mean a new dependency in a
 //! service whose supply chain is deliberately minimal, and it would give the
@@ -17,6 +23,7 @@
 use core::fmt::Write as _;
 
 use axum::{
+    extract::Path,
     http::{StatusCode, header},
     response::{IntoResponse, Redirect, Response},
 };
@@ -28,7 +35,7 @@ use super::{
 
 /// One documentation page.
 struct Section {
-    /// URL slug under `/docs/api/`.
+    /// URL slug under the manual's prefix.
     slug: &'static str,
     title: &'static str,
     /// One line, shown in the navigation and as the meta description.
@@ -36,11 +43,31 @@ struct Section {
     body: &'static str,
 }
 
-/// The documentation, in reading order.
+/// A set of sections published under one prefix.
+struct Manual {
+    /// URL prefix, without slashes, e.g. `api`.
+    prefix: &'static str,
+    /// Shown beside the logo in the header.
+    label: &'static str,
+    title: &'static str,
+    lede: &'static str,
+    sections: &'static [Section],
+}
+
+impl Manual {
+    fn find(&self, slug: &str) -> Option<(usize, &Section)> {
+        self.sections
+            .iter()
+            .enumerate()
+            .find(|(_, section)| section.slug == slug)
+    }
+}
+
+/// The HTTP contract, in reading order.
 ///
 /// Order is meaningful: it is the order a developer integrating with Silicon
 /// IAM for the first time should read them, not alphabetical.
-const SECTIONS: &[Section] = &[
+const API_SECTIONS: &[Section] = &[
     Section {
         slug: "overview",
         title: "Overview",
@@ -56,7 +83,7 @@ const SECTIONS: &[Section] = &[
     Section {
         slug: "conventions",
         title: "Request conventions",
-        summary: "Idempotency, versioning, pagination, rate limits, and the error envelope.",
+        summary: "The version handshake, idempotency, versioning, pagination, and errors.",
         body: include_str!("../../docs/api/conventions.html"),
     },
     Section {
@@ -109,27 +136,156 @@ const SECTIONS: &[Section] = &[
     },
 ];
 
-/// `/docs` sends readers to the API documentation, which is all there is today.
-pub(crate) async fn redirect_to_api() -> Redirect {
-    Redirect::permanent("/docs/api/")
+/// The Rust SDK, in the order an integration is actually built.
+const CLIENT_SECTIONS: &[Section] = &[
+    Section {
+        slug: "overview",
+        title: "Overview",
+        summary: "What the SDK covers, what it deliberately does not, and why.",
+        body: include_str!("../../docs/client/overview.html"),
+    },
+    Section {
+        slug: "connecting",
+        title: "Connecting",
+        summary: "Installation, credentials, and the fail-closed compatibility handshake.",
+        body: include_str!("../../docs/client/connecting.html"),
+    },
+    Section {
+        slug: "oauth",
+        title: "Signing users in",
+        summary: "PKCE authorization, the sealed continuation, and callback handling.",
+        body: include_str!("../../docs/client/oauth.html"),
+    },
+    Section {
+        slug: "tokens",
+        title: "Managing tokens",
+        summary: "Refresh, introspection, revocation, logout, and idempotency discipline.",
+        body: include_str!("../../docs/client/tokens.html"),
+    },
+    Section {
+        slug: "obo",
+        title: "Delegated access",
+        summary: "Discovering endpoints, exchanging a request-bound proof, and consuming it.",
+        body: include_str!("../../docs/client/obo.html"),
+    },
+    Section {
+        slug: "webhooks",
+        title: "Receiving webhooks",
+        summary: "Signature verification, secret keyrings, and deduplication.",
+        body: include_str!("../../docs/client/webhooks.html"),
+    },
+    Section {
+        slug: "errors",
+        title: "Errors and recovery",
+        summary: "The error taxonomy, what is retryable, and how to recover a lost response.",
+        body: include_str!("../../docs/client/errors.html"),
+    },
+];
+
+const API: Manual = Manual {
+    prefix: "api",
+    label: "API documentation",
+    title: "Silicon IAM API.",
+    lede: "Identity, organization governance, application login, and delegated access. The \
+           normative contract is <a href=\"/openapi.yaml\">openapi.yaml</a>; these pages explain \
+           the behaviour behind it.",
+    sections: API_SECTIONS,
+};
+
+const CLIENT: Manual = Manual {
+    prefix: "client",
+    label: "Client documentation",
+    title: "Silicon IAM for Rust.",
+    lede: "The official SDK for integrating an Application. It keeps wire paths, PKCE material, \
+           proof signatures, and retry policy inside the crate, and exposes only the inputs an \
+           Application actually owns.",
+    sections: CLIENT_SECTIONS,
+};
+
+const MANUALS: &[&Manual] = &[&API, &CLIENT];
+
+/// `/docs` — chooses between the two manuals.
+pub(crate) async fn landing() -> Document {
+    let body = format!(
+        r#"{header}
+    <main id="main" tabindex="-1">
+      <div class="wrap stack">
+        <div>
+          <h1>Documentation.</h1>
+          <p class="lede">
+            Two manuals. Read the contract if you are calling the API directly; read the client
+            if you are integrating an Application in Rust and would rather not reimplement PKCE,
+            proof signing, and signature verification yourself.
+          </p>
+        </div>
+
+        <ul class="docs-cards">
+          <li>
+            <a class="panel docs-card" href="/docs/api/">
+              <span class="label">01</span>
+              <h2>API</h2>
+              <p class="small muted">
+                The HTTP contract: transports, credential lifetimes, idempotency, the directory
+                model, webhooks, and delegated access. Language-independent.
+              </p>
+            </a>
+          </li>
+          <li>
+            <a class="panel docs-card" href="/docs/client/">
+              <span class="label">02</span>
+              <h2>Client</h2>
+              <p class="small muted">
+                The official Rust SDK. Connect, sign users in, manage tokens, delegate between
+                applications, and verify webhook deliveries.
+              </p>
+            </a>
+          </li>
+          <li>
+            <a class="panel docs-card" href="/openapi.yaml">
+              <span class="label">03</span>
+              <h2>openapi.yaml</h2>
+              <p class="small muted">
+                The normative machine-readable contract. Everything else describes this.
+              </p>
+            </a>
+          </li>
+        </ul>
+      </div>
+    </main>
+"#,
+        header = page_header(None),
+    );
+
+    Document::public(
+        Surface::Docs,
+        render(&Page {
+            title: "Documentation",
+            description: "Silicon IAM — the HTTP contract and the official Rust client.",
+            head: "",
+            body: &body,
+        }),
+    )
 }
 
-/// `/docs/api/` — the contents page.
-pub(crate) async fn index() -> Document {
+/// `/docs/api/` and `/docs/client/` — a manual's contents page.
+pub(crate) async fn index(Path(manual): Path<String>) -> Response {
+    let Some(manual) = MANUALS.iter().find(|entry| entry.prefix == manual) else {
+        return not_found().into_response();
+    };
+
     let mut cards = String::new();
-    for (position, section) in SECTIONS.iter().enumerate() {
-        // Writing into the buffer cannot fail for a `String`; the result is
-        // discarded rather than unwrapped so this stays panic-free.
+    for (position, section) in manual.sections.iter().enumerate() {
         let _ = write!(
             cards,
             r#"          <li>
-            <a class="panel docs-card" href="/docs/api/{slug}">
+            <a class="panel docs-card" href="/docs/{prefix}/{slug}">
               <span class="label">{ordinal}</span>
               <h2>{title}</h2>
               <p class="small muted">{summary}</p>
             </a>
           </li>
 "#,
+            prefix = manual.prefix,
             slug = section.slug,
             ordinal = format_args!("{:02}", position + 1),
             title = escape(section.title),
@@ -142,56 +298,48 @@ pub(crate) async fn index() -> Document {
     <main id="main" tabindex="-1">
       <div class="wrap stack">
         <div>
-          <h1>Silicon IAM API.</h1>
-          <p class="lede">
-            Identity, organization governance, application login, and delegated access. The
-            normative contract is <a href="/openapi.yaml">openapi.yaml</a>; these pages explain
-            the behaviour behind it.
-          </p>
+          <h1>{title}</h1>
+          <p class="lede">{lede}</p>
         </div>
 
-        <div class="banner banner-info">
-          <div>
-            <strong>Base URL</strong>
-            All JSON endpoints live under <code>https://backend.iam.teamofsilicons.com/api/v1</code>.
-            Liveness and readiness stay at <code>/healthz</code> and <code>/readyz</code>.
-          </div>
-        </div>
-
+{banner}
         <ul class="docs-cards">
 {cards}        </ul>
       </div>
     </main>
 "#,
-        header = page_header(None),
+        header = page_header(Some(manual)),
+        title = escape(manual.title),
+        lede = manual.lede,
+        banner = index_banner(manual),
         cards = cards,
     );
 
     Document::public(
         Surface::Docs,
         render(&Page {
-            title: "API documentation",
-            description: "Silicon IAM — identity, organization governance, application login, and delegated access.",
+            title: manual.label,
+            description: manual.lede,
             head: "",
             body: &body,
         }),
     )
+    .into_response()
 }
 
-/// `/docs/api/{section}`.
-pub(crate) async fn section(axum::extract::Path(slug): axum::extract::Path<String>) -> Response {
-    let Some(section) = SECTIONS.iter().find(|entry| entry.slug == slug) else {
+/// `/docs/{manual}/{section}`.
+pub(crate) async fn section(Path((manual, slug)): Path<(String, String)>) -> Response {
+    let Some(manual) = MANUALS.iter().find(|entry| entry.prefix == manual) else {
+        return not_found().into_response();
+    };
+    let Some((position, section)) = manual.find(&slug) else {
         return not_found().into_response();
     };
 
-    let position = SECTIONS
-        .iter()
-        .position(|entry| entry.slug == slug)
-        .unwrap_or(0);
     let previous = position
         .checked_sub(1)
-        .and_then(|index| SECTIONS.get(index));
-    let next = SECTIONS.get(position + 1);
+        .and_then(|index| manual.sections.get(index));
+    let next = manual.sections.get(position + 1);
 
     let mut pager = String::new();
     if previous.is_some() || next.is_some() {
@@ -200,7 +348,8 @@ pub(crate) async fn section(axum::extract::Path(slug): axum::extract::Path<Strin
             Some(entry) => {
                 let _ = writeln!(
                     pager,
-                    "            <a class=\"small\" href=\"/docs/api/{slug}\">← {title}</a>",
+                    "            <a class=\"small\" href=\"/docs/{prefix}/{slug}\">← {title}</a>",
+                    prefix = manual.prefix,
                     slug = entry.slug,
                     title = escape(entry.title),
                 );
@@ -211,7 +360,8 @@ pub(crate) async fn section(axum::extract::Path(slug): axum::extract::Path<Strin
             Some(entry) => {
                 let _ = writeln!(
                     pager,
-                    "            <a class=\"small\" href=\"/docs/api/{slug}\">{title} →</a>",
+                    "            <a class=\"small\" href=\"/docs/{prefix}/{slug}\">{title} →</a>",
+                    prefix = manual.prefix,
                     slug = entry.slug,
                     title = escape(entry.title),
                 );
@@ -236,8 +386,8 @@ pub(crate) async fn section(axum::extract::Path(slug): axum::extract::Path<Strin
       </div>
     </main>
 "#,
-        header = page_header(Some(section.slug)),
-        nav = navigation(Some(section.slug)),
+        header = page_header(Some(manual)),
+        nav = navigation(manual, Some(section.slug)),
         ordinal = format_args!("{:02}", position + 1),
         title = escape(section.title),
         body = section.body,
@@ -256,7 +406,7 @@ pub(crate) async fn section(axum::extract::Path(slug): axum::extract::Path<Strin
     .into_response()
 }
 
-/// The documentation's own 404.
+/// A manual's own 404.
 ///
 /// A real HTML page rather than a JSON envelope, because this router is merged
 /// outside the API's error normalisation and a reader who mistypes a slug
@@ -271,7 +421,7 @@ fn not_found() -> Document {
           <p class="lede">
             That documentation page does not exist. The contents page lists everything.
           </p>
-          <a class="btn btn-primary" href="/docs/api/"><span>Back to the contents</span></a>
+          <a class="btn btn-primary" href="/docs"><span>Back to the contents</span></a>
         </div>
       </div>
     </main>
@@ -291,31 +441,70 @@ fn not_found() -> Document {
     .with_status(StatusCode::NOT_FOUND)
 }
 
-fn page_header(current: Option<&str>) -> String {
-    let _ = current;
+/// A cross-reference from each manual to the other.
+///
+/// The two are complementary, not alternatives, and a reader who lands on the
+/// wrong one should discover that immediately rather than three sections in.
+fn index_banner(manual: &Manual) -> &'static str {
+    if manual.prefix == "api" {
+        r#"        <div class="banner banner-info">
+          <div>
+            <strong>Integrating in Rust?</strong>
+            The <a href="/docs/client/">official client</a> already implements everything on these
+            pages — PKCE, the version handshake, proof signing, signature verification, and the
+            retry policy. Read the contract when you need to know why it behaves as it does.
+          </div>
+        </div>
+
+"#
+    } else {
+        r#"        <div class="banner banner-info">
+          <div>
+            <strong>The contract behind this client.</strong>
+            Every behaviour here is described language-independently in the
+            <a href="/docs/api/">API documentation</a>. Read it when you need to know what the
+            SDK is protecting you from.
+          </div>
+        </div>
+
+"#
+    }
+}
+
+fn page_header(manual: Option<&Manual>) -> String {
+    let (home, label) = match manual {
+        Some(entry) => (format!("/docs/{}/", entry.prefix), escape(entry.label)),
+        None => ("/docs".to_owned(), "Documentation".to_owned()),
+    };
+
     format!(
         r#"    <header class="header">
-      <a class="logo" href="/docs/api/">
+      <a class="logo" href="{home}">
         <img src="/_static/{mark}" alt="" width="24" height="24">
         <span>Silicon <em>IAM</em></span>
       </a>
-      <span class="label">API documentation</span>
+      <span class="label">{label}</span>
       <span class="spacer"></span>
+      <a class="small" href="/docs/api/">API</a>
+      <a class="small" href="/docs/client/">Client</a>
       <a class="small" href="/openapi.yaml">openapi.yaml</a>
     </header>
     <div class="rail" aria-hidden="true"></div>
 "#,
+        home = home,
         mark = assets::MARK.path,
+        label = label,
     )
 }
 
-fn navigation(current: Option<&str>) -> String {
+fn navigation(manual: &Manual, current: Option<&str>) -> String {
     let mut items = String::new();
-    for section in SECTIONS {
+    for section in manual.sections {
         let is_current = current == Some(section.slug);
         let _ = writeln!(
             items,
-            "            <li><a href=\"/docs/api/{slug}\"{aria}>{title}</a></li>",
+            "            <li><a href=\"/docs/{prefix}/{slug}\"{aria}>{title}</a></li>",
+            prefix = manual.prefix,
             slug = section.slug,
             aria = if is_current {
                 " aria-current=\"page\""
@@ -358,44 +547,71 @@ pub(crate) async fn openapi() -> Response {
     response
 }
 
+/// Keeps a `/docs/api` link without its trailing slash working.
+pub(crate) async fn redirect_to_index(Path(manual): Path<String>) -> Response {
+    if MANUALS.iter().any(|entry| entry.prefix == manual) {
+        return Redirect::permanent(&format!("/docs/{manual}/")).into_response();
+    }
+    not_found().into_response()
+}
+
 const OPENAPI: &str = include_str!("../../openapi.yaml");
 
 #[cfg(test)]
 mod tests {
-    use super::{OPENAPI, SECTIONS};
+    use super::{MANUALS, OPENAPI};
 
     #[test]
     fn every_section_is_populated() {
-        for section in SECTIONS {
-            assert!(!section.slug.is_empty(), "a section has no slug");
-            assert!(!section.title.is_empty(), "{} has no title", section.slug);
+        for manual in MANUALS {
             assert!(
-                !section.summary.is_empty(),
-                "{} has no summary",
-                section.slug
+                !manual.sections.is_empty(),
+                "{} has no sections",
+                manual.prefix
             );
-            assert!(
-                section.body.len() > 400,
-                "{} is too thin to be useful ({} bytes)",
-                section.slug,
-                section.body.len(),
-            );
+            for section in manual.sections {
+                assert!(!section.slug.is_empty(), "a section has no slug");
+                assert!(!section.title.is_empty(), "{} has no title", section.slug);
+                assert!(
+                    !section.summary.is_empty(),
+                    "{} has no summary",
+                    section.slug
+                );
+                assert!(
+                    section.body.len() > 400,
+                    "{}/{} is too thin to be useful ({} bytes)",
+                    manual.prefix,
+                    section.slug,
+                    section.body.len(),
+                );
+            }
         }
     }
 
     #[test]
-    fn slugs_are_unique_and_url_safe() {
-        for (index, section) in SECTIONS.iter().enumerate() {
-            assert!(
-                section
-                    .slug
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte == b'-'),
-                "{} is not a clean slug",
-                section.slug,
-            );
-            for other in SECTIONS.iter().skip(index + 1) {
-                assert_ne!(section.slug, other.slug, "duplicate slug");
+    fn slugs_are_unique_within_a_manual_and_url_safe() {
+        for manual in MANUALS {
+            for (index, section) in manual.sections.iter().enumerate() {
+                assert!(
+                    section
+                        .slug
+                        .bytes()
+                        .all(|byte| byte.is_ascii_lowercase() || byte == b'-'),
+                    "{} is not a clean slug",
+                    section.slug,
+                );
+                for other in manual.sections.iter().skip(index + 1) {
+                    assert_ne!(section.slug, other.slug, "duplicate slug");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn manual_prefixes_are_unique() {
+        for (index, manual) in MANUALS.iter().enumerate() {
+            for other in MANUALS.iter().skip(index + 1) {
+                assert_ne!(manual.prefix, other.prefix, "duplicate manual prefix");
             }
         }
     }
@@ -404,17 +620,19 @@ mod tests {
     fn section_bodies_carry_no_script() {
         // The docs CSP omits `script-src` entirely, so anything here would be
         // dead markup that a future CSP relaxation would silently activate.
-        for section in SECTIONS {
-            assert!(
-                !section.body.contains("<script"),
-                "{} embeds a script",
-                section.slug,
-            );
-            assert!(
-                !section.body.contains("javascript:"),
-                "{} contains a javascript: URL",
-                section.slug,
-            );
+        for manual in MANUALS {
+            for section in manual.sections {
+                assert!(
+                    !section.body.contains("<script"),
+                    "{} embeds a script",
+                    section.slug,
+                );
+                assert!(
+                    !section.body.contains("javascript:"),
+                    "{} contains a javascript: URL",
+                    section.slug,
+                );
+            }
         }
     }
 
@@ -422,23 +640,38 @@ mod tests {
     fn every_internal_documentation_link_resolves() {
         // A dead cross-reference in an API doc costs a reader real time, and
         // is exactly the kind of rot a compile-time check can prevent.
-        for section in SECTIONS {
-            let mut rest = section.body;
-            while let Some(start) = rest.find("href=\"/docs/api/") {
-                let tail = &rest[start + "href=\"/docs/api/".len()..];
-                let Some(end) = tail.find('"') else { break };
-                let target = &tail[..end];
-                rest = &tail[end..];
+        for manual in MANUALS {
+            for section in manual.sections {
+                let mut rest = section.body;
+                while let Some(start) = rest.find("href=\"/docs/") {
+                    let tail = &rest[start + "href=\"/docs/".len()..];
+                    let Some(end) = tail.find('"') else { break };
+                    let target = &tail[..end];
+                    rest = &tail[end..];
 
-                let slug = target.split('#').next().unwrap_or(target);
-                if slug.is_empty() {
-                    continue; // the contents page
+                    let path = target.split('#').next().unwrap_or(target);
+                    let mut parts = path.split('/');
+                    let prefix = parts.next().unwrap_or("");
+                    if prefix.is_empty() {
+                        continue; // the landing page
+                    }
+                    let Some(other) = MANUALS.iter().find(|entry| entry.prefix == prefix) else {
+                        panic!(
+                            "{}/{} links to an unknown manual: {prefix}",
+                            manual.prefix, section.slug,
+                        );
+                    };
+                    let slug = parts.next().unwrap_or("");
+                    if slug.is_empty() {
+                        continue; // that manual's contents page
+                    }
+                    assert!(
+                        other.find(slug).is_some(),
+                        "{}/{} links to a missing section: {prefix}/{slug}",
+                        manual.prefix,
+                        section.slug,
+                    );
                 }
-                assert!(
-                    SECTIONS.iter().any(|entry| entry.slug == slug),
-                    "{} links to a missing section: {slug}",
-                    section.slug,
-                );
             }
         }
     }

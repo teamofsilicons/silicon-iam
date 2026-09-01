@@ -46,9 +46,10 @@ where
 {
     Router::new()
         .route("/admin", get(admin::page))
-        .route("/docs", get(docs::redirect_to_api))
-        .route("/docs/api/", get(docs::index))
-        .route("/docs/api/{section}", get(docs::section))
+        .route("/docs", get(docs::landing))
+        .route("/docs/{manual}", get(docs::redirect_to_index))
+        .route("/docs/{manual}/", get(docs::index))
+        .route("/docs/{manual}/{section}", get(docs::section))
         .route("/openapi.yaml", get(docs::openapi))
         .route("/_static/{file}", get(assets::serve))
 }
@@ -143,27 +144,42 @@ mod tests {
 
     #[tokio::test]
     async fn every_declared_section_renders() {
-        for slug in [
-            "overview",
-            "authentication",
-            "conventions",
-            "carbons",
-            "organizations",
-            "silicons",
-            "governance",
-            "applications",
-            "webhooks",
-            "obo",
-            "errors",
-        ] {
-            let response = get(&format!("/docs/api/{slug}")).await;
-            assert_eq!(response.status(), StatusCode::OK, "{slug} did not render");
+        let sections = [
+            ("api", "overview"),
+            ("api", "authentication"),
+            ("api", "conventions"),
+            ("api", "carbons"),
+            ("api", "organizations"),
+            ("api", "silicons"),
+            ("api", "governance"),
+            ("api", "applications"),
+            ("api", "webhooks"),
+            ("api", "obo"),
+            ("api", "errors"),
+            ("client", "overview"),
+            ("client", "connecting"),
+            ("client", "oauth"),
+            ("client", "tokens"),
+            ("client", "obo"),
+            ("client", "webhooks"),
+            ("client", "errors"),
+        ];
+        for (manual, slug) in sections {
+            let response = get(&format!("/docs/{manual}/{slug}")).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{manual}/{slug} did not render"
+            );
             let body = body_of(response).await;
             assert!(
                 body.contains("<article class=\"prose\">"),
-                "{slug} has no body"
+                "{manual}/{slug} has no body",
             );
-            assert!(body.contains("Contents"), "{slug} has no navigation");
+            assert!(
+                body.contains("Contents"),
+                "{manual}/{slug} has no navigation"
+            );
         }
     }
 
@@ -185,10 +201,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn docs_redirects_to_the_api_documentation() {
+    async fn the_landing_page_offers_both_manuals() {
         let response = get("/docs").await;
-        assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
-        assert_eq!(header_of(&response, "location"), "/docs/api/");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        assert!(body.contains("/docs/api/"), "the API manual is not offered");
+        assert!(
+            body.contains("/docs/client/"),
+            "the client manual is not offered"
+        );
+        assert!(
+            body.contains("/openapi.yaml"),
+            "the contract is not offered"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_manual_without_its_trailing_slash_redirects() {
+        for (path, target) in [
+            ("/docs/api", "/docs/api/"),
+            ("/docs/client", "/docs/client/"),
+        ] {
+            let response = get(path).await;
+            assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT, "{path}");
+            assert_eq!(header_of(&response, "location"), target);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unknown_manual_is_a_documentation_404() {
+        for path in ["/docs/nope", "/docs/nope/", "/docs/nope/overview"] {
+            let response = get(path).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            assert!(
+                header_of(&response, "content-type").starts_with("text/html"),
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn each_manual_cross_references_the_other() {
+        // The two are complementary, not alternatives. A reader who lands on
+        // the wrong one should find that out on the contents page.
+        let api = body_of(get("/docs/api/").await).await;
+        assert!(
+            api.contains("/docs/client/"),
+            "the API manual does not link to the client"
+        );
+
+        let client = body_of(get("/docs/client/").await).await;
+        assert!(
+            client.contains("/docs/api/"),
+            "the client manual does not link to the API"
+        );
     }
 
     #[tokio::test]
@@ -249,9 +315,11 @@ mod tests {
     async fn no_surface_relies_on_an_inline_style() {
         for path in [
             "/admin",
+            "/docs",
             "/docs/api/",
             "/docs/api/overview",
-            "/docs/api/errors",
+            "/docs/client/",
+            "/docs/client/oauth",
             "/docs/api/nope",
         ] {
             let body = body_of(get(path).await).await;
@@ -271,7 +339,7 @@ mod tests {
     #[tokio::test]
     async fn every_referenced_asset_exists() {
         let mut referenced = std::collections::BTreeSet::new();
-        for path in ["/admin", "/docs/api/", "/docs/api/overview"] {
+        for path in ["/admin", "/docs", "/docs/api/", "/docs/client/oauth"] {
             let body = body_of(get(path).await).await;
             let mut rest = body.as_str();
             while let Some(start) = rest.find("/_static/") {
@@ -334,7 +402,7 @@ mod tests {
     /// it carried disappears without any error anywhere.
     #[tokio::test]
     async fn no_element_declares_class_twice() {
-        for path in ["/admin", "/docs/api/", "/docs/api/overview"] {
+        for path in ["/admin", "/docs", "/docs/api/", "/docs/client/"] {
             let body = body_of(get(path).await).await;
             for tag in body.split('<').skip(1) {
                 let Some(end) = tag.find('>') else { continue };
@@ -349,7 +417,7 @@ mod tests {
 
     #[tokio::test]
     async fn html_surfaces_refuse_to_be_framed() {
-        for path in ["/admin", "/docs/api/", "/docs/api/overview"] {
+        for path in ["/admin", "/docs", "/docs/api/", "/docs/client/"] {
             let response = get(path).await;
             assert_eq!(header_of(&response, "x-frame-options"), "DENY", "{path}");
             assert!(

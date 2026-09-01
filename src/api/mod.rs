@@ -128,22 +128,21 @@ pub async fn serve(settings: Settings) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn router(state: ApiState) -> anyhow::Result<Router> {
-    let max_body_bytes = state.settings.server.max_body_bytes;
-    let request_timeout = state.settings.server.request_timeout;
-    let admission = Arc::new(Semaphore::new(
-        state.settings.server.max_concurrent_requests,
-    ));
-    let sensitive_request_headers = [
-        http::header::AUTHORIZATION,
-        http::header::COOKIE,
-        http::HeaderName::from_static("idempotency-key"),
-        http::HeaderName::from_static("x-csrf-token"),
-        http::HeaderName::from_static("x-step-up-token"),
-        http::HeaderName::from_static("workos-signature"),
-    ];
-    let sensitive_response_headers = [http::header::SET_COOKIE, http::header::LOCATION];
-
+/// Cross-origin policy for the browser frontends.
+///
+/// The allowlist is exact — no wildcard and no reflected origin — because the
+/// browser session cookie is sent with credentials, and a reflected origin
+/// there would let any site drive an authenticated session.
+///
+/// The two negotiation headers are listed explicitly: an official client sends
+/// `Silicon-IAM-Supported-API-Versions` on the handshake and must be able to
+/// read `Silicon-IAM-API-Version` back, and neither is a CORS-safelisted
+/// header.
+///
+/// # Errors
+///
+/// Returns an error when a configured origin cannot be encoded as a header.
+fn cors_layer(state: &ApiState) -> anyhow::Result<CorsLayer> {
     let allowed_origins = state
         .settings
         .server
@@ -151,7 +150,8 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
         .iter()
         .map(|origin| origin.origin().ascii_serialization().parse())
         .collect::<Result<Vec<http::HeaderValue>, _>>()?;
-    let cors = CorsLayer::new()
+
+    Ok(CorsLayer::new()
         .allow_origin(AllowOrigin::list(allowed_origins))
         .allow_credentials(true)
         .allow_methods([
@@ -185,7 +185,26 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
             http::HeaderName::from_static("x-request-id"),
             http::HeaderName::from_static(SELECTED_API_VERSION_HEADER),
         ])
-        .max_age(std::time::Duration::from_mins(10));
+        .max_age(std::time::Duration::from_mins(10)))
+}
+
+fn router(state: ApiState) -> anyhow::Result<Router> {
+    let max_body_bytes = state.settings.server.max_body_bytes;
+    let request_timeout = state.settings.server.request_timeout;
+    let admission = Arc::new(Semaphore::new(
+        state.settings.server.max_concurrent_requests,
+    ));
+    let sensitive_request_headers = [
+        http::header::AUTHORIZATION,
+        http::header::COOKIE,
+        http::HeaderName::from_static("idempotency-key"),
+        http::HeaderName::from_static("x-csrf-token"),
+        http::HeaderName::from_static("x-step-up-token"),
+        http::HeaderName::from_static("workos-signature"),
+    ];
+    let sensitive_response_headers = [http::header::SET_COOKIE, http::header::LOCATION];
+
+    let cors = cors_layer(&state)?;
 
     // The JSON contract. Everything under this router answers with the error
     // envelope and is never cached.

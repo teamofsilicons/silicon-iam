@@ -3,6 +3,47 @@
   layer, removes most of the failure modes you would otherwise meet one endpoint at a time.
 </p>
 
+<h2>The version handshake</h2>
+
+<p>
+  Before its first versioned call, a client negotiates an API major against the unversioned
+  <code>GET /api/version</code>. It advertises every major it implements, in descending
+  preference order:
+</p>
+
+<pre><code>GET /api/version
+Silicon-IAM-Supported-API-Versions: v1</code></pre>
+
+<pre><code>{
+  "service": "silicon-iam",
+  "selected_api_version": "v1",
+  "supported_api_versions": ["v1"],
+  "build": "0.1.0",
+  "commit": "…"
+}</code></pre>
+
+<p>
+  IAM selects the highest mutually supported version and returns it in both
+  <code>selected_api_version</code> and the <code>Silicon-IAM-API-Version</code> header. When
+  there is no common version it answers <code>406 api_version_not_acceptable</code> with its own
+  catalog in <code>details</code>.
+</p>
+
+<div class="banner banner-info">
+  <div>
+    <strong>Official clients fail closed.</strong>
+    They verify the catalog, the header, and that the selection really is the highest common
+    version — and refuse to construct a client otherwise. A client that guesses at the wire
+    contract will eventually send a well-formed request that means something other than its author
+    intended.
+  </div>
+</div>
+
+<p>
+  <code>/api/v1/version</code> remains available as a version-specific diagnostic. It is not the
+  handshake, and calling it instead skips every check above.
+</p>
+
 <h2>Idempotency</h2>
 
 <p>

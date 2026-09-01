@@ -1,0 +1,156 @@
+<p class="lede">
+  Six error variants, chosen so that the right recovery is decidable from the type alone. Nothing
+  in this crate returns a stringly-typed failure you have to parse.
+</p>
+
+<h2>The taxonomy</h2>
+
+<table>
+  <thead><tr><th>Variant</th><th>Means</th><th>Recovery</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>Configuration</code></td>
+      <td>Local input is invalid — a malformed origin, a bad credential, a non-HTTPS base URL.</td>
+      <td>Fix the deployment. Never retryable.</td>
+    </tr>
+    <tr>
+      <td><code>Handshake</code></td>
+      <td>The compatibility handshake failed closed. No client exists.</td>
+      <td>Upgrade the SDK or the backend. Never retryable.</td>
+    </tr>
+    <tr>
+      <td><code>Transport</code></td>
+      <td>The HTTP exchange failed with no usable API response.</td>
+      <td>Retryable <em>only</em> with the same idempotency key.</td>
+    </tr>
+    <tr>
+      <td><code>Api</code></td>
+      <td>Silicon IAM returned a documented error. Carries status, code, request ID and retry
+        metadata.</td>
+      <td>Ask <code>is_retryable()</code>.</td>
+    </tr>
+    <tr>
+      <td><code>Protocol</code></td>
+      <td>A successful-looking response violated the negotiated contract.</td>
+      <td>Never retryable. This is a bug, in the SDK or the backend — report it.</td>
+    </tr>
+    <tr>
+      <td><code>Crypto</code></td>
+      <td>A local cryptographic operation failed.</td>
+      <td>Never retryable.</td>
+    </tr>
+    <tr>
+      <td><code>AmbiguousOboVerification</code></td>
+      <td>A single-use proof may already have been consumed.</td>
+      <td><strong>Never retry.</strong> Fail the request.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Reading an API error</h2>
+
+<pre><code>match client.oauth().refresh(token).send().await {
+    Ok(replacement) => { /* … */ }
+    Err(Error::Api(api)) => {
+        let _status = api.status();
+        let _code = api.code();
+        let _request_id = api.request_id();
+
+        if let Some(wait) = api.retry_after() {
+            // Honour this exactly. Do not shorten it.
+        }
+        if let Some(limit) = api.rate_limit() {
+            let _remaining = limit.remaining();
+            let _resets_in = limit.reset_after();
+        }
+    }
+    Err(other) => return Err(other),
+}</code></pre>
+
+<p>
+  Branch on <code>code()</code>, never on <code>message()</code> — the message is prose for a human
+  and may be reworded without a contract change. Log <code>request_id()</code>; it is the fastest
+  way to get a specific failure investigated. The full code list is in the
+  <a href="/docs/api/errors">contract's error index</a>.
+</p>
+
+<div class="banner banner-info">
+  <div>
+    <strong>Errors never carry credentials.</strong>
+    Every variant is secret-free by construction, so the whole error is safe to log verbatim.
+  </div>
+</div>
+
+<h2>Transport failures</h2>
+
+<p>
+  <code>TransportErrorKind</code> distinguishes <code>Connection</code>, <code>Timeout</code>,
+  <code>Request</code> and <code>Response</code>. The distinction matters because it tells you
+  whether the server could have seen the request at all:
+</p>
+
+<ul>
+  <li><code>Connection</code> — it did not. Safe to rebuild and resend.</li>
+  <li><code>Timeout</code>, <code>Response</code> — it may have. The mutation may already have
+    applied. Resend with the <strong>same</strong> idempotency key, never a new one.</li>
+</ul>
+
+<h2>The recovery rule, in one sentence</h2>
+
+<div class="banner banner-danger">
+  <div>
+    <strong>Retain the operation after an uncertain outcome; never recover by issuing a new key
+    for the same mutation.</strong>
+    A fresh key turns a replay into a second execution. On a refresh, that revokes the user's
+    entire 900-day family.
+  </div>
+</div>
+
+<p>
+  Concretely, for every mutating call:
+</p>
+
+<ol>
+  <li>Build the operation and read <code>idempotency_key()</code>.</li>
+  <li>Persist the key with its input <em>before</em> sending.</li>
+  <li>On success, retire the key in the same transaction that commits the result.</li>
+  <li>On <code>Transport</code> or <code>Protocol</code>, keep both and rebuild the identical
+    operation later with the <code>*_with_idempotency_key</code> constructor.</li>
+  <li>On an authoritative terminal <code>Api</code> error, retire the key. The mutation will never
+    succeed.</li>
+</ol>
+
+<h2>What the SDK retries for you</h2>
+
+<p>
+  Safe and idempotent calls retry inside a small bounded policy — a few attempts, jittered. You do
+  not need to wrap them.
+</p>
+
+<p>
+  Two deliberate exceptions. A server <code>Retry-After</code> longer than that internal policy is
+  surfaced to you rather than silently waited out, because a thirty-second stall inside a library
+  call is worse than an error you can schedule around. And OBO verification is never retried at
+  all, for the reason in <a href="/docs/client/obo">Delegated access</a>.
+</p>
+
+<h2>What to log</h2>
+
+<table>
+  <thead><tr><th>Always</th><th>Never</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>request_id()</code>, <code>status()</code>, <code>code()</code>, the operation
+        name, and your own idempotency key</td>
+      <td>Token or proof values, the Application secret, a webhook secret, or a raw callback
+        query string</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>
+  The first column is everything needed to trace a failure end to end. The second is redacted from
+  <code>Debug</code> throughout the crate, so logging a whole error or a whole client is safe —
+  but a value you deliberately unwrapped with <code>expose_secret</code> is yours to keep out of
+  the log.
+</p>
