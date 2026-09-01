@@ -1,0 +1,745 @@
+\set ON_ERROR_STOP on
+
+BEGIN;
+
+DO $roles$
+BEGIN
+    IF pg_catalog.to_regrole('silicon_iam_api') IS NULL THEN
+        RAISE EXCEPTION 'required database role silicon_iam_api does not exist';
+    END IF;
+    IF pg_catalog.to_regrole('silicon_iam_worker') IS NULL THEN
+        RAISE EXCEPTION 'required database role silicon_iam_worker does not exist';
+    END IF;
+    IF pg_catalog.to_regrole('silicon_iam_key_operator') IS NULL THEN
+        RAISE EXCEPTION 'required database role silicon_iam_key_operator does not exist';
+    END IF;
+END;
+$roles$;
+
+REVOKE ALL ON SCHEMA iam FROM PUBLIC;
+REVOKE ALL ON SCHEMA iam_private FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA iam FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA iam_private FROM PUBLIC;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA iam FROM PUBLIC;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA iam_private FROM PUBLIC;
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA iam_private FROM PUBLIC;
+
+-- Rebuild privileges from zero on every run. Without these revokes, a
+-- privilege removed from this allowlist would survive an upgrade.
+REVOKE ALL ON SCHEMA iam
+    FROM silicon_iam_api, silicon_iam_worker, silicon_iam_key_operator;
+REVOKE ALL ON SCHEMA iam_private
+    FROM silicon_iam_api, silicon_iam_worker, silicon_iam_key_operator;
+REVOKE ALL ON ALL TABLES IN SCHEMA iam
+    FROM silicon_iam_api, silicon_iam_worker, silicon_iam_key_operator;
+REVOKE ALL ON ALL TABLES IN SCHEMA iam_private
+    FROM silicon_iam_api, silicon_iam_worker, silicon_iam_key_operator;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA iam
+    FROM silicon_iam_api, silicon_iam_worker, silicon_iam_key_operator;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA iam_private
+    FROM silicon_iam_api, silicon_iam_worker, silicon_iam_key_operator;
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA iam_private
+    FROM silicon_iam_api, silicon_iam_worker, silicon_iam_key_operator;
+
+GRANT USAGE ON SCHEMA iam TO silicon_iam_api;
+GRANT USAGE ON SCHEMA iam_private TO silicon_iam_api;
+GRANT USAGE ON SCHEMA public TO silicon_iam_api;
+
+-- Every API table capability is derived from production SQL. The SELECT list
+-- also includes the relations read by invoker-rights deferred trigger helpers.
+-- Relations absent from the manifest remain inaccessible, and partitions are
+-- always accessed through their explicitly listed parent table.
+DO $api_tables$
+DECLARE
+    table_name text;
+    matched_table_count integer;
+    unclassified_table_names text[];
+    select_table_names text[] := ARRAY[
+        'access_token_scopes',
+        'access_tokens',
+        'account_deletion_requests',
+        'application_approved_scopes',
+        'application_collaborators',
+        'application_redirect_uris',
+        'application_requested_scopes',
+        'application_reviews',
+        'application_secrets',
+        'application_webhook_endpoints',
+        'application_webhook_signing_keys',
+        'applications',
+        'approval_decisions',
+        'approval_requests',
+        'approval_requirements',
+        'audit_events',
+        'authentication_events',
+        'authentication_sessions',
+        'carbon_contacts',
+        'carbon_membership_settings',
+        'carbons',
+        'contact_blind_indexes',
+        'contact_change_blind_indexes',
+        'contact_change_sessions',
+        'extra_silicon_access_grants',
+        'idempotency_records',
+        'invitation_verification_challenges',
+        'job_role_change_requests',
+        'job_role_history',
+        'login_challenge_channels',
+        'login_challenges',
+        'membership_tags',
+        'notification_jobs',
+        'oauth_authorization_codes',
+        'oauth_authorization_request_scopes',
+        'oauth_authorization_requests',
+        'oauth_consent_grant_scopes',
+        'oauth_consent_grants',
+        'oauth_refresh_family_scopes',
+        'oauth_scope_catalog',
+        'obo_action_catalog',
+        'obo_application_grants',
+        'obo_proofs',
+        'oidc_signing_keys',
+        'organization_capability_catalog',
+        'organization_capability_grants',
+        'organization_invitation_extra_silicons',
+        'organization_invitation_tags',
+        'organization_invitations',
+        'organization_memberships',
+        'organization_sso_configs',
+        'organization_tags',
+        'organizations',
+        'outbox_event_recipients',
+        'outbox_events',
+        'ownership_transfer_requests',
+        'platform_role_grants',
+        'principals',
+        'rate_limit_buckets',
+        'refresh_token_families',
+        'refresh_tokens',
+        'service_principals',
+        'signup_candidate_blind_indexes',
+        'signup_contact_candidates',
+        'signup_otp_challenges',
+        'signup_sessions',
+        'silicon_credential_history',
+        'silicon_credentials',
+        'silicon_hooks',
+        'silicon_token_rotation_requests',
+        'silicons',
+        'sso_authorization_transactions',
+        'sso_connections',
+        'sso_membership_policies',
+        'sso_membership_policy_tags',
+        'sso_setup_sessions',
+        'step_up_assertions',
+        'step_up_challenges',
+        'trust_rules',
+        'webauthn_ceremonies',
+        'webauthn_credentials',
+        'webhook_deliveries',
+        'webhook_delivery_attempts'
+    ];
+    insert_table_names text[] := ARRAY[
+        'access_token_scopes',
+        'access_tokens',
+        'account_deletion_requests',
+        'application_approved_scopes',
+        'application_collaborators',
+        'application_redirect_uris',
+        'application_requested_scopes',
+        'application_reviews',
+        'application_secrets',
+        'application_webhook_endpoints',
+        'application_webhook_signing_keys',
+        'applications',
+        'approval_decisions',
+        'approval_requests',
+        'approval_requirements',
+        'audit_events',
+        'authentication_events',
+        'authentication_sessions',
+        'carbon_contacts',
+        'carbon_membership_settings',
+        'contact_blind_indexes',
+        'contact_change_blind_indexes',
+        'contact_change_sessions',
+        'extra_silicon_access_grants',
+        'idempotency_records',
+        'invitation_verification_challenges',
+        'job_role_change_requests',
+        'job_role_history',
+        'login_challenge_channels',
+        'login_challenges',
+        'membership_tags',
+        'notification_jobs',
+        'oauth_authorization_codes',
+        'oauth_authorization_request_scopes',
+        'oauth_authorization_requests',
+        'oauth_consent_grant_scopes',
+        'oauth_consent_grants',
+        'oauth_refresh_family_scopes',
+        'obo_proofs',
+        'oidc_signing_keys',
+        'organization_capability_grants',
+        'organization_invitation_extra_silicons',
+        'organization_invitation_tags',
+        'organization_invitations',
+        'organization_memberships',
+        'organization_tags',
+        'organizations',
+        'outbox_events',
+        'platform_role_grants',
+        'principals',
+        'rate_limit_buckets',
+        'refresh_token_families',
+        'refresh_tokens',
+        'signup_candidate_blind_indexes',
+        'signup_contact_candidates',
+        'signup_otp_challenges',
+        'signup_sessions',
+        'silicon_credential_history',
+        'silicon_credentials',
+        'silicon_hooks',
+        'silicon_token_rotation_requests',
+        'silicons',
+        'sso_membership_policies',
+        'sso_membership_policy_tags',
+        'sso_setup_sessions',
+        'step_up_assertions',
+        'step_up_challenges',
+        'trust_rules',
+        'webauthn_ceremonies',
+        'webauthn_credentials'
+    ];
+    update_table_names text[] := ARRAY[
+        'access_tokens',
+        'application_approved_scopes',
+        'application_collaborators',
+        'application_redirect_uris',
+        'application_secrets',
+        'application_webhook_endpoints',
+        'application_webhook_signing_keys',
+        'applications',
+        'approval_requests',
+        'authentication_sessions',
+        'carbon_contacts',
+        'carbon_membership_settings',
+        'carbons',
+        'contact_change_sessions',
+        'extra_silicon_access_grants',
+        'idempotency_records',
+        'invitation_verification_challenges',
+        'login_challenge_channels',
+        'login_challenges',
+        'notification_jobs',
+        'oauth_authorization_codes',
+        'oauth_authorization_requests',
+        'oauth_consent_grants',
+        'obo_proofs',
+        'oidc_signing_keys',
+        'organization_capability_grants',
+        'organization_invitations',
+        'organization_memberships',
+        'organization_sso_configs',
+        'organization_tags',
+        'organizations',
+        'platform_role_grants',
+        'principals',
+        'rate_limit_buckets',
+        'refresh_token_families',
+        'refresh_tokens',
+        'signup_contact_candidates',
+        'signup_otp_challenges',
+        'signup_sessions',
+        'silicon_credentials',
+        'silicon_hooks',
+        'silicon_token_rotation_requests',
+        'silicons',
+        'sso_authorization_transactions',
+        'sso_connections',
+        'sso_membership_policies',
+        'sso_setup_sessions',
+        'step_up_assertions',
+        'step_up_challenges',
+        'trust_rules',
+        'webauthn_ceremonies',
+        'webauthn_credentials',
+        'webhook_deliveries'
+    ];
+    delete_table_names text[] := ARRAY[
+        'application_requested_scopes',
+        'membership_tags',
+        'oauth_consent_grant_scopes',
+        'sso_membership_policy_tags'
+    ];
+    denied_table_names text[] := ARRAY[
+        'cryptographic_key_versions',
+        'external_webhook_receipts',
+        'platform_capability_catalog',
+        'platform_role_capabilities',
+        'platform_role_catalog',
+        'runtime_key_activations',
+        'service_credentials',
+        'sso_identities'
+    ];
+BEGIN
+    IF pg_catalog.cardinality(select_table_names) <> (
+        SELECT pg_catalog.count(DISTINCT listed_name)
+        FROM pg_catalog.unnest(select_table_names) AS listed_name
+    ) OR pg_catalog.cardinality(insert_table_names) <> (
+        SELECT pg_catalog.count(DISTINCT listed_name)
+        FROM pg_catalog.unnest(insert_table_names) AS listed_name
+    ) OR pg_catalog.cardinality(update_table_names) <> (
+        SELECT pg_catalog.count(DISTINCT listed_name)
+        FROM pg_catalog.unnest(update_table_names) AS listed_name
+    ) OR pg_catalog.cardinality(delete_table_names) <> (
+        SELECT pg_catalog.count(DISTINCT listed_name)
+        FROM pg_catalog.unnest(delete_table_names) AS listed_name
+    ) OR pg_catalog.cardinality(denied_table_names) <> (
+        SELECT pg_catalog.count(DISTINCT listed_name)
+        FROM pg_catalog.unnest(denied_table_names) AS listed_name
+    ) THEN
+        RAISE EXCEPTION 'API table capability manifest contains a duplicate';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.unnest(
+            insert_table_names || update_table_names || delete_table_names
+        ) AS writable_name
+        WHERE writable_name <> ALL (select_table_names)
+    ) THEN
+        RAISE EXCEPTION 'every writable API table must also be SELECT-authorized';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.unnest(denied_table_names) AS denied_name
+        WHERE denied_name = ANY (select_table_names)
+    ) THEN
+        RAISE EXCEPTION 'API table capability and deny manifests overlap';
+    END IF;
+
+    FOREACH table_name IN ARRAY select_table_names || denied_table_names
+    LOOP
+        SELECT pg_catalog.count(*)
+        INTO matched_table_count
+        FROM pg_catalog.pg_class AS relation
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'iam'
+          AND relation.relname = table_name
+          AND relation.relkind IN ('r', 'p')
+          AND NOT relation.relispartition;
+
+        IF matched_table_count <> 1 THEN
+            RAISE EXCEPTION
+                'API table manifest expected one non-partition iam.%, found %',
+                table_name,
+                matched_table_count;
+        END IF;
+    END LOOP;
+
+    FOREACH table_name IN ARRAY select_table_names
+    LOOP
+        EXECUTE pg_catalog.format(
+            'GRANT SELECT ON TABLE %I.%I TO silicon_iam_api',
+            'iam',
+            table_name
+        );
+    END LOOP;
+    FOREACH table_name IN ARRAY insert_table_names
+    LOOP
+        EXECUTE pg_catalog.format(
+            'GRANT INSERT ON TABLE %I.%I TO silicon_iam_api',
+            'iam',
+            table_name
+        );
+    END LOOP;
+    FOREACH table_name IN ARRAY update_table_names
+    LOOP
+        EXECUTE pg_catalog.format(
+            'GRANT UPDATE ON TABLE %I.%I TO silicon_iam_api',
+            'iam',
+            table_name
+        );
+    END LOOP;
+    FOREACH table_name IN ARRAY delete_table_names
+    LOOP
+        EXECUTE pg_catalog.format(
+            'GRANT DELETE ON TABLE %I.%I TO silicon_iam_api',
+            'iam',
+            table_name
+        );
+    END LOOP;
+
+    SELECT pg_catalog.array_agg(relation.relname ORDER BY relation.relname)
+    INTO unclassified_table_names
+    FROM pg_catalog.pg_class AS relation
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'iam'
+      AND relation.relkind IN ('r', 'p')
+      AND NOT relation.relispartition
+      AND relation.relname <> ALL (select_table_names || denied_table_names);
+
+    IF unclassified_table_names IS NOT NULL THEN
+        RAISE EXCEPTION
+            'unclassified IAM tables exist: %',
+            unclassified_table_names;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_class AS relation
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'iam'
+          AND relation.relispartition
+          AND (
+              pg_catalog.has_table_privilege(
+                  'silicon_iam_api', relation.oid, 'SELECT'
+              )
+              OR pg_catalog.has_table_privilege(
+                  'silicon_iam_api', relation.oid, 'INSERT'
+              )
+              OR pg_catalog.has_table_privilege(
+                  'silicon_iam_api', relation.oid, 'UPDATE'
+              )
+              OR pg_catalog.has_table_privilege(
+                  'silicon_iam_api', relation.oid, 'DELETE'
+              )
+          )
+    ) THEN
+        RAISE EXCEPTION 'API table capability manifest granted a partition directly';
+    END IF;
+END;
+$api_tables$;
+
+DO $api_sequences$
+DECLARE
+    sequence_name text;
+    matched_sequence_count integer;
+    unclassified_sequence_names text[];
+    usage_sequence_names text[] := ARRAY[
+        'audit_events_global_sequence_seq',
+        'outbox_events_global_sequence_seq'
+    ];
+    denied_sequence_names text[] := ARRAY[
+        'runtime_key_activations_id_seq'
+    ];
+BEGIN
+    IF pg_catalog.cardinality(usage_sequence_names) <> (
+        SELECT pg_catalog.count(DISTINCT listed_name)
+        FROM pg_catalog.unnest(usage_sequence_names) AS listed_name
+    ) OR pg_catalog.cardinality(denied_sequence_names) <> (
+        SELECT pg_catalog.count(DISTINCT listed_name)
+        FROM pg_catalog.unnest(denied_sequence_names) AS listed_name
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_catalog.unnest(denied_sequence_names) AS denied_name
+        WHERE denied_name = ANY (usage_sequence_names)
+    ) THEN
+        RAISE EXCEPTION 'API sequence capability manifest is invalid';
+    END IF;
+
+    FOREACH sequence_name IN ARRAY usage_sequence_names || denied_sequence_names
+    LOOP
+        SELECT pg_catalog.count(*)
+        INTO matched_sequence_count
+        FROM pg_catalog.pg_class AS relation
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'iam'
+          AND relation.relname = sequence_name
+          AND relation.relkind = 'S';
+
+        IF matched_sequence_count <> 1 THEN
+            RAISE EXCEPTION
+                'API sequence manifest expected one iam.%, found %',
+                sequence_name,
+                matched_sequence_count;
+        END IF;
+    END LOOP;
+
+    FOREACH sequence_name IN ARRAY usage_sequence_names
+    LOOP
+        EXECUTE pg_catalog.format(
+            'GRANT USAGE ON SEQUENCE %I.%I TO silicon_iam_api',
+            'iam',
+            sequence_name
+        );
+    END LOOP;
+
+    SELECT pg_catalog.array_agg(relation.relname ORDER BY relation.relname)
+    INTO unclassified_sequence_names
+    FROM pg_catalog.pg_class AS relation
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'iam'
+      AND relation.relkind = 'S'
+      AND relation.relname <> ALL (
+          usage_sequence_names || denied_sequence_names
+      );
+
+    IF unclassified_sequence_names IS NOT NULL THEN
+        RAISE EXCEPTION
+            'unclassified IAM sequences exist: %',
+            unclassified_sequence_names;
+    END IF;
+END;
+$api_sequences$;
+
+GRANT SELECT ON public._sqlx_migrations TO silicon_iam_api;
+
+DO $api_functions$
+DECLARE
+    allowed_function_name text;
+    matched_function_count integer;
+    function_record record;
+    api_function_names text[] := ARRAY[
+        'apply_workos_connection_event',
+        'archive_organization_tag',
+        'assert_active_carbon_contacts',
+        'assert_active_principal_subtype',
+        'assert_approval_request_shape',
+        'assert_exactly_one_organization_owner',
+        'assert_platform_administrator_present',
+        'begin_sso_authorization',
+        'can_administer_application',
+        'can_manage_application',
+        'can_manage_application_technical',
+        'can_read_application',
+        'carbon_handle_is_available',
+        'complete_sso_authorization',
+        'complete_verified_organization_invitation',
+        'complete_verified_signup',
+        'current_application_id',
+        'current_organization_id',
+        'current_principal_id',
+        'get_audit_public_identifiers',
+        'get_platform_carbon',
+        'has_organization_capability',
+        'has_platform_capability',
+        'is_active_organization_member',
+        'is_organization_creator',
+        'is_valid_sso_callback_correlation',
+        'list_active_carbon_login_contacts',
+        'organization_handle_is_available',
+        'reconcile_runtime_keyring',
+        'record_ignored_workos_event',
+        'remove_organization_membership',
+        'replace_carbon_status',
+        'replace_organization_sso_entitlement',
+        'resolve_active_carbon_by_contact_digest',
+        'resolve_active_carbon_by_handle',
+        'resolve_active_silicon_credential',
+        'resolve_organization_invitation_tenant',
+        'resolve_platform_sso_organization',
+        'set_organization_admin_role'
+    ];
+    non_api_definer_names text[] := ARRAY[
+        'activate_runtime_key_version',
+        'complete_worker_silicon_hook',
+        'fail_worker_silicon_hook',
+        'get_worker_application_webhook_material',
+        'get_worker_invitation_context',
+        'get_worker_notification_contact',
+        'get_worker_security_notice_contact',
+        'get_worker_silicon_hook_identity',
+        'list_worker_application_webhook_recipients',
+        'prevent_oauth_refresh_family_scope_mutation',
+        'reject_audit_mutation',
+        'reject_immutable_history_mutation',
+        'reconcile_worker_contact_aead_keyring',
+        'run_worker_account_deletion_finalization',
+        'run_worker_ephemeral_maintenance',
+        'run_worker_retention_maintenance'
+    ];
+BEGIN
+    FOREACH allowed_function_name IN ARRAY api_function_names
+    LOOP
+        SELECT pg_catalog.count(*)
+        INTO matched_function_count
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = 'iam_private'
+          AND procedure.proname = allowed_function_name;
+
+        IF matched_function_count <> 1 THEN
+            RAISE EXCEPTION
+                'API allowlist expected exactly one iam_private.%, found %',
+                allowed_function_name,
+                matched_function_count;
+        END IF;
+
+        SELECT
+            namespace.nspname,
+            procedure.proname,
+            pg_catalog.pg_get_function_identity_arguments(procedure.oid) AS arguments
+        INTO STRICT function_record
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = 'iam_private'
+          AND procedure.proname = allowed_function_name;
+
+        EXECUTE pg_catalog.format(
+            'GRANT EXECUTE ON FUNCTION %I.%I(%s) TO silicon_iam_api',
+            function_record.nspname,
+            function_record.proname,
+            function_record.arguments
+        );
+    END LOOP;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = 'iam_private'
+          AND procedure.prosecdef
+          AND procedure.proname <> ALL (
+              api_function_names || non_api_definer_names
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'unclassified SECURITY DEFINER function exists in iam_private';
+    END IF;
+END;
+$api_functions$;
+
+GRANT USAGE ON SCHEMA iam TO silicon_iam_worker;
+GRANT USAGE ON SCHEMA iam_private TO silicon_iam_worker;
+GRANT SELECT, UPDATE ON iam.outbox_events TO silicon_iam_worker;
+GRANT SELECT, INSERT ON iam.outbox_event_recipients TO silicon_iam_worker;
+GRANT SELECT, INSERT, UPDATE ON iam.webhook_deliveries TO silicon_iam_worker;
+GRANT SELECT, INSERT, UPDATE ON iam.webhook_delivery_attempts TO silicon_iam_worker;
+GRANT SELECT, UPDATE ON iam.notification_jobs TO silicon_iam_worker;
+GRANT SELECT, UPDATE ON iam.silicon_hooks TO silicon_iam_worker;
+GRANT SELECT ON iam.silicons TO silicon_iam_worker;
+GRANT SELECT ON iam.principals TO silicon_iam_worker;
+GRANT SELECT ON public._sqlx_migrations TO silicon_iam_worker;
+
+-- Worker policy roles are bound only after deployment has provisioned the
+-- fixed NOLOGIN roles. Keeping role names out of migrations makes a schema
+-- bootstrap portable while preventing worker sessions from evaluating API
+-- policy helpers whose EXECUTE privilege they intentionally do not receive.
+ALTER POLICY silicons_member_select
+    ON iam.silicons TO silicon_iam_api;
+ALTER POLICY silicon_hooks_member_select
+    ON iam.silicon_hooks TO silicon_iam_api;
+ALTER POLICY silicon_hooks_manage
+    ON iam.silicon_hooks TO silicon_iam_api;
+
+DROP POLICY IF EXISTS silicons_worker_select ON iam.silicons;
+CREATE POLICY silicons_worker_select
+ON iam.silicons FOR SELECT TO silicon_iam_worker
+USING (
+    COALESCE(
+        pg_catalog.pg_has_role(
+            current_user, pg_catalog.to_regrole('silicon_iam_worker'), 'member'
+        ),
+        false
+    )
+);
+
+DROP POLICY IF EXISTS silicon_hooks_worker_select ON iam.silicon_hooks;
+CREATE POLICY silicon_hooks_worker_select
+ON iam.silicon_hooks FOR SELECT TO silicon_iam_worker
+USING (
+    COALESCE(
+        pg_catalog.pg_has_role(
+            current_user, pg_catalog.to_regrole('silicon_iam_worker'), 'member'
+        ),
+        false
+    )
+);
+
+DROP POLICY IF EXISTS silicon_hooks_worker_update ON iam.silicon_hooks;
+CREATE POLICY silicon_hooks_worker_update
+ON iam.silicon_hooks FOR UPDATE TO silicon_iam_worker
+USING (
+    COALESCE(
+        pg_catalog.pg_has_role(
+            current_user, pg_catalog.to_regrole('silicon_iam_worker'), 'member'
+        ),
+        false
+    )
+)
+WITH CHECK (
+    COALESCE(
+        pg_catalog.pg_has_role(
+            current_user, pg_catalog.to_regrole('silicon_iam_worker'), 'member'
+        ),
+        false
+    )
+);
+
+DO $worker_functions$
+DECLARE
+    allowed_function_name text;
+    matched_function_count integer;
+    function_record record;
+    worker_function_names text[] := ARRAY[
+        'complete_worker_silicon_hook',
+        'fail_worker_silicon_hook',
+        'get_worker_application_webhook_material',
+        'get_worker_invitation_context',
+        'get_worker_notification_contact',
+        'get_worker_security_notice_contact',
+        'get_worker_silicon_hook_identity',
+        'list_worker_application_webhook_recipients',
+        'reconcile_worker_contact_aead_keyring',
+        'run_worker_account_deletion_finalization',
+        'run_worker_ephemeral_maintenance',
+        'run_worker_retention_maintenance'
+    ];
+BEGIN
+    FOREACH allowed_function_name IN ARRAY worker_function_names
+    LOOP
+        SELECT pg_catalog.count(*)
+        INTO matched_function_count
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = 'iam_private'
+          AND procedure.proname = allowed_function_name;
+
+        IF matched_function_count <> 1 THEN
+            RAISE EXCEPTION
+                'worker allowlist expected exactly one iam_private.%, found %',
+                allowed_function_name,
+                matched_function_count;
+        END IF;
+
+        SELECT
+            namespace.nspname,
+            procedure.proname,
+            pg_catalog.pg_get_function_identity_arguments(procedure.oid) AS arguments
+        INTO STRICT function_record
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = 'iam_private'
+          AND procedure.proname = allowed_function_name;
+
+        EXECUTE pg_catalog.format(
+            'GRANT EXECUTE ON FUNCTION %I.%I(%s) TO silicon_iam_worker',
+            function_record.nspname,
+            function_record.proname,
+            function_record.arguments
+        );
+    END LOOP;
+END;
+$worker_functions$;
+
+-- The operator role has no IAM table access. Its only authority is the
+-- compare-and-swap transition implemented by this fixed-path definer function.
+GRANT USAGE ON SCHEMA iam_private TO silicon_iam_key_operator;
+GRANT EXECUTE ON FUNCTION iam_private.activate_runtime_key_version(
+    text, smallint, smallint
+) TO silicon_iam_key_operator;
+
+COMMIT;
