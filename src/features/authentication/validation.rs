@@ -70,7 +70,7 @@ pub(super) fn login_identifier(
     match (input.email, input.phone_number, input.carbon_id) {
         (Some(value), None, None) => email(value).map(ValidatedLoginIdentifier::Contact),
         (None, Some(value), None) => phone(value).map(ValidatedLoginIdentifier::Contact),
-        (None, None, Some(value)) => CarbonId::from_str(&value)
+        (None, None, Some(value)) => CarbonId::from_lookup_str(&value)
             .map(ValidatedLoginIdentifier::CarbonId)
             .map_err(|_| validation("carbon_id", "has an invalid format")),
         _ => Err(validation(

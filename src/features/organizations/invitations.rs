@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_lines)]
 
-use std::{borrow::Cow, num::NonZeroU32, str::FromStr as _, time::Duration};
+use std::{borrow::Cow, num::NonZeroU32, time::Duration};
 
 use axum::{
     Json,
@@ -1559,7 +1559,7 @@ async fn validate_invitation_references(
 fn validate_invitation(input: &mut CarbonInviteCreate) -> Result<(), AppError> {
     match (input.carbon_id.as_mut(), input.email.as_mut()) {
         (Some(carbon_id), None) => {
-            *carbon_id = CarbonId::from_str(carbon_id)
+            *carbon_id = CarbonId::from_lookup_str(carbon_id)
                 .map_err(|_| validation::field("carbon_id", "has an invalid format"))?
                 .to_string();
         }
@@ -2026,13 +2026,15 @@ mod tests {
         .execute(&mut *transaction)
         .await?;
 
-        let error = sqlx::query(
+        let result = sqlx::query(
             "UPDATE iam.invitation_verification_challenges SET consumed_at = transaction_timestamp() WHERE id = $1",
         )
         .bind(challenge_id)
         .execute(&mut *transaction)
-        .await
-        .expect_err("a pending invitation OTP must not be consumable");
+        .await;
+        let Err(error) = result else {
+            anyhow::bail!("a pending invitation OTP was consumable");
+        };
         let sqlx::Error::Database(database_error) = error else {
             anyhow::bail!("pending consumption returned a non-database error");
         };

@@ -33,6 +33,40 @@ impl CarbonId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Parses an identifier used to look up an already-persisted Carbon.
+    ///
+    /// Carbon IDs containing `0` were valid before the creation alphabet was
+    /// narrowed to `1-9`. They remain immutable and addressable, but this
+    /// compatibility parser must never be used to admit a new identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CarbonIdError`] when the value is not a normalized legacy or
+    /// current Carbon identifier.
+    pub fn from_lookup_str(value: &str) -> Result<Self, CarbonIdError> {
+        Self::parse(value, true)
+    }
+
+    fn parse(value: &str, allow_legacy_zero: bool) -> Result<Self, CarbonIdError> {
+        if value != value.trim() {
+            return Err(CarbonIdError::Characters);
+        }
+        let normalized = value.to_ascii_lowercase();
+        if !(3..=30).contains(&normalized.len()) {
+            return Err(CarbonIdError::Length);
+        }
+
+        if !normalized.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || matches!(byte, b'1'..=b'9' | b'-' | b'_')
+                || (allow_legacy_zero && byte == b'0')
+        }) {
+            return Err(CarbonIdError::Characters);
+        }
+
+        Ok(Self(normalized))
+    }
 }
 
 impl TryFrom<String> for CarbonId {
@@ -53,22 +87,7 @@ impl FromStr for CarbonId {
     type Err = CarbonIdError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value != value.trim() {
-            return Err(CarbonIdError::Characters);
-        }
-        let normalized = value.to_ascii_lowercase();
-        if !(3..=30).contains(&normalized.len()) {
-            return Err(CarbonIdError::Length);
-        }
-
-        if !normalized
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || matches!(byte, b'1'..=b'9' | b'-' | b'_'))
-        {
-            return Err(CarbonIdError::Characters);
-        }
-
-        Ok(Self(normalized))
+        Self::parse(value, false)
     }
 }
 
@@ -114,6 +133,14 @@ mod tests {
     #[test]
     fn carbon_id_rejects_zero() {
         assert_eq!(CarbonId::from_str("saket0"), Err(CarbonIdError::Characters));
+    }
+
+    #[test]
+    fn existing_carbon_id_lookup_accepts_legacy_zero() {
+        assert_eq!(
+            CarbonId::from_lookup_str("Saket_0").map(|value| value.to_string()),
+            Ok("saket_0".to_owned())
+        );
     }
 
     #[test]
