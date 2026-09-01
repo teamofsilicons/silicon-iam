@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
-    application::ports::EmailOtp,
+    application::ports::{DeliveryError, EmailOtp},
     domain::{
         auth::{CarbonId, OTP_COOLDOWN_SECONDS},
         organization::Capability,
@@ -30,6 +30,7 @@ use crate::{
         },
         postgres::{
             context::{self, DatabaseContext},
+            idempotency::{self, IdempotencyLease},
             rate_limit::{self, RateLimitPolicy},
         },
     },
@@ -54,6 +55,37 @@ const INVITATION_EMAIL_CODE_ROUTE: &str =
 const INVITATION_JOIN_ROUTE: &str = "POST /api/v1/organizations/{org_id}/join";
 const INVITATION_CODE_SEND_LIMIT: u32 = 10;
 const INVITATION_CODE_SEND_WINDOW: Duration = Duration::from_secs(60);
+const INVITATION_OTP_PROVIDER_TIMEOUT: Duration = Duration::from_secs(5);
+const INVITATION_CHALLENGE_LOCK_QUERY: &str = r"
+    SELECT invitation.organization_id, invitation.target_carbon_id,
+           invitation.status AS invitation_status,
+           invitation.expires_at AS invitation_expires_at,
+           challenge.id AS challenge_id, challenge.code_digest,
+           challenge.digest_key_version, challenge.failed_attempts,
+           challenge.max_attempts, challenge.delivery_status,
+           CASE
+               WHEN challenge.expires_at > transaction_timestamp()
+                    AND challenge.consumed_at IS NULL
+                    AND challenge.superseded_at IS NULL
+                    AND challenge.cooldown_until > transaction_timestamp()
+                   THEN GREATEST(
+                       1,
+                       CEIL(EXTRACT(EPOCH FROM challenge.cooldown_until - transaction_timestamp()))::bigint
+                   )
+               ELSE 0
+           END AS cooldown_retry_after_seconds,
+           challenge.expires_at AS challenge_expires_at,
+           challenge.consumed_at, challenge.superseded_at
+    FROM iam.organization_invitations AS invitation
+    JOIN iam.invitation_verification_challenges AS challenge
+      ON challenge.organization_id = invitation.organization_id
+     AND challenge.invitation_id = invitation.id
+     AND challenge.target_carbon_id = invitation.target_carbon_id
+    WHERE invitation.id = $1 AND invitation.target_carbon_id = $2
+    ORDER BY challenge.created_at DESC
+    LIMIT 1
+    FOR UPDATE OF invitation, challenge
+";
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct ContactMaterial {
@@ -129,10 +161,17 @@ struct ChallengeRow {
     digest_key_version: i16,
     failed_attempts: i16,
     max_attempts: i16,
+    delivery_status: String,
     cooldown_retry_after_seconds: i64,
     challenge_expires_at: OffsetDateTime,
     consumed_at: Option<OffsetDateTime>,
     superseded_at: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InvitationOtpDeliveryError {
+    Definitive,
+    OutcomeUnknown,
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
@@ -547,23 +586,26 @@ pub(super) async fn send_invitation_email_code(
             category: "invitation_code_ttl",
         }
     })?;
+    let challenge_id = Uuid::now_v7();
     let challenge_expires_at = sqlx::query_scalar::<_, OffsetDateTime>(
         r"
         INSERT INTO iam.invitation_verification_challenges (
             id, organization_id, invitation_id, target_carbon_id,
             destination_contact_id, code_digest, digest_key_version,
-            failed_attempts, max_attempts, cooldown_until, expires_at
+            failed_attempts, max_attempts, cooldown_until, expires_at,
+            delivery_status, delivered_at
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
             LEAST(
                 $11,
                 transaction_timestamp() + ($12::bigint * interval '1 second')
-            )
+            ),
+            'pending', NULL
         )
         RETURNING expires_at
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(challenge_id)
     .bind(resolved.organization_id)
     .bind(resolved.invitation_id)
     .bind(carbon_id)
@@ -597,19 +639,15 @@ pub(super) async fn send_invitation_email_code(
         invite_id: resolved.invitation_id,
         expires_in,
     };
-    let body = support::finish_json(
-        &mut transaction,
-        &state,
-        lease,
-        StatusCode::ACCEPTED,
-        &response,
-    )
-    .await?;
+
+    // Phase A commits only a digest-backed pending challenge and the exclusive
+    // idempotency reservation. Provider I/O happens with no database locks,
+    // and pending challenges are rejected by both Rust and PostgreSQL.
     transaction.commit().await.map_err(support::database)?;
 
     let minutes = u16::try_from(expires_in.div_ceil(60).max(1)).unwrap_or(u16::MAX);
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+    let delivery = tokio::time::timeout(
+        INVITATION_OTP_PROVIDER_TIMEOUT,
         state.notifications.email.send_otp(EmailOtp {
             recipient: &recipient,
             code: &code,
@@ -618,7 +656,193 @@ pub(super) async fn send_invitation_email_code(
         }),
     )
     .await;
-    support::json_response(StatusCode::ACCEPTED, body, None, false)
+    match classify_invitation_otp_delivery(delivery) {
+        Ok(()) => {
+            let body = confirm_invitation_otp_delivery(
+                &state,
+                lease,
+                carbon_id,
+                resolved.organization_id,
+                resolved.invitation_id,
+                challenge_id,
+                contact.contact_id,
+                &response,
+            )
+            .await?;
+            support::json_response(StatusCode::ACCEPTED, body, None, false)
+        }
+        Err(InvitationOtpDeliveryError::Definitive) => {
+            fail_invitation_otp_delivery(
+                &state,
+                lease,
+                carbon_id,
+                resolved.organization_id,
+                resolved.invitation_id,
+                challenge_id,
+            )
+            .await?;
+            Err(AppError::ProviderUnavailable)
+        }
+        Err(InvitationOtpDeliveryError::OutcomeUnknown) => {
+            // The pending digest and processing reservation deliberately stay
+            // durable. Retrying the same key cannot duplicate an uncertain
+            // provider side effect; a fresh key supersedes this unusable code.
+            Err(AppError::ProviderUnavailable)
+        }
+    }
+}
+
+fn classify_invitation_otp_delivery(
+    result: Result<
+        Result<crate::application::ports::DeliveryReceipt, DeliveryError>,
+        tokio::time::error::Elapsed,
+    >,
+) -> Result<(), InvitationOtpDeliveryError> {
+    match result {
+        Ok(Ok(_receipt)) => Ok(()),
+        Ok(Err(DeliveryError::Rejected)) => {
+            tracing::warn!(
+                provider_error = "rejected",
+                purpose = "organization_invitation",
+                "required invitation OTP delivery failed"
+            );
+            Err(InvitationOtpDeliveryError::Definitive)
+        }
+        Ok(Err(DeliveryError::Unavailable)) => {
+            tracing::warn!(
+                provider_error = "unavailable",
+                purpose = "organization_invitation",
+                "required invitation OTP delivery outcome is unknown"
+            );
+            Err(InvitationOtpDeliveryError::OutcomeUnknown)
+        }
+        Err(_) => {
+            tracing::warn!(
+                provider_error = "timeout",
+                purpose = "organization_invitation",
+                "required invitation OTP delivery outcome is unknown"
+            );
+            Err(InvitationOtpDeliveryError::OutcomeUnknown)
+        }
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the exact invitation challenge authority is required for atomic activation"
+)]
+async fn confirm_invitation_otp_delivery(
+    state: &ApiState,
+    lease: IdempotencyLease,
+    carbon_id: Uuid,
+    organization_id: Uuid,
+    invitation_id: Uuid,
+    challenge_id: Uuid,
+    destination_contact_id: Uuid,
+    response: &InvitationEmailCodeResponse,
+) -> Result<Vec<u8>, AppError> {
+    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+        .await
+        .map_err(support::database)?;
+    context::select_organization(&mut transaction, organization_id)
+        .await
+        .map_err(support::database)?;
+    let activated = sqlx::query(
+        r"
+        UPDATE iam.invitation_verification_challenges AS challenge
+        SET delivery_status = 'delivered',
+            delivered_at = transaction_timestamp()
+        FROM iam.organization_invitations AS invitation,
+             iam.carbon_contacts AS contact
+        WHERE challenge.id = $1
+          AND challenge.organization_id = $2
+          AND challenge.invitation_id = $3
+          AND challenge.target_carbon_id = $4
+          AND challenge.destination_contact_id = $5
+          AND challenge.delivery_status = 'pending'
+          AND challenge.delivered_at IS NULL
+          AND challenge.delivery_failed_at IS NULL
+          AND challenge.consumed_at IS NULL
+          AND challenge.superseded_at IS NULL
+          AND challenge.expires_at > transaction_timestamp()
+          AND challenge.failed_attempts < challenge.max_attempts
+          AND invitation.organization_id = challenge.organization_id
+          AND invitation.id = challenge.invitation_id
+          AND invitation.target_carbon_id = challenge.target_carbon_id
+          AND invitation.status = 'pending'
+          AND invitation.expires_at > transaction_timestamp()
+          AND contact.carbon_id = challenge.target_carbon_id
+          AND contact.id = challenge.destination_contact_id
+          AND contact.kind = 'email'
+          AND contact.status = 'active'
+          AND contact.verified_at IS NOT NULL
+        ",
+    )
+    .bind(challenge_id)
+    .bind(organization_id)
+    .bind(invitation_id)
+    .bind(carbon_id)
+    .bind(destination_contact_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(support::database)?;
+    if activated.rows_affected() != 1 {
+        idempotency::cancel_for_retry(&mut transaction, lease).await?;
+        transaction.commit().await.map_err(support::database)?;
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("otp_delivery_superseded"),
+        });
+    }
+
+    let body = support::finish_json(
+        &mut transaction,
+        state,
+        lease,
+        StatusCode::ACCEPTED,
+        response,
+    )
+    .await?;
+    transaction.commit().await.map_err(support::database)?;
+    Ok(body)
+}
+
+async fn fail_invitation_otp_delivery(
+    state: &ApiState,
+    lease: IdempotencyLease,
+    carbon_id: Uuid,
+    organization_id: Uuid,
+    invitation_id: Uuid,
+    challenge_id: Uuid,
+) -> Result<(), AppError> {
+    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+        .await
+        .map_err(support::database)?;
+    context::select_organization(&mut transaction, organization_id)
+        .await
+        .map_err(support::database)?;
+    sqlx::query(
+        r"
+        UPDATE iam.invitation_verification_challenges
+        SET delivery_status = 'failed',
+            delivered_at = NULL,
+            delivery_failed_at = transaction_timestamp(),
+            superseded_at = COALESCE(superseded_at, transaction_timestamp())
+        WHERE id = $1
+          AND organization_id = $2
+          AND invitation_id = $3
+          AND target_carbon_id = $4
+          AND delivery_status = 'pending'
+        ",
+    )
+    .bind(challenge_id)
+    .bind(organization_id)
+    .bind(invitation_id)
+    .bind(carbon_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(support::database)?;
+    idempotency::cancel_for_retry(&mut transaction, lease).await?;
+    transaction.commit().await.map_err(support::database)
 }
 
 pub(super) async fn join_organization(
@@ -652,6 +876,18 @@ pub(super) async fn join_organization(
     if challenge.organization_id != organization_id || challenge.target_carbon_id != carbon_id {
         return Err(AppError::NotFound);
     }
+    if challenge.invitation_status != "pending"
+        || challenge.invitation_expires_at <= OffsetDateTime::now_utc()
+        || challenge.delivery_status != "delivered"
+        || challenge.challenge_expires_at <= OffsetDateTime::now_utc()
+        || challenge.consumed_at.is_some()
+        || challenge.superseded_at.is_some()
+        || challenge.failed_attempts >= challenge.max_attempts
+    {
+        return Err(AppError::Gone {
+            code: Cow::Borrowed("invitation_expired"),
+        });
+    }
     if challenge.cooldown_retry_after_seconds > 0 {
         let retry_after_seconds =
             u64::try_from(challenge.cooldown_retry_after_seconds).unwrap_or(u64::MAX);
@@ -679,17 +915,6 @@ pub(super) async fn join_organization(
             "verification_code",
             "is invalid or expired",
         ));
-    }
-    if challenge.invitation_status != "pending"
-        || challenge.invitation_expires_at <= OffsetDateTime::now_utc()
-        || challenge.challenge_expires_at <= OffsetDateTime::now_utc()
-        || challenge.consumed_at.is_some()
-        || challenge.superseded_at.is_some()
-        || challenge.failed_attempts >= challenge.max_attempts
-    {
-        return Err(AppError::Gone {
-            code: Cow::Borrowed("invitation_expired"),
-        });
     }
     let prior_membership = sqlx::query_as::<_, (String, i64)>(
         r"
@@ -1221,44 +1446,13 @@ async fn fetch_challenge(
     invite_id: Uuid,
     carbon_id: Uuid,
 ) -> Result<ChallengeRow, AppError> {
-    sqlx::query_as::<_, ChallengeRow>(
-        r"
-        SELECT invitation.organization_id, invitation.target_carbon_id,
-               invitation.status AS invitation_status,
-               invitation.expires_at AS invitation_expires_at,
-               challenge.id AS challenge_id, challenge.code_digest,
-               challenge.digest_key_version, challenge.failed_attempts,
-               challenge.max_attempts,
-               CASE
-                   WHEN challenge.expires_at > transaction_timestamp()
-                        AND challenge.consumed_at IS NULL
-                        AND challenge.superseded_at IS NULL
-                        AND challenge.cooldown_until > transaction_timestamp()
-                       THEN GREATEST(
-                           1,
-                           CEIL(EXTRACT(EPOCH FROM challenge.cooldown_until - transaction_timestamp()))::bigint
-                       )
-                   ELSE 0
-               END AS cooldown_retry_after_seconds,
-               challenge.expires_at AS challenge_expires_at,
-               challenge.consumed_at, challenge.superseded_at
-        FROM iam.organization_invitations AS invitation
-        JOIN iam.invitation_verification_challenges AS challenge
-          ON challenge.organization_id = invitation.organization_id
-         AND challenge.invitation_id = invitation.id
-         AND challenge.target_carbon_id = invitation.target_carbon_id
-        WHERE invitation.id = $1 AND invitation.target_carbon_id = $2
-        ORDER BY challenge.created_at DESC
-        LIMIT 1
-        FOR UPDATE OF invitation, challenge
-        ",
-    )
-    .bind(invite_id)
-    .bind(carbon_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(support::database)?
-    .ok_or(AppError::NotFound)
+    sqlx::query_as::<_, ChallengeRow>(INVITATION_CHALLENGE_LOCK_QUERY)
+        .bind(invite_id)
+        .bind(carbon_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(support::database)?
+        .ok_or(AppError::NotFound)
 }
 
 async fn register_failed_attempt(
@@ -1682,6 +1876,7 @@ const INVITATION_BY_ID_SQL: &str = r"
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::ports::DeliveryReceipt;
 
     #[test]
     fn masked_email_never_contains_the_local_part() {
@@ -1742,5 +1937,108 @@ mod tests {
         assert_eq!(email, "invitee@example.com");
         assert!(validate_invitation_email(" invitee@example.com").is_err());
         assert!(validate_invitation_email("not-an-email").is_err());
+    }
+
+    #[test]
+    fn invitation_otp_delivery_requires_an_unambiguous_provider_success() {
+        assert_eq!(
+            classify_invitation_otp_delivery(Ok(Ok(DeliveryReceipt {
+                provider_message_id: "provider-message-id".to_owned(),
+            }))),
+            Ok(())
+        );
+        assert_eq!(
+            classify_invitation_otp_delivery(Ok(Err(DeliveryError::Rejected))),
+            Err(InvitationOtpDeliveryError::Definitive)
+        );
+        assert_eq!(
+            classify_invitation_otp_delivery(Ok(Err(DeliveryError::Unavailable))),
+            Err(InvitationOtpDeliveryError::OutcomeUnknown)
+        );
+    }
+
+    #[test]
+    fn invitation_join_locks_delivery_state_with_the_challenge() {
+        assert!(INVITATION_CHALLENGE_LOCK_QUERY.contains("challenge.delivery_status"));
+        assert!(INVITATION_CHALLENGE_LOCK_QUERY.contains("FOR UPDATE OF invitation, challenge"));
+    }
+
+    #[test]
+    fn invitation_delivery_migration_fails_legacy_and_future_challenges_closed() {
+        let migration = include_str!("../../../migrations/0036_invitation_otp_delivery_state.sql");
+
+        assert!(migration.contains("ALTER COLUMN delivery_status SET DEFAULT 'pending'"));
+        assert!(migration.contains("consumed_at IS NULL OR delivery_status = 'delivered'"));
+        assert!(migration.contains(
+            "WHEN consumed_at IS NULL THEN COALESCE(superseded_at, transaction_timestamp())"
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Docker daemon"]
+    async fn live_pending_invitation_otp_cannot_be_consumed() -> anyhow::Result<()> {
+        use anyhow::ensure;
+        use sqlx::postgres::PgPoolOptions;
+        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
+        use testcontainers_modules::postgres::Postgres as TestPostgres;
+
+        let container = TestPostgres::default()
+            .with_tag("16-alpine")
+            .start()
+            .await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(5432).await?;
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&format!(
+                "postgres://postgres:postgres@{host}:{port}/postgres"
+            ))
+            .await?;
+        crate::infrastructure::postgres::migrate(&pool).await?;
+
+        let challenge_id = Uuid::from_u128(0x36_01);
+        let mut transaction = pool.begin().await?;
+        // Foreign keys are irrelevant to this focused constraint test. Check
+        // constraints remain active while replication-trigger FKs are skipped.
+        sqlx::query("SET LOCAL session_replication_role = replica")
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.invitation_verification_challenges (
+                id, organization_id, invitation_id, target_carbon_id,
+                destination_contact_id, code_digest, digest_key_version,
+                failed_attempts, max_attempts, expires_at,
+                delivery_status, delivered_at, delivery_failed_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, decode(repeat('36', 32), 'hex'), 1,
+                0, 10, transaction_timestamp() + interval '10 minutes',
+                'pending', NULL, NULL
+            )
+            ",
+        )
+        .bind(challenge_id)
+        .bind(Uuid::from_u128(0x36_02))
+        .bind(Uuid::from_u128(0x36_03))
+        .bind(Uuid::from_u128(0x36_04))
+        .bind(Uuid::from_u128(0x36_05))
+        .execute(&mut *transaction)
+        .await?;
+
+        let error = sqlx::query(
+            "UPDATE iam.invitation_verification_challenges SET consumed_at = transaction_timestamp() WHERE id = $1",
+        )
+        .bind(challenge_id)
+        .execute(&mut *transaction)
+        .await
+        .expect_err("a pending invitation OTP must not be consumable");
+        let sqlx::Error::Database(database_error) = error else {
+            anyhow::bail!("pending consumption returned a non-database error");
+        };
+        ensure!(
+            database_error.code().as_deref() == Some("23514"),
+            "pending consumption must violate a check constraint"
+        );
+        Ok(())
     }
 }
