@@ -1,0 +1,138 @@
+<p class="lede">
+  On-behalf-of lets one application call another on a user's behalf, without either holding the
+  other's credentials. It is strictly same-organization, and every proof is bound to one exact
+  request.
+</p>
+
+<div class="banner banner-danger">
+  <div>
+    <strong>OBO never crosses an organization.</strong>
+    IAM derives the organization from the two authenticated applications and refuses anything
+    else. <code>X-Org-ID</code> is not accepted on these endpoints at all.
+  </div>
+</div>
+
+<h2>The shape of it</h2>
+
+<p>
+  Application A wants to call Application B. Instead of sending B a token that would work for
+  any request, A asks IAM for a proof that works for <em>exactly one</em> request — and B
+  validates it with IAM before doing anything.
+</p>
+
+<ol>
+  <li>
+    <strong>Discover.</strong> <code>GET /api/v1/obo-access/applications/{app_id}/endpoints</code>
+    lists what B exposes and what metadata each endpoint requires.
+  </li>
+  <li>
+    <strong>Exchange.</strong> A calls <code>POST /api/v1/obo-access/exchanges</code> with the
+    subject token, the audience, the endpoint, the metadata, and a description of the request it
+    intends to make. IAM returns a proof token.
+  </li>
+  <li>
+    <strong>Call.</strong> A sends B the real request — including any file bytes — with the proof
+    attached.
+  </li>
+  <li>
+    <strong>Verify.</strong> B calls <code>POST /api/v1/obo-access/verify</code>. IAM consumes the
+    proof and returns the bound actor, endpoint and metadata. Only then does B execute.
+  </li>
+</ol>
+
+<h2>The exchange request</h2>
+
+<pre><code>{
+  "subject_token": "oat_...",
+  "audience": "application-b-id",
+  "endpoint_id": "files.upload",
+  "metadata": {
+    "filename": "report.pdf",
+    "content_type": "application/pdf"
+  },
+  "request": {
+    "method": "POST",
+    "body_sha256": "hash of the exact body bytes"
+  }
+}</code></pre>
+
+<p>
+  Note what the exchange does <em>not</em> carry: the file. Only its digest. The bytes travel
+  directly from A to B, and the proof commits to what they will be.
+</p>
+
+<p>The request is additionally signed:</p>
+
+<pre><code>X-OBO-Timestamp: &lt;unix seconds&gt;
+X-OBO-Signature: HMAC-SHA256(
+  app_secret,
+  timestamp + "." + method + "." + path + "." + body_sha256 + "." + idempotency_key
+)</code></pre>
+
+<h2>Why the proof is bound to the request</h2>
+
+<p>
+  Because the proof commits to the method, the path, the body digest and the idempotency key, it
+  cannot be lifted and replayed against a different call. A proof minted to upload
+  <code>report.pdf</code> cannot be used to upload anything else, or to hit a different endpoint,
+  even by the application that legitimately obtained it.
+</p>
+
+<p>
+  It is valid for <strong>one request or sixty seconds, whichever comes first</strong>.
+</p>
+
+<h2>Verification is single-use, deliberately</h2>
+
+<div class="banner banner-info">
+  <div>
+    <code>POST /api/v1/obo-access/verify</code> accepts <strong>no</strong>
+    <code>Idempotency-Key</code>, never stores or replays a successful response, and returns
+    <code>409</code> on every attempt after the proof is consumed.
+  </div>
+</div>
+
+<p>
+  This is the one endpoint in the contract that is deliberately not idempotent, and it must not be
+  retried. If your HTTP layer retries automatically, exempt this path — a retry after a successful
+  verification looks exactly like a replay attack and will be refused as one.
+</p>
+
+<p>
+  The exchange itself <em>is</em> idempotent, but its replay envelope expires no later than the
+  proof does.
+</p>
+
+<h2>Exposing endpoints</h2>
+
+<p>
+  An application declares its OBO surface through <code>obo_endpoints</code> on registration or
+  update. Each entry has a stable <code>endpoint_id</code>, an absolute <code>path</code>, and a
+  <code>metadata</code> schema whose top-level keys are all required at exchange time.
+</p>
+
+<p>
+  An existing <code>endpoint_id</code> cannot be repointed at a different path. That would silently
+  redirect callers who believe they are still talking to the endpoint they discovered.
+</p>
+
+<p>
+  Only an organization owner or administrator can configure this, and the resulting catalogue is
+  visible to every application in the same organization.
+</p>
+
+<h2>Failure modes worth handling</h2>
+
+<table>
+  <thead><tr><th>Status</th><th>Means</th><th>Do</th></tr></thead>
+  <tbody>
+    <tr><td><code>403</code></td><td>The two applications are not in one organization</td>
+      <td>Nothing. This is not retryable and never will be.</td></tr>
+    <tr><td><code>409</code></td><td>The proof was already consumed</td>
+      <td>Do not retry. Mint a new proof for a new request.</td></tr>
+    <tr><td><code>410</code> <code>proof_expired</code></td><td>More than 60 seconds elapsed</td>
+      <td>Exchange again. Consider why the gap was that long.</td></tr>
+    <tr><td><code>422</code></td><td>Metadata does not satisfy the declared schema</td>
+      <td>Re-read the catalogue; the audience may have changed it.</td></tr>
+  </tbody>
+</table>

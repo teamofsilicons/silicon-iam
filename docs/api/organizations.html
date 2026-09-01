@@ -1,0 +1,192 @@
+<p class="lede">
+  An organization is the boundary for people, machine identities, tags, trust and applications.
+  It has exactly one owner, any number of administrators, and everyone else is a member.
+</p>
+
+<h2>Roles</h2>
+
+<table>
+  <thead><tr><th>Role</th><th>Authority</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Owner</strong></td>
+      <td>Exactly one. Holds every capability implicitly. Only the owner can transfer
+        ownership, and doing so demotes them to administrator.</td></tr>
+    <tr><td><strong>Administrator</strong></td>
+      <td>Holds explicitly delegated capabilities, granted by the owner or by an administrator
+        with <code>admins.manage</code>.</td></tr>
+    <tr><td><strong>Member</strong></td>
+      <td>No organization-level authority. Invitations always join as members.</td></tr>
+  </tbody>
+</table>
+
+<p>
+  A Silicon can never be an owner or an administrator. Its authority is a separate question,
+  covered in <a href="/docs/api/governance">Tags, trust and governance</a>.
+</p>
+
+<h2>Capabilities</h2>
+
+<p>
+  Administrator authority is a set, replaced wholesale via
+  <code>PUT /api/v1/organizations/{org_id}/members/{membership_id}/capabilities</code>. Anything
+  not in the submitted list is removed.
+</p>
+
+<table>
+  <thead><tr><th>Capability</th><th>Permits</th></tr></thead>
+  <tbody>
+    <tr><td><code>organization.update</code></td><td>Name, logo, description, join method</td></tr>
+    <tr><td><code>members.invite</code></td><td>Issuing and revoking invitations</td></tr>
+    <tr><td><code>members.update_directory</code></td><td>Job role, tags, trust, reporting line</td></tr>
+    <tr><td><code>members.remove</code></td><td>Removing a member</td></tr>
+    <tr><td><code>silicons.create</code> · <code>silicons.update_directory</code>
+      · <code>silicons.manage_hierarchy</code> · <code>silicons.remove</code>
+      · <code>silicons.rotate_token</code></td><td>The Silicon lifecycle</td></tr>
+    <tr><td><code>tags.manage</code></td><td>Creating and editing tags</td></tr>
+    <tr><td><code>trust.manage</code></td><td>Default trust and trust rules</td></tr>
+    <tr><td><code>roles.request</code> · <code>roles.approve</code></td><td>Governance</td></tr>
+    <tr><td><code>admins.create</code> · <code>admins.manage</code></td><td>Promotion and delegation</td></tr>
+    <tr><td><code>sso.manage</code></td><td>SSO configuration, once entitled</td></tr>
+  </tbody>
+</table>
+
+<p>
+  Promotion, demotion and capability replacement all require a verified-channel step-up token and
+  an <code>If-Match</code> on the authorization aggregate, whose version is separate from the
+  membership's.
+</p>
+
+<h2>Creating an organization</h2>
+
+<p>
+  <code>GET /api/v1/organization-ids/{org_id}/availability</code> then
+  <code>POST /api/v1/organizations</code>. The creator becomes the sole member and owner.
+</p>
+
+<div class="banner banner-danger">
+  <div>
+    <strong><code>org_id</code> is permanent.</strong>
+    It cannot be changed and is never reused after deletion. It also becomes the suffix of every
+    Silicon ID in the organization — a Silicon created as <code>head_of_growth</code> in
+    <code>tos</code> is <code>head_of_growth:tos</code> forever.
+  </div>
+</div>
+
+<h2>The directory</h2>
+
+<p>
+  Three read-optimised endpoints answer "who is here, and what is my relationship to them" in one
+  call each:
+</p>
+
+<table>
+  <thead><tr><th></th><th>Endpoint</th><th>Returns</th></tr></thead>
+  <tbody>
+    <tr><td><span class="verb verb-get">GET</span></td>
+      <td><code>/api/v1/organizations/{org_id}/directory/self</code></td>
+      <td>The caller's own entry</td></tr>
+    <tr><td><span class="verb verb-get">GET</span></td>
+      <td><code>/api/v1/organizations/{org_id}/directory/members</code></td>
+      <td>Every teammate, paginated</td></tr>
+    <tr><td><span class="verb verb-get">GET</span></td>
+      <td><code>/api/v1/organizations/{org_id}/directory/members/{membership_id}</code></td>
+      <td>One teammate</td></tr>
+  </tbody>
+</table>
+
+<p>
+  Each returns name, ID, job role, tags and trust. <strong>Trust is always resolved from the
+  caller's point of view</strong> — the same pair reads differently depending on who is asking —
+  so label the column accordingly rather than presenting it as an absolute property.
+</p>
+
+<p>
+  All three accept <code>fields</code> to narrow the projection. On a large directory this is the
+  difference between a 12 KB and a 400 KB page, and it is worth using.
+</p>
+
+<p>
+  The directory deliberately exposes public handles rather than <code>membership_id</code>. To act
+  on somebody you need the membership endpoints, which are authority-checked.
+</p>
+
+<h2>Invitations</h2>
+
+<p>
+  <code>POST /api/v1/organizations/{org_id}/carbon-invites</code> identifies the invitee by
+  <strong>either</strong> <code>carbon_id</code> <strong>or</strong> <code>email</code>, never
+  both, and carries the job role, tags, default trust and any trust overrides they should start
+  with.
+</p>
+
+<p>
+  You cannot invite a Carbon who does not yet have an account. Resolve or search first.
+</p>
+
+<p>
+  The invitation email links to <code>{auth_url}/join/{org_id}?app={app_id}</code>. When
+  <code>app_id</code> is present, the person is returned to that application after joining.
+  Invitations last 48 hours and can be revoked at any point before acceptance.
+</p>
+
+<h3>Joining by email</h3>
+
+<ol>
+  <li><code>POST /api/v1/organizations/{org_id}/join/email-verification-code</code> with the
+    invited address. Returns <code>invite_id</code> and <code>expires_in</code>.</li>
+  <li><code>POST /api/v1/organizations/{org_id}/join</code> with that <code>invite_id</code> and
+    the six-digit <code>verification_code</code>.</li>
+</ol>
+
+<p>
+  Both calls need an IAM bearer: joining attaches an organization to an existing Silicon account,
+  so the visitor must already be signed in. Say so before they start.
+</p>
+
+<h3>Joining by SSO</h3>
+
+<p>
+  <code>GET /api/v1/organizations/{org_id}/sso/authorize</code> is a <em>navigation</em>, not a
+  fetch. It authenticates with the browser-session cookie and answers <code>302</code> to the
+  identity provider. <code>return_to</code> is honoured only for the configured auth origin;
+  anything else is refused outright.
+</p>
+
+<p>
+  <strong>SSO never creates a Carbon.</strong> It admits an existing one to an organization.
+  A visitor without an account must sign up first.
+</p>
+
+<h2>SSO configuration</h2>
+
+<p>
+  SSO is locked by default. A platform administrator grants the entitlement via
+  <code>PUT /api/v1/admin/organizations/{org_id}/sso-entitlement</code>; the organization cannot
+  grant it to itself. Once entitled:
+</p>
+
+<ol>
+  <li><code>POST /api/v1/organizations/{org_id}/sso/setup-link</code> mints a WorkOS admin-portal
+    link valid for <strong>five minutes</strong>. Open it immediately; do not store it.</li>
+  <li>WorkOS calls back; IAM sets <code>sso_status: "active"</code> with the connection ID.</li>
+  <li><code>POST /api/v1/organizations/{org_id}/sso/test</code> verifies the live connection
+    without admitting anybody.</li>
+</ol>
+
+<p>
+  <code>join_method</code> is <code>email</code> or <code>sso</code>, and the two are mutually
+  exclusive.
+</p>
+
+<h2>Removing a member</h2>
+
+<p>
+  <code>DELETE /api/v1/organizations/{org_id}/members/{membership_id}</code> revokes access across
+  every configured application immediately. <code>reassign_reports_to</code> re-parents any
+  Silicons that reported to them; without it the removal may fail rather than orphan a hierarchy.
+</p>
+
+<p>
+  Removal affects this organization only. The Carbon's own account is untouched and they can be
+  invited back later.
+</p>

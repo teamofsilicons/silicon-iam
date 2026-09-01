@@ -1,0 +1,168 @@
+<p class="lede">
+  Seven transports, each with one job. Picking the wrong one is the most common integration
+  mistake, so this page starts with the table and then explains when each applies.
+</p>
+
+<table>
+  <thead><tr><th>Mode</th><th>Transport</th><th>Used for</th></tr></thead>
+  <tbody>
+    <tr><td>Public</td><td>no credential</td>
+      <td>Signup, login initiation and verification, availability probes, provider callbacks</td></tr>
+    <tr><td>IAM bearer</td><td><code>Authorization: Bearer …</code></td>
+      <td>Carbon or Silicon API access</td></tr>
+    <tr><td>Browser session</td><td>secure <code>iam_session</code> cookie</td>
+      <td>Interactive OAuth consent and SSO navigation</td></tr>
+    <tr><td>Application</td><td>HTTP Basic, app ID and app secret</td>
+      <td>OAuth token operations, introspection, revocation, and OBO</td></tr>
+    <tr><td>Platform admin</td><td>IAM bearer whose Carbon holds a current grant</td>
+      <td><code>/api/v1/admin/*</code></td></tr>
+    <tr><td>Step-up</td><td><code>X-Step-Up-Token</code>, <em>in addition to</em> a bearer</td>
+      <td>Ownership, credentials, SSO, deletion, privileged grants</td></tr>
+    <tr><td>WorkOS</td><td>verified <code>WorkOS-Signature</code></td>
+      <td>The WorkOS webhook receiver</td></tr>
+  </tbody>
+</table>
+
+<h2>Credential lifetimes</h2>
+
+<p>These are exact. Startup rejects a deployment that overrides any of them.</p>
+
+<table>
+  <thead><tr><th>Credential or state</th><th>Lifetime</th></tr></thead>
+  <tbody>
+    <tr><td>Signup session</td><td>48 hours</td></tr>
+    <tr><td>Email or phone OTP</td><td>10 minutes</td></tr>
+    <tr><td>IAM and OAuth access token</td><td>30 minutes</td></tr>
+    <tr><td>Refresh-session family</td><td>900 days, absolute</td></tr>
+    <tr><td>OAuth authorization code</td><td>2 minutes, single use</td></tr>
+    <tr><td>Step-up token</td><td>5 minutes, bound to one action on one resource</td></tr>
+    <tr><td>Carbon invitation</td><td>48 hours</td></tr>
+    <tr><td>WorkOS setup link</td><td>5 minutes</td></tr>
+    <tr><td>OBO proof</td><td>60 seconds maximum, single use</td></tr>
+    <tr><td>One-time secret replay envelope</td><td>10 minutes</td></tr>
+  </tbody>
+</table>
+
+<h2>Refresh tokens rotate, and reuse is fatal</h2>
+
+<div class="banner banner-danger">
+  <div>
+    <strong>The single most important rule on this page.</strong>
+    Every successful refresh returns a new refresh token and consumes the old one. Presenting a
+    consumed refresh token revokes the <em>entire family</em> — every device, every application —
+    and raises a security audit event.
+  </div>
+</div>
+
+<p>
+  This is deliberate: it is what makes a stolen refresh token detectable. It also means a client
+  must serialise refresh. Two browser tabs, two worker replicas, or a retry that fires while the
+  first attempt is still in flight will each present the same token and sign the user out
+  everywhere.
+</p>
+
+<p>Concretely, a correct client:</p>
+
+<ul>
+  <li>refreshes at most once at a time, across every concurrent caller;</li>
+  <li>waits for an in-flight refresh rather than starting a second;</li>
+  <li>treats a rejected refresh as terminal and re-authenticates, rather than retrying.</li>
+</ul>
+
+<p>
+  Access and refresh tokens are opaque 256-bit random values. There is no signing-key discovery
+  surface and nothing to parse: when an application needs to know whether a token is still good
+  <em>right now</em>, it calls
+  <a href="/docs/api/applications">introspection</a>.
+</p>
+
+<h2>Carbon login</h2>
+
+<p>
+  Passwordless, in two calls. <code>POST /api/v1/login/challenges</code> takes exactly one of
+  <code>email</code>, <code>phone_number</code> or <code>carbon_id</code>;
+  <code>POST /api/v1/login/challenges/{session_id}/verify</code> exchanges the six-digit code for
+  a credential pair.
+</p>
+
+<p>
+  A <code>carbon_id</code> challenge dispatches a code to <strong>both</strong> verified channels,
+  and either one satisfies the verification. Say so in your interface — a user who checks only
+  their inbox will otherwise sit waiting for an SMS that already arrived.
+</p>
+
+<p>
+  Login initiation answers <code>404</code> when no active Carbon owns the submitted identity.
+  That is a documented, deliberate disclosure: an identity provider that pretends to send a code
+  to a non-existent account teaches people to ignore a missing message.
+</p>
+
+<h2>Silicon login</h2>
+
+<p>
+  <code>POST /api/v1/silicon-auth/token</code> takes the global Silicon ID as the username and the
+  <code>stk-…</code> token as the password, and returns the same credential pair a Carbon gets.
+  Silicon tokens are 128 bits, formatted as <code>stk-</code> plus 32 lowercase hexadecimal
+  characters, and are stored only as a keyed digest — a lost token can be replaced, never
+  recovered.
+</p>
+
+<h2>Step-up</h2>
+
+<p>
+  Some actions need proof that the person at the keyboard is still the account holder. Step-up is
+  a second factor over an already-authenticated session, and the resulting token is bound to
+  <strong>one action on one resource</strong>: a token minted for
+  <code>application.client_secret.rotate</code> on application A is rejected for application B.
+</p>
+
+<ol>
+  <li><code>POST /api/v1/step-up/challenges</code> with the action, the resource ID and a channel.</li>
+  <li><code>POST /api/v1/step-up/challenges/{session_id}/verify</code> with the code.</li>
+  <li>Send the resulting <code>sup_…</code> value as <code>X-Step-Up-Token</code> alongside your
+    bearer, within five minutes.</li>
+</ol>
+
+<p>Actions that require it:</p>
+
+<ul>
+  <li><code>account.session_revoke</code>, <code>account.sessions_revoke_all</code></li>
+  <li><code>organization.transfer_ownership</code>, <code>organization.authorization_change</code></li>
+  <li><code>organization.sso_change</code>, <code>organization.silicon_webhook.redirect</code></li>
+  <li><code>application.client_secret.rotate</code>, <code>silicon.rotate_token</code></li>
+  <li><code>platform_admin.application_review</code>, <code>platform_admin.sso_entitlement</code></li>
+</ul>
+
+<p>
+  Do not cache a step-up token. It buys at most one prompt and leaves a live credential in memory
+  between unrelated operations.
+</p>
+
+<h2>Verification-code protection</h2>
+
+<p>
+  Every IAM-managed OTP is six digits and lives ten minutes. Signup, Carbon login,
+  invitation-join and verified-channel step-up challenges each allow <strong>ten failed
+  verifications</strong>; the tenth failure starts a <strong>sixty-second cooldown</strong>, after
+  which the still-unexpired code gets a fresh ten-attempt window.
+</p>
+
+<p>
+  The partial failure count and any active cooldown <strong>carry into a replacement code</strong>.
+  Resending cannot reset either, and a cooldown never extends the original ten-minute expiry.
+  Interfaces should say so, or users will resend repeatedly in the belief that it helps.
+</p>
+
+<h2>The browser session</h2>
+
+<p>
+  A successful Carbon login also sets <code>iam_session</code>: host-only, <code>Secure</code>,
+  <code>HttpOnly</code>, <code>SameSite=Lax</code>, and signed. It exists for the two flows that
+  are navigations rather than API calls — OAuth consent and SSO — and it is bound to the same
+  refresh family, so revoking the session revokes the cookie.
+</p>
+
+<p>
+  Because it is <code>HttpOnly</code>, JavaScript cannot read the CSRF token bound into it. Any
+  page that posts a consent decision must have that token rendered into it server-side.
+</p>

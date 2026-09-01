@@ -1,0 +1,204 @@
+<p class="lede">
+  Silicon IAM pushes directory changes to every application that was authorized for the affected
+  resource, and to every Silicon subscribed to them. Events are written in the same transaction as
+  the change and delivered at least once.
+</p>
+
+<h2>The delivery guarantee, precisely</h2>
+
+<p>
+  A change is delivered to every application for which the user was authorized
+  <strong>immediately before or immediately after</strong> it. The "before" half is what makes
+  removal and revocation events arrive at all — an application that only heard about people it
+  currently sees would never learn that somebody left.
+</p>
+
+<p>Each event carries the changed fields and the complete current authorized state of the affected
+  resource, excluding tokens, OTPs, credentials, signing secrets and any other secret material.</p>
+
+<div class="banner banner-info">
+  <div>
+    <strong>Deduplicate on <code>event_id</code>; order by the resource version.</strong>
+    Delivery is at least once, so a duplicate is normal rather than exceptional. Arrival order is
+    not guaranteed, and the aggregate version is the only reliable sequencing signal.
+  </div>
+</div>
+
+<p>
+  Webhooks are a notification channel, never an authorization one. When an application needs a
+  current answer it calls <a href="/docs/api/applications">introspection</a>.
+</p>
+
+<h2>Verifying a delivery</h2>
+
+<p>Every request carries four headers:</p>
+
+<table>
+  <thead><tr><th>Header</th><th>Contents</th></tr></thead>
+  <tbody>
+    <tr><td><code>X-Silicon-IAM-Event-ID</code></td><td>The deduplication key</td></tr>
+    <tr><td><code>X-Silicon-IAM-Timestamp</code></td><td>Unix seconds at signing</td></tr>
+    <tr><td><code>X-Silicon-IAM-Key-Version</code></td><td>Which signing-secret version was used</td></tr>
+    <tr><td><code>X-Silicon-IAM-Signature</code></td><td>Hex HMAC-SHA256</td></tr>
+  </tbody>
+</table>
+
+<p>To verify:</p>
+
+<ol>
+  <li>Reject the request if the timestamp is outside your tolerance — five minutes is a
+    reasonable default. This is what stops a replay.</li>
+  <li>Recompute the HMAC over the timestamp and the <strong>exact raw body bytes</strong>, using
+    the signing secret for the named key version.</li>
+  <li>Compare in <strong>constant time</strong>. A byte-by-byte comparison that returns early
+    leaks the signature one character at a time.</li>
+</ol>
+
+<div class="banner banner-danger">
+  <div>
+    <strong>Sign over the raw bytes, before any parsing.</strong>
+    Re-serialising the JSON changes whitespace and key order and the signature will never match.
+    Capture the body as bytes in your framework's earliest hook.
+  </div>
+</div>
+
+<p>
+  <code>X-Silicon-IAM-Key-Version</code> exists so rotation is not an outage: keep the previous
+  secret accepted for a window and select by version rather than trying each in turn.
+</p>
+
+<p>
+  Respond <code>2xx</code> quickly and do the work asynchronously. A slow endpoint becomes a
+  retrying endpoint, and a retrying endpoint becomes a dead-lettered one.
+</p>
+
+<h2>Retries and dead letters</h2>
+
+<p>
+  Failed deliveries retry on a bounded schedule. A delivery that exhausts its cycle is
+  dead-lettered and stays readable:
+</p>
+
+<table>
+  <thead><tr><th>Recipient</th><th>List</th><th>Replay</th></tr></thead>
+  <tbody>
+    <tr><td>Application</td>
+      <td><code>GET /api/v1/applications/{app_id}/webhook/dead-letters</code></td>
+      <td><code>POST …/webhook/dead-letters/replays</code></td></tr>
+    <tr><td>Silicon</td>
+      <td><code>GET …/silicons/{silicon_id}/webhook/dead-letters</code></td>
+      <td><code>POST …/webhook/dead-letters/replays</code></td></tr>
+  </tbody>
+</table>
+
+<p>Attempt history is retained for 45 days.</p>
+
+<h2>What a replay does, and does not, change</h2>
+
+<p>A replay preserves:</p>
+
+<ul>
+  <li>the original <code>event_id</code> — so your existing deduplication still works;</li>
+  <li>the original payload, occurrence time and aggregate version;</li>
+  <li>all previous attempt history.</li>
+</ul>
+
+<p>It resets <code>cycle_attempt_count</code> and increments <code>manual_replay_count</code>.</p>
+
+<p>
+  Delivery goes to the <strong>currently configured</strong> URL, signed with the
+  <strong>current</strong> signing secret — not the ones in force when the event first fired.
+</p>
+
+<div class="banner banner-info">
+  <div>
+    <strong>Authorization is re-checked before each replay.</strong>
+    Current authorization and, for a Silicon, current subscription. Historical data is never
+    replayed to a recipient that no longer has permission, which is exactly the property that
+    makes a manual replay safe to expose at all.
+  </div>
+</div>
+
+<p>
+  Batches are capped at 100, replayed in their original order, require an
+  <code>Idempotency-Key</code>, and record who requested them.
+</p>
+
+<h2>Event catalogue</h2>
+
+<h3>Membership lifecycle</h3>
+<table>
+  <thead><tr><th>Event</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>organization.membership.created.v1</code></td><td>A new Carbon membership</td></tr>
+    <tr><td><code>organization.membership.reactivated.v1</code></td><td>An inactive membership restored</td></tr>
+    <tr><td><code>organization.membership.removed.v1</code></td><td>A membership removed or deactivated</td></tr>
+    <tr><td><code>organization.silicon.created.v1</code></td><td>A new Silicon</td></tr>
+    <tr><td><code>organization.silicon.removed.v1</code></td><td>A Silicon removed</td></tr>
+  </tbody>
+</table>
+
+<h3>Member and authorization updates</h3>
+<table>
+  <thead><tr><th>Event</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>organization.membership.updated.v1</code></td><td>Directory, tag, role or trust-related state changed</td></tr>
+    <tr><td><code>organization.membership.profile_updated.v1</code></td><td>A Carbon profile change projected here</td></tr>
+    <tr><td><code>organization.membership.authorization_updated.v1</code></td><td>Delegated capabilities changed</td></tr>
+    <tr><td><code>organization.ownership_transferred.v1</code></td><td>Ownership moved</td></tr>
+    <tr><td><code>organization.admin.promoted.v1</code></td><td>A member became an administrator</td></tr>
+    <tr><td><code>organization.admin.demoted.v1</code></td><td>An administrator became a member</td></tr>
+    <tr><td><code>organization.silicon.updated.v1</code></td><td>Silicon attributes changed</td></tr>
+    <tr><td><code>organization.tag_updated.v1</code></td><td>A tag definition changed</td></tr>
+  </tbody>
+</table>
+
+<h3>Trust configuration</h3>
+<table>
+  <thead><tr><th>Event</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>organization.trust.default_updated.v1</code></td><td>Default trust changed</td></tr>
+    <tr><td><code>organization.trust.rule_created.v1</code></td><td>A rule was created</td></tr>
+    <tr><td><code>organization.trust.rule_updated.v1</code></td><td>A rule was modified</td></tr>
+    <tr><td><code>organization.trust.rule_archived.v1</code></td><td>A rule was disabled or archived</td></tr>
+  </tbody>
+</table>
+
+<h3>Organization, invitations and governance</h3>
+<table>
+  <thead><tr><th>Event</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>organization.created.v1</code> · <code>organization.updated.v1</code>
+      · <code>organization.tag_created.v1</code></td><td>Organization-level changes</td></tr>
+    <tr><td><code>organization.invitation.created.v1</code>
+      · <code>…accepted.v1</code> · <code>…revoked.v1</code></td><td>Invitation lifecycle</td></tr>
+    <tr><td><code>organization.role_change.requested.v1</code>
+      · <code>organization.tag_change.requested.v1</code>
+      · <code>organization.approval.decided.v1</code></td><td>Governance</td></tr>
+  </tbody>
+</table>
+
+<h3>Silicon credentials and webhooks</h3>
+<table>
+  <thead><tr><th>Event</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>organization.silicon.rotation_requested.v1</code>
+      · <code>organization.silicon.credential_rotated.v1</code></td><td>Credential rotation</td></tr>
+    <tr><td><code>organization.silicon.webhook.configured.v1</code>
+      · <code>…webhook.deleted.v1</code></td><td>Endpoint configuration</td></tr>
+    <tr><td><code>organization.silicon.webhook_subscription.updated.v1</code>
+      · <code>…deleted.v1</code></td><td>Subscription changes</td></tr>
+  </tbody>
+</table>
+
+<h3>SSO</h3>
+<table>
+  <thead><tr><th>Event</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>sso.setup_link.created.v1</code></td><td>A provider setup link was generated</td></tr>
+    <tr><td><code>sso.configuration.disabled.v1</code></td><td>SSO was disabled</td></tr>
+    <tr><td><code>sso.entitlement.replaced.v1</code></td><td>The entitlement changed</td></tr>
+    <tr><td><code>sso.connection.activated.v1</code> · <code>…deactivated.v1</code>
+      · <code>…deleted.v1</code></td><td>Connection lifecycle</td></tr>
+  </tbody>
+</table>

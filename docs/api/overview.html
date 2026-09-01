@@ -1,0 +1,99 @@
+<p class="lede">
+  Silicon IAM is the identity and access layer for every Silicon application. It authenticates
+  people and machines, holds the authoritative directory for each organization, and tells
+  registered applications the moment anything about that directory changes.
+</p>
+
+<p>
+  Membership here is the real thing. Remove somebody from an organization in Silicon IAM and
+  they lose access in every application at once — no application keeps its own copy of who
+  belongs where.
+</p>
+
+<h2>Three kinds of principal</h2>
+
+<table>
+  <thead>
+    <tr><th>Principal</th><th>What it is</th><th>Public identifier</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Carbon</strong></td>
+      <td>A human account.</td>
+      <td><code>carbon_id</code> — 3–30 characters of <code>a–z</code>, <code>1–9</code>,
+        <code>_</code> and <code>-</code>.</td>
+    </tr>
+    <tr>
+      <td><strong>Silicon</strong></td>
+      <td>A machine identity, always scoped to one organization.</td>
+      <td><code>{handle}:{org_id}</code> — always contains a colon.</td>
+    </tr>
+    <tr>
+      <td><strong>Application</strong></td>
+      <td>A registered confidential OAuth client and delegation actor.</td>
+      <td><code>app_id</code>.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>
+  A Silicon has no organization-local form. The handle you submit at creation is input only;
+  <code>head_of_growth</code> registered in <code>tos</code> is addressable forever as
+  <code>head_of_growth:tos</code> and never as anything else. That single colon is also how a
+  client tells the two principal kinds apart, since a Carbon ID cannot contain one.
+</p>
+
+<h2>Identifiers, and what they are not</h2>
+
+<p>
+  Persistent records use UUIDv7 primary keys. Public handles are immutable normalised labels —
+  they are never foreign keys, and they are never reused after deletion.
+</p>
+
+<p>
+  Organization-scoped resources are addressed by <code>membership_id</code> rather than by a
+  public handle. This is deliberate: it keeps tenant-internal references out of URLs that a
+  member of another organization might see, and cross-tenant reads answer
+  <code>404 not_found</code> rather than disclosing that a resource exists.
+</p>
+
+<blockquote>
+  <p>
+    A typed <code>principal_id</code> prevents collisions between a Carbon and a Silicon whose
+    public labels happen to look alike. Never key your own storage on the public handle alone.
+  </p>
+</blockquote>
+
+<h2>How to read this documentation</h2>
+
+<p>
+  <a href="/openapi.yaml">openapi.yaml</a> is normative. Where these pages and the specification
+  disagree, the specification wins and the discrepancy is a bug worth reporting. What you get
+  here is the reasoning: why an endpoint behaves the way it does, which failure modes matter,
+  and what to do about each of them.
+</p>
+
+<p>
+  Read <a href="/docs/api/authentication">Authentication</a> and
+  <a href="/docs/api/conventions">Request conventions</a> first. Between them they cover the
+  rules that apply to every call in the contract, and almost every integration problem traces
+  back to one of the two.
+</p>
+
+<h2>Environments</h2>
+
+<table>
+  <thead><tr><th>Surface</th><th>URL</th></tr></thead>
+  <tbody>
+    <tr><td>API</td><td><code>https://backend.iam.teamofsilicons.com</code></td></tr>
+    <tr><td>Sign-in and signup</td><td><code>https://auth.iam.teamofsilicons.com</code></td></tr>
+    <tr><td>Management console</td><td><code>https://iam.teamofsilicons.com</code></td></tr>
+    <tr><td>Platform administration</td><td><code>https://backend.iam.teamofsilicons.com/admin</code></td></tr>
+  </tbody>
+</table>
+
+<p>
+  Timestamps are UTC RFC 3339. Request and response bodies are JSON unless an endpoint says
+  otherwise; the OAuth token, introspection and revocation endpoints take
+  <code>application/x-www-form-urlencoded</code>, as the OAuth specifications require.
+</p>

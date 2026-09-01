@@ -14,6 +14,24 @@ https://backend.iam.teamofsilicons.com
 JSON APIs are under `/api/v1`. Liveness and readiness remain at `/healthz`
 and `/readyz`.
 
+The same origin also serves three HTML surfaces, which are deliberately outside
+the JSON contract and are not described in `openapi.yaml`:
+
+| Path | Surface |
+| --- | --- |
+| `/docs/api/` | Browsable API documentation, in eleven sections |
+| `/openapi.yaml` | The normative contract itself |
+| `/admin` | The platform-administration console |
+
+`scripts/check-openapi-routes.rb` enforces that separation: a route declared in
+`src/web/mod.rs` must sit under `/admin`, `/docs`, `/_static` or
+`/openapi.yaml`, and must not appear in the specification. Contract routes
+belong in a feature router and in `openapi.yaml`, as they always have.
+
+The `/admin` console is a thin client over `/api/v1/admin/*`. It performs no
+authentication of its own and executes no SQL; authority stays entirely in the
+endpoints the contract already publishes.
+
 ## Security model
 
 ### Principals and identifiers
@@ -163,6 +181,11 @@ All JSON API errors use:
 OAuth redirect errors are returned to the exact registered redirect URI using
 OAuth protocol query fields and the unchanged `state`; JSON errors before a
 redirect URI is trusted use the envelope above.
+
+The HTML surfaces answer with HTML rather than this envelope. They are merged
+outside the JSON router's error normalisation, so an unknown documentation
+section returns a readable page with a way back rather than a machine-readable
+code that no reader asked for.
 
 | HTTP | Meaning | Typical codes |
 | --- | --- | --- |
@@ -421,6 +444,18 @@ approved scopes or bypass organization checks.
 | --- | --- | --- |
 | GET | `/api/v1/oauth/authorize` | Validate request and show consent or redirect with code |
 | POST | `/api/v1/oauth/authorize/decisions` | CSRF-protected consent decision |
+
+The decision endpoint accepts two equivalent encodings. JSON callers send
+`X-CSRF-Token` and `Idempotency-Key` as headers. The IAM-rendered consent
+screen submits `application/x-www-form-urlencoded` and carries the same two
+values as the `csrf_token` and `idempotency_key` fields, because a browser form
+cannot set request headers and only a top-level form navigation lets the user
+agent follow the `302` into a working application session. Both encodings are
+validated by the same code and produce the same idempotency digest.
+
+The consent page's Content-Security-Policy is `default-src 'none'` widened only
+to `style-src 'self'`, `img-src 'self' data:`, `font-src` for the webfont, and
+`form-action 'self'`. It has no `script-src` at all.
 | POST | `/api/v1/oauth/token` | Exchange code or rotate OAuth refresh token |
 | POST | `/api/v1/oauth/introspect` | Authenticated current-state introspection |
 | POST | `/api/v1/oauth/revoke` | Idempotent token/family revocation |

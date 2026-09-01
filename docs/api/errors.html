@@ -1,0 +1,127 @@
+<p class="lede">
+  Every status the API emits, the codes that accompany it, and what a client should actually do.
+  Branch on the code; the message is prose and may change.
+</p>
+
+<h2>By status</h2>
+
+<table>
+  <thead><tr><th>Status</th><th>Meaning</th><th>Typical codes</th></tr></thead>
+  <tbody>
+    <tr><td><code>400</code></td><td>Malformed or unsupported protocol input</td>
+      <td><code>invalid_request</code>, <code>unsupported_grant_type</code></td></tr>
+    <tr><td><code>401</code></td><td>Missing, invalid, expired or revoked authentication</td>
+      <td><code>invalid_credentials</code>, <code>token_expired</code>, <code>token_revoked</code></td></tr>
+    <tr><td><code>403</code></td><td>Actor type, capability, scope, consent or step-up is insufficient</td>
+      <td><code>forbidden</code>, <code>insufficient_scope</code>, <code>step_up_required</code></td></tr>
+    <tr><td><code>404</code></td><td>Missing or tenant-hidden resource</td><td><code>not_found</code></td></tr>
+    <tr><td><code>409</code></td><td>Unique, idempotency, replay or lifecycle conflict</td>
+      <td><code>identifier_unavailable</code>, <code>idempotency_conflict</code>,
+        <code>refresh_replay</code>, <code>state_conflict</code></td></tr>
+    <tr><td><code>410</code></td><td>Expired one-time state</td>
+      <td><code>challenge_expired</code>, <code>invite_expired</code>,
+        <code>authorization_code_expired</code>, <code>proof_expired</code></td></tr>
+    <tr><td><code>412</code></td><td>Stale <code>ETag</code></td><td><code>version_mismatch</code></td></tr>
+    <tr><td><code>413</code></td><td>Body exceeds the endpoint limit</td><td><code>payload_too_large</code></td></tr>
+    <tr><td><code>422</code></td><td>Well-formed input violates a field, tenant, policy or quorum rule</td>
+      <td><code>validation_failed</code>, <code>invalid_code</code>, <code>hierarchy_cycle</code></td></tr>
+    <tr><td><code>428</code></td><td>A required precondition is absent</td><td><code>precondition_required</code></td></tr>
+    <tr><td><code>429</code></td><td>A rate-limit bucket is exhausted</td><td><code>rate_limited</code></td></tr>
+    <tr><td><code>502</code></td><td>An upstream provider failed</td><td><code>provider_error</code></td></tr>
+    <tr><td><code>503</code></td><td>A required dependency is unavailable</td><td><code>service_unavailable</code></td></tr>
+    <tr><td><code>504</code></td><td>A bounded deadline elapsed</td><td><code>gateway_timeout</code></td></tr>
+  </tbody>
+</table>
+
+<h2>What to do about each</h2>
+
+<h3>401 — re-authenticate, once</h3>
+<p>
+  Refresh the access token and replay the request exactly once. If the refresh is also rejected,
+  the family is gone: sign the user out and start a fresh login. Do not loop.
+</p>
+
+<h3>403 <code>step_up_required</code> — mint a token</h3>
+<p>
+  Start a step-up challenge for the action and resource named in the request, verify it, and
+  retry with <code>X-Step-Up-Token</code>. See
+  <a href="/docs/api/authentication">Authentication</a>.
+</p>
+
+<h3>404 on a resource you believe exists</h3>
+<p>
+  Cross-tenant reads are hidden rather than forbidden. A <code>404</code> here usually means the
+  caller is not a member of that organization, not that the record is missing.
+</p>
+
+<h3>409 <code>idempotency_conflict</code> — you changed the body</h3>
+<p>
+  The same key was reused with different content. Mint a new key for the new intent; do not
+  strip the key and retry, which would risk a duplicate.
+</p>
+
+<h3>409 <code>refresh_replay</code> — the family is revoked</h3>
+<p>
+  A consumed refresh token was presented again. Every session in that family is now revoked and
+  a security audit event exists. This is almost always a concurrency bug in the client: refresh
+  must be single-flight.
+</p>
+
+<h3>410 — the state expired</h3>
+<p>
+  A code, invitation, authorization code or proof passed its lifetime. Nothing is retryable;
+  start the flow again. Tell the user the exact lifetime — "codes are valid for 10 minutes",
+  not "please try again".
+</p>
+
+<h3>412 <code>version_mismatch</code> — refetch, do not retry</h3>
+<p>
+  The record changed since you read it. Reload, show the current state, and let the human decide
+  whether their edit still applies. An automatic retry silently overwrites somebody else's work.
+</p>
+
+<h3>422 <code>invalid_code</code> — count the attempts</h3>
+<p>
+  Ten failures start a sixty-second cooldown. The count and the cooldown carry into a resent
+  code, so offering "send a new code" as the remedy is actively misleading.
+</p>
+
+<h3>428 — a precondition is missing</h3>
+<p>
+  Usually a missing <code>Idempotency-Key</code> or <code>If-Match</code>. The
+  <code>details</code> object names which.
+</p>
+
+<h3>429 — wait exactly as long as you are told</h3>
+<p>
+  Honour <code>Retry-After</code>. Adding your own backoff on top produces long, confusing waits;
+  ignoring it produces a longer ban.
+</p>
+
+<h3>502, 503, 504 — retry with jitter</h3>
+<p>
+  These are transient. Retry a <code>GET</code> freely, and a mutation only while reusing the
+  original idempotency key. Use full jitter so a fleet of clients does not resynchronise onto one
+  retry instant.
+</p>
+
+<h2>Reading <code>details</code></h2>
+
+<p>
+  <code>details</code> is a free-form object whose shape depends on the code. Validation failures
+  populate <code>fields</code>, mapping a request field to a human-readable reason:
+</p>
+
+<pre><code>{
+  "error": {
+    "code": "validation_failed",
+    "message": "The request was well-formed but could not be accepted.",
+    "details": { "fields": { "job_role": "at most 5000 characters" } },
+    "request_id": "018f2c1e-…"
+  }
+}</code></pre>
+
+<p>
+  Never surface <code>details</code> raw to an end user. Map the codes you handle to your own
+  copy, and fall back to <code>message</code> for the rest.
+</p>

@@ -171,7 +171,9 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
         ])
         .max_age(std::time::Duration::from_mins(10));
 
-    let router = Router::new()
+    // The JSON contract. Everything under this router answers with the error
+    // envelope and is never cached.
+    let api = Router::new()
         .route("/healthz", get(health))
         .route("/readyz", get(readiness))
         .route("/api/v1/version", get(version))
@@ -180,6 +182,29 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
         .merge(crate::features::organizations::router())
         .merge(crate::features::applications::router())
         .merge(crate::features::sso::router())
+        .layer(middleware::from_fn(normalize_errors))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            http::header::CACHE_CONTROL,
+            http::HeaderValue::from_static("no-store"),
+        ));
+
+    /*
+     * The HTML surfaces: /admin and /docs/api/.
+     *
+     * Merged as a sibling rather than nested, so they sit OUTSIDE the JSON
+     * router's own layers. Two of those layers would actively break them:
+     * `normalize_errors` rewrites any non-JSON 4xx into the error envelope,
+     * which would turn the documentation's 404 page into a machine-readable
+     * blob; and the `no-store` default would make every static asset
+     * uncacheable. Both surfaces set their own Content-Type, Cache-Control
+     * and Content-Security-Policy.
+     *
+     * They still share the request-scope, timeout, admission and panic layers
+     * applied to the whole application below, because those are process
+     * protections rather than contract behaviour.
+     */
+    let router = api
+        .merge(crate::web::router())
         .with_state(state)
         .layer(
             ServiceBuilder::new()
@@ -200,10 +225,6 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
         .layer(cors)
         .layer(middleware::from_fn(request_scope))
         .layer(SetResponseHeaderLayer::if_not_present(
-            http::header::CACHE_CONTROL,
-            http::HeaderValue::from_static("no-store"),
-        ))
-        .layer(SetResponseHeaderLayer::if_not_present(
             http::HeaderName::from_static("x-content-type-options"),
             http::HeaderValue::from_static("nosniff"),
         ))
@@ -212,6 +233,16 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
             http::HeaderValue::from_static("no-referrer"),
         ));
     Ok(router)
+}
+
+/// Rewrites a non-JSON error into the contract's error envelope.
+///
+/// Applied only to the JSON router. Axum's own rejections — an unmatched
+/// route, a method mismatch, a body that exceeded the limit — are plain text,
+/// and a client that has been promised one error shape everywhere should get
+/// it here too.
+async fn normalize_errors(request: Request, next: Next) -> Response {
+    normalize_error_response(next.run(request).await)
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -260,7 +291,7 @@ async fn request_scope(mut request: Request, next: Next) -> Response {
         latency_ms = tracing::field::Empty,
     );
 
-    let future = async move { normalize_error_response(next.run(request).await) };
+    let future = next.run(request);
     let mut response = request_context::scope(request_id.clone(), future)
         .instrument(span.clone())
         .await;

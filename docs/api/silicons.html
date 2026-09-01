@@ -1,0 +1,132 @@
+<p class="lede">
+  A Silicon is a machine identity that exists only inside one organization. It authenticates with
+  a credential pair, carries tags and a job role like any member, and can subscribe to directory
+  changes over its own webhook.
+</p>
+
+<h2>Identity</h2>
+
+<p>
+  <code>POST /api/v1/organizations/{org_id}/silicons</code> takes a handle and returns the
+  Silicon plus its token. The handle is creation input only; the public ID is always
+  <code>{handle}:{org_id}</code>.
+</p>
+
+<div class="banner banner-danger">
+  <div>
+    <strong>The response carries the only copy of the token.</strong>
+    Silicon IAM stores a keyed digest. The value is replayable for ten minutes with the same
+    idempotency key and is then unrecoverable — a lost token can only be rotated, never read.
+  </div>
+</div>
+
+<p>
+  <code>reports_to_membership_id</code> sets the reporting line, which determines
+  <code>hierarchy_level</code> and hence the default profile image. A cycle is refused with
+  <code>422 hierarchy_cycle</code>.
+</p>
+
+<h2>Credential rotation is two steps, on purpose</h2>
+
+<ol>
+  <li>
+    <code>POST …/silicons/{silicon_id}/token-rotation-requests</code> opens an approval request.
+    Requires <code>silicons.rotate_token</code> and a step-up token.
+  </li>
+  <li>
+    An organization owner approves it via the governance endpoints. <strong>Approval does not
+    mint a replacement.</strong> It invalidates the current credential.
+  </li>
+  <li>
+    <code>POST …/token-rotation-requests/{request_id}/complete</code> generates and reveals the
+    new token, once.
+  </li>
+</ol>
+
+<p>
+  The split is the point: it guarantees a human is present when the replacement appears, rather
+  than a token being generated into an empty room and lost. The Silicon cannot authenticate
+  between step two and step three, so schedule accordingly.
+</p>
+
+<h2>Webhooks</h2>
+
+<p>
+  <code>PUT …/silicons/{silicon_id}/webhook</code> configures the delivery endpoint. It must be
+  <code>https</code>, and the response returns a fresh <code>swhs_…</code> signing secret —
+  replayable for ten minutes, then gone. <code>If-Match</code> is required only when replacing an
+  existing endpoint.
+</p>
+
+<p>
+  A configured endpoint is a <strong>precondition for subscribing</strong>. There is nowhere to
+  deliver to otherwise.
+</p>
+
+<h3>Subscriptions</h3>
+
+<p>
+  <code>PUT …/silicons/{silicon_id}/webhook/subscription</code> takes a mode and, when the mode is
+  <code>selected</code>, a set of topics.
+</p>
+
+<table>
+  <thead><tr><th>Value</th><th>Covers</th></tr></thead>
+  <tbody>
+    <tr><td><code>mode: "all"</code></td>
+      <td>Every category, including ones added later</td></tr>
+    <tr><td><code>membership_lifecycle</code></td>
+      <td>People and Silicons joining, being reactivated, or being removed</td></tr>
+    <tr><td><code>member_updates</code></td>
+      <td>Role, tag, profile and hierarchy changes. <strong>Excludes trust.</strong></td></tr>
+    <tr><td><code>trust_updates</code></td>
+      <td>Default trust, trust rules, and rule archival</td></tr>
+  </tbody>
+</table>
+
+<p>
+  The three topics combine freely. Trust deliberately sits outside
+  <code>member_updates</code>: a Silicon that wants org-chart changes rarely wants every trust
+  adjustment, and conflating them makes both noisier.
+</p>
+
+<h3>The tag filter</h3>
+
+<p>
+  <code>tag_filter</code> narrows whichever topics are selected; it is <strong>not</strong> a
+  category of its own. Set it to <code>null</code> to disable filtering, or to an object with
+  <code>additional_tag_ids</code> to widen beyond the Silicon's own tags.
+</p>
+
+<p>
+  Matching uses the state <strong>before and after</strong> each change, so joining, leaving,
+  updating and removal all arrive. Without that, a Silicon filtering on <code>tech</code> would
+  never learn that somebody left <code>tech</code> — the very event it most needs.
+</p>
+
+<p>
+  With a filter active, organization-wide and unattributed events are suppressed. That is the
+  intended trade: a filtered subscription is a per-tag feed, not a filtered firehose.
+</p>
+
+<h2>Dead letters</h2>
+
+<p>
+  Deliveries that exhaust their retry cycle land in a dead-letter queue, readable at
+  <code>GET …/silicons/{silicon_id}/webhook/dead-letters</code> and replayable at
+  <code>POST …/webhook/dead-letters/replays</code> with up to 100 delivery IDs.
+</p>
+
+<p>
+  Replay is covered in full under <a href="/docs/api/webhooks">Webhooks</a>. The property worth
+  knowing here: authorization and subscription are re-checked before <em>each</em> replay, so a
+  Silicon whose tags changed never receives history it would not be entitled to today.
+</p>
+
+<h2>Removal</h2>
+
+<p>
+  <code>DELETE /api/v1/organizations/{org_id}/silicons/{silicon_id}</code> revokes access
+  everywhere immediately and deletes the credential. <code>reassign_reports_to</code> re-parents
+  anything beneath it. The global ID is never reused.
+</p>

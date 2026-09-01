@@ -555,21 +555,87 @@ pub(super) async fn authorize(
         .commit()
         .await
         .map_err(|_| ApiError::internal("oauth_consent_commit"))?;
-    let name = escape_html(app.app_name.as_deref().unwrap_or(&app.app_id));
-    let mut scope_items = String::new();
-    for scope in &scopes {
-        scope_items.push_str("<li>");
-        scope_items.push_str(&escape_html(scope));
-        scope_items.push_str("</li>");
-    }
-    let html = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Authorize {name}</title></head>\
-         <body><main><h1>Authorize {name}</h1><ul>{scope_items}</ul>\
-         <div data-authorization-transaction-id=\"{request_id}\" data-csrf-token=\"{}\"></div>\
-         </main></body></html>",
-        escape_html(&session.csrf_token),
+    let html = consent_page(
+        app.app_name.as_deref().unwrap_or(&app.app_id),
+        &app.app_id,
+        &scopes,
+        request_id,
+        &session.csrf_token,
     );
     Ok(consent_html_response(html))
+}
+
+/// Human-readable descriptions for the scopes a user is asked to grant.
+///
+/// A consent screen that shows `directory.read` and nothing else is not
+/// consent — it is a dialog the reader dismisses. An unknown scope falls back
+/// to its own name rather than being hidden, because silently omitting
+/// something the application asked for would be worse.
+fn describe_scope(scope: &str) -> &'static str {
+    match scope {
+        "openid" => "Confirm who you are",
+        "profile" => "See your display name and profile image",
+        "email" => "See your verified email address",
+        "phone" => "See your verified phone number",
+        "organizations" => "See which organizations you belong to",
+        "directory.read" => "See your teammates, their roles, tags and trust",
+        "directory.write" => "Change directory entries in your organizations",
+        "silicons.read" => "See the Silicons you have access to",
+        "offline_access" => "Stay signed in when you are not using the application",
+        _ => "",
+    }
+}
+
+/// Renders the consent screen.
+///
+/// A plain `<form method="post">`, deliberately. The decision endpoint answers
+/// `302` to the application's registered redirect URI, and only a top-level
+/// form navigation lets the browser follow that correctly — `fetch` with
+/// `redirect: "manual"` returns an opaque response even same-origin, and
+/// `redirect: "follow"` would consume the authorization code in a subresource
+/// request that the application could not turn into a session.
+///
+/// Because a form cannot set request headers, the CSRF token and a
+/// server-minted idempotency key travel as hidden fields. The handler lifts
+/// both into a header map and validates them with exactly the same code as
+/// the JSON path.
+fn consent_page(
+    display_name: &str,
+    app_id: &str,
+    scopes: &[String],
+    request_id: Uuid,
+    csrf_token: &str,
+) -> String {
+    let name = escape_html(display_name);
+
+    let mut scope_items = String::new();
+    for scope in scopes {
+        let description = describe_scope(scope);
+        scope_items.push_str("<li class=\"scope\"><code>");
+        scope_items.push_str(&escape_html(scope));
+        scope_items.push_str("</code>");
+        if !description.is_empty() {
+            scope_items.push_str("<span>");
+            scope_items.push_str(&escape_html(description));
+            scope_items.push_str("</span>");
+        }
+        scope_items.push_str("</li>");
+    }
+
+    // A form cannot set `Idempotency-Key`, so one is minted here and bound to
+    // this rendering. Re-submitting the same page replays rather than
+    // re-deciding, which is what a browser back button will do.
+    let idempotency_key = format!("consent-{request_id}");
+
+    format!(
+        include_str!("consent.html"),
+        name = name,
+        app_id = escape_html(app_id),
+        scope_items = scope_items,
+        request_id = request_id,
+        csrf_token = escape_html(csrf_token),
+        idempotency_key = escape_html(&idempotency_key),
+    )
 }
 
 fn consent_html_response(html: String) -> Response {
@@ -582,9 +648,19 @@ fn consent_html_response(html: String) -> Response {
         .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
     response.headers_mut().insert(
         http::HeaderName::from_static("content-security-policy"),
-        HeaderValue::from_static(
-            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-        ),
+        HeaderValue::from_static(concat!(
+            // `form-action 'self'` is the whole reason the consent decision can
+            // be a plain form post. `style-src 'self'` lets the page use the
+            // product's stylesheet; there is deliberately still no `script-src`,
+            // so this page cannot execute anything at all.
+            "default-src 'none'; ",
+            "style-src 'self'; ",
+            "img-src 'self' data:; ",
+            "font-src 'self' https://fonts.gstatic.com; ",
+            "form-action 'self'; ",
+            "frame-ancestors 'none'; ",
+            "base-uri 'none'",
+        )),
     );
     response.headers_mut().insert(
         http::HeaderName::from_static("x-content-type-options"),
@@ -593,13 +669,106 @@ fn consent_html_response(html: String) -> Response {
     response
 }
 
+/// A consent decision, submitted either as JSON or as a browser form.
+///
+/// The JSON path is the original contract and is untouched: headers carry
+/// `X-CSRF-Token` and `Idempotency-Key`, and the body carries the decision.
+///
+/// The form path exists because the consent screen must be a real
+/// `<form method="post">`. The endpoint answers `302` to the application's
+/// registered redirect URI, and only a top-level form navigation lets the
+/// browser follow that into a working session — `fetch` with
+/// `redirect: "manual"` yields an opaque response even same-origin, and
+/// `redirect: "follow"` would burn the authorization code on a subresource
+/// request the application cannot turn into a session.
+///
+/// A form cannot set request headers, so on that path the CSRF token and the
+/// idempotency key arrive as fields and are lifted into a synthetic header map
+/// here. Nothing downstream knows the difference: `require_csrf` and
+/// `idempotency::claim` see exactly the same headers either way, so there is
+/// one implementation of each check rather than two.
+pub(super) struct ConsentSubmission {
+    pub(super) headers: HeaderMap,
+    pub(super) input: ConsentDecision,
+}
+
+impl<S: Send + Sync> axum::extract::FromRequest<S> for ConsentSubmission {
+    type Rejection = ApiError;
+
+    async fn from_request(
+        request: axum::extract::Request,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let headers = request.headers().clone();
+        let is_form = headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value
+                    .split(';')
+                    .next()
+                    .is_some_and(|mime| mime.trim().eq_ignore_ascii_case(FORM_CONTENT_TYPE))
+            });
+
+        if !is_form {
+            let Json(input) = Json::<ConsentDecision>::from_request(request, state)
+                .await
+                .map_err(|_| ApiError::validation("body", "must be a valid consent decision"))?;
+            return Ok(Self { headers, input });
+        }
+
+        let Form(input) = Form::<ConsentDecision>::from_request(request, state)
+            .await
+            .map_err(|_| ApiError::validation("body", "must be a valid consent decision"))?;
+
+        let mut headers = headers;
+        promote_field(
+            &mut headers,
+            "x-csrf-token",
+            input.csrf_token.as_deref(),
+            "csrf_token",
+        )?;
+        promote_field(
+            &mut headers,
+            "idempotency-key",
+            input.idempotency_key.as_deref(),
+            "idempotency_key",
+        )?;
+        Ok(Self { headers, input })
+    }
+}
+
+const FORM_CONTENT_TYPE: &str = "application/x-www-form-urlencoded";
+
+/// Copies a form field into the header map the shared checks read from.
+///
+/// A field that is absent, empty, or not header-safe is rejected here rather
+/// than being silently dropped into a "missing header" error further down,
+/// where the cause would be much harder to see.
+fn promote_field(
+    headers: &mut HeaderMap,
+    header_name: &'static str,
+    value: Option<&str>,
+    field: &'static str,
+) -> Result<(), ApiError> {
+    let raw = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::validation(field, "is required on a form submission"))?;
+    let encoded = HeaderValue::from_str(raw)
+        .map_err(|_| ApiError::validation(field, "must contain only printable ASCII"))?;
+    headers.insert(http::HeaderName::from_static(header_name), encoded);
+    Ok(())
+}
+
 pub(super) async fn decide_consent(
     State(state): State<ApiState>,
     session: BrowserSession,
-    headers: HeaderMap,
-    Json(input): Json<ConsentDecision>,
+    submission: ConsentSubmission,
 ) -> Result<Response, ApiError> {
-    require_csrf(&headers, &session)?;
+    let ConsentSubmission { headers, input } = submission;
+    let headers = &headers;
+    require_csrf(headers, &session)?;
     if !matches!(input.decision.as_str(), "approve" | "deny") {
         return Err(ApiError::validation("decision", "must be approve or deny"));
     }
@@ -616,7 +785,7 @@ pub(super) async fn decide_consent(
     let claim = idempotency::claim::<RedirectReplay>(
         &mut transaction,
         &state.crypto,
-        &headers,
+        headers,
         &caller_scope,
         "POST /api/v1/oauth/authorize/decisions",
         &canonical,

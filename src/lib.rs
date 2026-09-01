@@ -20,4 +20,5 @@ pub mod infrastructure;
 pub mod request_context;
 pub mod shutdown;
 pub mod telemetry;
+pub(crate) mod web;
 pub mod worker;

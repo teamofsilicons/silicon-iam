@@ -1,0 +1,149 @@
+<p class="lede">
+  Five rules apply to nearly every call in the contract. Getting them right once, in your HTTP
+  layer, removes most of the failure modes you would otherwise meet one endpoint at a time.
+</p>
+
+<h2>Idempotency</h2>
+
+<p>
+  Every externally initiated mutation requires an <code>Idempotency-Key</code> of 16–255
+  characters. The server scopes it to the authenticated caller, the route, and a digest of the
+  request body.
+</p>
+
+<ul>
+  <li>Repeating an identical validated request returns the stored result, and may carry
+    <code>Idempotency-Replayed: true</code>.</li>
+  <li>Changing any canonical field under the same key returns
+    <code>409 idempotency_conflict</code>.</li>
+  <li>JSON whitespace and object-key ordering are not significant.</li>
+</ul>
+
+<div class="banner banner-info">
+  <div>
+    <strong>A key belongs to an intent, not to a request.</strong>
+    Mint it when the user submits, and reuse it for every transport retry of that submission.
+    A fresh key per attempt lets the server execute the mutation twice — which is the exact
+    thing idempotency exists to prevent.
+  </div>
+</div>
+
+<p>
+  Two deliberate exceptions. <strong>OBO proof verification</strong> accepts no idempotency key,
+  never stores a successful response, and answers <code>409</code> on every attempt after the
+  proof is consumed — it is single-use by design. And a response containing a
+  <strong>newly generated secret</strong> stays replayable for only ten minutes, rather than the
+  usual twenty-four hours.
+</p>
+
+<h2>Optimistic concurrency</h2>
+
+<p>
+  Versioned aggregate mutations require a strong <code>If-Match: "{version}"</code> header. Reads
+  and successful mutations return the version as an <code>ETag</code>; when a body also contains
+  <code>version</code>, it is the same number.
+</p>
+
+<table>
+  <thead><tr><th>Situation</th><th>Response</th></tr></thead>
+  <tbody>
+    <tr><td>Version matches</td><td>The mutation applies and the version increments by exactly one</td></tr>
+    <tr><td>Version is stale</td><td><code>412 version_mismatch</code></td></tr>
+    <tr><td>Precondition omitted</td><td><code>428 precondition_required</code></td></tr>
+  </tbody>
+</table>
+
+<p>
+  Do not retry a <code>412</code> automatically. It means the record changed underneath you, and
+  a blind retry silently overwrites whatever the other party did. Re-read, show the current
+  state, and let the human decide whether their change still applies.
+</p>
+
+<h2>Pagination</h2>
+
+<p>List endpoints use opaque cursors. The maximum page size is 100 and the default is 50.</p>
+
+<pre><code>GET /api/v1/organizations?limit=50&amp;cursor=opaque-value</code></pre>
+
+<pre><code>{
+  "items": [],
+  "page": { "next_cursor": null, "has_more": false }
+}</code></pre>
+
+<p>
+  A cursor is bound to the caller, the filters, the sort order and the tenant context. It is
+  <strong>not</strong> an offset, and clients must not interpret, construct or reuse one across
+  a different filter set. There is no total count, and no way to jump to page seven — an
+  interface that promises either is promising something the API cannot deliver.
+</p>
+
+<h2>Errors</h2>
+
+<p>Every JSON error uses one envelope:</p>
+
+<pre><code>{
+  "error": {
+    "code": "machine_readable_code",
+    "message": "Safe human-readable explanation",
+    "details": {},
+    "request_id": "trace identifier"
+  }
+}</code></pre>
+
+<p>
+  Branch on <code>code</code>, never on <code>message</code> — the message is prose for a human
+  and may be reworded without a contract change. Log <code>request_id</code>; it is the fastest
+  way to have a specific failure investigated.
+</p>
+
+<p>
+  OAuth redirect errors are the one exception. They go to the exact registered redirect URI using
+  OAuth protocol query fields with the <code>state</code> unchanged, because that is what the
+  OAuth specification requires. JSON errors raised before a redirect URI is trusted use the
+  envelope above.
+</p>
+
+<p>
+  The full list of statuses and codes is in the <a href="/docs/api/errors">error index</a>.
+</p>
+
+<h2>Rate limits</h2>
+
+<p>
+  A <code>429</code> carries <code>Retry-After</code>, <code>RateLimit-Limit</code>,
+  <code>RateLimit-Remaining</code> and <code>RateLimit-Reset</code>. Honour
+  <code>Retry-After</code>; do not invent your own backoff on top of it.
+</p>
+
+<p>
+  Buckets are keyed across normalised identity, session, purpose, channel and provider. Signup
+  send protection includes a contact-global bucket independent of the temporary signup session,
+  so cycling sessions does not buy extra attempts. Verification-attempt cooldowns are separate
+  from initiation limits, and issuing a new code invalidates the older one.
+</p>
+
+<p>
+  IP and subnet buckets are deliberately disabled until a deployment defines trusted proxy
+  extraction. Silicon IAM never trusts an arbitrary forwarding header.
+</p>
+
+<h2>Headers worth knowing</h2>
+
+<table>
+  <thead><tr><th>Header</th><th>Direction</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>Idempotency-Key</code></td><td>request</td><td>Required on every external mutation</td></tr>
+    <tr><td><code>If-Match</code></td><td>request</td><td>Strong version precondition, quoted</td></tr>
+    <tr><td><code>X-Step-Up-Token</code></td><td>request</td><td>Action-bound reauthentication</td></tr>
+    <tr><td><code>X-Org-ID</code></td><td>request</td><td>Introspection only; can never widen authority</td></tr>
+    <tr><td><code>X-Request-ID</code></td><td>both</td><td>Accepted when a valid UUID, otherwise generated</td></tr>
+    <tr><td><code>ETag</code></td><td>response</td><td>Current aggregate version</td></tr>
+    <tr><td><code>Idempotency-Replayed</code></td><td>response</td><td>A stored result was returned</td></tr>
+  </tbody>
+</table>
+
+<p>
+  <code>X-Org-ID</code> must agree with the credential and the grant. OBO does not accept it at
+  all: IAM derives the organization from the authenticated applications and refuses
+  cross-organization use.
+</p>
