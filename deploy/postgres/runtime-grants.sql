@@ -108,7 +108,9 @@ DECLARE
         'organization_sso_configs',
         'organization_tags',
         'organizations',
+        'outbox_event_affected_tags',
         'outbox_event_recipients',
+        'outbox_event_topics',
         'outbox_events',
         'ownership_transfer_requests',
         'platform_role_grants',
@@ -125,6 +127,10 @@ DECLARE
         'silicon_credentials',
         'silicon_hooks',
         'silicon_token_rotation_requests',
+        'silicon_webhook_endpoints',
+        'silicon_webhook_signing_keys',
+        'silicon_webhook_subscription_topics',
+        'silicon_webhook_subscriptions',
         'silicons',
         'sso_authorization_transactions',
         'sso_connections',
@@ -187,6 +193,8 @@ DECLARE
         'organization_memberships',
         'organization_tags',
         'organizations',
+        'outbox_event_affected_tags',
+        'outbox_event_topics',
         'outbox_events',
         'platform_role_grants',
         'principals',
@@ -199,8 +207,11 @@ DECLARE
         'signup_sessions',
         'silicon_credential_history',
         'silicon_credentials',
-        'silicon_hooks',
         'silicon_token_rotation_requests',
+        'silicon_webhook_endpoints',
+        'silicon_webhook_signing_keys',
+        'silicon_webhook_subscription_topics',
+        'silicon_webhook_subscriptions',
         'silicons',
         'sso_membership_policies',
         'sso_membership_policy_tags',
@@ -252,8 +263,10 @@ DECLARE
         'signup_otp_challenges',
         'signup_sessions',
         'silicon_credentials',
-        'silicon_hooks',
         'silicon_token_rotation_requests',
+        'silicon_webhook_endpoints',
+        'silicon_webhook_signing_keys',
+        'silicon_webhook_subscriptions',
         'silicons',
         'sso_authorization_transactions',
         'sso_connections',
@@ -270,6 +283,8 @@ DECLARE
         'application_requested_scopes',
         'membership_tags',
         'oauth_consent_grant_scopes',
+        'silicon_webhook_subscription_topics',
+        'silicon_webhook_subscriptions',
         'sso_membership_policy_tags'
     ];
     denied_table_names text[] := ARRAY[
@@ -547,7 +562,9 @@ DECLARE
         'get_worker_notification_contact',
         'get_worker_security_notice_contact',
         'get_worker_silicon_hook_identity',
+        'get_worker_silicon_webhook_material',
         'list_worker_application_webhook_recipients',
+        'list_worker_silicon_webhook_recipients',
         'prevent_oauth_refresh_family_scope_mutation',
         'reject_audit_mutation',
         'reject_immutable_history_mutation',
@@ -617,9 +634,6 @@ GRANT SELECT, INSERT ON iam.outbox_event_recipients TO silicon_iam_worker;
 GRANT SELECT, INSERT, UPDATE ON iam.webhook_deliveries TO silicon_iam_worker;
 GRANT SELECT, INSERT, UPDATE ON iam.webhook_delivery_attempts TO silicon_iam_worker;
 GRANT SELECT, UPDATE ON iam.notification_jobs TO silicon_iam_worker;
-GRANT SELECT, UPDATE ON iam.silicon_hooks TO silicon_iam_worker;
-GRANT SELECT ON iam.silicons TO silicon_iam_worker;
-GRANT SELECT ON iam.principals TO silicon_iam_worker;
 GRANT SELECT ON public._sqlx_migrations TO silicon_iam_worker;
 
 -- Worker policy roles are bound only after deployment has provisioned the
@@ -630,52 +644,30 @@ ALTER POLICY silicons_member_select
     ON iam.silicons TO silicon_iam_api;
 ALTER POLICY silicon_hooks_member_select
     ON iam.silicon_hooks TO silicon_iam_api;
+ALTER POLICY silicon_hooks_create
+    ON iam.silicon_hooks TO silicon_iam_api;
 ALTER POLICY silicon_hooks_manage
     ON iam.silicon_hooks TO silicon_iam_api;
+ALTER POLICY silicon_hooks_platform_delivery_select
+    ON iam.silicon_hooks TO silicon_iam_api;
+ALTER POLICY silicon_webhook_endpoints_manage
+    ON iam.silicon_webhook_endpoints TO silicon_iam_api;
+ALTER POLICY silicon_webhook_endpoints_platform_delivery_select
+    ON iam.silicon_webhook_endpoints TO silicon_iam_api;
+ALTER POLICY application_webhook_endpoints_platform_delivery_select
+    ON iam.application_webhook_endpoints TO silicon_iam_api;
+ALTER POLICY silicon_webhook_signing_keys_manage
+    ON iam.silicon_webhook_signing_keys TO silicon_iam_api;
+ALTER POLICY silicon_webhook_subscriptions_manage
+    ON iam.silicon_webhook_subscriptions TO silicon_iam_api;
+ALTER POLICY silicon_webhook_subscription_topics_manage
+    ON iam.silicon_webhook_subscription_topics TO silicon_iam_api;
 
+-- Remove stale worker policies from deployments that previously provisioned
+-- provider-managed Silicon Hooks. Table privileges are rebuilt from zero above.
 DROP POLICY IF EXISTS silicons_worker_select ON iam.silicons;
-CREATE POLICY silicons_worker_select
-ON iam.silicons FOR SELECT TO silicon_iam_worker
-USING (
-    COALESCE(
-        pg_catalog.pg_has_role(
-            current_user, pg_catalog.to_regrole('silicon_iam_worker'), 'member'
-        ),
-        false
-    )
-);
-
 DROP POLICY IF EXISTS silicon_hooks_worker_select ON iam.silicon_hooks;
-CREATE POLICY silicon_hooks_worker_select
-ON iam.silicon_hooks FOR SELECT TO silicon_iam_worker
-USING (
-    COALESCE(
-        pg_catalog.pg_has_role(
-            current_user, pg_catalog.to_regrole('silicon_iam_worker'), 'member'
-        ),
-        false
-    )
-);
-
 DROP POLICY IF EXISTS silicon_hooks_worker_update ON iam.silicon_hooks;
-CREATE POLICY silicon_hooks_worker_update
-ON iam.silicon_hooks FOR UPDATE TO silicon_iam_worker
-USING (
-    COALESCE(
-        pg_catalog.pg_has_role(
-            current_user, pg_catalog.to_regrole('silicon_iam_worker'), 'member'
-        ),
-        false
-    )
-)
-WITH CHECK (
-    COALESCE(
-        pg_catalog.pg_has_role(
-            current_user, pg_catalog.to_regrole('silicon_iam_worker'), 'member'
-        ),
-        false
-    )
-);
 
 DO $worker_functions$
 DECLARE
@@ -683,14 +675,13 @@ DECLARE
     matched_function_count integer;
     function_record record;
     worker_function_names text[] := ARRAY[
-        'complete_worker_silicon_hook',
-        'fail_worker_silicon_hook',
         'get_worker_application_webhook_material',
         'get_worker_invitation_context',
         'get_worker_notification_contact',
         'get_worker_security_notice_contact',
-        'get_worker_silicon_hook_identity',
+        'get_worker_silicon_webhook_material',
         'list_worker_application_webhook_recipients',
+        'list_worker_silicon_webhook_recipients',
         'reconcile_worker_contact_aead_keyring',
         'run_worker_account_deletion_finalization',
         'run_worker_ephemeral_maintenance',

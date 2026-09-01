@@ -36,6 +36,8 @@ EXPECTED_DELETE_TABLES = Set.new(%w[
   application_requested_scopes
   membership_tags
   oauth_consent_grant_scopes
+  silicon_webhook_subscription_topics
+  silicon_webhook_subscriptions
   sso_membership_policy_tags
 ]).freeze
 
