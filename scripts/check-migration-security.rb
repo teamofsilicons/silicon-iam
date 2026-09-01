@@ -102,6 +102,33 @@ unless account_deletion.match?(
   issues << "account-deletion finalization must discharge deferred invariants inside its definer"
 end
 
+silicon_webhooks = File.read("migrations/0014_configurable_silicon_webhooks.sql")
+silicon_webhook_requirements = {
+  "keeps routing topics outside the webhook payload" =>
+    /CREATE TABLE iam\.outbox_event_topics[\s\S]*control routing only and are never serialized into webhook payloads/,
+  "keeps affected-tag routing data outside the webhook payload" =>
+    /CREATE TABLE iam\.outbox_event_affected_tags[\s\S]*never enter webhook payloads/,
+  "fails closed for organization-wide own-tag subscriptions" =>
+    /subscription\.own_tags_only[\s\S]*NOT event\.organization_wide[\s\S]*active_tag\.status = 'active'/,
+  "uses a closed three-topic subscription vocabulary" =>
+    /topic IN \('membership_lifecycle', 'member_updates', 'trust_updates'\)/,
+  "activates new Silicons without legacy Hook provisioning" =>
+    /ALTER COLUMN provisioning_status SET DEFAULT 'active'/,
+  "activates Silicons stranded by legacy Hook provisioning" =>
+    /SET provisioning_status = 'active'[\s\S]*IN \('pending_hook', 'hook_error'\)/,
+  "disables every legacy provider-managed Silicon Hook" =>
+    /UPDATE iam\.silicon_hooks[\s\S]*SET status = 'disabled'/,
+  "cancels in-flight legacy Silicon Hook deliveries" =>
+    /recipient\.recipient_kind = 'silicon_hook'[\s\S]*delivery\.status IN \('pending', 'processing'\)/,
+  "revokes Public access to the Silicon recipient reader" =>
+    /REVOKE ALL ON FUNCTION iam_private\.list_worker_silicon_webhook_recipients\(uuid\) FROM PUBLIC;/,
+  "revokes Public access to Silicon delivery material" =>
+    /REVOKE ALL ON FUNCTION iam_private\.get_worker_silicon_webhook_material\(uuid, uuid\) FROM PUBLIC;/
+}
+silicon_webhook_requirements.each do |description, pattern|
+  issues << "configurable Silicon webhook migration #{description}" unless silicon_webhooks.match?(pattern)
+end
+
 unless issues.empty?
   issues.each { |issue| warn issue }
   exit 1
