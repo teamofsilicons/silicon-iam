@@ -1,0 +1,226 @@
+x-runtime-environment: &runtime-environment
+  IAM_ENVIRONMENT: ${IAM_ENVIRONMENT:-development}
+  IAM_BIND_ADDR: 0.0.0.0:8080
+  IAM_PUBLIC_BASE_URL: ${IAM_PUBLIC_BASE_URL:-http://localhost:8080}
+  IAM_AUTH_BASE_URL: ${IAM_AUTH_BASE_URL:-http://localhost:3000}
+  IAM_CORS_ALLOWED_ORIGINS: ${IAM_CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+  IAM_REQUEST_TIMEOUT_SECONDS: ${IAM_REQUEST_TIMEOUT_SECONDS:-15}
+  IAM_MAX_BODY_BYTES: ${IAM_MAX_BODY_BYTES:-65536}
+  IAM_MAX_CONCURRENT_REQUESTS: ${IAM_MAX_CONCURRENT_REQUESTS:-512}
+  IAM_SHUTDOWN_TIMEOUT_SECONDS: ${IAM_SHUTDOWN_TIMEOUT_SECONDS:-30}
+  IAM_LOG_FILTER: ${IAM_LOG_FILTER:-silicon_iam=debug,tower_http=info}
+  IAM_DATABASE_MAX_CONNECTIONS: ${IAM_DATABASE_MAX_CONNECTIONS:-16}
+  IAM_DATABASE_MIN_CONNECTIONS: ${IAM_DATABASE_MIN_CONNECTIONS:-1}
+  IAM_DATABASE_ACQUIRE_TIMEOUT_SECONDS: ${IAM_DATABASE_ACQUIRE_TIMEOUT_SECONDS:-3}
+  IAM_DATABASE_STATEMENT_TIMEOUT_SECONDS: ${IAM_DATABASE_STATEMENT_TIMEOUT_SECONDS:-10}
+  IAM_REDIS_URL: ${IAM_REDIS_URL:-}
+  IAM_REDIS_CONNECT_TIMEOUT_MS: ${IAM_REDIS_CONNECT_TIMEOUT_MS:-500}
+  IAM_REDIS_COMMAND_TIMEOUT_MS: ${IAM_REDIS_COMMAND_TIMEOUT_MS:-750}
+  IAM_TOKEN_PEPPER_CURRENT_VERSION: ${IAM_TOKEN_PEPPER_CURRENT_VERSION}
+  IAM_TOKEN_PEPPER_KEYRING: ${IAM_TOKEN_PEPPER_KEYRING}
+  IAM_BLIND_INDEX_CURRENT_VERSION: ${IAM_BLIND_INDEX_CURRENT_VERSION}
+  IAM_BLIND_INDEX_KEYRING: ${IAM_BLIND_INDEX_KEYRING}
+  IAM_ENCRYPTION_CURRENT_VERSION: ${IAM_ENCRYPTION_CURRENT_VERSION}
+  IAM_ENCRYPTION_KEYRING: ${IAM_ENCRYPTION_KEYRING}
+  IAM_COOKIE_KEY: ${IAM_COOKIE_KEY}
+  IAM_JWT_ED25519_PRIVATE_KEY: ${IAM_JWT_ED25519_PRIVATE_KEY}
+  IAM_JWT_KEY_ID: ${IAM_JWT_KEY_ID}
+  IAM_ACCESS_TOKEN_TTL_SECONDS: ${IAM_ACCESS_TOKEN_TTL_SECONDS:-900}
+  IAM_REFRESH_FAMILY_TTL_SECONDS: ${IAM_REFRESH_FAMILY_TTL_SECONDS:-31536000}
+  IAM_AUTHORIZATION_CODE_TTL_SECONDS: ${IAM_AUTHORIZATION_CODE_TTL_SECONDS:-120}
+  IAM_OTP_TTL_SECONDS: ${IAM_OTP_TTL_SECONDS:-600}
+  IAM_OTP_MAX_ATTEMPTS: ${IAM_OTP_MAX_ATTEMPTS:-5}
+  IAM_POSTMARK_SERVER_TOKEN: ${IAM_POSTMARK_SERVER_TOKEN:-}
+  IAM_POSTMARK_FROM_EMAIL: ${IAM_POSTMARK_FROM_EMAIL:-auth@teamofsilicons.com}
+  IAM_TWILIO_ACCOUNT_SID: ${IAM_TWILIO_ACCOUNT_SID:-}
+  IAM_TWILIO_AUTH_TOKEN: ${IAM_TWILIO_AUTH_TOKEN:-}
+  IAM_TWILIO_MESSAGING_SERVICE_SID: ${IAM_TWILIO_MESSAGING_SERVICE_SID:-}
+  IAM_WORKOS_API_KEY: ${IAM_WORKOS_API_KEY:-}
+  IAM_WORKOS_CLIENT_ID: ${IAM_WORKOS_CLIENT_ID:-}
+  IAM_WORKOS_WEBHOOK_SECRET: ${IAM_WORKOS_WEBHOOK_SECRET:-}
+  IAM_HOOK_BASE_URL: ${IAM_HOOK_BASE_URL:-https://hook.teamofsilicons.com/api/v1}
+  IAM_HOOK_SERVICE_TOKEN: ${IAM_HOOK_SERVICE_TOKEN:-}
+  IAM_IRIS_BASE_URL: ${IAM_IRIS_BASE_URL:-https://iris.teamofsilicons.com}
+  IAM_ALLOW_LOCAL_PROVIDERS: ${IAM_ALLOW_LOCAL_PROVIDERS:-true}
+  IAM_EXPOSE_LOCAL_OTPS: ${IAM_EXPOSE_LOCAL_OTPS:-true}
+  IAM_WORKER_BATCH_SIZE: ${IAM_WORKER_BATCH_SIZE:-100}
+  IAM_WORKER_DELIVERY_CONCURRENCY: ${IAM_WORKER_DELIVERY_CONCURRENCY:-16}
+  IAM_WORKER_POLL_INTERVAL_MS: ${IAM_WORKER_POLL_INTERVAL_MS:-500}
+  IAM_WORKER_LEASE_SECONDS: ${IAM_WORKER_LEASE_SECONDS:-60}
+  IAM_WORKER_MAX_ATTEMPTS: ${IAM_WORKER_MAX_ATTEMPTS:-20}
+  IAM_WORKER_MAX_RETRY_DELAY_SECONDS: ${IAM_WORKER_MAX_RETRY_DELAY_SECONDS:-300}
+  IAM_RETENTION_SWEEP_INTERVAL_SECONDS: ${IAM_RETENTION_SWEEP_INTERVAL_SECONDS:-30}
+  IAM_RETENTION_BATCH_SIZE: ${IAM_RETENTION_BATCH_SIZE:-1000}
+  IAM_RETENTION_LOGIN_HISTORY_DAYS: ${IAM_RETENTION_LOGIN_HISTORY_DAYS:-365}
+  IAM_RETENTION_EPHEMERAL_SECURITY_DAYS: ${IAM_RETENTION_EPHEMERAL_SECURITY_DAYS:-30}
+  IAM_RETENTION_TOKEN_METADATA_DAYS: ${IAM_RETENTION_TOKEN_METADATA_DAYS:-90}
+  IAM_RETENTION_COMPROMISED_REFRESH_DAYS: ${IAM_RETENTION_COMPROMISED_REFRESH_DAYS:-365}
+  IAM_RETENTION_WEBHOOK_ATTEMPT_DAYS: ${IAM_RETENTION_WEBHOOK_ATTEMPT_DAYS:-45}
+  IAM_RETENTION_AUDIT_EVENT_DAYS: ${IAM_RETENTION_AUDIT_EVENT_DAYS:-2555}
+
+x-runtime-hardening: &runtime-hardening
+  read_only: true
+  init: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16.15-bookworm
+    environment:
+      POSTGRES_DB: silicon_iam
+      POSTGRES_USER: silicon_iam_migrator
+      POSTGRES_PASSWORD: ${IAM_LOCAL_MIGRATOR_DATABASE_PASSWORD}
+      IAM_LOCAL_API_DATABASE_PASSWORD: ${IAM_LOCAL_API_DATABASE_PASSWORD}
+      IAM_LOCAL_WORKER_DATABASE_PASSWORD: ${IAM_LOCAL_WORKER_DATABASE_PASSWORD}
+      IAM_LOCAL_KEY_OPERATOR_DATABASE_PASSWORD: ${IAM_LOCAL_KEY_OPERATOR_DATABASE_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --username silicon_iam_migrator --dbname silicon_iam"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres/init-runtime-roles.sh:/docker-entrypoint-initdb.d/10-runtime-roles.sh:ro
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+    command: ["iam-migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      IAM_ENVIRONMENT: development
+      IAM_LOG_FILTER: silicon_iam=info
+      IAM_MIGRATOR_DATABASE_URL: postgres://silicon_iam_migrator:${IAM_LOCAL_MIGRATOR_DATABASE_PASSWORD}@postgres:5432/silicon_iam
+      IAM_MIGRATOR_DATABASE_MAX_CONNECTIONS: 2
+      IAM_MIGRATOR_DATABASE_ACQUIRE_TIMEOUT_SECONDS: 10
+      IAM_MIGRATOR_DATABASE_STATEMENT_TIMEOUT_SECONDS: 120
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: "no"
+
+  grant-runtime-access:
+    image: postgres:16.15-bookworm
+    command:
+      - psql
+      - --set=ON_ERROR_STOP=1
+      - --file=/opt/silicon-iam/runtime-grants.sql
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PGDATABASE: silicon_iam
+      PGHOST: postgres
+      PGPASSWORD: ${IAM_LOCAL_MIGRATOR_DATABASE_PASSWORD}
+      PGUSER: silicon_iam_migrator
+    volumes:
+      - ./deploy/postgres/runtime-grants.sql:/opt/silicon-iam/runtime-grants.sql:ro
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: "no"
+
+  key-operator:
+    profiles: ["operator"]
+    build:
+      context: .
+    entrypoint: ["iam-activate-key-version"]
+    command: ["--help"]
+    depends_on:
+      grant-runtime-access:
+        condition: service_completed_successfully
+    environment:
+      IAM_ENVIRONMENT: development
+      IAM_LOG_FILTER: silicon_iam=info
+      IAM_KEY_OPERATOR_DATABASE_URL: postgres://silicon_iam_key_operator_runtime:${IAM_LOCAL_KEY_OPERATOR_DATABASE_PASSWORD}@postgres:5432/silicon_iam
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: "no"
+
+  api:
+    <<: *runtime-hardening
+    build:
+      context: .
+    command: ["iam-api"]
+    depends_on:
+      grant-runtime-access:
+        condition: service_completed_successfully
+    environment:
+      <<: *runtime-environment
+      IAM_DATABASE_URL: postgres://silicon_iam_api_runtime:${IAM_LOCAL_API_DATABASE_PASSWORD}@postgres:5432/silicon_iam
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  worker:
+    <<: *runtime-hardening
+    build:
+      context: .
+    command: ["iam-worker"]
+    # Worker shutdown is configurable up to 300 seconds; Compose must not send
+    # SIGKILL before the application has exhausted that drain deadline.
+    stop_grace_period: 310s
+    depends_on:
+      grant-runtime-access:
+        condition: service_completed_successfully
+    environment:
+      IAM_ENVIRONMENT: ${IAM_ENVIRONMENT:-development}
+      IAM_LOG_FILTER: ${IAM_LOG_FILTER:-silicon_iam=debug}
+      IAM_DATABASE_URL: postgres://silicon_iam_worker_runtime:${IAM_LOCAL_WORKER_DATABASE_PASSWORD}@postgres:5432/silicon_iam
+      IAM_DATABASE_MAX_CONNECTIONS: ${IAM_DATABASE_MAX_CONNECTIONS:-16}
+      IAM_DATABASE_MIN_CONNECTIONS: ${IAM_DATABASE_MIN_CONNECTIONS:-1}
+      IAM_DATABASE_ACQUIRE_TIMEOUT_SECONDS: ${IAM_DATABASE_ACQUIRE_TIMEOUT_SECONDS:-3}
+      IAM_DATABASE_STATEMENT_TIMEOUT_SECONDS: ${IAM_DATABASE_STATEMENT_TIMEOUT_SECONDS:-10}
+      IAM_AUTH_BASE_URL: ${IAM_AUTH_BASE_URL:-http://localhost:3000}
+      IAM_SHUTDOWN_TIMEOUT_SECONDS: ${IAM_SHUTDOWN_TIMEOUT_SECONDS:-30}
+      IAM_ENCRYPTION_CURRENT_VERSION: ${IAM_ENCRYPTION_CURRENT_VERSION}
+      IAM_ENCRYPTION_KEYRING: ${IAM_ENCRYPTION_KEYRING}
+      IAM_POSTMARK_SERVER_TOKEN: ${IAM_POSTMARK_SERVER_TOKEN:-}
+      IAM_POSTMARK_FROM_EMAIL: ${IAM_POSTMARK_FROM_EMAIL:-auth@teamofsilicons.com}
+      IAM_TWILIO_ACCOUNT_SID: ${IAM_TWILIO_ACCOUNT_SID:-}
+      IAM_TWILIO_AUTH_TOKEN: ${IAM_TWILIO_AUTH_TOKEN:-}
+      IAM_TWILIO_MESSAGING_SERVICE_SID: ${IAM_TWILIO_MESSAGING_SERVICE_SID:-}
+      IAM_HOOK_BASE_URL: ${IAM_HOOK_BASE_URL:-https://hook.teamofsilicons.com/api/v1}
+      IAM_HOOK_SERVICE_TOKEN: ${IAM_HOOK_SERVICE_TOKEN:-}
+      IAM_IRIS_BASE_URL: ${IAM_IRIS_BASE_URL:-https://iris.teamofsilicons.com}
+      IAM_ALLOW_LOCAL_PROVIDERS: ${IAM_ALLOW_LOCAL_PROVIDERS:-true}
+      IAM_WORKER_BATCH_SIZE: ${IAM_WORKER_BATCH_SIZE:-100}
+      IAM_WORKER_DELIVERY_CONCURRENCY: ${IAM_WORKER_DELIVERY_CONCURRENCY:-16}
+      IAM_WORKER_POLL_INTERVAL_MS: ${IAM_WORKER_POLL_INTERVAL_MS:-500}
+      IAM_WORKER_LEASE_SECONDS: ${IAM_WORKER_LEASE_SECONDS:-60}
+      IAM_WORKER_MAX_ATTEMPTS: ${IAM_WORKER_MAX_ATTEMPTS:-20}
+      IAM_WORKER_MAX_RETRY_DELAY_SECONDS: ${IAM_WORKER_MAX_RETRY_DELAY_SECONDS:-300}
+      IAM_RETENTION_SWEEP_INTERVAL_SECONDS: ${IAM_RETENTION_SWEEP_INTERVAL_SECONDS:-30}
+      IAM_RETENTION_BATCH_SIZE: ${IAM_RETENTION_BATCH_SIZE:-1000}
+      IAM_RETENTION_LOGIN_HISTORY_DAYS: ${IAM_RETENTION_LOGIN_HISTORY_DAYS:-365}
+      IAM_RETENTION_EPHEMERAL_SECURITY_DAYS: ${IAM_RETENTION_EPHEMERAL_SECURITY_DAYS:-30}
+      IAM_RETENTION_TOKEN_METADATA_DAYS: ${IAM_RETENTION_TOKEN_METADATA_DAYS:-90}
+      IAM_RETENTION_COMPROMISED_REFRESH_DAYS: ${IAM_RETENTION_COMPROMISED_REFRESH_DAYS:-365}
+      IAM_RETENTION_WEBHOOK_ATTEMPT_DAYS: ${IAM_RETENTION_WEBHOOK_ATTEMPT_DAYS:-45}
+      IAM_RETENTION_AUDIT_EVENT_DAYS: ${IAM_RETENTION_AUDIT_EVENT_DAYS:-2555}
+
+volumes:
+  postgres-data:
