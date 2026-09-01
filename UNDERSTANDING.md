@@ -29,6 +29,8 @@ For the verification code, after 10 failed tries, there's a cooldown of 1 minute
 
 For the final Sign Up request, it would take in the `session_id, carbon_id, description, display_name, profile_photo` Every field except description or profile_photo is compulsory.
 
+By default, set the profile_photo to: https://iris.teamofsilicons.com/pfp/carbon?id={carbon_id}.
+
 The verified_email and verified_phone_number both need to be present in that session_id for it to be able to create the account. And also check once that the verified_email and verified_phone_number is not already associated to another account. 
 
 `carbon_id` is the unique identifier for that carbon account. Also make an endpoint for checking if the carbon_id is availaible, which just returns. `available: True/False`.
@@ -130,17 +132,14 @@ For each application's defined webhook url, for any changes in user it should be
 
 ### Silicon Webhooks
 
-For each silicon part of the organisation also keep webhooking them all the organisation changes information, when a carbon/silicon leaves, org level changes, role changes, etc. 
+For each silicon it's also possible for them to subscribe to organisation changes along with the scope of the changes, the scope options include:
+1) Full - Every change, description, role, new member, everything gets notified. When this is selected, basically all the options have been selected and all changes would be applied.
+2) New/Removal - Only inform about the new people that join in and if anyone is removed from the organisation.
+3) Updates - Only inform about the updates of already existing members. Like role update, tags update, trust update, etc
+4) Trust Updates - Only inform about the trust updates
+5) Just for my tag - Only inform me about the selected changes if they are of my tag, if a new peoson joins my tag, or gets removed, gets their roles updated, etc.
 
-The webhook url for each silicon is: [hook.teamofsilicons.com/silicon/{silicon_global_id}/{random_6_digit_hexanumerical}]
-
-For each silicon when the silicon is created they must automatically recieve a default webhook from `silicon hook`, named Silicon IAM. This is the hook you would use to communicate all the org level changes to the silicon. Store the webhook url returned by the 
-
-
-##### Initial Silicon Hook Event
-
-After the default hook becomes active, IAM should send an `iam.silicon.initialized` event containing the Silicon's information and the current organisation snapshot.
-
+Any PnC of the following settings is possible. Any silicon should be able to perform these subscriptions, and silicons should also have their webhook_url configured for this subscription to take place, make a seperate endpoint for configuring a webhook_url for any given silicon. This webhook_url is only for IAm to be able to push the selected subscriptions to the silicon once they subscribe. If they don't have any webhook url configured, they can't subscribe.
 
 # Organisation specifications stored in IAm
 
@@ -270,7 +269,7 @@ For the 6 digit verification code input, it should be an OTP input.
 
 ## Signup 
 
-For the signup flow, first ask the user for their email, then verify email, then their phone number, then verify phone, then carbon_id picker, then a basic profile config page. By default, set the profile_pic to: https://iris.teamofsilicons.com/pfp/carbon?id={carbon_id}. 
+For the signup flow, first ask the user for their email, then verify email, then their phone number, then verify phone, then carbon_id picker, then a basic profile config page.
 
 ## App Defining
 
