@@ -1285,3 +1285,112 @@ replicas therefore serialize on their shared old-version identity and cannot
 create parallel claims for one request. Operators retain the previous pepper
 until no process can still write with it; removing a pepper earlier would also
 make credentials and replay records protected by that version unverifiable.
+
+## D-084 — Silicon webhooks are explicit subscriber-owned resources
+
+**Status:** Accepted; supersedes the automatic Silicon Hook portions of D-017,
+D-021, D-050, D-075, D-078, and D-079
+
+Creating a Silicon no longer provisions a callback through Silicon Hook and no
+longer delays Silicon activation on an external provider. A Silicon is active
+as soon as its principal, membership, credential, tags, and capability grants
+commit. IAM creates no webhook, emits no initialization snapshot, and sends no
+organization event until an authorized caller explicitly configures a webhook
+endpoint and enables a subscription.
+
+Each Silicon owns at most one active webhook endpoint, one effective
+subscription, and one active signing key. The Silicon itself may manage only
+its own resource. An organization actor with `silicons.update_directory` may
+manage a target Silicon; a Carbon redirecting organization data must also
+present verified-channel step-up. Endpoint, subscription, and key resources
+are versioned and mutations require idempotency and optimistic concurrency.
+
+## D-085 — Full is a mode, topics are composable, and tag scope is orthogonal
+
+**Status:** Accepted product interpretation
+
+Subscriptions use either `all` mode or `selected` mode. Selected mode accepts
+any non-empty combination of `membership_lifecycle`, `member_updates`, and
+`trust_updates`. `all` is the canonical representation of the specification's
+Full option and does not store a redundant topic selection. `own_tags_only` is
+an independent narrowing filter and can be combined with either mode.
+
+`membership_lifecycle` covers Carbon membership joins/removals, Silicon
+creation/removal, and their invitation lifecycle. `member_updates` covers
+directory, job-role, tag, hierarchy, authorization, organization-setting, and
+related governance changes. `trust_updates` is separate from member updates so
+the dedicated Trust Updates option remains meaningful. Full receives every
+event in the closed externally visible organization-event catalog.
+
+For tag-scoped subscriptions, an affected member matches when the union of its
+before- and after-mutation tags intersects the subscribing Silicon's current
+active tags at fan-out. A Silicon with no tags receives no tag-scoped event.
+Organization-wide events have no tag audience and are suppressed when
+`own_tags_only` is enabled. These strict semantics avoid broadening a request
+whose wording says to send only changes "of my tag."
+
+## D-086 — Silicon webhook destinations use per-Silicon cryptographic trust
+
+**Status:** Accepted security boundary
+
+Arbitrary configured destinations reuse the application-webhook URL policy and
+delivery transport: production requires HTTPS; userinfo, fragments, local and
+private destinations, ambiguous DNS results, ambient proxies, and redirects
+are rejected; resolution is bounded and public addresses are pinned again for
+each attempt. The former shared Silicon Hook service bearer is never sent to a
+subscriber URL and is not used as a signing key.
+
+IAM generates a distinct `swhs_` secret for each Silicon endpoint, stores it
+under a purpose-separated AEAD context, and reveals it only in a no-store,
+short-lived idempotent creation or rotation response. Deliveries use the
+existing v1 HMAC envelope over `{timestamp}.{exact_body}`, include the event ID
+inside the authenticated body, identify the signing-key version, and retain
+the established retry, ordering, dead-letter, and bounded-response behavior.
+Rotation snapshots the exact key on each new delivery; disabling an endpoint
+or subscription cancels its pending delivery authority atomically.
+
+## D-087 — Subscription routing is typed, transactional, and not wire data
+
+**Status:** Accepted integration-event boundary
+
+Every organization event eligible for Silicon delivery declares a topic,
+optional affected membership, union of affected before/after tags, and whether
+it is organization-wide. Topics and affected tags are normalized beside the
+outbox event in the same domain transaction. Worker fan-out uses only this
+closed catalog and fails closed for uncatalogued events; it never classifies
+security events by a string prefix or reconstructs a removed member's tags
+after the fact.
+
+Routing metadata is not embedded in callback data. The wire payload is a
+secret-free integration projection containing the stable change and target
+plus redacted before/after state and event-specific metadata. Subscription
+state is evaluated when an outbox event is expanded, so disabling or
+unsubscribing prevents not-yet-expanded data from acquiring a recipient.
+Already-expanded recipients retain their immutable event/destination audit
+record, while endpoint disablement cancels pending network work.
+
+## D-088 — Legacy Silicon Hook state is drained without implicit consent
+
+**Status:** Accepted compatibility transition
+
+The additive cutover retains legacy Hook tables, recipient columns, and
+delivery history for referential integrity and the configured retention
+window. It stops new Hook creation and provider claims, disables existing Hook
+rows, cancels their pending deliveries, and activates Silicons previously
+stuck in Hook-specific pending or error states. Legacy provider URLs are not
+silently copied into subscriber-owned endpoints because they were created
+under a different consent and signing model.
+
+New recipient rows use `silicon_webhook`, snapshot the selected endpoint and
+signing key, and coexist with historical `silicon_hook` rows. Obsolete provider
+configuration and worker authority are removed from the runtime composition;
+the compatibility schema can be dropped only after its audit-retention window.
+
+## D-089 — Carbon signup owns the Iris profile-photo default
+
+**Status:** Accepted contract clarification
+
+When signup omits or explicitly nulls `profile_photo`, the backend persists
+`https://iris.teamofsilicons.com/pfp/carbon?id={carbon_id}` using the configured
+Iris base URL. Clients may preview that value but do not own the invariant.
+Legacy null reads derive the same value so existing accounts remain consistent.
