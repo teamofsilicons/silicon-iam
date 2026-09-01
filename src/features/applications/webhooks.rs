@@ -566,6 +566,15 @@ async fn application_replay_is_authorized(
     application_id: Uuid,
     delivery: &DeadLetterRecord,
 ) -> Result<bool, ApiError> {
+    if delivery.event_type == "session.logout" {
+        return webhook_replay::application_logout_dead_letter_is_bound_to(
+            transaction,
+            application_id,
+            delivery,
+        )
+        .await
+        .map_err(|_| ApiError::internal("application_logout_replay_recipient"));
+    }
     if uses_captured_application_webhook_projection(&delivery.event_type) {
         let row = sqlx::query_as::<_, EncryptedProjectionRow>(
             r"
