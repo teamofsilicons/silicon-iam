@@ -1,0 +1,647 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Silicon IAM production on private EC2 and RDS behind the shared Team of Silicons ALB.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet::Id
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet::Id
+  AlbSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  HttpsListenerArn:
+    Type: String
+  CertificateArn:
+    Type: String
+  AppSecretArn:
+    Type: String
+  BackendImageUri:
+    Type: String
+  FrontendImageUri:
+    Type: String
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+  InstanceType:
+    Type: String
+    Default: t4g.small
+    AllowedValues: [t4g.micro, t4g.small, t4g.medium]
+  DatabaseInstanceClass:
+    Type: String
+    Default: db.t4g.small
+    AllowedValues: [db.t4g.micro, db.t4g.small, db.t4g.medium]
+
+Resources:
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Silicon IAM production instance; application ports are ALB-only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8082
+          SourceSecurityGroupId: !Ref AlbSecurityGroupId
+          Description: Shared ALB to IAM API and frontend listeners
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: silicon-iam-production-instance
+        - Key: Service
+          Value: silicon-iam
+        - Key: Environment
+          Value: production
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Silicon IAM production PostgreSQL; IAM instances only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref InstanceSecurityGroup
+          Description: IAM production instances
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: silicon-iam-production-database
+        - Key: Service
+          Value: silicon-iam
+        - Key: Environment
+          Value: production
+
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private subnets for Silicon IAM production
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      Tags:
+        - Key: Service
+          Value: silicon-iam
+        - Key: Environment
+          Value: production
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: silicon-iam-production
+      Engine: postgres
+      EngineVersion: "17.9"
+      DBInstanceClass: !Ref DatabaseInstanceClass
+      DBName: silicon_iam
+      MasterUsername: silicon_iam_migrator
+      ManageMasterUserPassword: true
+      Port: 5432
+      AllocatedStorage: "30"
+      MaxAllocatedStorage: 100
+      StorageType: gp3
+      StorageEncrypted: true
+      PubliclyAccessible: false
+      MultiAZ: false
+      AutoMinorVersionUpgrade: true
+      BackupRetentionPeriod: 7
+      CopyTagsToSnapshot: true
+      DeletionProtection: true
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      EnableCloudwatchLogsExports: [postgresql, upgrade]
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups:
+        - !GetAtt DatabaseSecurityGroup.GroupId
+      Tags:
+        - Key: Name
+          Value: silicon-iam-production
+        - Key: Service
+          Value: silicon-iam
+        - Key: Environment
+          Value: production
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: /silicon-iam/production/api
+      RetentionInDays: 30
+
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: /silicon-iam/production/worker
+      RetentionInDays: 30
+
+  FrontendLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: /silicon-iam/production/frontend
+      RetentionInDays: 30
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: silicon-iam-production-instance
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: silicon-iam-production-runtime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/silicon-iam-production
+                  - !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/silicon-iam-frontend-production
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref AppSecretArn
+                  - !GetAtt Database.MasterUserSecret.SecretArn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !GetAtt ApiLogGroup.Arn
+                  - !Sub ${ApiLogGroup.Arn}:*
+                  - !GetAtt WorkerLogGroup.Arn
+                  - !Sub ${WorkerLogGroup.Arn}:*
+                  - !GetAtt FrontendLogGroup.Arn
+                  - !Sub ${FrontendLogGroup.Arn}:*
+      Tags:
+        - Key: Service
+          Value: silicon-iam
+        - Key: Environment
+          Value: production
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  ApiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: silicon-iam-prod-api
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 8080
+      TargetType: instance
+      HealthCheckEnabled: true
+      HealthCheckPath: /readyz
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+      Tags:
+        - Key: Service
+          Value: silicon-iam
+        - Key: Environment
+          Value: production
+
+  AuthTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: silicon-iam-prod-auth
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 8081
+      TargetType: instance
+      HealthCheckPath: /healthz
+      HealthCheckProtocol: HTTP
+      Matcher:
+        HttpCode: "200"
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+      Tags:
+        - Key: Service
+          Value: silicon-iam
+        - Key: Environment
+          Value: production
+
+  ConsoleTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: silicon-iam-prod-console
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 8082
+      TargetType: instance
+      HealthCheckPath: /healthz
+      HealthCheckProtocol: HTTP
+      Matcher:
+        HttpCode: "200"
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+      Tags:
+        - Key: Service
+          Value: silicon-iam
+        - Key: Environment
+          Value: production
+
+  ListenerCertificate:
+    Type: AWS::ElasticLoadBalancingV2::ListenerCertificate
+    Properties:
+      ListenerArn: !Ref HttpsListenerArn
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+
+  ApiListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HttpsListenerArn
+      Priority: 20
+      Conditions:
+        - Field: host-header
+          HostHeaderConfig:
+            Values: [backend.iam.teamofsilicons.com]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ApiTargetGroup
+
+  AuthListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HttpsListenerArn
+      Priority: 21
+      Conditions:
+        - Field: host-header
+          HostHeaderConfig:
+            Values: [auth.iam.teamofsilicons.com]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref AuthTargetGroup
+
+  ConsoleListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HttpsListenerArn
+      Priority: 22
+      Conditions:
+        - Field: host-header
+          HostHeaderConfig:
+            Values: [iam.teamofsilicons.com]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ConsoleTargetGroup
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: silicon-iam-production
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
+        SecurityGroupIds:
+          - !GetAtt InstanceSecurityGroup.GroupId
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          InstanceMetadataTags: enabled
+        Monitoring:
+          Enabled: true
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              DeleteOnTermination: true
+              Encrypted: true
+              VolumeSize: 24
+              VolumeType: gp3
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: silicon-iam-production
+              - Key: Service
+                Value: silicon-iam
+              - Key: Environment
+                Value: production
+          - ResourceType: volume
+            Tags:
+              - Key: Service
+                Value: silicon-iam
+              - Key: Environment
+                Value: production
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -euo pipefail
+            umask 077
+
+            REGION='${AWS::Region}'
+            ACCOUNT_ID='${AWS::AccountId}'
+            APP_SECRET_ARN='${AppSecretArn}'
+            DB_SECRET_ARN='${Database.MasterUserSecret.SecretArn}'
+            DB_HOST='${Database.Endpoint.Address}'
+            BACKEND_IMAGE='${BackendImageUri}'
+            FRONTEND_IMAGE='${FrontendImageUri}'
+
+            dnf install --assumeyes docker jq postgresql15
+            systemctl enable --now docker
+            systemctl enable --now amazon-ssm-agent
+
+            install -d -m 0700 /etc/silicon-iam /opt/silicon-iam
+            curl --fail --silent --show-error --location \
+              https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+              --output /opt/silicon-iam/aws-rds-global-bundle.pem
+            chmod 0644 /opt/silicon-iam/aws-rds-global-bundle.pem
+
+            aws ecr get-login-password --region "$REGION" \
+              | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
+            docker pull "$BACKEND_IMAGE"
+            docker pull "$FRONTEND_IMAGE"
+
+            APP_SECRET_JSON=$(aws secretsmanager get-secret-value --region "$REGION" \
+              --secret-id "$APP_SECRET_ARN" --query SecretString --output text)
+            DB_SECRET_JSON=$(aws secretsmanager get-secret-value --region "$REGION" \
+              --secret-id "$DB_SECRET_ARN" --query SecretString --output text)
+
+            if ! printf '%s' "$APP_SECRET_JSON" | jq -e '
+              [ .IAM_POSTMARK_SERVER_TOKEN, .IAM_TWILIO_ACCOUNT_SID,
+                .IAM_TWILIO_AUTH_TOKEN, .IAM_TWILIO_MESSAGING_SERVICE_SID,
+                .IAM_WORKOS_API_KEY, .IAM_WORKOS_CLIENT_ID,
+                .IAM_WORKOS_WEBHOOK_SECRET ]
+              | all(type == "string" and length > 0 and . != "REPLACE_IN_AWS_CONSOLE")
+            ' >/dev/null; then
+              echo 'Provider credentials have not been completed in Secrets Manager.' >&2
+              exit 1
+            fi
+
+            DB_MASTER_USER=$(printf '%s' "$DB_SECRET_JSON" | jq -r .username)
+            DB_MASTER_PASSWORD=$(printf '%s' "$DB_SECRET_JSON" | jq -r .password)
+            API_DB_PASSWORD=$(printf '%s' "$APP_SECRET_JSON" | jq -r .IAM_LOCAL_API_DATABASE_PASSWORD)
+            WORKER_DB_PASSWORD=$(printf '%s' "$APP_SECRET_JSON" | jq -r .IAM_LOCAL_WORKER_DATABASE_PASSWORD)
+            KEY_OPERATOR_DB_PASSWORD=$(printf '%s' "$APP_SECRET_JSON" | jq -r .IAM_LOCAL_KEY_OPERATOR_DATABASE_PASSWORD)
+
+            export PGHOST="$DB_HOST" PGPORT=5432 PGDATABASE=silicon_iam
+            export PGUSER="$DB_MASTER_USER" PGPASSWORD="$DB_MASTER_PASSWORD"
+            export PGSSLMODE=verify-full PGSSLROOTCERT=/opt/silicon-iam/aws-rds-global-bundle.pem
+
+            for attempt in $(seq 1 90); do
+              if pg_isready --timeout=5 >/dev/null 2>&1; then
+                break
+              fi
+              if [ "$attempt" -eq 90 ]; then
+                echo 'RDS did not become ready in time.' >&2
+                exit 1
+              fi
+              sleep 5
+            done
+
+            psql --set=ON_ERROR_STOP=1 \
+              --set=api_password="$API_DB_PASSWORD" \
+              --set=worker_password="$WORKER_DB_PASSWORD" \
+              --set=key_operator_password="$KEY_OPERATOR_DB_PASSWORD" <<'SQL'
+            DO $roles$
+            BEGIN
+              IF pg_catalog.to_regrole('silicon_iam_api') IS NULL THEN
+                CREATE ROLE silicon_iam_api NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+              END IF;
+              IF pg_catalog.to_regrole('silicon_iam_worker') IS NULL THEN
+                CREATE ROLE silicon_iam_worker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+              END IF;
+              IF pg_catalog.to_regrole('silicon_iam_key_operator') IS NULL THEN
+                CREATE ROLE silicon_iam_key_operator NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+              END IF;
+              IF pg_catalog.to_regrole('silicon_iam_api_runtime') IS NULL THEN
+                CREATE ROLE silicon_iam_api_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+              END IF;
+              IF pg_catalog.to_regrole('silicon_iam_worker_runtime') IS NULL THEN
+                CREATE ROLE silicon_iam_worker_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+              END IF;
+              IF pg_catalog.to_regrole('silicon_iam_key_operator_runtime') IS NULL THEN
+                CREATE ROLE silicon_iam_key_operator_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+              END IF;
+            END;
+            $roles$;
+            ALTER ROLE silicon_iam_api_runtime PASSWORD :'api_password';
+            ALTER ROLE silicon_iam_worker_runtime PASSWORD :'worker_password';
+            ALTER ROLE silicon_iam_key_operator_runtime PASSWORD :'key_operator_password';
+            GRANT silicon_iam_api TO silicon_iam_api_runtime;
+            GRANT silicon_iam_worker TO silicon_iam_worker_runtime;
+            GRANT silicon_iam_key_operator TO silicon_iam_key_operator_runtime;
+            SQL
+
+            DB_MASTER_PASSWORD_URI=$(printf '%s' "$DB_MASTER_PASSWORD" | jq -sRr @uri)
+            MIGRATOR_DATABASE_URL="postgresql://$DB_MASTER_USER:$DB_MASTER_PASSWORD_URI@$DB_HOST:5432/silicon_iam?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
+            docker run --rm --network host --read-only --cap-drop ALL \
+              --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 \
+              --volume /opt/silicon-iam/aws-rds-global-bundle.pem:/opt/silicon-iam/aws-rds-global-bundle.pem:ro \
+              --env IAM_ENVIRONMENT=production \
+              --env IAM_LOG_FILTER=silicon_iam=info \
+              --env IAM_MIGRATOR_DATABASE_URL="$MIGRATOR_DATABASE_URL" \
+              --env IAM_MIGRATOR_DATABASE_MAX_CONNECTIONS=2 \
+              --env IAM_MIGRATOR_DATABASE_ACQUIRE_TIMEOUT_SECONDS=10 \
+              --env IAM_MIGRATOR_DATABASE_STATEMENT_TIMEOUT_SECONDS=120 \
+              "$BACKEND_IMAGE" iam-migrate
+
+            GRANT_CONTAINER=$(docker create "$BACKEND_IMAGE")
+            docker cp "$GRANT_CONTAINER:/opt/silicon-iam/postgres/runtime-grants.sql" /opt/silicon-iam/runtime-grants.sql
+            docker rm "$GRANT_CONTAINER" >/dev/null
+            chmod 0400 /opt/silicon-iam/runtime-grants.sql
+            psql --set=ON_ERROR_STOP=1 --file=/opt/silicon-iam/runtime-grants.sql
+
+            API_DB_URL="postgresql://silicon_iam_api_runtime:$API_DB_PASSWORD@$DB_HOST:5432/silicon_iam?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
+            WORKER_DB_URL="postgresql://silicon_iam_worker_runtime:$WORKER_DB_PASSWORD@$DB_HOST:5432/silicon_iam?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
+
+            cat > /etc/silicon-iam/api.env <<EOF
+            IAM_ENVIRONMENT=production
+            IAM_BIND_ADDR=0.0.0.0:8080
+            IAM_PUBLIC_BASE_URL=https://backend.iam.teamofsilicons.com
+            IAM_AUTH_BASE_URL=https://auth.iam.teamofsilicons.com
+            IAM_CORS_ALLOWED_ORIGINS=https://auth.iam.teamofsilicons.com,https://iam.teamofsilicons.com
+            IAM_DATABASE_URL=$API_DB_URL
+            IAM_DATABASE_MAX_CONNECTIONS=12
+            IAM_DATABASE_MIN_CONNECTIONS=1
+            IAM_DATABASE_ACQUIRE_TIMEOUT_SECONDS=3
+            IAM_DATABASE_STATEMENT_TIMEOUT_SECONDS=10
+            IAM_LOG_FILTER=silicon_iam=info,tower_http=info
+            IAM_ALLOW_LOCAL_PROVIDERS=false
+            IAM_EXPOSE_LOCAL_OTPS=false
+            EOF
+            printf '%s' "$APP_SECRET_JSON" | jq -r '
+              [ "IAM_TOKEN_PEPPER_CURRENT_VERSION=" + .IAM_TOKEN_PEPPER_CURRENT_VERSION,
+                "IAM_TOKEN_PEPPER_KEYRING=" + .IAM_TOKEN_PEPPER_KEYRING,
+                "IAM_BLIND_INDEX_CURRENT_VERSION=" + .IAM_BLIND_INDEX_CURRENT_VERSION,
+                "IAM_BLIND_INDEX_KEYRING=" + .IAM_BLIND_INDEX_KEYRING,
+                "IAM_ENCRYPTION_CURRENT_VERSION=" + .IAM_ENCRYPTION_CURRENT_VERSION,
+                "IAM_ENCRYPTION_KEYRING=" + .IAM_ENCRYPTION_KEYRING,
+                "IAM_COOKIE_KEY=" + .IAM_COOKIE_KEY,
+                "IAM_POSTMARK_SERVER_TOKEN=" + .IAM_POSTMARK_SERVER_TOKEN,
+                "IAM_POSTMARK_FROM_EMAIL=" + .IAM_POSTMARK_FROM_EMAIL,
+                "IAM_TWILIO_ACCOUNT_SID=" + .IAM_TWILIO_ACCOUNT_SID,
+                "IAM_TWILIO_AUTH_TOKEN=" + .IAM_TWILIO_AUTH_TOKEN,
+                "IAM_TWILIO_MESSAGING_SERVICE_SID=" + .IAM_TWILIO_MESSAGING_SERVICE_SID,
+                "IAM_WORKOS_API_KEY=" + .IAM_WORKOS_API_KEY,
+                "IAM_WORKOS_CLIENT_ID=" + .IAM_WORKOS_CLIENT_ID,
+                "IAM_WORKOS_WEBHOOK_SECRET=" + .IAM_WORKOS_WEBHOOK_SECRET,
+                "IAM_IRIS_BASE_URL=" + .IAM_IRIS_BASE_URL ] | .[]
+            ' >> /etc/silicon-iam/api.env
+
+            cat > /etc/silicon-iam/worker.env <<EOF
+            IAM_ENVIRONMENT=production
+            IAM_AUTH_BASE_URL=https://auth.iam.teamofsilicons.com
+            IAM_DATABASE_URL=$WORKER_DB_URL
+            IAM_DATABASE_MAX_CONNECTIONS=8
+            IAM_DATABASE_MIN_CONNECTIONS=1
+            IAM_DATABASE_ACQUIRE_TIMEOUT_SECONDS=3
+            IAM_DATABASE_STATEMENT_TIMEOUT_SECONDS=10
+            IAM_LOG_FILTER=silicon_iam=info
+            IAM_ALLOW_LOCAL_PROVIDERS=false
+            EOF
+            printf '%s' "$APP_SECRET_JSON" | jq -r '
+              [ "IAM_ENCRYPTION_CURRENT_VERSION=" + .IAM_ENCRYPTION_CURRENT_VERSION,
+                "IAM_ENCRYPTION_KEYRING=" + .IAM_ENCRYPTION_KEYRING,
+                "IAM_POSTMARK_SERVER_TOKEN=" + .IAM_POSTMARK_SERVER_TOKEN,
+                "IAM_POSTMARK_FROM_EMAIL=" + .IAM_POSTMARK_FROM_EMAIL,
+                "IAM_TWILIO_ACCOUNT_SID=" + .IAM_TWILIO_ACCOUNT_SID,
+                "IAM_TWILIO_AUTH_TOKEN=" + .IAM_TWILIO_AUTH_TOKEN,
+                "IAM_TWILIO_MESSAGING_SERVICE_SID=" + .IAM_TWILIO_MESSAGING_SERVICE_SID,
+                "IAM_IRIS_BASE_URL=" + .IAM_IRIS_BASE_URL ] | .[]
+            ' >> /etc/silicon-iam/worker.env
+            chmod 0600 /etc/silicon-iam/api.env /etc/silicon-iam/worker.env
+
+            cat > /etc/systemd/system/silicon-iam-api.service <<EOF
+            [Unit]
+            Description=Silicon IAM production API
+            Requires=docker.service
+            After=docker.service network-online.target
+
+            [Service]
+            Restart=always
+            RestartSec=5
+            TimeoutStopSec=45
+            ExecStartPre=-/usr/bin/docker rm -f silicon-iam-api
+            ExecStart=/usr/bin/docker run --name silicon-iam-api --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 --volume /opt/silicon-iam/aws-rds-global-bundle.pem:/opt/silicon-iam/aws-rds-global-bundle.pem:ro --env-file /etc/silicon-iam/api.env --publish 8080:8080 --log-driver awslogs --log-opt awslogs-region=$REGION --log-opt awslogs-group=/silicon-iam/production/api --log-opt tag=api "$BACKEND_IMAGE" iam-api
+            ExecStop=/usr/bin/docker stop --time 35 silicon-iam-api
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            cat > /etc/systemd/system/silicon-iam-worker.service <<EOF
+            [Unit]
+            Description=Silicon IAM production worker
+            Requires=docker.service
+            After=docker.service network-online.target silicon-iam-api.service
+
+            [Service]
+            Restart=always
+            RestartSec=5
+            TimeoutStopSec=315
+            ExecStartPre=-/usr/bin/docker rm -f silicon-iam-worker
+            ExecStart=/usr/bin/docker run --name silicon-iam-worker --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 --volume /opt/silicon-iam/aws-rds-global-bundle.pem:/opt/silicon-iam/aws-rds-global-bundle.pem:ro --env-file /etc/silicon-iam/worker.env --log-driver awslogs --log-opt awslogs-region=$REGION --log-opt awslogs-group=/silicon-iam/production/worker --log-opt tag=worker "$BACKEND_IMAGE" iam-worker
+            ExecStop=/usr/bin/docker stop --time 310 silicon-iam-worker
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            cat > /etc/systemd/system/silicon-iam-frontend.service <<EOF
+            [Unit]
+            Description=Silicon IAM production auth and console frontends
+            Requires=docker.service
+            After=docker.service network-online.target
+
+            [Service]
+            Restart=always
+            RestartSec=5
+            TimeoutStopSec=20
+            ExecStartPre=-/usr/bin/docker rm -f silicon-iam-frontend
+            ExecStart=/usr/bin/docker run --name silicon-iam-frontend --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 --publish 8081:8081 --publish 8082:8082 --log-driver awslogs --log-opt awslogs-region=$REGION --log-opt awslogs-group=/silicon-iam/production/frontend --log-opt tag=frontend "$FRONTEND_IMAGE"
+            ExecStop=/usr/bin/docker stop --time 15 silicon-iam-frontend
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            systemctl daemon-reload
+            systemctl enable --now silicon-iam-api silicon-iam-worker silicon-iam-frontend
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - ApiListenerRule
+      - AuthListenerRule
+      - ConsoleListenerRule
+    Properties:
+      AutoScalingGroupName: silicon-iam-production
+      MinSize: "1"
+      MaxSize: "1"
+      DesiredCapacity: "1"
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      TargetGroupARNs:
+        - !Ref ApiTargetGroup
+        - !Ref AuthTargetGroup
+        - !Ref ConsoleTargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 1200
+      NewInstancesProtectedFromScaleIn: false
+      Tags:
+        - Key: Service
+          Value: silicon-iam
+          PropagateAtLaunch: true
+        - Key: Environment
+          Value: production
+          PropagateAtLaunch: true
+
+Outputs:
+  DatabaseEndpoint:
+    Value: !GetAtt Database.Endpoint.Address
+  DatabaseSecretArn:
+    Value: !GetAtt Database.MasterUserSecret.SecretArn
+  AutoScalingGroupName:
+    Value: !Ref AutoScalingGroup
+  ApiTargetGroupArn:
+    Value: !Ref ApiTargetGroup
+  AuthTargetGroupArn:
+    Value: !Ref AuthTargetGroup
+  ConsoleTargetGroupArn:
+    Value: !Ref ConsoleTargetGroup

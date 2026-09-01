@@ -50,6 +50,11 @@ COPY --from=builder /opt/silicon-iam/iam-worker /usr/local/bin/iam-worker
 COPY --from=builder /opt/silicon-iam/iam-migrate /usr/local/bin/iam-migrate
 COPY --from=builder /opt/silicon-iam/iam-bootstrap-admin /usr/local/bin/iam-bootstrap-admin
 COPY --from=builder /opt/silicon-iam/iam-activate-key-version /usr/local/bin/iam-activate-key-version
+# Keep the production grant manifest beside the binaries so an immutable image
+# contains everything required to initialize a replacement instance. The
+# long-running API and worker never execute this file; the deployment bootstrap
+# extracts it and applies it with the short-lived RDS migration principal.
+COPY --chown=10001:10001 deploy/postgres/runtime-grants.sql /opt/silicon-iam/postgres/runtime-grants.sql
 
 USER 10001:10001
 
