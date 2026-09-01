@@ -1,0 +1,129 @@
+//! Transaction-local PostgreSQL identity context for row-level security.
+
+use sqlx::{PgPool, Postgres, Transaction};
+use uuid::Uuid;
+
+/// Identity and tenant boundary applied to one database transaction.
+#[derive(Clone, Copy, Debug)]
+pub struct DatabaseContext {
+    /// Authenticated principal, if the operation is not public.
+    pub principal_id: Option<Uuid>,
+    /// Organization selected for an organization-scoped operation.
+    pub organization_id: Option<Uuid>,
+    /// Application selected for an application-scoped operation.
+    pub application_id: Option<Uuid>,
+    /// Public signup session authorized to finalize a Carbon.
+    pub signup_session_id: Option<Uuid>,
+}
+
+impl DatabaseContext {
+    /// Creates a context for a principal without a selected tenant.
+    #[must_use]
+    pub const fn principal(principal_id: Uuid) -> Self {
+        Self {
+            principal_id: Some(principal_id),
+            organization_id: None,
+            application_id: None,
+            signup_session_id: None,
+        }
+    }
+
+    /// Creates an organization-scoped principal context.
+    #[must_use]
+    pub const fn organization(principal_id: Uuid, organization_id: Uuid) -> Self {
+        Self {
+            principal_id: Some(principal_id),
+            organization_id: Some(organization_id),
+            application_id: None,
+            signup_session_id: None,
+        }
+    }
+
+    /// Creates an application-scoped principal context.
+    #[must_use]
+    pub const fn application(principal_id: Uuid, application_id: Uuid) -> Self {
+        Self {
+            principal_id: Some(principal_id),
+            organization_id: None,
+            application_id: Some(application_id),
+            signup_session_id: None,
+        }
+    }
+
+    /// Creates an anonymous context bound to a verified signup session.
+    #[must_use]
+    pub const fn signup(signup_session_id: Uuid) -> Self {
+        Self {
+            principal_id: None,
+            organization_id: None,
+            application_id: None,
+            signup_session_id: Some(signup_session_id),
+        }
+    }
+}
+
+/// Begins a transaction and installs RLS context with transaction-local scope.
+///
+/// # Errors
+///
+/// Returns an error when the transaction cannot begin or PostgreSQL rejects a
+/// context setting. No setting survives transaction commit, rollback, or pool
+/// reuse.
+pub async fn begin(
+    pool: &PgPool,
+    context: DatabaseContext,
+) -> Result<Transaction<'_, Postgres>, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        r"
+        SELECT
+            set_config('iam.principal_id', $1, true),
+            set_config('iam.organization_id', $2, true),
+            set_config('iam.application_id', $3, true),
+            set_config('iam.signup_session_id', $4, true)
+        ",
+    )
+    .bind(
+        context
+            .principal_id
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
+    )
+    .bind(
+        context
+            .organization_id
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
+    )
+    .bind(
+        context
+            .application_id
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
+    )
+    .bind(
+        context
+            .signup_session_id
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
+    )
+    .execute(&mut *transaction)
+    .await?;
+    Ok(transaction)
+}
+
+/// Selects an organization after resolving its public handle in a transaction.
+///
+/// # Errors
+///
+/// Returns an error if PostgreSQL rejects the transaction-local setting.
+pub async fn select_organization(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT set_config('iam.organization_id', $1, true)")
+        .bind(organization_id.to_string())
+        .execute(&mut **transaction)
+        .await?;
+    Ok(())
+}
