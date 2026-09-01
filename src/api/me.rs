@@ -1153,7 +1153,7 @@ mod tests {
                 decode(repeat('29', 17), 'hex'), decode(repeat('2a', 12), 'hex'), 1
               );
             INSERT INTO iam.silicon_webhook_subscriptions (
-                id, organization_id, silicon_id, endpoint_id, mode, own_tags_only
+                id, organization_id, silicon_id, endpoint_id, mode, tag_filter_enabled
             ) VALUES
               (
                 '{silicon_subscription_id}', '{organization_id}', '{silicon_id}',
@@ -1511,7 +1511,7 @@ mod tests {
         sqlx::query(
             r"
             UPDATE iam.silicon_webhook_subscriptions
-            SET mode = 'selected', own_tags_only = true
+            SET mode = 'selected', tag_filter_enabled = true
             WHERE id = $1
             ",
         )
