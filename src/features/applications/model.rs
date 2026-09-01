@@ -39,6 +39,7 @@ pub(super) struct AppRedirectPath {
 #[serde(deny_unknown_fields)]
 pub(super) struct ApplicationCreate {
     pub(super) app_id: String,
+    pub(super) org_id: String,
     pub(super) app_name: Option<String>,
     #[serde(rename = "app_logo")]
     pub(super) app_logo_uri: Option<String>,
@@ -128,7 +129,9 @@ pub(super) struct ApplicationAdminDecision {
 pub(super) struct ApplicationView {
     pub(super) id: Uuid,
     pub(super) app_id: String,
-    pub(super) owner_carbon_id: Uuid,
+    pub(super) organization_id: Uuid,
+    pub(super) org_id: String,
+    pub(super) created_by_carbon_id: Uuid,
     pub(super) app_name: Option<String>,
     pub(super) app_logo_uri: Option<String>,
     pub(super) review_status: String,
@@ -141,7 +144,8 @@ pub(super) struct ApplicationView {
 pub(super) struct ApplicationDetail {
     pub(super) id: Uuid,
     pub(super) app_id: String,
-    pub(super) owner: PublicActor,
+    pub(super) org_id: String,
+    pub(super) created_by: PublicActor,
     pub(super) app_name: Option<String>,
     pub(super) app_logo: Option<String>,
     pub(super) redirect_uris: Vec<String>,
@@ -399,7 +403,8 @@ mod tests {
         ApplicationDetail {
             id: Uuid::nil(),
             app_id: "example-app".to_owned(),
-            owner: actor(),
+            org_id: "example-org".to_owned(),
+            created_by: actor(),
             app_name: Some("Example".to_owned()),
             app_logo: None,
             redirect_uris: vec!["https://example.test/callback".to_owned()],
@@ -520,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_application_projection_omits_backend_consent_policy() {
+    fn organization_application_projection_omits_backend_consent_policy() {
         let owner = serde_json::to_value(application_detail(None)).unwrap_or(Value::Null);
         assert!(owner.get("notify_users").is_none());
 

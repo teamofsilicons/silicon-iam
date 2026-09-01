@@ -12,6 +12,7 @@ use super::error::ApiError;
 pub(super) struct Mutation {
     pub(super) actor_id: Option<Uuid>,
     pub(super) authentication_session_id: Option<Uuid>,
+    pub(super) organization_id: Uuid,
     pub(super) application_id: Uuid,
     pub(super) action: &'static str,
     pub(super) target_type: &'static str,
@@ -42,7 +43,7 @@ pub(super) async fn record(
                 id,
             }),
             authentication_session_id: mutation.authentication_session_id,
-            organization_id: None,
+            organization_id: Some(mutation.organization_id),
             application_id: Some(mutation.application_id),
             action: mutation.action,
             target_type: mutation.target_type,
@@ -59,7 +60,7 @@ pub(super) async fn record(
     events::enqueue_outbox(
         transaction,
         OutboxRecord {
-            organization_id: None,
+            organization_id: Some(mutation.organization_id),
             aggregate,
             event_ordinal: 1,
             event_type: mutation.event_type,

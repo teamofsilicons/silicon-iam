@@ -68,12 +68,11 @@ const SESSION_RESOURCE_OWNERSHIP_QUERY: &str = r"
 const APPLICATION_RESOURCE_OWNERSHIP_QUERY: &str = r"
     SELECT application.id
     FROM iam.applications AS application
-    JOIN iam.principals AS owner
-      ON owner.id = application.owner_carbon_id
-     AND owner.kind = 'carbon'
-     AND owner.status = 'active'
     WHERE application.id = $1
-      AND application.owner_carbon_id = $2
+      AND iam_private.is_active_organization_owner_or_admin(
+          application.organization_id,
+          $2
+      )
       AND application.deleted_at IS NULL
     FOR SHARE OF application
 ";
@@ -1050,9 +1049,13 @@ mod tests {
     }
 
     #[test]
-    fn client_secret_rotation_step_up_is_bound_to_an_owned_live_application() {
+    fn client_secret_rotation_step_up_is_bound_to_a_managed_live_application() {
         assert!(APPLICATION_RESOURCE_OWNERSHIP_QUERY.contains("application.id = $1"));
-        assert!(APPLICATION_RESOURCE_OWNERSHIP_QUERY.contains("application.owner_carbon_id = $2"));
+        assert!(
+            APPLICATION_RESOURCE_OWNERSHIP_QUERY
+                .contains("iam_private.is_active_organization_owner_or_admin")
+        );
+        assert!(APPLICATION_RESOURCE_OWNERSHIP_QUERY.contains("application.organization_id"));
         assert!(APPLICATION_RESOURCE_OWNERSHIP_QUERY.contains("application.deleted_at IS NULL"));
     }
 

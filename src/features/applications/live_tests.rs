@@ -12,6 +12,10 @@ use testcontainers_modules::postgres::Postgres;
 use uuid::Uuid;
 
 const CARBON_ID: Uuid = Uuid::from_u128(1);
+const ADMIN_CARBON_ID: Uuid = Uuid::from_u128(2);
+const ORGANIZATION_ID: Uuid = Uuid::from_u128(0x21);
+const OWNER_MEMBERSHIP_ID: Uuid = Uuid::from_u128(0x31);
+const ADMIN_MEMBERSHIP_ID: Uuid = Uuid::from_u128(0x32);
 const APP_A_ID: Uuid = Uuid::from_u128(0x11);
 const APP_B_ID: Uuid = Uuid::from_u128(0x12);
 const CONSENT_ID: Uuid = Uuid::from_u128(0x71);
@@ -44,6 +48,105 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     consent_revocation_cascades_to_tokens(&pool).await?;
     obo_proof_is_single_use(&pool).await?;
     committed_application_secret_revocation_wins_authentication(&pool).await?;
+    organization_management_authority_tracks_current_roles(&pool).await?;
+    application_tenancy_and_creator_are_immutable(&pool).await?;
+    Ok(())
+}
+
+async fn organization_management_authority_tracks_current_roles(
+    pool: &PgPool,
+) -> anyhow::Result<()> {
+    let initially_authorized = sqlx::query_scalar::<_, bool>(
+        "SELECT iam_private.is_active_organization_owner_or_admin($1, $2)",
+    )
+    .bind(ORGANIZATION_ID)
+    .bind(ADMIN_CARBON_ID)
+    .fetch_one(pool)
+    .await?;
+    ensure!(
+        initially_authorized,
+        "an active organization admin could not manage its applications"
+    );
+
+    sqlx::query(
+        r"
+        UPDATE iam.organization_memberships
+        SET org_role = 'member', role_granted_by_membership_id = NULL
+        WHERE id = $1
+        ",
+    )
+    .bind(ADMIN_MEMBERSHIP_ID)
+    .execute(pool)
+    .await?;
+    let authorized_after_demotion = sqlx::query_scalar::<_, bool>(
+        "SELECT iam_private.is_active_organization_owner_or_admin($1, $2)",
+    )
+    .bind(ORGANIZATION_ID)
+    .bind(ADMIN_CARBON_ID)
+    .fetch_one(pool)
+    .await?;
+    ensure!(
+        !authorized_after_demotion,
+        "a demoted organization admin retained Application management authority"
+    );
+
+    sqlx::query(
+        r"
+        UPDATE iam.organization_memberships
+        SET org_role = 'admin', role_granted_by_membership_id = $2
+        WHERE id = $1
+        ",
+    )
+    .bind(ADMIN_MEMBERSHIP_ID)
+    .bind(OWNER_MEMBERSHIP_ID)
+    .execute(pool)
+    .await?;
+    let authorized_after_repromotion = sqlx::query_scalar::<_, bool>(
+        "SELECT iam_private.is_active_organization_owner_or_admin($1, $2)",
+    )
+    .bind(ORGANIZATION_ID)
+    .bind(ADMIN_CARBON_ID)
+    .fetch_one(pool)
+    .await?;
+    ensure!(
+        authorized_after_repromotion,
+        "a re-promoted organization admin did not regain Application management authority"
+    );
+    Ok(())
+}
+
+async fn application_tenancy_and_creator_are_immutable(pool: &PgPool) -> anyhow::Result<()> {
+    let organization_change =
+        sqlx::query("UPDATE iam.applications SET organization_id = $2 WHERE id = $1")
+            .bind(APP_B_ID)
+            .bind(Uuid::from_u128(0x22))
+            .execute(pool)
+            .await
+            .expect_err("Application organization mutation unexpectedly succeeded");
+    ensure!(
+        organization_change
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref()
+            == Some("23514"),
+        "Application organization mutation did not fail through the immutable identity guard"
+    );
+
+    let creator_change =
+        sqlx::query("UPDATE iam.applications SET created_by_carbon_id = $2 WHERE id = $1")
+            .bind(APP_B_ID)
+            .bind(ADMIN_CARBON_ID)
+            .execute(pool)
+            .await
+            .expect_err("Application creator mutation unexpectedly succeeded");
+    ensure!(
+        creator_change
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref()
+            == Some("23514"),
+        "Application creator mutation did not fail through the immutable identity guard"
+    );
     Ok(())
 }
 
@@ -906,10 +1009,12 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
 
         INSERT INTO iam.principals (id, kind, status, activated_at) VALUES
           ('00000000-0000-0000-0000-000000000001', 'carbon', 'active', transaction_timestamp()),
+          ('00000000-0000-0000-0000-000000000002', 'carbon', 'active', transaction_timestamp()),
           ('00000000-0000-0000-0000-000000000011', 'application', 'active', transaction_timestamp()),
           ('00000000-0000-0000-0000-000000000012', 'application', 'active', transaction_timestamp());
-        INSERT INTO iam.carbons (id, carbon_id, display_name)
-        VALUES ('00000000-0000-0000-0000-000000000001', 'test_carbon', 'Test Carbon');
+        INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES
+          ('00000000-0000-0000-0000-000000000001', 'test_carbon', 'Test Carbon'),
+          ('00000000-0000-0000-0000-000000000002', 'test_admin', 'Test Admin');
         INSERT INTO iam.carbon_contacts (
             id, carbon_id, kind, ciphertext, nonce, encryption_key_version, verified_at
         ) VALUES
@@ -920,21 +1025,39 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
           ('00000000-0000-0000-0000-000000000003',
            '00000000-0000-0000-0000-000000000001', 'phone',
            decode(repeat('03', 17), 'hex'), decode(repeat('13', 12), 'hex'), 1,
+           transaction_timestamp()),
+          ('00000000-0000-0000-0000-000000000004',
+           '00000000-0000-0000-0000-000000000002', 'email',
+           decode(repeat('04', 17), 'hex'), decode(repeat('14', 12), 'hex'), 1,
+           transaction_timestamp()),
+          ('00000000-0000-0000-0000-000000000005',
+           '00000000-0000-0000-0000-000000000002', 'phone',
+           decode(repeat('05', 17), 'hex'), decode(repeat('15', 12), 'hex'), 1,
            transaction_timestamp());
         INSERT INTO iam.organizations (id, org_id, created_by_carbon_id, name)
         VALUES ('00000000-0000-0000-0000-000000000021', 'test_org',
                 '00000000-0000-0000-0000-000000000001', 'Test Organization');
         INSERT INTO iam.organization_memberships (
-            id, organization_id, principal_id, principal_kind, org_role
+            id, organization_id, principal_id, principal_kind, org_role,
+            job_role, role_granted_by_membership_id
         ) VALUES (
             '00000000-0000-0000-0000-000000000031',
             '00000000-0000-0000-0000-000000000021',
-            '00000000-0000-0000-0000-000000000001', 'carbon', 'owner'
+            '00000000-0000-0000-0000-000000000001', 'carbon', 'owner', '', NULL
+        ), (
+            '00000000-0000-0000-0000-000000000032',
+            '00000000-0000-0000-0000-000000000021',
+            '00000000-0000-0000-0000-000000000002', 'carbon', 'admin', '',
+            '00000000-0000-0000-0000-000000000031'
         );
-        INSERT INTO iam.applications (id, app_id, owner_carbon_id, review_status) VALUES
+        INSERT INTO iam.applications (
+            id, app_id, organization_id, created_by_carbon_id, review_status
+        ) VALUES
           ('00000000-0000-0000-0000-000000000011', 'app-alpha',
+           '00000000-0000-0000-0000-000000000021',
            '00000000-0000-0000-0000-000000000001', 'verified'),
           ('00000000-0000-0000-0000-000000000012', 'app-beta',
+           '00000000-0000-0000-0000-000000000021',
            '00000000-0000-0000-0000-000000000001', 'verified');
         INSERT INTO iam.application_secrets (
             id, application_id, secret_version, secret_prefix, secret_digest,

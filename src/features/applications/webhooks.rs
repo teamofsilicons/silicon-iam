@@ -267,6 +267,7 @@ pub(super) async fn replace(
         Mutation {
             actor_id: Some(carbon_id),
             authentication_session_id: Some(access.authentication_session_id),
+            organization_id: app.organization_id,
             application_id: app.id,
             action: "application.webhook.propose",
             target_type: "application_webhook",
@@ -418,7 +419,7 @@ pub(super) async fn replay_dead_letters(
                 id: carbon_id,
             },
             access.authentication_session_id,
-            None,
+            Some(app.organization_id),
             Some(app.id),
             &reset,
         )

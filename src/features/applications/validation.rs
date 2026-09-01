@@ -30,6 +30,7 @@ pub(super) fn app_id(value: &str) -> Result<(), ApiError> {
 
 pub(super) fn application_create(input: &model::ApplicationCreate) -> Result<(), ApiError> {
     app_id(&input.app_id)?;
+    org_id(&input.org_id)?;
     optional_text("app_name", input.app_name.as_deref(), 1, 200)?;
     optional_https_uri("app_logo_uri", input.app_logo_uri.as_deref(), 2_048)?;
     if input.redirect_uris.len() != 1 {

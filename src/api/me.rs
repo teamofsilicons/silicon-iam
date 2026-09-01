@@ -1056,9 +1056,24 @@ mod tests {
                 transaction_timestamp() + interval '1 day',
                 transaction_timestamp() + interval '2 days'
             );
-            INSERT INTO iam.applications (id, app_id, owner_carbon_id, review_status) VALUES
-              ('{retained_application_id}', 'projection-retained', '{carbon_id}', 'verified'),
-              ('{before_only_application_id}', 'projection-before', '{carbon_id}', 'verified');
+            INSERT INTO iam.organizations (id, org_id, created_by_carbon_id, name)
+            VALUES ('{organization_id}', 'projection-org', '{carbon_id}', 'Projection Org');
+            INSERT INTO iam.organization_memberships (
+                id, organization_id, principal_id, principal_kind, org_role, job_role
+            ) VALUES
+              ('{carbon_membership_id}', '{organization_id}', '{carbon_id}', 'carbon',
+               'owner', 'Platform engineer'),
+              ('{silicon_membership_id}', '{organization_id}', '{silicon_id}', 'silicon',
+               'member', 'Profile subscriber'),
+              ('{full_silicon_membership_id}', '{organization_id}', '{full_silicon_id}',
+               'silicon', 'member', 'Full subscriber');
+            INSERT INTO iam.applications (
+                id, app_id, organization_id, created_by_carbon_id, review_status
+            ) VALUES
+              ('{retained_application_id}', 'projection-retained', '{organization_id}',
+               '{carbon_id}', 'verified'),
+              ('{before_only_application_id}', 'projection-before', '{organization_id}',
+               '{carbon_id}', 'verified');
             INSERT INTO iam.application_requested_scopes (application_id, scope) VALUES
               ('{retained_application_id}', 'profile'),
               ('{retained_application_id}', 'email'),
@@ -1081,17 +1096,6 @@ mod tests {
               ('{retained_consent_id}', 'profile'),
               ('{retained_consent_id}', 'email'),
               ('{before_only_consent_id}', 'phone');
-            INSERT INTO iam.organizations (id, org_id, created_by_carbon_id, name)
-            VALUES ('{organization_id}', 'projection-org', '{carbon_id}', 'Projection Org');
-            INSERT INTO iam.organization_memberships (
-                id, organization_id, principal_id, principal_kind, org_role, job_role
-            ) VALUES
-              ('{carbon_membership_id}', '{organization_id}', '{carbon_id}', 'carbon',
-               'owner', 'Platform engineer'),
-              ('{silicon_membership_id}', '{organization_id}', '{silicon_id}', 'silicon',
-               'member', 'Profile subscriber'),
-              ('{full_silicon_membership_id}', '{organization_id}', '{full_silicon_id}',
-               'silicon', 'member', 'Full subscriber');
             INSERT INTO iam.carbon_membership_settings (
                 organization_id, membership_id, carbon_id
             ) VALUES ('{organization_id}', '{carbon_membership_id}', '{carbon_id}');

@@ -60,6 +60,73 @@ pub(super) const REVOKE_ACCESS_TOKENS_FOR_REMOVED_SCOPES_QUERY: &str = r"
 
 const CLIENT_SECRET_ROTATION_STEP_UP_ACTION: &str = "application.client_secret.rotate";
 
+async fn resolve_creation_organization(
+    transaction: &mut Transaction<'_, Postgres>,
+    carbon_id: Uuid,
+    organization_handle: &str,
+) -> Result<Uuid, ApiError> {
+    sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT organization.id
+        FROM iam.organizations AS organization
+        JOIN iam.organization_memberships AS membership
+          ON membership.organization_id = organization.id
+         AND membership.principal_id = $2
+         AND membership.principal_kind = 'carbon'
+         AND membership.org_role IN ('owner', 'admin')
+         AND membership.status = 'active'
+        JOIN iam.principals AS principal
+          ON principal.id = membership.principal_id
+         AND principal.kind = 'carbon'
+         AND principal.status = 'active'
+        WHERE organization.org_id = $1
+          AND organization.status = 'active'
+        FOR SHARE OF organization, membership, principal
+        ",
+    )
+    .bind(organization_handle)
+    .bind(carbon_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_creation_organization"))?
+    .ok_or_else(ApiError::not_found)
+}
+
+async fn lock_current_application_manager(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    carbon_id: Uuid,
+) -> Result<(), ApiError> {
+    let current = sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT membership.id
+        FROM iam.organizations AS organization
+        JOIN iam.organization_memberships AS membership
+          ON membership.organization_id = organization.id
+         AND membership.principal_id = $2
+         AND membership.principal_kind = 'carbon'
+         AND membership.org_role IN ('owner', 'admin')
+         AND membership.status = 'active'
+        JOIN iam.principals AS principal
+          ON principal.id = membership.principal_id
+         AND principal.kind = 'carbon'
+         AND principal.status = 'active'
+        WHERE organization.id = $1
+          AND organization.status = 'active'
+        FOR SHARE OF organization, membership, principal
+        ",
+    )
+    .bind(organization_id)
+    .bind(carbon_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_manager_lock"))?;
+    if current.is_none() {
+        return Err(ApiError::not_found());
+    }
+    Ok(())
+}
+
 pub(super) async fn list(
     State(state): State<ApiState>,
     Bearer(access): Bearer,
@@ -84,11 +151,14 @@ pub(super) async fn list(
     let mut rows = sqlx::query_as::<_, ApplicationView>(
         r"
         SELECT
-            application.id, application.app_id, application.owner_carbon_id,
+            application.id, application.app_id, application.organization_id,
+            organization.org_id, application.created_by_carbon_id,
             application.app_name, application.app_logo_uri,
             application.review_status, application.version,
             application.created_at, application.updated_at
         FROM iam.applications AS application
+        JOIN iam.organizations AS organization
+          ON organization.id = application.organization_id
         WHERE application.deleted_at IS NULL
           AND iam_private.can_read_application(application.id, $1)
           AND ($2::text IS NULL OR application.review_status = $2)
@@ -140,6 +210,7 @@ pub(super) async fn create(
     validation::application_create(&input)?;
     let canonical = serde_json::to_vec(&json!({
         "app_id": input.app_id,
+        "org_id": input.org_id,
         "app_name": input.app_name,
         "app_logo_uri": input.app_logo_uri,
         "redirect_uris": input.redirect_uris,
@@ -151,7 +222,12 @@ pub(super) async fn create(
     let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_create_context"))?;
-    let caller_scope = format!("carbon:{carbon_id}");
+    let organization_id =
+        resolve_creation_organization(&mut transaction, carbon_id, &input.org_id).await?;
+    context::select_organization(&mut transaction, organization_id)
+        .await
+        .map_err(|_| ApiError::internal("application_create_organization_context"))?;
+    let caller_scope = format!("carbon:{carbon_id}:organization:{organization_id}");
     let claim = idempotency::claim::<ApplicationCreated>(
         &mut transaction,
         &state.crypto,
@@ -233,12 +309,14 @@ pub(super) async fn create(
     sqlx::query(
         r"
         INSERT INTO iam.applications (
-            id, app_id, owner_carbon_id, app_name, app_logo_uri
-        ) VALUES ($1, $2, $3, $4, $5)
+            id, app_id, organization_id, created_by_carbon_id,
+            app_name, app_logo_uri
+        ) VALUES ($1, $2, $3, $4, $5, $6)
         ",
     )
     .bind(application_id)
     .bind(&input.app_id)
+    .bind(organization_id)
     .bind(carbon_id)
     .bind(&input.app_name)
     .bind(&input.app_logo_uri)
@@ -356,6 +434,7 @@ pub(super) async fn create(
         Mutation {
             actor_id: Some(carbon_id),
             authentication_session_id: Some(access.authentication_session_id),
+            organization_id,
             application_id,
             action: "application.create",
             target_type: "application",
@@ -370,6 +449,8 @@ pub(super) async fn create(
             })),
             metadata: json!({
                 "application_id": application_id,
+                "organization_id": organization_id,
+                "org_id": input.org_id,
                 "requested_scope_count": input.requested_scopes.len(),
                 "redirect_uri_count": input.redirect_uris.len(),
                 "obo_endpoint_count": input.obo_endpoints.len(),
@@ -541,6 +622,7 @@ pub(super) async fn rotate_client_secret(
         Mutation {
             actor_id: Some(carbon_id),
             authentication_session_id: Some(access.authentication_session_id),
+            organization_id: app.organization_id,
             application_id: app.id,
             action: "application.client_secret.rotate",
             target_type: "application_secret",
@@ -699,6 +781,7 @@ pub(super) async fn add_redirect_uri(
         &mut transaction,
         access.authentication_session_id,
         carbon_id,
+        app.organization_id,
         app.id,
         application_version,
         redirect_uri_id,
@@ -806,6 +889,7 @@ pub(super) async fn retire_redirect_uri(
         &mut transaction,
         access.authentication_session_id,
         carbon_id,
+        app.organization_id,
         app.id,
         application_version,
         path.redirect_uri_id,
@@ -845,7 +929,8 @@ pub(super) async fn patch(
     let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_patch_context"))?;
-    let caller_scope = format!("carbon:{carbon_id}:application:{}", path.app_id);
+    let claim_app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
+    let caller_scope = format!("carbon:{carbon_id}:application:{}", claim_app.id);
     let claim = idempotency::claim::<ApplicationDetail>(
         &mut transaction,
         &state.crypto,
@@ -979,6 +1064,7 @@ pub(super) async fn patch(
         Mutation {
             actor_id: Some(carbon_id),
             authentication_session_id: Some(access.authentication_session_id),
+            organization_id: before.organization_id,
             application_id: before.id,
             action: "application.update",
             target_type: "application",
@@ -1032,12 +1118,18 @@ pub(super) async fn admin_list(
     let (at, id) = cursor.map_or((None, None), |cursor| (Some(cursor.at), Some(cursor.id)));
     let mut rows = sqlx::query_as::<_, ApplicationView>(
         r"
-        SELECT id, app_id, owner_carbon_id, app_name, app_logo_uri,
-               review_status, version, created_at, updated_at
-        FROM iam.applications
-        WHERE ($1::text IS NULL OR review_status = $1)
-          AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))
-        ORDER BY created_at DESC, id DESC
+        SELECT application.id, application.app_id, application.organization_id,
+               organization.org_id, application.created_by_carbon_id,
+               application.app_name, application.app_logo_uri,
+               application.review_status, application.version,
+               application.created_at, application.updated_at
+        FROM iam.applications AS application
+        JOIN iam.organizations AS organization
+          ON organization.id = application.organization_id
+        WHERE ($1::text IS NULL OR application.review_status = $1)
+          AND ($2::timestamptz IS NULL
+               OR (application.created_at, application.id) < ($2, $3))
+        ORDER BY application.created_at DESC, application.id DESC
         LIMIT $4
         ",
     )
@@ -1249,6 +1341,7 @@ pub(super) async fn admin_decide(
         Mutation {
             actor_id: Some(carbon_id),
             authentication_session_id: Some(access.authentication_session_id),
+            organization_id: app.organization_id,
             application_id: app.id,
             action: if deleted {
                 "application.delete"
@@ -1322,10 +1415,15 @@ async fn resolve_admin_app_for_claim(
 ) -> Result<ApplicationView, ApiError> {
     let app = sqlx::query_as::<_, ApplicationView>(
         r"
-        SELECT id, app_id, owner_carbon_id, app_name, app_logo_uri,
-               review_status, version, created_at, updated_at
-        FROM iam.applications
-        WHERE app_id = $1
+        SELECT application.id, application.app_id, application.organization_id,
+               organization.org_id, application.created_by_carbon_id,
+               application.app_name, application.app_logo_uri,
+               application.review_status, application.version,
+               application.created_at, application.updated_at
+        FROM iam.applications AS application
+        JOIN iam.organizations AS organization
+          ON organization.id = application.organization_id
+        WHERE application.app_id = $1
         ",
     )
     .bind(app_id)
@@ -1333,11 +1431,17 @@ async fn resolve_admin_app_for_claim(
     .await
     .map_err(|_| ApiError::internal("admin_application_claim_resolve"))?
     .ok_or_else(ApiError::not_found)?;
-    sqlx::query("SELECT set_config('iam.application_id', $1, true)")
-        .bind(app.id.to_string())
-        .execute(&mut **transaction)
-        .await
-        .map_err(|_| ApiError::internal("admin_application_claim_context"))?;
+    sqlx::query(
+        r"
+        SELECT set_config('iam.application_id', $1, true),
+               set_config('iam.organization_id', $2, true)
+        ",
+    )
+    .bind(app.id.to_string())
+    .bind(app.organization_id.to_string())
+    .execute(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("admin_application_claim_context"))?;
     Ok(app)
 }
 
@@ -1359,18 +1463,23 @@ async fn resolve_app(
     let app = if for_update {
         sqlx::query_as::<_, ApplicationView>(
             r"
-            SELECT id, app_id, owner_carbon_id, app_name, app_logo_uri,
-                   review_status, version, created_at, updated_at
-            FROM iam.applications
-            WHERE app_id = $1 AND deleted_at IS NULL
+            SELECT application.id, application.app_id, application.organization_id,
+                   organization.org_id, application.created_by_carbon_id,
+                   application.app_name, application.app_logo_uri,
+                   application.review_status, application.version,
+                   application.created_at, application.updated_at
+            FROM iam.applications AS application
+            JOIN iam.organizations AS organization
+              ON organization.id = application.organization_id
+            WHERE application.app_id = $1 AND application.deleted_at IS NULL
               AND CASE $3::text
-                    WHEN 'read' THEN iam_private.can_read_application(id, $2)
-                    WHEN 'technical' THEN iam_private.can_manage_application_technical(id, $2)
-                    WHEN 'manage' THEN iam_private.can_manage_application(id, $2)
+                    WHEN 'read' THEN iam_private.can_read_application(application.id, $2)
+                    WHEN 'technical' THEN iam_private.can_manage_application_technical(application.id, $2)
+                    WHEN 'manage' THEN iam_private.can_manage_application(application.id, $2)
                     WHEN 'admin' THEN TRUE
                     ELSE FALSE
                   END
-            FOR UPDATE
+            FOR UPDATE OF application
             ",
         )
         .bind(app_id)
@@ -1381,14 +1490,19 @@ async fn resolve_app(
     } else {
         sqlx::query_as::<_, ApplicationView>(
             r"
-            SELECT id, app_id, owner_carbon_id, app_name, app_logo_uri,
-                   review_status, version, created_at, updated_at
-            FROM iam.applications
-            WHERE app_id = $1 AND deleted_at IS NULL
+            SELECT application.id, application.app_id, application.organization_id,
+                   organization.org_id, application.created_by_carbon_id,
+                   application.app_name, application.app_logo_uri,
+                   application.review_status, application.version,
+                   application.created_at, application.updated_at
+            FROM iam.applications AS application
+            JOIN iam.organizations AS organization
+              ON organization.id = application.organization_id
+            WHERE application.app_id = $1 AND application.deleted_at IS NULL
               AND CASE $3::text
-                    WHEN 'read' THEN iam_private.can_read_application(id, $2)
-                    WHEN 'technical' THEN iam_private.can_manage_application_technical(id, $2)
-                    WHEN 'manage' THEN iam_private.can_manage_application(id, $2)
+                    WHEN 'read' THEN iam_private.can_read_application(application.id, $2)
+                    WHEN 'technical' THEN iam_private.can_manage_application_technical(application.id, $2)
+                    WHEN 'manage' THEN iam_private.can_manage_application(application.id, $2)
                     WHEN 'admin' THEN TRUE
                     ELSE FALSE
                   END
@@ -1402,11 +1516,20 @@ async fn resolve_app(
     }
     .map_err(|_| ApiError::internal("application_resolve"))?
     .ok_or_else(ApiError::not_found)?;
-    sqlx::query("SELECT set_config('iam.application_id', $1, true)")
-        .bind(app.id.to_string())
-        .execute(&mut **transaction)
-        .await
-        .map_err(|_| ApiError::internal("application_context_select"))?;
+    if let Some(carbon_id) = carbon_id {
+        lock_current_application_manager(transaction, app.organization_id, carbon_id).await?;
+    }
+    sqlx::query(
+        r"
+        SELECT set_config('iam.application_id', $1, true),
+               set_config('iam.organization_id', $2, true)
+        ",
+    )
+    .bind(app.id.to_string())
+    .bind(app.organization_id.to_string())
+    .execute(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_context_select"))?;
     Ok(app)
 }
 
@@ -1418,9 +1541,15 @@ pub(super) async fn load_detail(
 ) -> Result<ApplicationDetail, ApiError> {
     let application = sqlx::query_as::<_, ApplicationView>(
         r"
-        SELECT id, app_id, owner_carbon_id, app_name, app_logo_uri,
-               review_status, version, created_at, updated_at
-        FROM iam.applications WHERE id = $1
+        SELECT application.id, application.app_id, application.organization_id,
+               organization.org_id, application.created_by_carbon_id,
+               application.app_name, application.app_logo_uri,
+               application.review_status, application.version,
+               application.created_at, application.updated_at
+        FROM iam.applications AS application
+        JOIN iam.organizations AS organization
+          ON organization.id = application.organization_id
+        WHERE application.id = $1
         ",
     )
     .bind(application_id)
@@ -1440,12 +1569,12 @@ pub(super) async fn load_detail(
     } else {
         None
     };
-    let owner_public_id =
+    let creator_public_id =
         sqlx::query_scalar::<_, String>("SELECT carbon_id FROM iam.carbons WHERE id = $1")
-            .bind(application.owner_carbon_id)
+            .bind(application.created_by_carbon_id)
             .fetch_one(&mut **transaction)
             .await
-            .map_err(|_| ApiError::internal("application_owner_public_id"))?;
+            .map_err(|_| ApiError::internal("application_creator_public_id"))?;
     let requested_scopes = sqlx::query_scalar::<_, String>(
         r"
         SELECT scope FROM iam.application_requested_scopes
@@ -1528,10 +1657,11 @@ pub(super) async fn load_detail(
     Ok(ApplicationDetail {
         id: application.id,
         app_id: application.app_id,
-        owner: PublicActor {
-            principal_id: application.owner_carbon_id,
+        org_id: application.org_id,
+        created_by: PublicActor {
+            principal_id: application.created_by_carbon_id,
             actor_type: ActorType::Carbon.as_str().to_owned(),
-            public_id: owner_public_id,
+            public_id: creator_public_id,
         },
         app_name: application.app_name,
         app_logo: application.app_logo_uri,
@@ -2089,6 +2219,7 @@ async fn record_redirect_mutation(
     transaction: &mut Transaction<'_, Postgres>,
     authentication_session_id: Uuid,
     carbon_id: Uuid,
+    organization_id: Uuid,
     application_id: Uuid,
     application_version: i64,
     redirect_uri_id: Uuid,
@@ -2101,6 +2232,7 @@ async fn record_redirect_mutation(
         Mutation {
             actor_id: Some(carbon_id),
             authentication_session_id: Some(authentication_session_id),
+            organization_id,
             application_id,
             action,
             target_type: "application_redirect_uri",

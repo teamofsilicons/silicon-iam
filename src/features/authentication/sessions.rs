@@ -1515,6 +1515,8 @@ mod tests {
         let code_b = Uuid::from_u128(0x36_0f);
         let endpoint_b = Uuid::from_u128(0x36_10);
         let signing_key_b = Uuid::from_u128(0x36_11);
+        let organization_id = Uuid::from_u128(0x36_14);
+        let owner_membership_id = Uuid::from_u128(0x36_15);
 
         sqlx::query(
             r"
@@ -1571,18 +1573,44 @@ mod tests {
         .bind(carbon_id)
         .execute(&pool)
         .await?;
+        let mut setup = pool.begin().await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.organizations (id, org_id, created_by_carbon_id, name)
+            VALUES ($1, 'logout-org', $2, 'Logout Organization')
+            ",
+        )
+        .bind(organization_id)
+        .bind(carbon_id)
+        .execute(&mut *setup)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.organization_memberships (
+                id, organization_id, principal_id, principal_kind, org_role
+            ) VALUES ($1, $2, $3, 'carbon', 'owner')
+            ",
+        )
+        .bind(owner_membership_id)
+        .bind(organization_id)
+        .bind(carbon_id)
+        .execute(&mut *setup)
+        .await?;
+        setup.commit().await?;
         sqlx::query(
             r"
             INSERT INTO iam.applications (
-                id, app_id, owner_carbon_id, app_name, review_status
+                id, app_id, organization_id, created_by_carbon_id,
+                app_name, review_status
             ) VALUES
-                ($1, 'logout-app-a', $3, 'Logout App A', 'verified'),
-                ($2, 'logout-app-b', $3, 'Logout App B', 'verified')
+                ($1, 'logout-app-a', $4, $3, 'Logout App A', 'verified'),
+                ($2, 'logout-app-b', $4, $3, 'Logout App B', 'verified')
             ",
         )
         .bind(app_a)
         .bind(app_b)
         .bind(carbon_id)
+        .bind(organization_id)
         .execute(&pool)
         .await?;
         sqlx::query(

@@ -523,6 +523,7 @@ DECLARE
         'has_organization_capability',
         'has_platform_capability',
         'is_active_organization_member',
+        'is_active_organization_owner_or_admin',
         'is_organization_creator',
         'is_valid_sso_callback_correlation',
         'list_active_carbon_login_contacts',
