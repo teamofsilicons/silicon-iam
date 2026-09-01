@@ -221,7 +221,6 @@ fn token_class(token: &SecretString) -> Result<(DigestPurpose, &'static str), Ac
         Some("cat_") => Ok((DigestPurpose::CarbonAccessToken, "carbon_access")),
         Some("sat_") => Ok((DigestPurpose::SiliconAccessToken, "silicon_access")),
         Some("oat_") => Ok((DigestPurpose::ApplicationAccessToken, "application_access")),
-        Some("svt_") => Ok((DigestPurpose::ServiceAccessToken, "service_access")),
         _ => Err(AccessTokenError::InvalidFormat),
     }
 }
@@ -268,6 +267,12 @@ mod tests {
         let short = SecretString::from("cat_short".to_owned());
         assert!(matches!(
             token_class(&short),
+            Err(AccessTokenError::InvalidFormat)
+        ));
+
+        let retired_service_token = SecretString::from(format!("svt_{}", "A".repeat(43)));
+        assert!(matches!(
+            token_class(&retired_service_token),
             Err(AccessTokenError::InvalidFormat)
         ));
     }

@@ -11,24 +11,29 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::{
-    api::{ApiState, authentication::Authenticated},
-    application::ports::{EmailOtp, SmsOtp},
+    api::{
+        ApiState,
+        authentication::{Authenticated, LogoutAuthenticated},
+    },
     domain::auth::CarbonId,
     error::AppError,
     infrastructure::{
         browser_session,
-        postgres::rate_limit::{self, RateLimitPolicy},
+        postgres::{
+            rate_limit::{self, RateLimitPolicy},
+            step_up::StepUpToken,
+        },
     },
 };
 
 use super::{
     contacts,
     database::expired,
-    idempotency::IdempotencyKey,
+    idempotency::{IdempotencyKey, Outcome},
     login,
     model::{
         AvailabilityResponse, ContactChannel, EmailInput, LoginChallengeInput, LoginEventPage,
-        LoginVerificationOutcome, LogoutInput, PageQuery, PhoneInput, RefreshInput,
+        LoginVerificationOutcome, LogoutInput, LogoutMode, PageQuery, PhoneInput, RefreshInput,
         RefreshMutationOutcome, SessionPage, SignupCompletionInput, StepUpChallengeInput,
         StepUpVerificationOutcome, TokenResponse, VerificationInput, VerificationOutcome,
         VerifiedResponse,
@@ -41,16 +46,7 @@ pub(super) async fn create_signup_session(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let key = IdempotencyKey::from_headers(&headers)?;
-    enforce_limit(
-        &state,
-        "signup_session_create",
-        key.as_secret(),
-        20,
-        Duration::from_hours(1),
-    )
-    .await?;
-    let response = signup::create_session(&state, &key).await?;
-    Ok(no_store_json(StatusCode::CREATED, response))
+    idempotent_no_store_json(signup::create_session(&state, &key).await?)
 }
 
 pub(super) async fn start_signup_email(
@@ -61,10 +57,7 @@ pub(super) async fn start_signup_email(
 ) -> Result<Response, AppError> {
     let key = IdempotencyKey::from_headers(&headers)?;
     let contact = validation::email(json_body(payload)?.email)?;
-    enforce_contact_limit(&state, "signup_email_start", session_id, &contact).await?;
-    let result = signup::start_contact(&state, &key, session_id, contact).await?;
-    deliver_one(&state, result.delivery.as_ref()).await;
-    Ok(no_store_json(StatusCode::ACCEPTED, result.response))
+    idempotent_no_store_json(signup::start_contact(&state, &key, session_id, contact).await?)
 }
 
 pub(super) async fn start_signup_phone(
@@ -75,10 +68,7 @@ pub(super) async fn start_signup_phone(
 ) -> Result<Response, AppError> {
     let key = IdempotencyKey::from_headers(&headers)?;
     let contact = validation::phone(json_body(payload)?.phone_number)?;
-    enforce_contact_limit(&state, "signup_phone_start", session_id, &contact).await?;
-    let result = signup::start_contact(&state, &key, session_id, contact).await?;
-    deliver_one(&state, result.delivery.as_ref()).await;
-    Ok(no_store_json(StatusCode::ACCEPTED, result.response))
+    idempotent_no_store_json(signup::start_contact(&state, &key, session_id, contact).await?)
 }
 
 pub(super) async fn verify_signup_email(
@@ -86,7 +76,7 @@ pub(super) async fn verify_signup_email(
     Path(session_id): Path<Uuid>,
     headers: HeaderMap,
     payload: Result<Json<VerificationInput>, JsonRejection>,
-) -> Result<Json<VerifiedResponse>, AppError> {
+) -> Result<Response, AppError> {
     verify_signup(
         &state,
         &headers,
@@ -102,7 +92,7 @@ pub(super) async fn verify_signup_phone(
     Path(session_id): Path<Uuid>,
     headers: HeaderMap,
     payload: Result<Json<VerificationInput>, JsonRejection>,
-) -> Result<Json<VerifiedResponse>, AppError> {
+) -> Result<Response, AppError> {
     verify_signup(
         &state,
         &headers,
@@ -124,17 +114,7 @@ pub(super) async fn complete_signup(
         json_body(payload)?,
         state.settings.environment == crate::config::RuntimeEnvironment::Production,
     )?;
-    let scope = SecretString::from(session_id.to_string());
-    enforce_limit(
-        &state,
-        "signup_complete",
-        &scope,
-        10,
-        Duration::from_hours(1),
-    )
-    .await?;
-    let response = signup::complete_signup(&state, &key, session_id, input).await?;
-    Ok(no_store_json(StatusCode::CREATED, response))
+    idempotent_no_store_json(signup::complete_signup(&state, &key, session_id, input).await?)
 }
 
 pub(super) async fn carbon_id_availability(
@@ -169,18 +149,7 @@ pub(super) async fn create_login_challenge(
 ) -> Result<Response, AppError> {
     let key = IdempotencyKey::from_headers(&headers)?;
     let identifier = validation::login_identifier(json_body(payload)?)?;
-    let scope = login_scope(&identifier);
-    enforce_limit(
-        &state,
-        "login_challenge_create",
-        &scope,
-        5,
-        Duration::from_mins(10),
-    )
-    .await?;
-    let result = login::create_challenge(&state, &key, identifier).await?;
-    deliver_many(&state, &result.deliveries).await;
-    Ok(no_store_json(StatusCode::CREATED, result.response))
+    idempotent_no_store_json(login::create_challenge(&state, &key, identifier).await?)
 }
 
 pub(super) async fn verify_login_challenge(
@@ -191,19 +160,15 @@ pub(super) async fn verify_login_challenge(
 ) -> Result<Response, AppError> {
     let key = IdempotencyKey::from_headers(&headers)?;
     let code = validation::verification_code(json_body(payload)?.code)?;
-    let scope = SecretString::from(session_id.to_string());
-    enforce_limit(
-        &state,
-        "login_challenge_verify",
-        &scope,
-        5,
-        Duration::from_mins(10),
-    )
-    .await?;
-    match login::verify_challenge(&state, &key, session_id, code).await? {
-        LoginVerificationOutcome::Success(response) => login_success_response(&state, response),
-        LoginVerificationOutcome::Invalid => Err(invalid_code()),
-        LoginVerificationOutcome::Expired => Err(expired()),
+    let outcome = login::verify_challenge(&state, &key, session_id, code).await?;
+    let status = outcome.status;
+    let replayed = outcome.replayed;
+    match outcome.value {
+        LoginVerificationOutcome::Success(response) => {
+            login_success_response(&state, status, response, replayed)
+        }
+        LoginVerificationOutcome::Invalid => idempotent_error(invalid_code(), status, replayed),
+        LoginVerificationOutcome::Expired => idempotent_error(expired(), status, replayed),
     }
 }
 
@@ -215,24 +180,7 @@ pub(super) async fn create_step_up_challenge(
 ) -> Result<Response, AppError> {
     let key = IdempotencyKey::from_headers(&headers)?;
     let input = json_body(payload)?;
-    let scope = SecretString::from(format!(
-        "{}:{}:{}:{}",
-        context.subject.id,
-        context.authentication_session_id,
-        input.action.database_value(),
-        input.channel.database_value(),
-    ));
-    enforce_limit(
-        &state,
-        "step_up_challenge_create",
-        &scope,
-        5,
-        Duration::from_mins(10),
-    )
-    .await?;
-    let result = step_up::create_challenge(&state, &context, &key, input).await?;
-    deliver_one(&state, result.delivery.as_ref()).await;
-    Ok(no_store_json(StatusCode::CREATED, result.response))
+    idempotent_no_store_json(step_up::create_challenge(&state, &context, &key, input).await?)
 }
 
 pub(super) async fn verify_step_up_challenge(
@@ -244,22 +192,17 @@ pub(super) async fn verify_step_up_challenge(
 ) -> Result<Response, AppError> {
     let key = IdempotencyKey::from_headers(&headers)?;
     let code = validation::verification_code(json_body(payload)?.code)?;
-    let scope = SecretString::from(format!(
-        "{}:{}:{}",
-        context.subject.id, context.authentication_session_id, session_id,
-    ));
-    enforce_limit(
-        &state,
-        "step_up_challenge_verify",
-        &scope,
-        5,
-        Duration::from_mins(10),
-    )
-    .await?;
-    match step_up::verify_challenge(&state, &context, &key, session_id, code).await? {
-        StepUpVerificationOutcome::Success(response) => Ok(no_store_json(StatusCode::OK, response)),
-        StepUpVerificationOutcome::Invalid => Err(invalid_code()),
-        StepUpVerificationOutcome::Expired => Err(expired()),
+    let outcome = step_up::verify_challenge(&state, &context, &key, session_id, code).await?;
+    let status = outcome.status;
+    let replayed = outcome.replayed;
+    match outcome.value {
+        StepUpVerificationOutcome::Success(response) => idempotent_no_store_json(Outcome {
+            status,
+            value: response,
+            replayed,
+        }),
+        StepUpVerificationOutcome::Invalid => idempotent_error(invalid_code(), status, replayed),
+        StepUpVerificationOutcome::Expired => idempotent_error(expired(), status, replayed),
     }
 }
 
@@ -270,23 +213,24 @@ pub(super) async fn refresh_tokens(
 ) -> Result<Response, AppError> {
     let key = IdempotencyKey::from_headers(&headers)?;
     let token = validation::refresh_token(json_body(payload)?.refresh_token)?;
-    enforce_limit(
-        &state,
-        "refresh_token_rotate",
-        &token,
-        30,
-        Duration::from_mins(1),
-    )
-    .await?;
-    match refresh::rotate(&state, &key, token).await? {
-        RefreshMutationOutcome::Success(response) => Ok(no_store_json(StatusCode::OK, response)),
-        RefreshMutationOutcome::ReplayRevoked => Err(AppError::Unauthenticated),
+    let outcome = refresh::rotate(&state, &key, token).await?;
+    let status = outcome.status;
+    let replayed = outcome.replayed;
+    match outcome.value {
+        RefreshMutationOutcome::Success(response) => idempotent_no_store_json(Outcome {
+            status,
+            value: response,
+            replayed,
+        }),
+        RefreshMutationOutcome::ReplayRevoked => {
+            idempotent_error(AppError::Unauthenticated, status, replayed)
+        }
     }
 }
 
 pub(super) async fn logout(
     State(state): State<ApiState>,
-    Authenticated(context): Authenticated,
+    identity: LogoutAuthenticated,
     headers: HeaderMap,
     payload: Result<Option<Json<LogoutInput>>, JsonRejection>,
 ) -> Result<Response, AppError> {
@@ -295,8 +239,21 @@ pub(super) async fn logout(
         .map_err(|_| validation::validation("body", "must match the documented JSON schema"))?
         .map_or_default(|Json(input)| input)
         .mode;
-    sessions::logout(&state, &context, &key, mode).await?;
-    Ok(cleared_browser_session_response())
+    let step_up_token = if matches!(mode, LogoutMode::AllSessions) {
+        optional_step_up_token(&headers)?
+    } else {
+        None
+    };
+    let outcome = sessions::logout(
+        &state,
+        identity.principal_id,
+        identity.authentication_session_id,
+        &key,
+        step_up_token.as_ref(),
+        mode,
+    )
+    .await?;
+    cleared_browser_session_response(outcome.status, outcome.replayed)
 }
 
 pub(super) async fn list_sessions(
@@ -318,11 +275,14 @@ pub(super) async fn revoke_session(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let key = IdempotencyKey::from_headers(&headers)?;
-    sessions::revoke_session(&state, &context, &key, session_id).await?;
+    let step_up_token = optional_step_up_token(&headers)?;
+    let outcome =
+        sessions::revoke_session(&state, &context, &key, step_up_token.as_ref(), session_id)
+            .await?;
     if session_id == context.authentication_session_id {
-        Ok(cleared_browser_session_response())
+        cleared_browser_session_response(outcome.status, outcome.replayed)
     } else {
-        Ok(StatusCode::NO_CONTENT.into_response())
+        empty_idempotent_response(outcome.status, outcome.replayed)
     }
 }
 
@@ -344,45 +304,43 @@ async fn verify_signup(
     session_id: Uuid,
     channel: ContactChannel,
     input: VerificationInput,
-) -> Result<Json<VerifiedResponse>, AppError> {
+) -> Result<Response, AppError> {
     let key = IdempotencyKey::from_headers(headers)?;
     let code = validation::verification_code(input.code)?;
-    let scope = SecretString::from(format!("{}:{}", session_id, channel.database_value()));
-    enforce_limit(
-        state,
-        "signup_contact_verify",
-        &scope,
-        5,
-        Duration::from_mins(10),
-    )
-    .await?;
-    match signup::verify_contact(state, &key, session_id, channel, code).await? {
-        VerificationOutcome::Verified => Ok(Json(VerifiedResponse { verified: true })),
-        VerificationOutcome::Invalid => Err(invalid_code()),
-        VerificationOutcome::Expired => Err(expired()),
+    let outcome = signup::verify_contact(state, &key, session_id, channel, code).await?;
+    let status = outcome.status;
+    let replayed = outcome.replayed;
+    match outcome.value {
+        VerificationOutcome::Verified => idempotent_json(Outcome {
+            status,
+            value: VerifiedResponse { verified: true },
+            replayed,
+        }),
+        VerificationOutcome::Invalid => idempotent_error(invalid_code(), status, replayed),
+        VerificationOutcome::Expired => idempotent_error(expired(), status, replayed),
     }
 }
 
-async fn enforce_contact_limit(
+pub(super) async fn enforce_contact_limit(
     state: &ApiState,
     name: &'static str,
     session_id: Uuid,
     contact: &super::model::ValidatedContact,
 ) -> Result<(), AppError> {
     let (contact_scope, session_scope) = contact_limit_scopes(session_id, contact);
-    enforce_limit(
+    enforce_burst_limit(
         state,
         name,
         &SecretString::from(contact_scope),
-        5,
+        10,
         Duration::from_mins(10),
     )
     .await?;
-    enforce_limit(
+    enforce_burst_limit(
         state,
         "signup_contact_start_session",
         &SecretString::from(session_scope),
-        5,
+        10,
         Duration::from_mins(10),
     )
     .await
@@ -397,16 +355,11 @@ fn contact_limit_scopes(
         contact.channel.database_value(),
         contact.normalized,
     );
-    let session_scope = format!(
-        "{}:{}:{}",
-        session_id,
-        contact.channel.database_value(),
-        contact.normalized,
-    );
+    let session_scope = format!("{}:{}", session_id, contact.channel.database_value());
     (contact_scope, session_scope)
 }
 
-async fn enforce_limit(
+pub(super) async fn enforce_limit(
     state: &ApiState,
     name: &'static str,
     scope: &SecretString,
@@ -423,54 +376,25 @@ async fn enforce_limit(
     Ok(())
 }
 
-async fn deliver_many(state: &ApiState, deliveries: &[super::model::Delivery]) {
-    futures::future::join_all(deliveries.iter().map(|delivery| deliver(state, delivery))).await;
+async fn enforce_burst_limit(
+    state: &ApiState,
+    name: &'static str,
+    scope: &SecretString,
+    maximum: u32,
+    cooldown: Duration,
+) -> Result<(), AppError> {
+    let maximum = NonZeroU32::new(maximum).ok_or(AppError::Internal {
+        category: "rate_limit_policy",
+    })?;
+    let policy =
+        RateLimitPolicy::new(maximum, cooldown, cooldown).map_err(|_| AppError::Internal {
+            category: "rate_limit_policy",
+        })?;
+    rate_limit::enforce_burst_cooldown(&state.pool, &state.crypto, name, scope, policy).await?;
+    Ok(())
 }
 
-async fn deliver_one(state: &ApiState, delivery: Option<&super::model::Delivery>) {
-    if let Some(delivery) = delivery {
-        deliver(state, delivery).await;
-    }
-}
-
-async fn deliver(state: &ApiState, delivery: &super::model::Delivery) {
-    let minutes = state.settings.security.otp_ttl.as_secs().div_ceil(60);
-    let expires_in_minutes = u16::try_from(minutes).unwrap_or(u16::MAX);
-    let result = match delivery.channel {
-        ContactChannel::Email => {
-            state
-                .notifications
-                .email
-                .send_otp(EmailOtp {
-                    recipient: &delivery.recipient,
-                    code: &delivery.code,
-                    purpose: delivery.purpose,
-                    expires_in_minutes,
-                })
-                .await
-        }
-        ContactChannel::Phone => {
-            state
-                .notifications
-                .sms
-                .send_otp(SmsOtp {
-                    recipient: &delivery.recipient,
-                    code: &delivery.code,
-                    expires_in_minutes,
-                })
-                .await
-        }
-    };
-    if result.is_err() {
-        tracing::warn!(
-            channel = delivery.channel.database_value(),
-            purpose = delivery.purpose,
-            "OTP delivery did not complete"
-        );
-    }
-}
-
-fn login_scope(identifier: &super::model::ValidatedLoginIdentifier) -> SecretString {
+pub(super) fn login_scope(identifier: &super::model::ValidatedLoginIdentifier) -> SecretString {
     match identifier {
         super::model::ValidatedLoginIdentifier::Contact(contact) => SecretString::from(format!(
             "{}:{}",
@@ -509,7 +433,47 @@ fn no_store_json<T: Serialize>(status: StatusCode, body: T) -> Response {
     response
 }
 
-fn login_success_response(state: &ApiState, body: TokenResponse) -> Result<Response, AppError> {
+fn idempotent_json<T: Serialize>(outcome: Outcome<T>) -> Result<Response, AppError> {
+    let status = idempotency_status(outcome.status)?;
+    let mut response = (status, Json(outcome.value)).into_response();
+    mark_replayed(&mut response, outcome.replayed);
+    Ok(response)
+}
+
+fn idempotent_no_store_json<T: Serialize>(outcome: Outcome<T>) -> Result<Response, AppError> {
+    let status = idempotency_status(outcome.status)?;
+    let mut response = no_store_json(status, outcome.value);
+    mark_replayed(&mut response, outcome.replayed);
+    Ok(response)
+}
+
+fn idempotent_error(error: AppError, status: u16, replayed: bool) -> Result<Response, AppError> {
+    if !replayed {
+        return Err(error);
+    }
+    let expected_status = idempotency_status(status)?;
+    let mut response = error.into_response();
+    if response.status() != expected_status {
+        return Err(AppError::Internal {
+            category: "authentication_idempotency_error_status",
+        });
+    }
+    mark_replayed(&mut response, true);
+    Ok(response)
+}
+
+fn empty_idempotent_response(status: u16, replayed: bool) -> Result<Response, AppError> {
+    let mut response = idempotency_status(status)?.into_response();
+    mark_replayed(&mut response, replayed);
+    Ok(response)
+}
+
+fn login_success_response(
+    state: &ApiState,
+    status: u16,
+    body: TokenResponse,
+    replayed: bool,
+) -> Result<Response, AppError> {
     let cookie = browser_session::issue(
         body.session_id,
         body.refresh_expires_at,
@@ -518,28 +482,66 @@ fn login_success_response(state: &ApiState, body: TokenResponse) -> Result<Respo
     .map_err(|_| AppError::Internal {
         category: "browser_session_cookie_issue",
     })?;
-    let mut response = no_store_json(StatusCode::OK, body);
+    let mut response = no_store_json(idempotency_status(status)?, body);
     response
         .headers_mut()
         .insert(http::header::SET_COOKIE, cookie);
+    mark_replayed(&mut response, replayed);
     Ok(response)
 }
 
-fn cleared_browser_session_response() -> Response {
-    let mut response = StatusCode::NO_CONTENT.into_response();
+fn cleared_browser_session_response(status: u16, replayed: bool) -> Result<Response, AppError> {
+    let mut response = idempotency_status(status)?.into_response();
     response
         .headers_mut()
         .insert(http::header::SET_COOKIE, browser_session::clear());
-    response
+    mark_replayed(&mut response, replayed);
+    Ok(response)
+}
+
+fn idempotency_status(status: u16) -> Result<StatusCode, AppError> {
+    StatusCode::from_u16(status).map_err(|_| AppError::Internal {
+        category: "authentication_idempotency_status",
+    })
+}
+
+fn mark_replayed(response: &mut Response, replayed: bool) {
+    if replayed {
+        response.headers_mut().insert(
+            http::HeaderName::from_static("idempotency-replayed"),
+            HeaderValue::from_static("true"),
+        );
+    }
+}
+
+fn optional_step_up_token(headers: &HeaderMap) -> Result<Option<StepUpToken>, AppError> {
+    headers
+        .get("x-step-up-token")
+        .map(|value| {
+            let raw = value.to_str().map_err(|_| AppError::PreconditionFailed {
+                code: "step_up_invalid".into(),
+            })?;
+            StepUpToken::parse(raw).map_err(|_| AppError::PreconditionFailed {
+                code: "step_up_invalid".into(),
+            })
+        })
+        .transpose()
 }
 
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
 
-    use super::{contact_limit_scopes, login_scope, no_store_json};
-    use crate::features::authentication::model::{
-        ContactChannel, ValidatedContact, ValidatedLoginIdentifier,
+    use super::{
+        cleared_browser_session_response, contact_limit_scopes, empty_idempotent_response,
+        idempotent_error, idempotent_json, login_scope, no_store_json, optional_step_up_token,
+    };
+    use crate::{
+        error::AppError,
+        features::authentication::{
+            idempotency::Outcome,
+            model::{ContactChannel, ValidatedContact, ValidatedLoginIdentifier},
+        },
     };
     use secrecy::{ExposeSecret as _, SecretString};
 
@@ -570,6 +572,16 @@ mod tests {
 
         assert_eq!(first_contact, second_contact);
         assert_ne!(first_session, second_session);
+
+        let other_contact = ValidatedContact {
+            channel: ContactChannel::Email,
+            normalized: "other@example.com".to_owned(),
+            presentation: SecretString::from("other@example.com".to_owned()),
+        };
+        let (other_contact_scope, same_session_scope) =
+            contact_limit_scopes(uuid::Uuid::from_u128(1), &other_contact);
+        assert_ne!(first_contact, other_contact_scope);
+        assert_eq!(first_session, same_session_scope);
     }
 
     #[test]
@@ -583,5 +595,77 @@ mod tests {
             response.headers().get(http::header::PRAGMA),
             Some(&http::HeaderValue::from_static("no-cache"))
         );
+    }
+
+    #[test]
+    fn replay_responses_preserve_status_and_emit_the_marker() {
+        let response = idempotent_json(Outcome::replay(
+            StatusCode::CREATED.as_u16(),
+            serde_json::json!({ "created": true }),
+        ));
+        let Ok(response) = response else {
+            panic!("a valid stored status must build a response");
+        };
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(
+            response.headers().get("idempotency-replayed"),
+            Some(&http::HeaderValue::from_static("true"))
+        );
+
+        let response = empty_idempotent_response(StatusCode::NO_CONTENT.as_u16(), true);
+        let Ok(response) = response else {
+            panic!("a stored 204 must replay");
+        };
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response.headers().get("idempotency-replayed"),
+            Some(&http::HeaderValue::from_static("true"))
+        );
+    }
+
+    #[test]
+    fn replayed_error_and_cookie_clear_responses_are_marked() {
+        let response = idempotent_error(
+            AppError::Unauthenticated,
+            StatusCode::UNAUTHORIZED.as_u16(),
+            true,
+        );
+        let Ok(response) = response else {
+            panic!("a stored authentication error must replay");
+        };
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers().get("idempotency-replayed"),
+            Some(&http::HeaderValue::from_static("true"))
+        );
+
+        let response = cleared_browser_session_response(StatusCode::NO_CONTENT.as_u16(), true);
+        let Ok(response) = response else {
+            panic!("a stored logout must replay");
+        };
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(response.headers().contains_key(http::header::SET_COOKIE));
+        assert_eq!(
+            response.headers().get("idempotency-replayed"),
+            Some(&http::HeaderValue::from_static("true"))
+        );
+    }
+
+    #[test]
+    fn session_revocation_step_up_header_is_optional_and_shape_checked() {
+        let mut headers = axum::http::HeaderMap::new();
+        assert!(matches!(optional_step_up_token(&headers), Ok(None)));
+
+        headers.insert(
+            "x-step-up-token",
+            axum::http::HeaderValue::from_static("sup_too-short"),
+        );
+        assert!(optional_step_up_token(&headers).is_err());
+
+        headers.insert(
+            "x-step-up-token",
+            axum::http::HeaderValue::from_static("sup_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        );
+        assert!(matches!(optional_step_up_token(&headers), Ok(Some(_))));
     }
 }

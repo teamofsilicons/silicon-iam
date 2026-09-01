@@ -22,6 +22,31 @@ pub(super) struct SecurityMutation<'a> {
     pub(super) metadata: Value,
 }
 
+/// Allocates the next outbox-backed version while the caller holds the
+/// aggregate's state lock. Reusable OTP challenges can span more than one
+/// failed-attempt window, so an attempt counter is not a durable version.
+pub(super) async fn next_aggregate_version(
+    transaction: &mut Transaction<'_, Postgres>,
+    aggregate_type: &'static str,
+    aggregate_id: Uuid,
+) -> Result<i64, AppError> {
+    sqlx::query_scalar::<_, i64>(
+        r"
+        SELECT COALESCE(MAX(aggregate_version), 0) + 1
+        FROM iam.outbox_events
+        WHERE aggregate_type = $1
+          AND aggregate_id = $2
+        ",
+    )
+    .bind(aggregate_type)
+    .bind(aggregate_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|_| AppError::Internal {
+        category: "authentication_aggregate_version",
+    })
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the immutable authentication and outbox evidence writes share one atomic operation"

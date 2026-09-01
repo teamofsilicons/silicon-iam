@@ -78,8 +78,6 @@ pub enum SecretKind {
     SiliconAccessToken,
     /// Application access token.
     ApplicationAccessToken,
-    /// Internal service access token.
-    ServiceAccessToken,
     /// Rotating refresh token.
     RefreshToken,
     /// Rotating OAuth client refresh token.
@@ -98,8 +96,8 @@ pub enum SecretKind {
     ApplicationSecret,
     /// Application webhook signing secret.
     WebhookSigningSecret,
-    /// Internal service credential.
-    ServiceCredential,
+    /// Organization Silicon webhook signing secret.
+    SiliconWebhookSigningSecret,
 }
 
 /// Closed domain separation for credential digests.
@@ -111,8 +109,6 @@ pub enum DigestPurpose {
     SiliconAccessToken,
     /// Application access-token lookup.
     ApplicationAccessToken,
-    /// Service access-token lookup.
-    ServiceAccessToken,
     /// Refresh-token lookup.
     RefreshToken,
     /// OAuth refresh-token lookup, separated from first-party Carbon sessions.
@@ -125,8 +121,6 @@ pub enum DigestPurpose {
     SsoNonce,
     /// OBO proof lookup.
     OboProof,
-    /// Optional OBO resource constraint binding.
-    OboResource,
     /// One-time code used to produce a step-up assertion.
     StepUpOtp,
     /// Action-bound step-up assertion lookup.
@@ -145,10 +139,6 @@ pub enum DigestPurpose {
     LoginEmailOtp,
     /// Phone login verification code.
     LoginPhoneOtp,
-    /// Replacement email verification code.
-    ContactChangeEmailOtp,
-    /// Replacement phone verification code.
-    ContactChangePhoneOtp,
     /// Organization invitation verification code.
     InvitationOtp,
     /// Distributed rate-limit scope.
@@ -183,17 +173,17 @@ pub enum ProtectedField {
     ProviderCredential,
     /// Browser return URI retained for one `WorkOS` SSO transaction.
     SsoReturnUri,
-    /// Server-side passkey registration ceremony state.
-    WebauthnRegistrationState,
-    /// Server-side passkey assertion ceremony state.
-    WebauthnAuthenticationState,
     /// Application webhook endpoint URL.
     ApplicationWebhookUrl,
     /// Application webhook HMAC signing secret.
     ApplicationWebhookSigningSecret,
-    /// OIDC asymmetric private signing key encoded as PKCS#8 DER.
-    OidcSigningPrivateKey,
-    /// Provisioned Silicon Hook endpoint URL.
+    /// Immutable, recipient-specific application webhook event projection.
+    ApplicationWebhookEventPayload,
+    /// Organization Silicon webhook endpoint URL.
+    SiliconWebhookUrl,
+    /// Organization Silicon webhook HMAC signing secret.
+    SiliconWebhookSigningSecret,
+    /// Legacy provisioned Silicon Hook endpoint URL retained for ciphertext compatibility.
     SiliconHookUrl,
 }
 
@@ -272,7 +262,7 @@ impl CryptoService {
     /// Returns [`CryptoError::EntropyUnavailable`] if secure bytes cannot be
     /// obtained from the operating system.
     pub fn generate_silicon_token(&self) -> Result<SecretString, CryptoError> {
-        let mut bytes = Zeroizing::new([0_u8; 32]);
+        let mut bytes = Zeroizing::new([0_u8; 16]);
         fill_random(bytes.as_mut())?;
         Ok(SecretString::from(format!(
             "stk-{}",
@@ -586,7 +576,7 @@ impl EncryptionContext {
         }
     }
 
-    /// Binds ciphertext to an organization-owned entity row.
+    /// Binds ciphertext to a tenant/application scope and one entity row.
     #[must_use]
     pub const fn tenant(field: ProtectedField, tenant_id: Uuid, entity_id: Uuid) -> Self {
         Self {
@@ -603,14 +593,12 @@ impl DigestPurpose {
             Self::CarbonAccessToken => b"carbon-access-token",
             Self::SiliconAccessToken => b"silicon-access-token",
             Self::ApplicationAccessToken => b"application-access-token",
-            Self::ServiceAccessToken => b"service-access-token",
             Self::RefreshToken => b"refresh-token",
             Self::OAuthRefreshToken => b"oauth-refresh-token",
             Self::AuthorizationCode => b"authorization-code",
             Self::SsoState => b"sso-state",
             Self::SsoNonce => b"sso-nonce",
             Self::OboProof => b"obo-proof",
-            Self::OboResource => b"obo-resource",
             Self::StepUpOtp => b"step-up-otp",
             Self::StepUpAssertion => b"step-up-assertion",
             Self::SiliconCredential => b"silicon-credential",
@@ -620,8 +608,6 @@ impl DigestPurpose {
             Self::SignupPhoneOtp => b"signup-phone-otp",
             Self::LoginEmailOtp => b"login-email-otp",
             Self::LoginPhoneOtp => b"login-phone-otp",
-            Self::ContactChangeEmailOtp => b"contact-change-email-otp",
-            Self::ContactChangePhoneOtp => b"contact-change-phone-otp",
             Self::InvitationOtp => b"invitation-otp",
             Self::RateLimitScope => b"rate-limit-scope",
             Self::IdempotencyCallerScope => b"idempotency-caller-scope",
@@ -648,11 +634,11 @@ impl ProtectedField {
             Self::IdempotencySecretResponse => b"idempotency-secret-response",
             Self::ProviderCredential => b"provider-credential",
             Self::SsoReturnUri => b"sso-return-uri",
-            Self::WebauthnRegistrationState => b"webauthn-registration-state",
-            Self::WebauthnAuthenticationState => b"webauthn-authentication-state",
             Self::ApplicationWebhookUrl => b"application-webhook-url",
             Self::ApplicationWebhookSigningSecret => b"application-webhook-signing-secret",
-            Self::OidcSigningPrivateKey => b"oidc-signing-private-key",
+            Self::ApplicationWebhookEventPayload => b"application-webhook-event-payload",
+            Self::SiliconWebhookUrl => b"silicon-webhook-url",
+            Self::SiliconWebhookSigningSecret => b"silicon-webhook-signing-secret",
             Self::SiliconHookUrl => b"silicon-hook-url",
         }
     }
@@ -721,7 +707,6 @@ const fn secret_prefix(kind: SecretKind) -> &'static str {
         SecretKind::CarbonAccessToken => "cat_",
         SecretKind::SiliconAccessToken => "sat_",
         SecretKind::ApplicationAccessToken => "oat_",
-        SecretKind::ServiceAccessToken => "svt_",
         SecretKind::RefreshToken => "rft_",
         SecretKind::OAuthRefreshToken => "ort_",
         SecretKind::AuthorizationCode => "oac_",
@@ -731,7 +716,7 @@ const fn secret_prefix(kind: SecretKind) -> &'static str {
         SecretKind::StepUpAssertion => "sup_",
         SecretKind::ApplicationSecret => "ask_",
         SecretKind::WebhookSigningSecret => "whs_",
-        SecretKind::ServiceCredential => "svc_",
+        SecretKind::SiliconWebhookSigningSecret => "swhs_",
     }
 }
 
@@ -766,14 +751,12 @@ mod tests {
             token_peppers: keyring(2, 7),
             blind_index_keys: keyring(3, 8),
             encryption_keys: keyring(4, 9),
-            cookie_key: SecretString::from(key.clone()),
-            jwt_ed25519_private_key: SecretString::from(key),
-            jwt_key_id: "test-key".to_owned(),
-            access_token_ttl: std::time::Duration::from_mins(15),
-            refresh_family_ttl: std::time::Duration::from_hours(8_760),
+            cookie_key: SecretString::from(key),
+            access_token_ttl: std::time::Duration::from_mins(30),
+            refresh_family_ttl: std::time::Duration::from_hours(21_600),
             authorization_code_ttl: std::time::Duration::from_secs(120),
             otp_ttl: std::time::Duration::from_secs(600),
-            otp_max_attempts: 5,
+            otp_max_attempts: 10,
         };
         let Ok(service) = CryptoService::from_settings(&settings) else {
             panic!("valid test keyrings must initialize");
@@ -786,23 +769,25 @@ mod tests {
         let service = service();
         let first = service.generate_secret(SecretKind::CarbonAccessToken);
         let second = service.generate_secret(SecretKind::SiliconAccessToken);
-        let (Ok(first), Ok(second)) = (first, second) else {
+        let webhook = service.generate_secret(SecretKind::SiliconWebhookSigningSecret);
+        let (Ok(first), Ok(second), Ok(webhook)) = (first, second, webhook) else {
             panic!("test environment must provide secure entropy");
         };
 
         assert!(first.expose_secret().starts_with("cat_"));
         assert!(second.expose_secret().starts_with("sat_"));
+        assert!(webhook.expose_secret().starts_with("swhs_"));
         assert_ne!(first.expose_secret(), second.expose_secret());
     }
 
     #[test]
-    fn silicon_tokens_have_256_bits_of_hex_payload() {
+    fn silicon_tokens_have_the_exact_product_hex_payload() {
         let Ok(token) = service().generate_silicon_token() else {
             panic!("test environment must provide secure entropy");
         };
         let value = token.expose_secret();
         assert!(value.starts_with("stk-"));
-        assert_eq!(value.len(), 68);
+        assert_eq!(value.len(), 36);
         assert!(value[4..].bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 
@@ -847,6 +832,40 @@ mod tests {
         let wrong_row = EncryptionContext::global(ProtectedField::CarbonEmail, Uuid::now_v7());
         assert!(matches!(
             service.decrypt(wrong_row, &first),
+            Err(CryptoError::Decryption)
+        ));
+    }
+
+    #[test]
+    fn application_event_projection_is_bound_to_recipient_and_row() {
+        let service = service();
+        let application_id = Uuid::now_v7();
+        let projection_id = Uuid::now_v7();
+        let context = EncryptionContext::tenant(
+            ProtectedField::ApplicationWebhookEventPayload,
+            application_id,
+            projection_id,
+        );
+        let Ok(encrypted) = service.encrypt(context, br#"{"current":{"version":7}}"#) else {
+            panic!("valid encryption must succeed");
+        };
+        let wrong_application = EncryptionContext::tenant(
+            ProtectedField::ApplicationWebhookEventPayload,
+            Uuid::now_v7(),
+            projection_id,
+        );
+        let wrong_row = EncryptionContext::tenant(
+            ProtectedField::ApplicationWebhookEventPayload,
+            application_id,
+            Uuid::now_v7(),
+        );
+
+        assert!(matches!(
+            service.decrypt(wrong_application, &encrypted),
+            Err(CryptoError::Decryption)
+        ));
+        assert!(matches!(
+            service.decrypt(wrong_row, &encrypted),
             Err(CryptoError::Decryption)
         ));
     }

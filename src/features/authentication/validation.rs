@@ -87,6 +87,9 @@ pub(super) fn signup_completion(
     let carbon_id = CarbonId::from_str(&input.carbon_id)
         .map_err(|_| validation("carbon_id", "has an invalid format"))?;
     let display_name = bounded_text("display_name", input.display_name, 1, 200, false)?;
+    if !crate::domain::timezone::is_valid_identifier(&input.timezone) {
+        return Err(validation("timezone", "must be a valid IANA TZ identifier"));
+    }
     let description = input
         .description
         .map(|value| bounded_text("description", value, 0, 5_000, true))
@@ -98,6 +101,7 @@ pub(super) fn signup_completion(
     Ok(ValidatedSignupCompletion {
         carbon_id,
         display_name,
+        timezone: input.timezone,
         description,
         profile_photo,
     })
@@ -172,7 +176,8 @@ pub(super) fn validation(field: &'static str, message: &'static str) -> AppError
 mod tests {
     use secrecy::ExposeSecret as _;
 
-    use super::{email, phone, refresh_token, verification_code};
+    use super::{email, phone, refresh_token, signup_completion, verification_code};
+    use crate::features::authentication::model::SignupCompletionInput;
 
     #[test]
     fn contacts_are_exactly_validated_and_normalized() {
@@ -193,5 +198,29 @@ mod tests {
 
         assert!(refresh_token(format!("rft_{}", "A".repeat(43))).is_ok());
         assert!(refresh_token(format!("cat_{}", "A".repeat(43))).is_err());
+    }
+
+    #[test]
+    fn signup_profiles_require_a_real_tzdb_identifier() {
+        let valid = SignupCompletionInput {
+            carbon_id: "timezone_test".to_owned(),
+            display_name: "Time Zone Test".to_owned(),
+            timezone: "Asia/Kolkata".to_owned(),
+            description: None,
+            profile_photo: None,
+        };
+        assert!(matches!(
+            signup_completion(valid, false),
+            Ok(profile) if profile.timezone == "Asia/Kolkata"
+        ));
+
+        let invalid = SignupCompletionInput {
+            carbon_id: "timezone_test".to_owned(),
+            display_name: "Time Zone Test".to_owned(),
+            timezone: "Mars/Olympus_Mons".to_owned(),
+            description: None,
+            profile_photo: None,
+        };
+        assert!(signup_completion(invalid, false).is_err());
     }
 }

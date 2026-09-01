@@ -5,6 +5,12 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Failed OTP verifications permitted before a challenge enters cooldown.
+pub const OTP_MAX_FAILED_ATTEMPTS: u16 = 10;
+
+/// Mandatory cooldown after one exhausted OTP verification window.
+pub const OTP_COOLDOWN_SECONDS: i64 = 60;
+
 /// Normalized immutable Carbon handle.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(try_from = "String", into = "String")]
@@ -85,7 +91,15 @@ pub fn normalize_email(value: &str) -> String {
 mod tests {
     use std::str::FromStr as _;
 
-    use super::{CarbonId, CarbonIdError, normalize_email};
+    use super::{
+        CarbonId, CarbonIdError, OTP_COOLDOWN_SECONDS, OTP_MAX_FAILED_ATTEMPTS, normalize_email,
+    };
+
+    #[test]
+    fn otp_policy_matches_the_public_contract() {
+        assert_eq!(OTP_MAX_FAILED_ATTEMPTS, 10);
+        assert_eq!(OTP_COOLDOWN_SECONDS, 60);
+    }
 
     #[test]
     fn carbon_id_is_normalized() {

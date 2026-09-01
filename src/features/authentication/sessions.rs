@@ -6,23 +6,66 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
-    api::ApiState, domain::actor::ActorType, error::AppError,
-    infrastructure::postgres::tokens::AccessContext,
+    api::ApiState,
+    domain::actor::ActorType,
+    error::AppError,
+    infrastructure::postgres::{
+        step_up::{self, RequiredAssurance, StepUpExpectation, StepUpToken},
+        tokens::AccessContext,
+    },
 };
 
 use super::{
     database::{database_conflict, serializable, set_principal_context},
     events::{self, SecurityMutation},
-    idempotency::{self, Claim, IdempotencyKey},
+    idempotency::{self, Claim, IdempotencyKey, Outcome},
     model::{
         ActorResponse, EmptyMutationOutcome, LoginEventPage, LoginEventResponse, LogoutMode,
-        PageInfo, SessionPage, SessionResponse,
+        PageInfo, SessionPage, SessionResponse, StepUpAction,
     },
 };
 
-const SESSION_ROUTE: &str = "/api/v1/me/sessions/:session_id";
-const LOGOUT_ROUTE: &str = "/api/v1/logout";
+const SESSION_ROUTE: &str = "DELETE /api/v1/me/sessions/{session_id}";
+const LOGOUT_ROUTE: &str = "POST /api/v1/logout";
 const IAM_AUDIENCE: &str = "silicon-iam";
+const SESSION_REVOCATION_MIN_AGE_SECONDS: i64 = 12 * 60 * 60;
+const SESSION_REVOKE_ACTION: &str = StepUpAction::AccountSessionRevoke.database_value();
+const SESSIONS_REVOKE_ALL_ACTION: &str = StepUpAction::AccountSessionsRevokeAll.database_value();
+const MATURE_TARGET_SESSION_QUERY: &str = r"
+    SELECT session.created_at <= transaction_timestamp()
+            - ($3::bigint * interval '1 second')
+    FROM iam.authentication_sessions AS session
+    WHERE session.id = $1
+      AND session.subject_principal_id = $2
+    ";
+const MATURE_CURRENT_SESSION_QUERY: &str = r"
+    SELECT session.created_at <= transaction_timestamp()
+            - ($3::bigint * interval '1 second')
+    FROM iam.authentication_sessions AS session
+    JOIN iam.principals AS principal
+      ON principal.id = session.subject_principal_id
+     AND principal.kind = session.subject_kind
+    WHERE session.id = $1
+      AND session.subject_principal_id = $2
+      AND session.status = 'active'
+      AND session.idle_expires_at > transaction_timestamp()
+      AND session.absolute_expires_at > transaction_timestamp()
+      AND principal.status = 'active'
+      AND principal.auth_epoch = session.subject_auth_epoch
+    ";
+const OTHER_ACTIVE_SESSIONS_MATURITY_QUERY: &str = r"
+    SELECT bool_and(
+        session.created_at <= transaction_timestamp()
+            - ($3::bigint * interval '1 second')
+    )
+    FROM iam.authentication_sessions AS session
+    WHERE session.subject_principal_id = $1
+      AND session.subject_kind = 'carbon'
+      AND session.id <> $2
+      AND session.status = 'active'
+      AND session.idle_expires_at > transaction_timestamp()
+      AND session.absolute_expires_at > transaction_timestamp()
+    ";
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
 struct PageCursor {
@@ -58,6 +101,7 @@ struct LoginEventRow {
 struct RevokedSessionRow {
     session_id: Uuid,
     version: i64,
+    revocation_reason: String,
 }
 
 pub(super) fn carbon_context(context: &AccessContext) -> Result<Uuid, AppError> {
@@ -241,8 +285,9 @@ pub(super) async fn revoke_session(
     state: &ApiState,
     context: &AccessContext,
     key: &IdempotencyKey,
+    step_up_token: Option<&StepUpToken>,
     session_id: Uuid,
-) -> Result<(), AppError> {
+) -> Result<Outcome<()>, AppError> {
     let principal_id = carbon_context(context)?;
     let request_digest = idempotency::digest_parts(
         b"session-revoke",
@@ -260,14 +305,27 @@ pub(super) async fn revoke_session(
     )
     .await?
     {
-        Claim::Replay { .. } => {
+        Claim::Replay { status, .. } => {
             transaction.commit().await.map_err(|error| {
                 database_conflict(&error, "session_revoke_serialization_conflict")
             })?;
-            return Ok(());
+            return Ok(Outcome::replay(status, ()));
         }
         Claim::Acquired { record_id } => record_id,
     };
+    let step_up_token = step_up_token.ok_or_else(|| AppError::PreconditionRequired {
+        code: "step_up_required".into(),
+    })?;
+    consume_verified_channel_step_up(
+        &mut transaction,
+        state,
+        principal_id,
+        context.authentication_session_id,
+        step_up_token,
+        SESSION_REVOKE_ACTION,
+        session_id,
+    )
+    .await?;
     let owned_session_id = sqlx::query_scalar::<_, Uuid>(
         r"
         SELECT id
@@ -288,6 +346,13 @@ pub(super) async fn revoke_session(
     if owned_session_id.is_none() {
         return Err(AppError::NotFound);
     }
+    authorize_session_revocation(
+        &mut transaction,
+        principal_id,
+        context.authentication_session_id,
+        session_id,
+    )
+    .await?;
     if let Some(revoked) =
         revoke_one(&mut transaction, principal_id, session_id, "user_revoked").await?
     {
@@ -313,16 +378,18 @@ pub(super) async fn revoke_session(
     transaction
         .commit()
         .await
-        .map_err(|error| database_conflict(&error, "session_revoke_serialization_conflict"))
+        .map_err(|error| database_conflict(&error, "session_revoke_serialization_conflict"))?;
+    Ok(Outcome::fresh(204, ()))
 }
 
 pub(super) async fn logout(
     state: &ApiState,
-    context: &AccessContext,
+    principal_id: Uuid,
+    authentication_session_id: Uuid,
     key: &IdempotencyKey,
+    step_up_token: Option<&StepUpToken>,
     mode: LogoutMode,
-) -> Result<(), AppError> {
-    let principal_id = carbon_context(context)?;
+) -> Result<Outcome<()>, AppError> {
     let mode_value = match mode {
         LogoutMode::CurrentSession => b"current".as_slice(),
         LogoutMode::AllSessions => b"all".as_slice(),
@@ -331,7 +398,7 @@ pub(super) async fn logout(
         b"logout",
         &[
             principal_id.as_bytes(),
-            context.authentication_session_id.as_bytes(),
+            authentication_session_id.as_bytes(),
             mode_value,
         ],
     );
@@ -347,33 +414,56 @@ pub(super) async fn logout(
     )
     .await?
     {
-        Claim::Replay { .. } => {
+        Claim::Replay { status, .. } => {
             transaction
                 .commit()
                 .await
                 .map_err(|error| database_conflict(&error, "logout_serialization_conflict"))?;
-            return Ok(());
+            return Ok(Outcome::replay(status, ()));
         }
         Claim::Acquired { record_id } => record_id,
     };
 
-    let revoked = match mode {
-        LogoutMode::CurrentSession => revoke_one(
+    let revokes_other_sessions = if matches!(mode, LogoutMode::AllSessions) {
+        authorize_all_sessions_logout(&mut transaction, principal_id, authentication_session_id)
+            .await?
+    } else {
+        false
+    };
+    if revokes_other_sessions {
+        let token = step_up_token.ok_or_else(|| AppError::PreconditionRequired {
+            code: "step_up_required".into(),
+        })?;
+        consume_verified_channel_step_up(
+            &mut transaction,
+            state,
+            principal_id,
+            authentication_session_id,
+            token,
+            SESSIONS_REVOKE_ALL_ACTION,
+            principal_id,
+        )
+        .await?;
+    }
+
+    let revoked = if revokes_other_sessions {
+        revoke_all(&mut transaction, principal_id).await?
+    } else {
+        revoke_one(
             &mut transaction,
             principal_id,
-            context.authentication_session_id,
+            authentication_session_id,
             "user_logout",
         )
         .await?
         .into_iter()
-        .collect(),
-        LogoutMode::AllSessions => revoke_all(&mut transaction, principal_id).await?,
+        .collect()
     };
     for session in revoked {
         record_revocation(
             &mut transaction,
             principal_id,
-            context.authentication_session_id,
+            authentication_session_id,
             session,
             "logout.completed",
         )
@@ -392,7 +482,119 @@ pub(super) async fn logout(
     transaction
         .commit()
         .await
-        .map_err(|error| database_conflict(&error, "logout_serialization_conflict"))
+        .map_err(|error| database_conflict(&error, "logout_serialization_conflict"))?;
+    Ok(Outcome::fresh(204, ()))
+}
+
+pub(super) async fn authorize_session_revocation(
+    transaction: &mut Transaction<'_, Postgres>,
+    principal_id: Uuid,
+    current_session_id: Uuid,
+    target_session_id: Uuid,
+) -> Result<(), AppError> {
+    require_mature_target_session(transaction, principal_id, target_session_id).await?;
+    if revocation_targets_another_session(current_session_id, target_session_id) {
+        require_mature_current_session(transaction, principal_id, current_session_id).await?;
+    }
+    Ok(())
+}
+
+async fn require_mature_target_session(
+    transaction: &mut Transaction<'_, Postgres>,
+    principal_id: Uuid,
+    target_session_id: Uuid,
+) -> Result<(), AppError> {
+    let mature = sqlx::query_scalar::<_, bool>(MATURE_TARGET_SESSION_QUERY)
+        .bind(target_session_id)
+        .bind(principal_id)
+        .bind(SESSION_REVOCATION_MIN_AGE_SECONDS)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "session_revocation_target_age",
+        })?;
+
+    match mature {
+        Some(true) => Ok(()),
+        Some(false) => Err(AppError::Forbidden),
+        None => Err(AppError::NotFound),
+    }
+}
+
+async fn require_mature_current_session(
+    transaction: &mut Transaction<'_, Postgres>,
+    principal_id: Uuid,
+    current_session_id: Uuid,
+) -> Result<(), AppError> {
+    let mature = sqlx::query_scalar::<_, bool>(MATURE_CURRENT_SESSION_QUERY)
+        .bind(current_session_id)
+        .bind(principal_id)
+        .bind(SESSION_REVOCATION_MIN_AGE_SECONDS)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "session_revocation_authority",
+        })?;
+
+    match mature {
+        Some(true) => Ok(()),
+        Some(false) => Err(AppError::Forbidden),
+        None => Err(AppError::Unauthenticated),
+    }
+}
+
+async fn authorize_all_sessions_logout(
+    transaction: &mut Transaction<'_, Postgres>,
+    principal_id: Uuid,
+    current_session_id: Uuid,
+) -> Result<bool, AppError> {
+    let all_other_sessions_mature =
+        sqlx::query_scalar::<_, Option<bool>>(OTHER_ACTIVE_SESSIONS_MATURITY_QUERY)
+            .bind(principal_id)
+            .bind(current_session_id)
+            .bind(SESSION_REVOCATION_MIN_AGE_SECONDS)
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(|_| AppError::Internal {
+                category: "session_revoke_all_target_ages",
+            })?;
+    let Some(all_other_sessions_mature) = all_other_sessions_mature else {
+        return Ok(false);
+    };
+    if !all_other_sessions_mature {
+        return Err(AppError::Forbidden);
+    }
+    require_mature_current_session(transaction, principal_id, current_session_id).await?;
+    Ok(true)
+}
+
+async fn consume_verified_channel_step_up(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    principal_id: Uuid,
+    authentication_session_id: Uuid,
+    token: &StepUpToken,
+    action: &'static str,
+    resource_id: Uuid,
+) -> Result<(), AppError> {
+    step_up::consume(
+        transaction,
+        &state.crypto,
+        token,
+        StepUpExpectation {
+            carbon_id: principal_id,
+            authentication_session_id,
+            action,
+            resource_id: Some(resource_id),
+            required_assurance: RequiredAssurance::VerifiedChannel,
+        },
+    )
+    .await
+    .map(|_| ())
+}
+
+fn revocation_targets_another_session(current_session_id: Uuid, target_session_id: Uuid) -> bool {
+    current_session_id != target_session_id
 }
 
 async fn revoke_one(
@@ -411,8 +613,10 @@ async fn revoke_one(
         WHERE id = $1
           AND subject_principal_id = $2
           AND subject_kind = 'carbon'
-          AND status <> 'revoked'
-        RETURNING id AS session_id, version
+          AND status = 'active'
+          AND idle_expires_at > transaction_timestamp()
+          AND absolute_expires_at > transaction_timestamp()
+        RETURNING id AS session_id, version, revocation_reason
         ",
     )
     .bind(session_id)
@@ -442,8 +646,10 @@ async fn revoke_all(
             version = version + 1
         WHERE subject_principal_id = $1
           AND subject_kind = 'carbon'
-          AND status <> 'revoked'
-        RETURNING id AS session_id, version
+          AND status = 'active'
+          AND idle_expires_at > transaction_timestamp()
+          AND absolute_expires_at > transaction_timestamp()
+        RETURNING id AS session_id, version, revocation_reason
         ",
     )
     .bind(principal_id)
@@ -519,6 +725,8 @@ async fn record_revocation(
     session: RevokedSessionRow,
     outbox_event: &'static str,
 ) -> Result<(), AppError> {
+    let metadata =
+        revocation_event_payload(principal_id, actor_authentication_session_id, &session);
     events::record(
         transaction,
         SecurityMutation {
@@ -534,10 +742,40 @@ async fn record_revocation(
             aggregate_id: session.session_id,
             aggregate_version: session.version,
             failure_code: None,
-            metadata: json!({ "revoked_session_id": session.session_id }),
+            metadata,
         },
     )
     .await
+}
+
+fn revocation_event_payload(
+    principal_id: Uuid,
+    actor_authentication_session_id: Uuid,
+    session: &RevokedSessionRow,
+) -> serde_json::Value {
+    json!({
+        // Top-level routing identity lets the outbox worker resolve every
+        // Application authorized immediately before or after this mutation.
+        "subject_principal_id": principal_id,
+        "actor": {
+            "type": "carbon",
+            "principal_id": principal_id,
+            "authentication_session_id": actor_authentication_session_id,
+        },
+        "changed_fields": ["status"],
+        "authorized_state": {
+            "subject": {
+                "type": "carbon",
+                "principal_id": principal_id,
+            },
+            "authentication_session": {
+                "session_id": session.session_id,
+                "status": "revoked",
+                "revocation_reason": session.revocation_reason,
+                "version": session.version,
+            },
+        },
+    })
 }
 
 async fn carbon_handle(
@@ -647,7 +885,12 @@ mod tests {
         infrastructure::postgres::tokens::AccessContext,
     };
 
-    use super::{carbon_context, decode_cursor, encode_cursor};
+    use super::{
+        MATURE_CURRENT_SESSION_QUERY, MATURE_TARGET_SESSION_QUERY,
+        OTHER_ACTIVE_SESSIONS_MATURITY_QUERY, SESSION_REVOCATION_MIN_AGE_SECONDS,
+        SESSION_REVOKE_ACTION, SESSIONS_REVOKE_ALL_ACTION, carbon_context, decode_cursor,
+        encode_cursor, revocation_event_payload, revocation_targets_another_session,
+    };
 
     #[test]
     fn pagination_cursor_round_trips_and_rejects_malformed_input() {
@@ -682,5 +925,67 @@ mod tests {
 
         context.client_application_id = Some(Uuid::from_u128(3));
         assert!(carbon_context(&context).is_err());
+    }
+
+    #[test]
+    fn session_revocation_requires_mature_targets_and_cross_session_authority() {
+        let current_session_id = Uuid::from_u128(1);
+
+        assert_eq!(SESSION_REVOCATION_MIN_AGE_SECONDS, 12 * 60 * 60);
+        assert_eq!(SESSION_REVOKE_ACTION, "account.session_revoke");
+        assert_eq!(SESSIONS_REVOKE_ALL_ACTION, "account.sessions_revoke_all");
+        assert!(!revocation_targets_another_session(
+            current_session_id,
+            current_session_id,
+        ));
+        assert!(revocation_targets_another_session(
+            current_session_id,
+            Uuid::from_u128(2),
+        ));
+        assert!(MATURE_TARGET_SESSION_QUERY.contains("session.created_at <="));
+        assert!(MATURE_CURRENT_SESSION_QUERY.contains("session.status = 'active'"));
+        assert!(MATURE_CURRENT_SESSION_QUERY.contains("session.idle_expires_at >"));
+        assert!(MATURE_CURRENT_SESSION_QUERY.contains("session.absolute_expires_at >"));
+        assert!(MATURE_CURRENT_SESSION_QUERY.contains("principal.status = 'active'"));
+        assert!(
+            MATURE_CURRENT_SESSION_QUERY
+                .contains("principal.auth_epoch = session.subject_auth_epoch")
+        );
+        assert!(OTHER_ACTIVE_SESSIONS_MATURITY_QUERY.contains("bool_and"));
+        assert!(OTHER_ACTIVE_SESSIONS_MATURITY_QUERY.contains("session.id <> $2"));
+        assert!(OTHER_ACTIVE_SESSIONS_MATURITY_QUERY.contains("session.status = 'active'"));
+    }
+
+    #[test]
+    fn revocation_event_is_routable_and_contains_only_secret_free_state() {
+        let principal_id = Uuid::from_u128(7);
+        let actor_session_id = Uuid::from_u128(8);
+        let revoked = super::RevokedSessionRow {
+            session_id: Uuid::from_u128(9),
+            version: 2,
+            revocation_reason: "user_logout".to_owned(),
+        };
+        let payload = revocation_event_payload(principal_id, actor_session_id, &revoked);
+
+        assert_eq!(
+            payload
+                .get("subject_principal_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|value| Uuid::parse_str(value).ok()),
+            Some(principal_id)
+        );
+        assert_eq!(
+            payload["authorized_state"]["authentication_session"]["status"],
+            "revoked"
+        );
+        for forbidden in [
+            "access_token",
+            "refresh_token",
+            "otp",
+            "credential",
+            "secret",
+        ] {
+            assert!(!payload.to_string().contains(forbidden));
+        }
     }
 }

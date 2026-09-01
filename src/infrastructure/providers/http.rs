@@ -17,11 +17,14 @@ where
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| DeliveryError::Unavailable)?;
         if body.len().saturating_add(chunk.len()) > MAX_PROVIDER_RESPONSE_BYTES {
-            return Err(DeliveryError::Rejected);
+            // A success response means the provider may already have accepted
+            // the message. Failure to consume its receipt is outcome-unknown,
+            // never a definitive rejection that is safe to resend.
+            return Err(DeliveryError::Unavailable);
         }
         body.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&body).map_err(|_| DeliveryError::Rejected)
+    serde_json::from_slice(&body).map_err(|_| DeliveryError::Unavailable)
 }
 
 pub(super) fn classify_status(status: reqwest::StatusCode) -> DeliveryError {

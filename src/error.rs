@@ -30,6 +30,9 @@ pub enum AppError {
     /// Requested resource does not exist or is not visible.
     #[error("resource was not found")]
     NotFound,
+    /// Authenticated Carbon has no matching usable organization invitation.
+    #[error("the authenticated Carbon is not invited")]
+    NotInvited,
     /// Mutation conflicts with current state or a unique invariant.
     #[error("request conflicts with current state")]
     Conflict {
@@ -221,6 +224,12 @@ impl AppError {
                 Cow::Borrowed("The requested resource was not found."),
                 None,
             ),
+            Self::NotInvited => (
+                StatusCode::NOT_FOUND,
+                Cow::Borrowed("not_invited"),
+                Cow::Borrowed("The authenticated Carbon is not invited."),
+                None,
+            ),
             Self::Conflict { code } => (
                 StatusCode::CONFLICT,
                 code,
@@ -392,6 +401,16 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("Bearer")
         );
+    }
+
+    #[test]
+    fn not_invited_is_a_non_disclosing_not_found_error() {
+        let (status, code, message, details) = AppError::NotInvited.public_parts();
+
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+        assert_eq!(code, "not_invited");
+        assert_eq!(message, "The authenticated Carbon is not invited.");
+        assert!(details.is_none());
     }
 
     #[test]

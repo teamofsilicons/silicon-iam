@@ -123,7 +123,7 @@ impl TwilioSms {
         }
         let body: MessageResponse = http::decode_json(response).await?;
         if body.sid.is_empty() {
-            return Err(DeliveryError::Rejected);
+            return Err(DeliveryError::Unavailable);
         }
         Ok(DeliveryReceipt {
             provider_message_id: body.sid,

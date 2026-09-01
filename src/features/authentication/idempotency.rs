@@ -20,15 +20,38 @@ const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 
 pub(super) struct IdempotencyKey {
     parsed: shared::IdempotencyKey,
-    raw: SecretString,
 }
 
 pub(super) enum Claim<T> {
     Acquired { record_id: Lease },
-    Replay { response: T },
+    Replay { status: u16, response: T },
 }
 
 pub(super) struct Lease(IdempotencyLease);
+
+pub(super) struct Outcome<T> {
+    pub(super) status: u16,
+    pub(super) value: T,
+    pub(super) replayed: bool,
+}
+
+impl<T> Outcome<T> {
+    pub(super) const fn fresh(status: u16, value: T) -> Self {
+        Self {
+            status,
+            value,
+            replayed: false,
+        }
+    }
+
+    pub(super) const fn replay(status: u16, value: T) -> Self {
+        Self {
+            status,
+            value,
+            replayed: true,
+        }
+    }
+}
 
 #[derive(Deserialize, Serialize)]
 struct StoredResponse<T> {
@@ -53,14 +76,7 @@ impl IdempotencyKey {
                 "must be 16 to 255 non-whitespace ASCII characters",
             )
         })?;
-        Ok(Self {
-            parsed,
-            raw: SecretString::from(value.to_owned()),
-        })
-    }
-
-    pub(super) fn as_secret(&self) -> &SecretString {
-        &self.raw
+        Ok(Self { parsed })
     }
 }
 
@@ -99,6 +115,7 @@ pub(super) async fn begin<T: DeserializeOwned>(
                 });
             }
             Ok(Claim::Replay {
+                status: stored.public_status,
                 response: stored.response,
             })
         }
@@ -126,6 +143,13 @@ pub(super) async fn complete<T: Serialize>(
         category: "idempotency_response_serialize",
     })?;
     shared::complete(transaction, crypto, record_id.0, 200, &serialized).await
+}
+
+pub(super) async fn cancel_for_retry(
+    transaction: &mut Transaction<'_, Postgres>,
+    record_id: Lease,
+) -> Result<(), AppError> {
+    shared::cancel_for_retry(transaction, record_id.0).await
 }
 
 pub(super) fn digest_parts(domain: &[u8], parts: &[&[u8]]) -> [u8; 32] {

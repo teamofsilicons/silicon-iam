@@ -1,32 +1,22 @@
 use secrecy::{ExposeSecret as _, SecretString};
 
-use crate::{api::ApiState, error::AppError, infrastructure::crypto::DigestPurpose};
+use crate::{api::ApiState, error::AppError};
 
 use super::{
     database::{database_conflict, serializable},
-    idempotency::{self, Claim, IdempotencyKey},
+    idempotency::{self, Claim, IdempotencyKey, Outcome},
     model::RefreshMutationOutcome,
     tokens::{self, RefreshResult},
 };
 
-const REFRESH_ROUTE: &str = "/api/v1/auth/tokens/refresh";
+const REFRESH_ROUTE: &str = "POST /api/v1/auth/tokens/refresh";
 
 pub(super) async fn rotate(
     state: &ApiState,
     key: &IdempotencyKey,
     supplied: SecretString,
-) -> Result<RefreshMutationOutcome, AppError> {
-    let request_key = state
-        .crypto
-        .digest_secret(DigestPurpose::RefreshToken, &supplied)
-        .map_err(|_| AppError::Internal {
-            category: "refresh_request_digest",
-        })?;
-    let request_version = request_key.key_version().to_be_bytes();
-    let request_digest = idempotency::digest_parts(
-        b"refresh-token-rotate",
-        &[&request_version, request_key.as_bytes()],
-    );
+) -> Result<Outcome<RefreshMutationOutcome>, AppError> {
+    let request_digest = refresh_request_digest(&supplied);
     let caller_scope = idempotency::digest_parts(
         b"refresh-token-caller",
         &[supplied.expose_secret().as_bytes()],
@@ -43,15 +33,24 @@ pub(super) async fn rotate(
     )
     .await?
     {
-        Claim::Replay { response } => {
+        Claim::Replay { status, response } => {
             transaction
                 .commit()
                 .await
                 .map_err(|error| database_conflict(&error, "refresh_serialization_conflict"))?;
-            return Ok(response);
+            return Ok(Outcome::replay(status, response));
         }
         Claim::Acquired { record_id } => record_id,
     };
+
+    super::http::enforce_limit(
+        state,
+        "refresh_token_rotate",
+        &supplied,
+        30,
+        std::time::Duration::from_secs(60),
+    )
+    .await?;
 
     let outcome = match tokens::rotate_refresh_token(
         &mut transaction,
@@ -81,15 +80,35 @@ pub(super) async fn rotate(
         .commit()
         .await
         .map_err(|error| database_conflict(&error, "refresh_serialization_conflict"))?;
-    Ok(outcome)
+    Ok(Outcome::fresh(status, outcome))
+}
+
+fn refresh_request_digest(supplied: &SecretString) -> [u8; 32] {
+    idempotency::digest_parts(
+        b"refresh-token-rotate",
+        &[supplied.expose_secret().as_bytes()],
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::REFRESH_ROUTE;
+    use secrecy::SecretString;
+
+    use super::{REFRESH_ROUTE, refresh_request_digest};
 
     #[test]
     fn refresh_idempotency_route_is_template_stable() {
-        assert_eq!(REFRESH_ROUTE, "/api/v1/auth/tokens/refresh");
+        assert_eq!(REFRESH_ROUTE, "POST /api/v1/auth/tokens/refresh");
+    }
+
+    #[test]
+    fn refresh_idempotency_material_is_pepper_version_independent() {
+        let token = SecretString::from(format!("rft_{}", "a".repeat(43)));
+        let digest = refresh_request_digest(&token);
+        assert_eq!(digest, refresh_request_digest(&token));
+        assert_ne!(
+            digest,
+            refresh_request_digest(&SecretString::from(format!("rft_{}", "b".repeat(43))))
+        );
     }
 }

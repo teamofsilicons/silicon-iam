@@ -1,6 +1,5 @@
 //! External notification-provider adapters.
 
-pub(crate) mod hook;
 mod http;
 mod local;
 mod postmark;
@@ -53,8 +52,6 @@ impl NotificationProviders {
             twilio_account_sid: settings.twilio_account_sid.clone(),
             twilio_auth_token: settings.twilio_auth_token.clone(),
             twilio_messaging_service_sid: settings.twilio_messaging_service_sid.clone(),
-            hook_base_url: settings.hook_base_url.clone(),
-            hook_service_token: settings.hook_service_token.clone(),
             iris_base_url: settings.iris_base_url.clone(),
             allow_local_providers: settings.allow_local_providers,
         })

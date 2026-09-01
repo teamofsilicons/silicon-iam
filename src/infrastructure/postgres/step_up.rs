@@ -29,8 +29,6 @@ pub enum StepUpTokenError {
 pub enum RequiredAssurance {
     /// A recently verified Carbon contact channel.
     VerifiedChannel = 2,
-    /// A phishing-resistant `WebAuthn` assertion.
-    PhishingResistant = 3,
 }
 
 /// Exact actor, action, resource, and assurance binding for a privileged call.
@@ -121,16 +119,11 @@ pub async fn consume(
             WITH candidate AS (
                 SELECT assertion.id
                 FROM iam.step_up_assertions AS assertion
-                LEFT JOIN iam.step_up_challenges AS challenge
+                JOIN iam.step_up_challenges AS challenge
                   ON challenge.id = assertion.step_up_challenge_id
                  AND challenge.authentication_session_id = assertion.authentication_session_id
                  AND challenge.carbon_id = assertion.carbon_id
                  AND challenge.purpose = assertion.purpose
-                LEFT JOIN iam.webauthn_ceremonies AS ceremony
-                  ON ceremony.id = assertion.webauthn_ceremony_id
-                 AND ceremony.authentication_session_id = assertion.authentication_session_id
-                 AND ceremony.carbon_id = assertion.carbon_id
-                 AND ceremony.action = assertion.purpose
                 WHERE assertion.digest_key_version = $1
                   AND assertion.token_digest = $2
                   AND assertion.carbon_id = $3
@@ -139,18 +132,8 @@ pub async fn consume(
                   AND assertion.assurance_level >= $7
                   AND assertion.consumed_at IS NULL
                   AND assertion.expires_at > transaction_timestamp()
-                  AND (
-                      (
-                          assertion.step_up_challenge_id IS NOT NULL
-                          AND challenge.status = 'completed'
-                          AND challenge.resource_id IS NOT DISTINCT FROM $6
-                      )
-                      OR (
-                          assertion.webauthn_ceremony_id IS NOT NULL
-                          AND ceremony.status = 'completed'
-                          AND ceremony.resource_id IS NOT DISTINCT FROM $6
-                      )
-                  )
+                  AND challenge.status = 'completed'
+                  AND challenge.resource_id IS NOT DISTINCT FROM $6
                 FOR UPDATE OF assertion
             )
             UPDATE iam.step_up_assertions AS assertion

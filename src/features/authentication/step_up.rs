@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     api::ApiState,
+    domain::auth::OTP_COOLDOWN_SECONDS,
     error::AppError,
     infrastructure::{
         crypto::{DigestPurpose, SecretDigest, SecretKind},
@@ -16,8 +17,9 @@ use crate::{
 use super::{
     contacts,
     database::{database_conflict, serializable, set_principal_context},
+    delivery,
     events::{self, SecurityMutation},
-    idempotency::{self, Claim, IdempotencyKey},
+    idempotency::{self, Claim, IdempotencyKey, Outcome},
     model::{
         AuthSessionResponse, ContactChannel, Delivery, StepUpAction, StepUpChallengeInput,
         StepUpTokenResponse, StepUpVerificationOutcome,
@@ -25,14 +27,44 @@ use super::{
     otp, sessions,
 };
 
-const CREATE_ROUTE: &str = "/api/v1/step-up/challenges";
-const VERIFY_ROUTE: &str = "/api/v1/step-up/challenges/:session_id/verify";
+const CREATE_ROUTE: &str = "POST /api/v1/step-up/challenges";
+const VERIFY_ROUTE: &str = "POST /api/v1/step-up/challenges/{session_id}/verify";
 const ASSERTION_TTL_SECONDS: i64 = 300;
-
-pub(super) struct StepUpDispatch {
-    pub(super) response: AuthSessionResponse,
-    pub(super) delivery: Option<Delivery>,
-}
+const STEP_UP_CHALLENGE_LOCK_QUERY: &str = r"
+    SELECT
+        channel::text AS channel,
+        purpose,
+        resource_id,
+        challenge_digest,
+        digest_key_version,
+        max_attempts,
+        status,
+        expires_at > transaction_timestamp()
+            AND delivery_status = 'delivered' AS active,
+        CASE
+            WHEN status = 'pending'
+                 AND expires_at > transaction_timestamp()
+                 AND cooldown_until > transaction_timestamp()
+                THEN GREATEST(
+                    1,
+                    CEIL(EXTRACT(EPOCH FROM cooldown_until - transaction_timestamp()))::bigint
+                )
+            ELSE 0
+        END AS cooldown_retry_after_seconds
+    FROM iam.step_up_challenges
+    WHERE id = $1
+      AND carbon_id = $2
+      AND authentication_session_id = $3
+    FOR UPDATE
+";
+const SESSION_RESOURCE_OWNERSHIP_QUERY: &str = r"
+    SELECT id
+    FROM iam.authentication_sessions
+    WHERE id = $1
+      AND subject_principal_id = $2
+      AND subject_kind = 'carbon'
+    FOR SHARE
+";
 
 #[derive(FromRow)]
 struct ContactRow {
@@ -49,36 +81,32 @@ struct ChallengeRow {
     resource_id: Option<Uuid>,
     challenge_digest: Vec<u8>,
     digest_key_version: i16,
-    attempt_count: i16,
     max_attempts: i16,
     status: String,
     active: bool,
+    cooldown_retry_after_seconds: i64,
 }
 
 #[derive(FromRow)]
 struct CancelledChallengeRow {
     id: Uuid,
     channel: String,
-    attempt_count: i16,
-}
-
-#[derive(FromRow)]
-struct FailureUpdateRow {
-    attempt_count: i16,
+    was_delivered: bool,
+    failed_attempts: i16,
+    cooldown_until: Option<OffsetDateTime>,
 }
 
 #[allow(
     clippy::too_many_lines,
-    reason = "challenge creation, security records, and idempotency form one transaction"
+    reason = "challenge preparation and delivery finalization are explicit fail-closed phases"
 )]
 pub(super) async fn create_challenge(
     state: &ApiState,
     context: &AccessContext,
     key: &IdempotencyKey,
     input: StepUpChallengeInput,
-) -> Result<StepUpDispatch, AppError> {
+) -> Result<Outcome<AuthSessionResponse>, AppError> {
     let principal_id = sessions::carbon_context(context)?;
-    let resource = input.resource_id.map(Uuid::into_bytes);
     let request_digest = idempotency::digest_parts(
         b"step-up-challenge-create",
         &[
@@ -86,7 +114,7 @@ pub(super) async fn create_challenge(
             context.authentication_session_id.as_bytes(),
             input.channel.database_value().as_bytes(),
             input.action.database_value().as_bytes(),
-            resource.as_ref().map_or(&[], <[u8; 16]>::as_slice),
+            input.resource_id.as_bytes(),
         ],
     );
     let mut transaction = serializable(&state.pool, "step_up_create_transaction").await?;
@@ -101,19 +129,38 @@ pub(super) async fn create_challenge(
     )
     .await?
     {
-        Claim::Replay { response } => {
+        Claim::Replay { status, response } => {
             transaction.commit().await.map_err(|error| {
                 database_conflict(&error, "step_up_create_serialization_conflict")
             })?;
-            return Ok(StepUpDispatch {
-                response,
-                delivery: None,
-            });
+            return Ok(Outcome::replay(status, response));
         }
         Claim::Acquired { record_id } => record_id,
     };
+    let rate_limit_scope = SecretString::from(format!(
+        "{}:{}:{}:{}",
+        principal_id,
+        context.authentication_session_id,
+        input.action.database_value(),
+        input.channel.database_value(),
+    ));
+    super::http::enforce_limit(
+        state,
+        "step_up_challenge_create",
+        &rate_limit_scope,
+        5,
+        std::time::Duration::from_mins(10),
+    )
+    .await?;
     lock_current_session(&mut transaction, context, principal_id).await?;
     set_principal_context(&mut transaction, principal_id).await?;
+    validate_resource_binding(
+        &mut transaction,
+        principal_id,
+        input.action,
+        input.resource_id,
+    )
+    .await?;
     let contact = active_contact(&mut transaction, principal_id, input.channel).await?;
     let recipient = contacts::decrypt_contact(
         &state.crypto,
@@ -142,13 +189,32 @@ pub(super) async fn create_challenge(
     let cancelled = sqlx::query_as::<_, CancelledChallengeRow>(
         r"
         UPDATE iam.step_up_challenges
-        SET status = 'cancelled'
+        SET status = 'cancelled',
+            delivery_status = CASE
+                WHEN delivery_status = 'pending' THEN 'failed'
+                ELSE delivery_status
+            END,
+            delivered_at = CASE
+                WHEN delivery_status = 'pending' THEN NULL
+                ELSE delivered_at
+            END,
+            delivery_failed_at = CASE
+                WHEN delivery_status = 'pending' THEN transaction_timestamp()
+                ELSE delivery_failed_at
+            END
         WHERE authentication_session_id = $1
           AND carbon_id = $2
           AND purpose = $3
           AND resource_id IS NOT DISTINCT FROM $4
           AND status = 'pending'
-        RETURNING id, channel::text AS channel, attempt_count
+        RETURNING id,
+                  channel::text AS channel,
+                  delivery_status = 'delivered' AS was_delivered,
+                  attempt_count AS failed_attempts,
+                  CASE
+                      WHEN cooldown_until > transaction_timestamp() THEN cooldown_until
+                      ELSE NULL
+                  END AS cooldown_until
         ",
     )
     .bind(context.authentication_session_id)
@@ -160,14 +226,27 @@ pub(super) async fn create_challenge(
     .map_err(|_| AppError::Internal {
         category: "step_up_challenge_supersede",
     })?;
+    let attempt_rows = cancelled
+        .iter()
+        .map(|prior| otp::AttemptState {
+            failed_attempts: prior.failed_attempts,
+            cooldown_until: prior.cooldown_until,
+        })
+        .collect::<Vec<_>>();
+    let attempt_state = otp::inherited_attempt_state(&attempt_rows);
     for prior in cancelled {
-        record_cancellation(
-            &mut transaction,
-            principal_id,
-            context.authentication_session_id,
-            prior,
-        )
-        .await?;
+        // Pending-delivery challenges never emitted a creation event and are
+        // silently retired as orphan recovery. Delivered challenges preserve
+        // the existing auditable cancellation transition.
+        if prior.was_delivered {
+            record_cancellation(
+                &mut transaction,
+                principal_id,
+                context.authentication_session_id,
+                prior,
+            )
+            .await?;
+        }
     }
     let max_attempts = i16::try_from(state.settings.security.otp_max_attempts).map_err(|_| {
         AppError::Internal {
@@ -185,12 +264,17 @@ pub(super) async fn create_challenge(
             resource_id,
             challenge_digest,
             digest_key_version,
+            attempt_count,
             max_attempts,
-            expires_at
+            cooldown_until,
+            expires_at,
+            delivery_status,
+            delivered_at
         )
         VALUES (
-            $1, $2, $3, $4::iam.contact_kind, $5, $6, $7, $8, $9,
-            transaction_timestamp() + ($10::bigint * interval '1 second')
+            $1, $2, $3, $4::iam.contact_kind, $5, $6, $7, $8, $9, $10, $11,
+            transaction_timestamp() + ($12::bigint * interval '1 second'),
+            'pending', NULL
         )
         RETURNING expires_at
         ",
@@ -203,23 +287,131 @@ pub(super) async fn create_challenge(
     .bind(input.resource_id)
     .bind(digest.as_bytes().as_slice())
     .bind(digest.key_version())
+    .bind(attempt_state.failed_attempts)
     .bind(max_attempts)
+    .bind(attempt_state.cooldown_until)
     .bind(otp_seconds)
     .fetch_one(&mut *transaction)
     .await
     .map_err(|_| AppError::Internal {
         category: "step_up_challenge_create",
     })?;
-    let local_otp = state
-        .settings
-        .providers
-        .expose_local_otps
-        .then(|| otp.expose_secret().to_owned());
     let response = AuthSessionResponse {
         session_id: challenge_id,
         expires_at,
-        local_otp,
+        local_otp: state
+            .settings
+            .providers
+            .expose_local_otps
+            .then(|| otp.expose_secret().to_owned()),
     };
+    let required_delivery = Delivery {
+        channel: input.channel,
+        recipient,
+        code: otp,
+        purpose: "step-up",
+    };
+
+    // Commit the digest-only pending challenge and its exclusive request
+    // reservation before invoking the provider. Pending challenges cannot be
+    // verified, including across a post-send/pre-finalize process crash.
+    transaction
+        .commit()
+        .await
+        .map_err(|error| database_conflict(&error, "step_up_create_serialization_conflict"))?;
+
+    match delivery::send_required(state, &required_delivery).await {
+        Ok(()) => {
+            confirm_step_up_delivery(
+                state,
+                record_id,
+                principal_id,
+                context.authentication_session_id,
+                challenge_id,
+                input.channel,
+                input.action,
+                input.resource_id,
+                &response,
+            )
+            .await?;
+            Ok(Outcome::fresh(201, response))
+        }
+        Err(delivery::RequiredDeliveryError::Definitive) => {
+            fail_step_up_delivery(state, record_id, principal_id, challenge_id).await?;
+            Err(delivery::public_error())
+        }
+        Err(delivery::RequiredDeliveryError::OutcomeUnknown) => Err(delivery::public_error()),
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the exact challenge authority and response are required for atomic activation"
+)]
+async fn confirm_step_up_delivery(
+    state: &ApiState,
+    record_id: idempotency::Lease,
+    principal_id: Uuid,
+    authentication_session_id: Uuid,
+    challenge_id: Uuid,
+    channel: ContactChannel,
+    action: StepUpAction,
+    resource_id: Uuid,
+    response: &AuthSessionResponse,
+) -> Result<(), AppError> {
+    let mut transaction =
+        serializable(&state.pool, "step_up_delivery_finalize_transaction").await?;
+    set_principal_context(&mut transaction, principal_id).await?;
+    let activated = sqlx::query(
+        r"
+        UPDATE iam.step_up_challenges AS challenge
+        SET delivery_status = 'delivered',
+            delivered_at = transaction_timestamp()
+        WHERE challenge.id = $1
+          AND challenge.carbon_id = $2
+          AND challenge.authentication_session_id = $3
+          AND challenge.status = 'pending'
+          AND challenge.delivery_status = 'pending'
+          AND challenge.delivered_at IS NULL
+          AND challenge.delivery_failed_at IS NULL
+          AND challenge.expires_at > transaction_timestamp()
+          AND EXISTS (
+              SELECT 1
+              FROM iam.authentication_sessions AS session
+              JOIN iam.principals AS principal
+                ON principal.id = session.subject_principal_id
+               AND principal.kind = 'carbon'
+               AND principal.status = 'active'
+               AND principal.auth_epoch = session.subject_auth_epoch
+              WHERE session.id = challenge.authentication_session_id
+                AND session.subject_principal_id = challenge.carbon_id
+                AND session.status = 'active'
+                AND session.idle_expires_at > transaction_timestamp()
+                AND session.absolute_expires_at > transaction_timestamp()
+          )
+        ",
+    )
+    .bind(challenge_id)
+    .bind(principal_id)
+    .bind(authentication_session_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| AppError::Internal {
+        category: "step_up_delivery_activate",
+    })?;
+    if activated.rows_affected() != 1 {
+        idempotency::cancel_for_retry(&mut transaction, record_id).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| database_conflict(&error, "step_up_delivery_finalize_conflict"))?;
+        return Err(AppError::Conflict {
+            code: std::borrow::Cow::Borrowed("otp_delivery_superseded"),
+        });
+    }
+
+    let aggregate_version =
+        events::next_aggregate_version(&mut transaction, "step_up_challenge", challenge_id).await?;
     events::record(
         &mut transaction,
         SecurityMutation {
@@ -230,15 +422,15 @@ pub(super) async fn create_challenge(
             outbox_event: "step_up.challenge_created",
             subject_id: Some(principal_id),
             actor_id: Some(principal_id),
-            authentication_session_id: Some(context.authentication_session_id),
+            authentication_session_id: Some(authentication_session_id),
             aggregate_type: "step_up_challenge",
             aggregate_id: challenge_id,
-            aggregate_version: 1,
+            aggregate_version,
             failure_code: None,
             metadata: json!({
-                "action": input.action.database_value(),
-                "channel": input.channel.database_value(),
-                "resource_id": input.resource_id,
+                "action": action.database_value(),
+                "channel": channel.database_value(),
+                "resource_id": resource_id,
             }),
         },
     )
@@ -248,23 +440,49 @@ pub(super) async fn create_challenge(
         &state.crypto,
         record_id,
         201,
-        &response,
+        response,
         state.settings.providers.expose_local_otps,
     )
     .await?;
     transaction
         .commit()
         .await
-        .map_err(|error| database_conflict(&error, "step_up_create_serialization_conflict"))?;
-    Ok(StepUpDispatch {
-        response,
-        delivery: Some(Delivery {
-            channel: input.channel,
-            recipient,
-            code: otp,
-            purpose: "step-up",
-        }),
-    })
+        .map_err(|error| database_conflict(&error, "step_up_delivery_finalize_conflict"))
+}
+
+async fn fail_step_up_delivery(
+    state: &ApiState,
+    record_id: idempotency::Lease,
+    principal_id: Uuid,
+    challenge_id: Uuid,
+) -> Result<(), AppError> {
+    let mut transaction = serializable(&state.pool, "step_up_delivery_failure_transaction").await?;
+    set_principal_context(&mut transaction, principal_id).await?;
+    sqlx::query(
+        r"
+        UPDATE iam.step_up_challenges
+        SET status = 'cancelled',
+            delivery_status = 'failed',
+            delivered_at = NULL,
+            delivery_failed_at = transaction_timestamp()
+        WHERE id = $1
+          AND carbon_id = $2
+          AND status = 'pending'
+          AND delivery_status = 'pending'
+        ",
+    )
+    .bind(challenge_id)
+    .bind(principal_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| AppError::Internal {
+        category: "step_up_delivery_fail",
+    })?;
+    idempotency::cancel_for_retry(&mut transaction, record_id).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| database_conflict(&error, "step_up_delivery_failure_conflict"))
 }
 
 #[allow(
@@ -277,24 +495,16 @@ pub(super) async fn verify_challenge(
     key: &IdempotencyKey,
     challenge_id: Uuid,
     code: SecretString,
-) -> Result<StepUpVerificationOutcome, AppError> {
+) -> Result<Outcome<StepUpVerificationOutcome>, AppError> {
     let principal_id = sessions::carbon_context(context)?;
     let bound_otp = otp::bound_secret("step-up-otp", challenge_id, &code);
-    let keyed_request = state
-        .crypto
-        .digest_secret(DigestPurpose::StepUpOtp, &bound_otp)
-        .map_err(|_| AppError::Internal {
-            category: "step_up_verify_request_digest",
-        })?;
-    let request_version = keyed_request.key_version().to_be_bytes();
     let request_digest = idempotency::digest_parts(
         b"step-up-challenge-verify",
         &[
             principal_id.as_bytes(),
             context.authentication_session_id.as_bytes(),
             challenge_id.as_bytes(),
-            &request_version,
-            keyed_request.as_bytes(),
+            code.expose_secret().as_bytes(),
         ],
     );
     let mut transaction = serializable(&state.pool, "step_up_verify_transaction").await?;
@@ -309,11 +519,11 @@ pub(super) async fn verify_challenge(
     )
     .await?
     {
-        Claim::Replay { response } => {
+        Claim::Replay { status, response } => {
             transaction.commit().await.map_err(|error| {
                 database_conflict(&error, "step_up_verify_serialization_conflict")
             })?;
-            return Ok(response);
+            return Ok(Outcome::replay(status, response));
         }
         Claim::Acquired { record_id } => record_id,
     };
@@ -326,18 +536,20 @@ pub(super) async fn verify_challenge(
     )
     .await?;
     let Some(challenge) = challenge else {
-        return Ok(StepUpVerificationOutcome::Expired);
+        return Ok(Outcome::fresh(410, StepUpVerificationOutcome::Expired));
     };
-    if challenge.attempt_count >= challenge.max_attempts {
+    if challenge.status != "pending" || !challenge.active {
+        return Ok(Outcome::fresh(410, StepUpVerificationOutcome::Expired));
+    }
+    if challenge.cooldown_retry_after_seconds > 0 {
+        let retry_after_seconds =
+            u64::try_from(challenge.cooldown_retry_after_seconds).unwrap_or(u64::MAX);
         return Err(AppError::RateLimited {
             limit: u64::try_from(challenge.max_attempts.max(1)).unwrap_or(1),
             remaining: 0,
-            reset_after_seconds: state.settings.security.otp_ttl.as_secs(),
-            retry_after_seconds: state.settings.security.otp_ttl.as_secs(),
+            reset_after_seconds: retry_after_seconds,
+            retry_after_seconds,
         });
-    }
-    if challenge.status != "pending" || !challenge.active {
-        return Ok(StepUpVerificationOutcome::Expired);
     }
     let expected =
         SecretDigest::from_parts(challenge.digest_key_version, &challenge.challenge_digest).ok_or(
@@ -352,37 +564,42 @@ pub(super) async fn verify_challenge(
             category: "step_up_otp_verify",
         })?;
     if !matches {
-        let failure = sqlx::query_as::<_, FailureUpdateRow>(
+        let failure = sqlx::query(
             r"
             UPDATE iam.step_up_challenges
-            SET attempt_count = attempt_count + 1,
-                status = CASE
-                    WHEN attempt_count + 1 >= max_attempts THEN 'cancelled'
-                    ELSE status
+            SET attempt_count = CASE
+                    WHEN attempt_count + 1 >= max_attempts THEN 0
+                    ELSE attempt_count + 1
+                END,
+                cooldown_until = CASE
+                    WHEN attempt_count + 1 >= max_attempts
+                        THEN transaction_timestamp() + ($2::bigint * interval '1 second')
+                    ELSE NULL
                 END
             WHERE id = $1
               AND status = 'pending'
               AND expires_at > transaction_timestamp()
-              AND attempt_count < max_attempts
-            RETURNING attempt_count
+              AND (cooldown_until IS NULL OR cooldown_until <= transaction_timestamp())
             ",
         )
         .bind(challenge_id)
-        .fetch_optional(&mut *transaction)
+        .bind(OTP_COOLDOWN_SECONDS)
+        .execute(&mut *transaction)
         .await
         .map_err(|_| AppError::Internal {
             category: "step_up_failure_record",
-        })?
-        .ok_or(AppError::Conflict {
-            code: std::borrow::Cow::Borrowed("step_up_verification_race"),
         })?;
+        if failure.rows_affected() != 1 {
+            return Err(AppError::Conflict {
+                code: std::borrow::Cow::Borrowed("step_up_verification_race"),
+            });
+        }
         record_failure(
             &mut transaction,
             principal_id,
             context.authentication_session_id,
             challenge_id,
             &challenge.channel,
-            failure.attempt_count,
         )
         .await?;
         let outcome = StepUpVerificationOutcome::Invalid;
@@ -399,7 +616,7 @@ pub(super) async fn verify_challenge(
             .commit()
             .await
             .map_err(|error| database_conflict(&error, "step_up_verify_serialization_conflict"))?;
-        return Ok(outcome);
+        return Ok(Outcome::fresh(422, outcome));
     }
 
     let assertion = state
@@ -478,6 +695,8 @@ pub(super) async fn verify_challenge(
             category: "step_up_assertion_expiry",
         })?,
     };
+    let aggregate_version =
+        events::next_aggregate_version(&mut transaction, "step_up_challenge", challenge_id).await?;
     events::record(
         &mut transaction,
         SecurityMutation {
@@ -491,7 +710,7 @@ pub(super) async fn verify_challenge(
             authentication_session_id: Some(context.authentication_session_id),
             aggregate_type: "step_up_challenge",
             aggregate_id: challenge_id,
-            aggregate_version: i64::from(challenge.attempt_count) + 2,
+            aggregate_version,
             failure_code: None,
             metadata: json!({
                 "action": challenge.purpose,
@@ -516,7 +735,7 @@ pub(super) async fn verify_challenge(
         .commit()
         .await
         .map_err(|error| database_conflict(&error, "step_up_verify_serialization_conflict"))?;
-    Ok(outcome)
+    Ok(Outcome::fresh(200, outcome))
 }
 
 async fn lock_current_session(
@@ -556,6 +775,38 @@ async fn lock_current_session(
     }
 }
 
+async fn validate_resource_binding(
+    transaction: &mut Transaction<'_, Postgres>,
+    principal_id: Uuid,
+    action: StepUpAction,
+    resource_id: Uuid,
+) -> Result<(), AppError> {
+    match action {
+        StepUpAction::AccountSessionRevoke => {
+            let owned_session = sqlx::query_scalar::<_, Uuid>(SESSION_RESOURCE_OWNERSHIP_QUERY)
+                .bind(resource_id)
+                .bind(principal_id)
+                .fetch_optional(&mut **transaction)
+                .await
+                .map_err(|_| AppError::Internal {
+                    category: "step_up_session_resource_validate",
+                })?;
+            if owned_session.is_none() {
+                return Err(AppError::NotFound);
+            }
+        }
+        StepUpAction::AccountSessionsRevokeAll if resource_id != principal_id => {
+            return Err(AppError::Validation {
+                details: json!({
+                    "resource_id": ["must equal the current Carbon principal_id for this action"]
+                }),
+            });
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 async fn active_contact(
     transaction: &mut Transaction<'_, Postgres>,
     principal_id: Uuid,
@@ -589,33 +840,15 @@ async fn lock_challenge(
     principal_id: Uuid,
     authentication_session_id: Uuid,
 ) -> Result<Option<ChallengeRow>, AppError> {
-    sqlx::query_as::<_, ChallengeRow>(
-        r"
-        SELECT
-            channel::text AS channel,
-            purpose,
-            resource_id,
-            challenge_digest,
-            digest_key_version,
-            attempt_count,
-            max_attempts,
-            status,
-            expires_at > transaction_timestamp() AS active
-        FROM iam.step_up_challenges
-        WHERE id = $1
-          AND carbon_id = $2
-          AND authentication_session_id = $3
-        FOR UPDATE
-        ",
-    )
-    .bind(challenge_id)
-    .bind(principal_id)
-    .bind(authentication_session_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(|_| AppError::Internal {
-        category: "step_up_challenge_lock",
-    })
+    sqlx::query_as::<_, ChallengeRow>(STEP_UP_CHALLENGE_LOCK_QUERY)
+        .bind(challenge_id)
+        .bind(principal_id)
+        .bind(authentication_session_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "step_up_challenge_lock",
+        })
 }
 
 async fn record_failure(
@@ -624,8 +857,9 @@ async fn record_failure(
     authentication_session_id: Uuid,
     challenge_id: Uuid,
     channel: &str,
-    attempt_count: i16,
 ) -> Result<(), AppError> {
+    let aggregate_version =
+        events::next_aggregate_version(transaction, "step_up_challenge", challenge_id).await?;
     events::record(
         transaction,
         SecurityMutation {
@@ -639,11 +873,12 @@ async fn record_failure(
             authentication_session_id: Some(authentication_session_id),
             aggregate_type: "step_up_challenge",
             aggregate_id: challenge_id,
-            aggregate_version: i64::from(attempt_count) + 1,
+            aggregate_version,
             failure_code: Some("invalid_otp"),
             metadata: json!({
                 "challenge_id": challenge_id,
                 "channel": channel,
+                "cooldown_seconds": OTP_COOLDOWN_SECONDS,
             }),
         },
     )
@@ -656,6 +891,8 @@ async fn record_cancellation(
     authentication_session_id: Uuid,
     challenge: CancelledChallengeRow,
 ) -> Result<(), AppError> {
+    let aggregate_version =
+        events::next_aggregate_version(transaction, "step_up_challenge", challenge.id).await?;
     events::record(
         transaction,
         SecurityMutation {
@@ -669,7 +906,7 @@ async fn record_cancellation(
             authentication_session_id: Some(authentication_session_id),
             aggregate_type: "step_up_challenge",
             aggregate_id: challenge.id,
-            aggregate_version: i64::from(challenge.attempt_count) + 2,
+            aggregate_version,
             failure_code: Some("superseded"),
             metadata: json!({
                 "challenge_id": challenge.id,
@@ -697,16 +934,16 @@ fn token_prefix(token: &SecretString) -> Result<String, AppError> {
 
 fn parse_action(value: &str) -> Result<StepUpAction, AppError> {
     match value {
-        "account.contact_change" => Ok(StepUpAction::AccountContactChange),
-        "account.delete" => Ok(StepUpAction::AccountDelete),
+        "account.session_revoke" => Ok(StepUpAction::AccountSessionRevoke),
+        "account.sessions_revoke_all" => Ok(StepUpAction::AccountSessionsRevokeAll),
         "organization.transfer_ownership" => Ok(StepUpAction::OrganizationTransferOwnership),
         "organization.authorization_change" => Ok(StepUpAction::OrganizationAuthorizationChange),
         "organization.sso_change" => Ok(StepUpAction::OrganizationSsoChange),
+        "organization.silicon_webhook.redirect" => {
+            Ok(StepUpAction::OrganizationSiliconWebhookRedirect)
+        }
         "silicon.rotate_token" => Ok(StepUpAction::SiliconRotateToken),
-        "application.delete" => Ok(StepUpAction::ApplicationDelete),
-        "application.rotate_secret" => Ok(StepUpAction::ApplicationRotateSecret),
-        "application.manage_collaborators" => Ok(StepUpAction::ApplicationManageCollaborators),
-        "platform_admin.manage" => Ok(StepUpAction::PlatformAdminManage),
+        "platform_admin.sso_entitlement" => Ok(StepUpAction::PlatformAdminSsoEntitlement),
         "platform_admin.application_review" => Ok(StepUpAction::PlatformAdminApplicationReview),
         _ => Err(AppError::Internal {
             category: "step_up_action",
@@ -723,14 +960,67 @@ fn duration_seconds(
 
 #[cfg(test)]
 mod tests {
-    use super::{StepUpAction, parse_action};
+    use super::{
+        SESSION_RESOURCE_OWNERSHIP_QUERY, STEP_UP_CHALLENGE_LOCK_QUERY, StepUpAction,
+        StepUpChallengeInput, parse_action,
+    };
 
     #[test]
     fn persisted_actions_use_the_closed_public_vocabulary() {
+        assert!(parse_action("application.rotate_secret").is_err());
+        assert!(parse_action("application.delete").is_err());
+        assert!(parse_action("platform_admin.manage").is_err());
         assert!(matches!(
-            parse_action("application.rotate_secret"),
-            Ok(StepUpAction::ApplicationRotateSecret)
+            parse_action("account.session_revoke"),
+            Ok(StepUpAction::AccountSessionRevoke)
         ));
+        assert!(matches!(
+            parse_action("account.sessions_revoke_all"),
+            Ok(StepUpAction::AccountSessionsRevokeAll)
+        ));
+        assert!(matches!(
+            parse_action("organization.silicon_webhook.redirect"),
+            Ok(StepUpAction::OrganizationSiliconWebhookRedirect)
+        ));
+        assert!(matches!(
+            parse_action("platform_admin.sso_entitlement"),
+            Ok(StepUpAction::PlatformAdminSsoEntitlement)
+        ));
+        assert!(parse_action("organization.silicon_webhook.rotate_secret").is_err());
         assert!(parse_action("application.rotate-anything").is_err());
+    }
+
+    #[test]
+    fn pending_or_failed_step_up_delivery_cannot_verify() {
+        assert!(STEP_UP_CHALLENGE_LOCK_QUERY.contains("delivery_status = 'delivered'"));
+    }
+
+    #[test]
+    fn every_step_up_challenge_requires_a_resource() {
+        let missing = serde_json::json!({
+            "channel": "email",
+            "action": "account.session_revoke"
+        });
+        assert!(serde_json::from_value::<StepUpChallengeInput>(missing).is_err());
+
+        let resource_id = uuid::Uuid::from_u128(1);
+        let valid = serde_json::json!({
+            "channel": "email",
+            "action": "account.session_revoke",
+            "resource_id": resource_id
+        });
+        assert!(serde_json::from_value::<StepUpChallengeInput>(valid).is_ok());
+        assert!(SESSION_RESOURCE_OWNERSHIP_QUERY.contains("subject_principal_id = $2"));
+        assert!(SESSION_RESOURCE_OWNERSHIP_QUERY.contains("subject_kind = 'carbon'"));
+    }
+
+    #[test]
+    fn forward_migration_closes_step_up_action_and_resource_catalogs() {
+        let migration = include_str!("../../../migrations/0035_auth_contract_hardening.sql");
+        assert!(migration.contains("'platform_admin.sso_entitlement'"));
+        assert!(migration.contains("WHERE purpose = 'platform_admin.manage'"));
+        assert!(migration.contains("CHECK (resource_id IS NOT NULL) NOT VALID"));
+        assert!(migration.contains("step_up_challenges_supported_purpose"));
+        assert!(migration.contains("step_up_assertions_supported_purpose"));
     }
 }

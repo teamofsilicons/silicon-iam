@@ -88,7 +88,7 @@ impl PostmarkEmail {
         if body.error_code != 0 {
             return Err(DeliveryError::Rejected);
         }
-        let provider_message_id = body.message_id.ok_or(DeliveryError::Rejected)?;
+        let provider_message_id = body.message_id.ok_or(DeliveryError::Unavailable)?;
         Ok(DeliveryReceipt {
             provider_message_id,
         })

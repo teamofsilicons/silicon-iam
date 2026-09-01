@@ -2,13 +2,10 @@ use std::{num::NonZeroU32, time::Duration};
 
 use axum::{
     Json,
-    extract::{Query, State, rejection::QueryRejection},
+    extract::{Query, State, rejection::JsonRejection, rejection::QueryRejection},
 };
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
-use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -19,7 +16,11 @@ use crate::{
     },
 };
 
-use super::{sessions, validation};
+use super::{
+    contacts,
+    model::{EmailInput, PhoneInput, ValidatedContact},
+    sessions, validation,
+};
 
 const DEFAULT_LIMIT: u16 = 10;
 const MAX_LIMIT: u16 = 10;
@@ -31,31 +32,19 @@ pub(super) struct SearchQuery {
     limit: Option<u16>,
 }
 
-#[derive(Clone, Debug, FromRow, Serialize)]
-struct CarbonPublicRow {
-    principal_id: Uuid,
+#[derive(Clone, Debug, Serialize)]
+struct CarbonSuggestion {
     carbon_id: String,
-    display_name: String,
-    description: Option<String>,
-    profile_photo_uri: Option<String>,
-    #[serde(with = "time::serde::rfc3339")]
-    created_at: OffsetDateTime,
 }
 
 #[derive(Serialize)]
 pub(super) struct CarbonSearchResponse {
-    items: Vec<CarbonPublicResponse>,
+    items: Vec<CarbonSuggestion>,
 }
 
 #[derive(Serialize)]
-struct CarbonPublicResponse {
-    principal_id: Uuid,
+pub(super) struct CarbonResolutionResponse {
     carbon_id: String,
-    display_name: String,
-    description: Option<String>,
-    profile_photo: String,
-    #[serde(with = "time::serde::rfc3339")]
-    created_at: OffsetDateTime,
 }
 
 pub(super) async fn search(
@@ -104,15 +93,10 @@ pub(super) async fn search(
     let escaped = escape_like(&term);
     let pattern = format!("%{escaped}%");
     let prefix = format!("{escaped}%");
-    let rows = sqlx::query_as::<_, CarbonPublicRow>(
+    let carbon_ids = sqlx::query_scalar::<_, String>(
         r"
         SELECT
-            carbon.id AS principal_id,
-            carbon.carbon_id,
-            carbon.display_name,
-            carbon.description,
-            carbon.profile_photo_uri,
-            carbon.created_at
+            carbon.carbon_id
         FROM iam.carbons AS carbon
         JOIN iam.principals AS principal
           ON principal.id = carbon.id
@@ -121,7 +105,7 @@ pub(super) async fn search(
         WHERE carbon.deleted_at IS NULL
           AND (
               carbon.carbon_id ILIKE $1 ESCAPE '\'
-              OR carbon.display_name ILIKE $1 ESCAPE '\'
+              OR carbon.carbon_id OPERATOR(public.%) $2
           )
         ORDER BY
             (carbon.carbon_id = $2) DESC,
@@ -145,11 +129,90 @@ pub(super) async fn search(
         category: "carbon_search_commit",
     })?;
 
-    let items = rows
+    let items = carbon_ids
         .into_iter()
-        .map(|row| public_response(&state, row))
-        .collect::<Result<Vec<_>, AppError>>()?;
+        .map(|carbon_id| CarbonSuggestion { carbon_id })
+        .collect();
     Ok(Json(CarbonSearchResponse { items }))
+}
+
+pub(super) async fn resolve_email(
+    State(state): State<ApiState>,
+    authenticated: Authenticated,
+    payload: Result<Json<EmailInput>, JsonRejection>,
+) -> Result<Json<CarbonResolutionResponse>, AppError> {
+    let Json(input) = payload.map_err(|_| validation::validation("body", "is invalid"))?;
+    let contact = validation::email(input.email)?;
+    resolve_contact(&state, &authenticated, contact).await
+}
+
+pub(super) async fn resolve_phone(
+    State(state): State<ApiState>,
+    authenticated: Authenticated,
+    payload: Result<Json<PhoneInput>, JsonRejection>,
+) -> Result<Json<CarbonResolutionResponse>, AppError> {
+    let Json(input) = payload.map_err(|_| validation::validation("body", "is invalid"))?;
+    let contact = validation::phone(input.phone_number)?;
+    resolve_contact(&state, &authenticated, contact).await
+}
+
+async fn resolve_contact(
+    state: &ApiState,
+    authenticated: &Authenticated,
+    contact: ValidatedContact,
+) -> Result<Json<CarbonResolutionResponse>, AppError> {
+    let principal_id = sessions::carbon_context(&authenticated.0)?;
+    enforce_resolution_rate_limits(state, principal_id, &contact).await?;
+    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(principal_id))
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "carbon_resolution_context",
+        })?;
+    let carbon_id =
+        contacts::resolve_carbon_id_by_contact(&mut transaction, &state.crypto, &contact)
+            .await?
+            .ok_or(AppError::NotFound)?;
+    transaction.commit().await.map_err(|_| AppError::Internal {
+        category: "carbon_resolution_commit",
+    })?;
+    Ok(Json(CarbonResolutionResponse { carbon_id }))
+}
+
+async fn enforce_resolution_rate_limits(
+    state: &ApiState,
+    principal_id: uuid::Uuid,
+    contact: &ValidatedContact,
+) -> Result<(), AppError> {
+    let maximum = NonZeroU32::new(60).ok_or(AppError::Internal {
+        category: "carbon_resolution_rate_policy",
+    })?;
+    let window = Duration::from_mins(1);
+    let policy = RateLimitPolicy::new(maximum, window, window).map_err(|_| AppError::Internal {
+        category: "carbon_resolution_rate_policy",
+    })?;
+    let actor_scope = SecretString::from(principal_id.to_string());
+    let contact_scope = SecretString::from(format!(
+        "{}:{}",
+        contact.channel.database_value(),
+        contact.normalized,
+    ));
+    rate_limit::enforce(
+        &state.pool,
+        &state.crypto,
+        "carbon_resolution_actor",
+        &actor_scope,
+        policy,
+    )
+    .await?;
+    rate_limit::enforce(
+        &state.pool,
+        &state.crypto,
+        "carbon_resolution_contact",
+        &contact_scope,
+        policy,
+    )
+    .await
+    .map(|_| ())
 }
 
 fn validate_term(value: &str) -> Result<String, AppError> {
@@ -170,42 +233,40 @@ fn escape_like(value: &str) -> String {
         .replace('_', "\\_")
 }
 
-fn public_response(
-    state: &ApiState,
-    row: CarbonPublicRow,
-) -> Result<CarbonPublicResponse, AppError> {
-    let profile_photo = if let Some(value) = row.profile_photo_uri {
-        value
-    } else {
-        let mut url = state
-            .settings
-            .providers
-            .iris_base_url
-            .join("pfp/carbon")
-            .map_err(|_| AppError::Internal {
-                category: "carbon_search_profile_photo",
-            })?;
-        url.query_pairs_mut().append_pair("id", &row.carbon_id);
-        url.to_string()
-    };
-    Ok(CarbonPublicResponse {
-        principal_id: row.principal_id,
-        carbon_id: row.carbon_id,
-        display_name: row.display_name,
-        description: row.description,
-        profile_photo,
-        created_at: row.created_at,
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{escape_like, validate_term};
+    use serde_json::json;
+
+    use super::{
+        CarbonResolutionResponse, CarbonSearchResponse, CarbonSuggestion, escape_like,
+        validate_term,
+    };
 
     #[test]
     fn search_terms_are_bounded_and_wildcards_are_literal() {
         assert_eq!(validate_term("  Carbon  ").ok().as_deref(), Some("carbon"));
         assert!(validate_term("\n").is_err());
         assert_eq!(escape_like(r"a%b_c\d"), r"a\%b\_c\\d");
+    }
+
+    #[test]
+    fn public_search_and_resolution_expose_only_carbon_ids() {
+        let search = CarbonSearchResponse {
+            items: vec![CarbonSuggestion {
+                carbon_id: "saket".to_owned(),
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(search).ok(),
+            Some(json!({ "items": [{ "carbon_id": "saket" }] }))
+        );
+
+        let resolution = CarbonResolutionResponse {
+            carbon_id: "saket".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_value(resolution).ok(),
+            Some(json!({ "carbon_id": "saket" }))
+        );
     }
 }

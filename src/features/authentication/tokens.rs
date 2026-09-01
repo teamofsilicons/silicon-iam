@@ -15,9 +15,46 @@ use super::{
     model::{ActorResponse, ContactChannel, TokenResponse},
 };
 
-const SESSION_IDLE_SECONDS: i64 = 30 * 24 * 60 * 60;
 const IAM_AUDIENCE: &str = "silicon-iam";
 const IAM_SELF_SCOPE: &str = "iam.self";
+const CARBON_SESSION_INSERT_QUERY: &str = r"
+    INSERT INTO iam.authentication_sessions (
+        id,
+        subject_principal_id,
+        subject_kind,
+        authentication_method,
+        assurance_level,
+        subject_auth_epoch,
+        idle_expires_at,
+        absolute_expires_at
+    )
+    VALUES (
+        $1, $2, 'carbon', $3, 1, $4,
+        transaction_timestamp() + ($5::bigint * interval '1 second'),
+        transaction_timestamp() + ($5::bigint * interval '1 second')
+    )
+    RETURNING absolute_expires_at
+";
+const SILICON_SESSION_INSERT_QUERY: &str = r"
+    INSERT INTO iam.authentication_sessions (
+        id, subject_principal_id, subject_kind, authentication_method,
+        assurance_level, subject_auth_epoch, idle_expires_at, absolute_expires_at
+    )
+    VALUES (
+        $1, $2, 'silicon', 'silicon_credential', 2, $3,
+        transaction_timestamp() + ($4::bigint * interval '1 second'),
+        transaction_timestamp() + ($4::bigint * interval '1 second')
+    )
+    RETURNING absolute_expires_at
+";
+const SESSION_REFRESH_TOUCH_QUERY: &str = r"
+    UPDATE iam.authentication_sessions
+    SET last_seen_at = transaction_timestamp(),
+        idle_expires_at = absolute_expires_at,
+        version = version + 1
+    WHERE id = $1 AND status = 'active'
+    RETURNING version
+";
 
 pub(super) enum RefreshResult {
     Rotated(TokenResponse),
@@ -93,40 +130,17 @@ pub(super) async fn issue_login_session(
     let session_id = Uuid::now_v7();
     let refresh_family_id = Uuid::now_v7();
     let refresh_seconds = duration_seconds(security.refresh_family_ttl, "refresh_family_ttl")?;
-    let session = sqlx::query_as::<_, SessionInsertRow>(
-        r"
-        INSERT INTO iam.authentication_sessions (
-            id,
-            subject_principal_id,
-            subject_kind,
-            authentication_method,
-            assurance_level,
-            subject_auth_epoch,
-            idle_expires_at,
-            absolute_expires_at
-        )
-        VALUES (
-            $1, $2, 'carbon', $3, 1, $4,
-            LEAST(
-                transaction_timestamp() + ($5::bigint * interval '1 second'),
-                transaction_timestamp() + ($6::bigint * interval '1 second')
-            ),
-            transaction_timestamp() + ($6::bigint * interval '1 second')
-        )
-        RETURNING absolute_expires_at
-        ",
-    )
-    .bind(session_id)
-    .bind(principal_id)
-    .bind(channel.authentication_method())
-    .bind(auth_epoch)
-    .bind(SESSION_IDLE_SECONDS)
-    .bind(refresh_seconds)
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|_| AppError::Internal {
-        category: "authentication_session_create",
-    })?;
+    let session = sqlx::query_as::<_, SessionInsertRow>(CARBON_SESSION_INSERT_QUERY)
+        .bind(session_id)
+        .bind(principal_id)
+        .bind(channel.authentication_method())
+        .bind(auth_epoch)
+        .bind(refresh_seconds)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "authentication_session_create",
+        })?;
 
     sqlx::query(
         r"
@@ -204,33 +218,16 @@ pub(super) async fn issue_silicon_session(
     let session_id = Uuid::now_v7();
     let refresh_family_id = Uuid::now_v7();
     let refresh_seconds = duration_seconds(security.refresh_family_ttl, "refresh_family_ttl")?;
-    let session = sqlx::query_as::<_, SessionInsertRow>(
-        r"
-        INSERT INTO iam.authentication_sessions (
-            id, subject_principal_id, subject_kind, authentication_method,
-            assurance_level, subject_auth_epoch, idle_expires_at, absolute_expires_at
-        )
-        VALUES (
-            $1, $2, 'silicon', 'silicon_credential', 2, $3,
-            LEAST(
-                transaction_timestamp() + ($4::bigint * interval '1 second'),
-                transaction_timestamp() + ($5::bigint * interval '1 second')
-            ),
-            transaction_timestamp() + ($5::bigint * interval '1 second')
-        )
-        RETURNING absolute_expires_at
-        ",
-    )
-    .bind(session_id)
-    .bind(identity.principal_id)
-    .bind(identity.principal_auth_epoch)
-    .bind(SESSION_IDLE_SECONDS)
-    .bind(refresh_seconds)
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|_| AppError::Internal {
-        category: "silicon_authentication_session_create",
-    })?;
+    let session = sqlx::query_as::<_, SessionInsertRow>(SILICON_SESSION_INSERT_QUERY)
+        .bind(session_id)
+        .bind(identity.principal_id)
+        .bind(identity.principal_auth_epoch)
+        .bind(refresh_seconds)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "silicon_authentication_session_create",
+        })?;
     sqlx::query(
         r"
         INSERT INTO iam.refresh_token_families (
@@ -455,26 +452,13 @@ pub(super) async fn rotate_refresh_token(
         replacement_id,
     )
     .await?;
-    let session_version = sqlx::query_scalar::<_, i64>(
-        r"
-        UPDATE iam.authentication_sessions
-        SET last_seen_at = transaction_timestamp(),
-            idle_expires_at = LEAST(
-                absolute_expires_at,
-                transaction_timestamp() + ($2::bigint * interval '1 second')
-            ),
-            version = version + 1
-        WHERE id = $1 AND status = 'active'
-        RETURNING version
-        ",
-    )
-    .bind(row.session_id)
-    .bind(SESSION_IDLE_SECONDS)
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|_| AppError::Internal {
-        category: "session_refresh_touch",
-    })?;
+    let session_version = sqlx::query_scalar::<_, i64>(SESSION_REFRESH_TOUCH_QUERY)
+        .bind(row.session_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "session_refresh_touch",
+        })?;
     events::record(
         transaction,
         SecurityMutation {
@@ -852,12 +836,38 @@ fn duration_seconds(
 mod tests {
     use secrecy::SecretString;
 
-    use super::token_prefix;
+    use super::{
+        CARBON_SESSION_INSERT_QUERY, SESSION_REFRESH_TOUCH_QUERY, SILICON_SESSION_INSERT_QUERY,
+        token_prefix,
+    };
 
     #[test]
     fn persisted_prefix_is_class_bound_and_fixed_length() {
         let token = SecretString::from(format!("cat_{}", "A".repeat(43)));
         assert!(matches!(token_prefix(&token, "cat_"), Ok(value) if value == "cat_AAAAAAAA"));
         assert!(token_prefix(&token, "rft_").is_err());
+    }
+
+    #[test]
+    fn iam_session_idle_deadline_is_the_absolute_refresh_deadline() {
+        for query in [CARBON_SESSION_INSERT_QUERY, SILICON_SESSION_INSERT_QUERY] {
+            let deadline_assignments = query
+                .lines()
+                .filter(|line| line.contains("transaction_timestamp() +"))
+                .map(|line| line.trim().trim_end_matches(','))
+                .collect::<Vec<_>>();
+            assert_eq!(deadline_assignments.len(), 2);
+            assert_eq!(deadline_assignments[0], deadline_assignments[1]);
+            assert!(!query.contains("30 days"));
+        }
+        assert!(SESSION_REFRESH_TOUCH_QUERY.contains("idle_expires_at = absolute_expires_at"));
+    }
+
+    #[test]
+    fn forward_migration_aligns_existing_iam_and_oauth_refresh_credentials() {
+        let migration = include_str!("../../../migrations/0028_align_refresh_session_lifetime.sql");
+        assert!(migration.contains("idle_expires_at = authentication_session.absolute_expires_at"));
+        assert!(migration.contains("family.client_application_id IS NOT NULL"));
+        assert!(migration.contains("SET expires_at = family.absolute_expires_at"));
     }
 }

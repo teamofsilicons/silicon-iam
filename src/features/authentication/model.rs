@@ -26,6 +26,7 @@ pub(super) struct VerificationInput {
 pub(super) struct SignupCompletionInput {
     pub(super) carbon_id: String,
     pub(super) display_name: String,
+    pub(super) timezone: String,
     pub(super) description: Option<String>,
     pub(super) profile_photo: Option<String>,
 }
@@ -77,8 +78,9 @@ pub(super) struct AuthSessionResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct CodeDispatchResponse {
-    pub(super) accepted: bool,
-    pub(super) expires_in: u64,
+    pub(super) already_exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) expires_in: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) local_otp: Option<String>,
 }
@@ -106,6 +108,7 @@ pub(super) struct CarbonSelfResponse {
     pub(super) principal_id: Uuid,
     pub(super) carbon_id: String,
     pub(super) display_name: String,
+    pub(super) timezone: String,
     pub(super) description: Option<String>,
     pub(super) profile_photo: String,
     pub(super) email: String,
@@ -230,6 +233,7 @@ impl ValidatedLoginIdentifier {
 pub(super) struct ValidatedSignupCompletion {
     pub(super) carbon_id: crate::domain::auth::CarbonId,
     pub(super) display_name: String,
+    pub(super) timezone: String,
     pub(super) description: Option<String>,
     pub(super) profile_photo: Option<url::Url>,
 }
@@ -270,26 +274,22 @@ pub(super) enum EmptyMutationOutcome {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum StepUpAction {
-    #[serde(rename = "account.contact_change")]
-    AccountContactChange,
-    #[serde(rename = "account.delete")]
-    AccountDelete,
+    #[serde(rename = "account.session_revoke")]
+    AccountSessionRevoke,
+    #[serde(rename = "account.sessions_revoke_all")]
+    AccountSessionsRevokeAll,
     #[serde(rename = "organization.transfer_ownership")]
     OrganizationTransferOwnership,
     #[serde(rename = "organization.authorization_change")]
     OrganizationAuthorizationChange,
     #[serde(rename = "organization.sso_change")]
     OrganizationSsoChange,
+    #[serde(rename = "organization.silicon_webhook.redirect")]
+    OrganizationSiliconWebhookRedirect,
     #[serde(rename = "silicon.rotate_token")]
     SiliconRotateToken,
-    #[serde(rename = "application.delete")]
-    ApplicationDelete,
-    #[serde(rename = "application.rotate_secret")]
-    ApplicationRotateSecret,
-    #[serde(rename = "application.manage_collaborators")]
-    ApplicationManageCollaborators,
-    #[serde(rename = "platform_admin.manage")]
-    PlatformAdminManage,
+    #[serde(rename = "platform_admin.sso_entitlement")]
+    PlatformAdminSsoEntitlement,
     #[serde(rename = "platform_admin.application_review")]
     PlatformAdminApplicationReview,
 }
@@ -297,16 +297,14 @@ pub(super) enum StepUpAction {
 impl StepUpAction {
     pub(super) const fn database_value(self) -> &'static str {
         match self {
-            Self::AccountContactChange => "account.contact_change",
-            Self::AccountDelete => "account.delete",
+            Self::AccountSessionRevoke => "account.session_revoke",
+            Self::AccountSessionsRevokeAll => "account.sessions_revoke_all",
             Self::OrganizationTransferOwnership => "organization.transfer_ownership",
             Self::OrganizationAuthorizationChange => "organization.authorization_change",
             Self::OrganizationSsoChange => "organization.sso_change",
+            Self::OrganizationSiliconWebhookRedirect => "organization.silicon_webhook.redirect",
             Self::SiliconRotateToken => "silicon.rotate_token",
-            Self::ApplicationDelete => "application.delete",
-            Self::ApplicationRotateSecret => "application.rotate_secret",
-            Self::ApplicationManageCollaborators => "application.manage_collaborators",
-            Self::PlatformAdminManage => "platform_admin.manage",
+            Self::PlatformAdminSsoEntitlement => "platform_admin.sso_entitlement",
             Self::PlatformAdminApplicationReview => "platform_admin.application_review",
         }
     }
@@ -317,7 +315,7 @@ impl StepUpAction {
 pub(super) struct StepUpChallengeInput {
     pub(super) channel: ContactChannel,
     pub(super) action: StepUpAction,
-    pub(super) resource_id: Option<Uuid>,
+    pub(super) resource_id: Uuid,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

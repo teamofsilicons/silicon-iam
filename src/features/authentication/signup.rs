@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     api::ApiState,
+    domain::auth::OTP_COOLDOWN_SECONDS,
     error::AppError,
     infrastructure::crypto::{DigestPurpose, EncryptedValue, SecretDigest},
 };
@@ -13,8 +14,9 @@ use crate::{
 use super::{
     contacts,
     database::{database_conflict, expired, serializable},
+    delivery,
     events::{self, SecurityMutation},
-    idempotency::{self, Claim, IdempotencyKey},
+    idempotency::{self, Claim, IdempotencyKey, Outcome},
     model::{
         AuthSessionResponse, CarbonSelfResponse, CodeDispatchResponse, ContactChannel, Delivery,
         ValidatedContact, ValidatedSignupCompletion, VerificationOutcome,
@@ -23,11 +25,42 @@ use super::{
 };
 
 const SIGNUP_LIFETIME_HOURS: i64 = 48;
-
-pub(super) struct DispatchResult {
-    pub(super) response: CodeDispatchResponse,
-    pub(super) delivery: Option<Delivery>,
-}
+const SIGNUP_CHALLENGE_LOCK_QUERY: &str = r"
+    SELECT
+        challenge.id AS challenge_id,
+        candidate.id AS candidate_id,
+        challenge.code_digest,
+        challenge.digest_key_version,
+        challenge.max_attempts,
+        challenge.expires_at > transaction_timestamp()
+            AND challenge.superseded_at IS NULL
+            AND challenge.consumed_at IS NULL
+            AND challenge.delivery_status = 'delivered' AS challenge_active,
+        CASE
+            WHEN challenge.cooldown_until > transaction_timestamp()
+                THEN GREATEST(
+                    1,
+                    CEIL(EXTRACT(EPOCH FROM challenge.cooldown_until - transaction_timestamp()))::bigint
+                )
+            ELSE 0
+        END AS cooldown_retry_after_seconds,
+        challenge.consumed_at IS NOT NULL
+            OR candidate.verified_at IS NOT NULL AS verified,
+        signup_session.status = 'pending'
+            AND signup_session.expires_at > transaction_timestamp() AS session_usable
+    FROM iam.signup_sessions AS signup_session
+    JOIN iam.signup_contact_candidates AS candidate
+      ON candidate.signup_session_id = signup_session.id
+     AND candidate.kind = $2::iam.contact_kind
+     AND candidate.superseded_at IS NULL
+    JOIN iam.signup_otp_challenges AS challenge
+      ON challenge.candidate_id = candidate.id
+     AND challenge.contact_kind = candidate.kind
+    WHERE signup_session.id = $1
+    ORDER BY challenge.created_at DESC, challenge.id DESC
+    LIMIT 1
+    FOR UPDATE OF signup_session, candidate, challenge
+";
 
 #[derive(FromRow)]
 struct SignupSessionRow {
@@ -41,9 +74,9 @@ struct SignupChallengeRow {
     candidate_id: Uuid,
     code_digest: Vec<u8>,
     digest_key_version: i16,
-    failed_attempts: i16,
     max_attempts: i16,
-    challenge_usable: bool,
+    challenge_active: bool,
+    cooldown_retry_after_seconds: i64,
     verified: bool,
     session_usable: bool,
 }
@@ -68,7 +101,7 @@ struct CompletionRow {
 pub(super) async fn create_session(
     state: &ApiState,
     key: &IdempotencyKey,
-) -> Result<AuthSessionResponse, AppError> {
+) -> Result<Outcome<AuthSessionResponse>, AppError> {
     let mut transaction = serializable(&state.pool, "signup_session_transaction").await?;
     let request_digest = idempotency::digest_parts(b"signup-session-create", &[]);
     match idempotency::begin::<AuthSessionResponse>(
@@ -76,17 +109,17 @@ pub(super) async fn create_session(
         &state.crypto,
         key,
         b"anonymous-signup",
-        "/api/v1/signup/sessions",
+        "POST /api/v1/signup/sessions",
         request_digest,
         false,
     )
     .await?
     {
-        Claim::Replay { response, .. } => {
+        Claim::Replay { status, response } => {
             transaction.commit().await.map_err(|error| {
                 database_conflict(&error, "signup_session_serialization_conflict")
             })?;
-            Ok(response)
+            Ok(Outcome::replay(status, response))
         }
         Claim::Acquired { record_id } => {
             let session_id = Uuid::now_v7();
@@ -143,40 +176,25 @@ pub(super) async fn create_session(
             transaction.commit().await.map_err(|error| {
                 database_conflict(&error, "signup_session_serialization_conflict")
             })?;
-            Ok(response)
+            Ok(Outcome::fresh(201, response))
         }
     }
 }
 
 #[allow(
     clippy::too_many_lines,
-    reason = "candidate, OTP, audit, outbox, and idempotency commit atomically"
+    reason = "challenge preparation and delivery finalization are explicit fail-closed phases"
 )]
 pub(super) async fn start_contact(
     state: &ApiState,
     key: &IdempotencyKey,
     signup_session_id: Uuid,
     contact: ValidatedContact,
-) -> Result<DispatchResult, AppError> {
+) -> Result<Outcome<CodeDispatchResponse>, AppError> {
     let channel = contact.channel;
-    let request_index = state
-        .crypto
-        .blind_index(contacts::blind_index_purpose(channel), &contact.normalized)
-        .map_err(|_| AppError::Internal {
-            category: "signup_contact_request_digest",
-        })?;
-    let request_version = request_index.key_version().to_be_bytes();
-    let request_digest = idempotency::digest_parts(
-        b"signup-contact-start",
-        &[
-            signup_session_id.as_bytes(),
-            channel.database_value().as_bytes(),
-            &request_version,
-            request_index.as_bytes(),
-        ],
-    );
+    let request_digest = start_contact_request_digest(signup_session_id, &contact);
     let mut transaction = serializable(&state.pool, "signup_contact_transaction").await?;
-    match idempotency::begin::<CodeDispatchResponse>(
+    let record_id = match idempotency::begin::<CodeDispatchResponse>(
         &mut transaction,
         &state.crypto,
         key,
@@ -187,167 +205,339 @@ pub(super) async fn start_contact(
     )
     .await?
     {
-        Claim::Replay { response, .. } => {
+        Claim::Replay { status, response } => {
             transaction.commit().await.map_err(|error| {
                 database_conflict(&error, "signup_contact_serialization_conflict")
             })?;
-            Ok(DispatchResult {
-                response,
-                delivery: None,
-            })
+            return Ok(Outcome::replay(status, response));
         }
-        Claim::Acquired { record_id } => {
-            let session = lock_signup_session(&mut transaction, signup_session_id).await?;
-            ensure_pending_session(&session)?;
-            let verified_exists = sqlx::query_scalar::<_, bool>(
-                r"
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM iam.signup_contact_candidates
-                    WHERE signup_session_id = $1
-                      AND kind = $2::iam.contact_kind
-                      AND verified_at IS NOT NULL
-                      AND superseded_at IS NULL
-                )
-                ",
-            )
-            .bind(signup_session_id)
-            .bind(channel.database_value())
-            .fetch_one(&mut *transaction)
+        Claim::Acquired { record_id } => record_id,
+    };
+
+    super::http::enforce_contact_limit(
+        state,
+        signup_start_limit_name(channel),
+        signup_session_id,
+        &contact,
+    )
+    .await?;
+
+    let session = lock_signup_session(&mut transaction, signup_session_id).await?;
+    ensure_pending_session(&session)?;
+    let verified_exists = sqlx::query_scalar::<_, bool>(
+        r"
+        SELECT EXISTS (
+            SELECT 1
+            FROM iam.signup_contact_candidates
+            WHERE signup_session_id = $1
+              AND kind = $2::iam.contact_kind
+              AND verified_at IS NOT NULL
+              AND superseded_at IS NULL
+        )
+        ",
+    )
+    .bind(signup_session_id)
+    .bind(channel.database_value())
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| AppError::Internal {
+        category: "signup_verified_candidate_check",
+    })?;
+    if verified_exists {
+        return Err(AppError::Conflict {
+            code: std::borrow::Cow::Borrowed("signup_contact_already_verified"),
+        });
+    }
+
+    let existing_contact = contacts::contact_associated_with_non_deleted_carbon(
+        &mut transaction,
+        &state.crypto,
+        &contact,
+    )
+    .await?;
+    if existing_contact {
+        let response = CodeDispatchResponse {
+            already_exists: true,
+            expires_in: None,
+            local_otp: None,
+        };
+        idempotency::complete(
+            &mut transaction,
+            &state.crypto,
+            record_id,
+            202,
+            &response,
+            false,
+        )
+        .await?;
+        transaction
+            .commit()
             .await
-            .map_err(|_| AppError::Internal {
-                category: "signup_verified_candidate_check",
-            })?;
-            if verified_exists {
-                return Err(AppError::Conflict {
-                    code: std::borrow::Cow::Borrowed("signup_contact_already_verified"),
-                });
-            }
+            .map_err(|error| database_conflict(&error, "signup_contact_serialization_conflict"))?;
+        return Ok(Outcome::fresh(202, response));
+    }
 
-            let existing_contact =
-                contacts::active_contact_exists(&mut transaction, &state.crypto, &contact).await?;
-            let candidate_id = Uuid::now_v7();
-            let challenge_id = Uuid::now_v7();
-            let encrypted = contacts::encrypt_contact(&state.crypto, &contact, candidate_id)?;
-            let indexes = contacts::blind_indexes(&state.crypto, &contact)?;
-            let otp = state
-                .crypto
-                .generate_otp()
-                .map_err(|_| AppError::Internal {
-                    category: "signup_otp_generate",
-                })?;
-            let otp_digest = state
-                .crypto
-                .digest_secret(
-                    signup_otp_purpose(channel),
-                    &otp::bound_secret("signup", signup_session_id, &otp),
-                )
-                .map_err(|_| AppError::Internal {
-                    category: "signup_otp_digest",
-                })?;
+    let candidate_id = Uuid::now_v7();
+    let challenge_id = Uuid::now_v7();
+    let encrypted = contacts::encrypt_contact(&state.crypto, &contact, candidate_id)?;
+    let indexes = contacts::blind_indexes(&state.crypto, &contact)?;
+    let otp = state
+        .crypto
+        .generate_otp()
+        .map_err(|_| AppError::Internal {
+            category: "signup_otp_generate",
+        })?;
+    let otp_digest = state
+        .crypto
+        .digest_secret(
+            signup_otp_purpose(channel),
+            &otp::bound_secret("signup", signup_session_id, &otp),
+        )
+        .map_err(|_| AppError::Internal {
+            category: "signup_otp_digest",
+        })?;
 
-            supersede_signup_contact(&mut transaction, signup_session_id, channel).await?;
-            insert_candidate(
-                &mut transaction,
+    let attempt_state =
+        supersede_signup_contact(&mut transaction, signup_session_id, channel).await?;
+    insert_candidate(
+        &mut transaction,
+        signup_session_id,
+        candidate_id,
+        channel,
+        encrypted,
+        &indexes,
+    )
+    .await?;
+    let otp_ttl = duration_seconds(state.settings.security.otp_ttl, "signup_otp_ttl")?;
+    let max_attempts = i16::try_from(state.settings.security.otp_max_attempts).map_err(|_| {
+        AppError::Internal {
+            category: "signup_otp_attempts",
+        }
+    })?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.signup_otp_challenges (
+            id,
+            signup_session_id,
+            candidate_id,
+            contact_kind,
+            code_digest,
+            digest_key_version,
+            failed_attempts,
+            max_attempts,
+            cooldown_until,
+            expires_at,
+            delivery_status,
+            delivered_at
+        )
+        VALUES (
+            $1, $2, $3, $4::iam.contact_kind, $5, $6, $7, $8, $9,
+            transaction_timestamp() + ($10::bigint * interval '1 second'),
+            'pending', NULL
+        )
+        ",
+    )
+    .bind(challenge_id)
+    .bind(signup_session_id)
+    .bind(candidate_id)
+    .bind(channel.database_value())
+    .bind(otp_digest.as_bytes().as_slice())
+    .bind(otp_digest.key_version())
+    .bind(attempt_state.failed_attempts)
+    .bind(max_attempts)
+    .bind(attempt_state.cooldown_until)
+    .bind(otp_ttl)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| AppError::Internal {
+        category: "signup_otp_create",
+    })?;
+    let response = CodeDispatchResponse {
+        already_exists: false,
+        expires_in: Some(state.settings.security.otp_ttl.as_secs()),
+        local_otp: state
+            .settings
+            .providers
+            .expose_local_otps
+            .then(|| otp.expose_secret().to_owned()),
+    };
+    let required_delivery = Delivery {
+        channel,
+        recipient: contact.presentation,
+        code: otp,
+        purpose: "signup",
+    };
+
+    // Phase A commits only a digest-backed, unverifiable challenge and the
+    // exclusive request reservation. Provider I/O never holds database locks.
+    transaction
+        .commit()
+        .await
+        .map_err(|error| database_conflict(&error, "signup_contact_serialization_conflict"))?;
+
+    match delivery::send_required(state, &required_delivery).await {
+        Ok(()) => {
+            confirm_signup_delivery(
+                state,
+                record_id,
                 signup_session_id,
                 candidate_id,
+                challenge_id,
                 channel,
-                encrypted,
-                &indexes,
-            )
-            .await?;
-            let otp_ttl = duration_seconds(state.settings.security.otp_ttl, "signup_otp_ttl")?;
-            let max_attempts =
-                i16::try_from(state.settings.security.otp_max_attempts).map_err(|_| {
-                    AppError::Internal {
-                        category: "signup_otp_attempts",
-                    }
-                })?;
-            sqlx::query(
-                r"
-                INSERT INTO iam.signup_otp_challenges (
-                    id,
-                    signup_session_id,
-                    candidate_id,
-                    contact_kind,
-                    code_digest,
-                    digest_key_version,
-                    max_attempts,
-                    expires_at
-                )
-                VALUES (
-                    $1, $2, $3, $4::iam.contact_kind, $5, $6, $7,
-                    transaction_timestamp() + ($8::bigint * interval '1 second')
-                )
-                ",
-            )
-            .bind(challenge_id)
-            .bind(signup_session_id)
-            .bind(candidate_id)
-            .bind(channel.database_value())
-            .bind(otp_digest.as_bytes().as_slice())
-            .bind(otp_digest.key_version())
-            .bind(max_attempts)
-            .bind(otp_ttl)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|_| AppError::Internal {
-                category: "signup_otp_create",
-            })?;
-            let version = bump_signup_session(&mut transaction, signup_session_id).await?;
-            let local_otp = state
-                .settings
-                .providers
-                .expose_local_otps
-                .then(|| otp.expose_secret().to_owned());
-            let response = CodeDispatchResponse {
-                accepted: true,
-                expires_in: state.settings.security.otp_ttl.as_secs(),
-                local_otp,
-            };
-            events::record(
-                &mut transaction,
-                SecurityMutation {
-                    authentication_event: "signup.otp_issued",
-                    authentication_outcome: "success",
-                    audit_action: "signup.contact_start",
-                    audit_result: "success",
-                    outbox_event: "signup.otp_issued",
-                    subject_id: None,
-                    actor_id: None,
-                    authentication_session_id: None,
-                    aggregate_type: "signup_session",
-                    aggregate_id: signup_session_id,
-                    aggregate_version: version,
-                    failure_code: None,
-                    metadata: json!({
-                        "candidate_id": candidate_id,
-                        "channel": channel.database_value(),
-                    }),
-                },
-            )
-            .await?;
-            idempotency::complete(
-                &mut transaction,
-                &state.crypto,
-                record_id,
-                202,
                 &response,
-                state.settings.providers.expose_local_otps,
             )
             .await?;
-            transaction.commit().await.map_err(|error| {
-                database_conflict(&error, "signup_contact_serialization_conflict")
-            })?;
-            let delivery = (!existing_contact).then(|| Delivery {
-                channel,
-                recipient: contact.presentation,
-                code: otp,
-                purpose: "signup",
-            });
-            Ok(DispatchResult { response, delivery })
+            Ok(Outcome::fresh(202, response))
+        }
+        Err(delivery::RequiredDeliveryError::Definitive) => {
+            fail_signup_delivery(state, record_id, candidate_id, challenge_id).await?;
+            Err(delivery::public_error())
+        }
+        Err(delivery::RequiredDeliveryError::OutcomeUnknown) => {
+            // The pending digest and processing reservation intentionally stay
+            // durable. The same key receives `idempotency_in_progress`; a new
+            // key supersedes this unusable challenge.
+            Err(delivery::public_error())
         }
     }
+}
+
+async fn confirm_signup_delivery(
+    state: &ApiState,
+    record_id: idempotency::Lease,
+    signup_session_id: Uuid,
+    candidate_id: Uuid,
+    challenge_id: Uuid,
+    channel: ContactChannel,
+    response: &CodeDispatchResponse,
+) -> Result<(), AppError> {
+    let mut transaction = serializable(&state.pool, "signup_delivery_finalize_transaction").await?;
+    let activated = sqlx::query(
+        r"
+        UPDATE iam.signup_otp_challenges AS challenge
+        SET delivery_status = 'delivered',
+            delivered_at = transaction_timestamp()
+        FROM iam.signup_contact_candidates AS candidate,
+             iam.signup_sessions AS signup_session
+        WHERE challenge.id = $1
+          AND challenge.candidate_id = $2
+          AND challenge.signup_session_id = $3
+          AND challenge.delivery_status = 'pending'
+          AND challenge.delivered_at IS NULL
+          AND challenge.delivery_failed_at IS NULL
+          AND challenge.consumed_at IS NULL
+          AND challenge.superseded_at IS NULL
+          AND challenge.expires_at > transaction_timestamp()
+          AND candidate.id = challenge.candidate_id
+          AND candidate.verified_at IS NULL
+          AND candidate.superseded_at IS NULL
+          AND signup_session.id = challenge.signup_session_id
+          AND signup_session.status = 'pending'
+          AND signup_session.expires_at > transaction_timestamp()
+        ",
+    )
+    .bind(challenge_id)
+    .bind(candidate_id)
+    .bind(signup_session_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| AppError::Internal {
+        category: "signup_delivery_activate",
+    })?;
+    if activated.rows_affected() != 1 {
+        idempotency::cancel_for_retry(&mut transaction, record_id).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| database_conflict(&error, "signup_delivery_finalize_conflict"))?;
+        return Err(AppError::Conflict {
+            code: std::borrow::Cow::Borrowed("otp_delivery_superseded"),
+        });
+    }
+
+    let version = bump_signup_session(&mut transaction, signup_session_id).await?;
+    events::record(
+        &mut transaction,
+        SecurityMutation {
+            authentication_event: "signup.otp_issued",
+            authentication_outcome: "success",
+            audit_action: "signup.contact_start",
+            audit_result: "success",
+            outbox_event: "signup.otp_issued",
+            subject_id: None,
+            actor_id: None,
+            authentication_session_id: None,
+            aggregate_type: "signup_session",
+            aggregate_id: signup_session_id,
+            aggregate_version: version,
+            failure_code: None,
+            metadata: json!({
+                "candidate_id": candidate_id,
+                "channel": channel.database_value(),
+            }),
+        },
+    )
+    .await?;
+    idempotency::complete(
+        &mut transaction,
+        &state.crypto,
+        record_id,
+        202,
+        response,
+        state.settings.providers.expose_local_otps,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| database_conflict(&error, "signup_delivery_finalize_conflict"))
+}
+
+async fn fail_signup_delivery(
+    state: &ApiState,
+    record_id: idempotency::Lease,
+    candidate_id: Uuid,
+    challenge_id: Uuid,
+) -> Result<(), AppError> {
+    let mut transaction = serializable(&state.pool, "signup_delivery_failure_transaction").await?;
+    sqlx::query(
+        r"
+        UPDATE iam.signup_otp_challenges
+        SET delivery_status = 'failed',
+            delivered_at = NULL,
+            delivery_failed_at = transaction_timestamp(),
+            superseded_at = COALESCE(superseded_at, transaction_timestamp())
+        WHERE id = $1
+          AND candidate_id = $2
+          AND delivery_status = 'pending'
+        ",
+    )
+    .bind(challenge_id)
+    .bind(candidate_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| AppError::Internal {
+        category: "signup_delivery_fail",
+    })?;
+    sqlx::query(
+        r"
+        UPDATE iam.signup_contact_candidates
+        SET superseded_at = COALESCE(superseded_at, transaction_timestamp())
+        WHERE id = $1
+          AND verified_at IS NULL
+        ",
+    )
+    .bind(candidate_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| AppError::Internal {
+        category: "signup_delivery_candidate_fail",
+    })?;
+    idempotency::cancel_for_retry(&mut transaction, record_id).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| database_conflict(&error, "signup_delivery_failure_conflict"))
 }
 
 #[allow(
@@ -360,24 +550,9 @@ pub(super) async fn verify_contact(
     signup_session_id: Uuid,
     channel: ContactChannel,
     supplied_code: SecretString,
-) -> Result<VerificationOutcome, AppError> {
+) -> Result<Outcome<VerificationOutcome>, AppError> {
     let bound_code = otp::bound_secret("signup", signup_session_id, &supplied_code);
-    let keyed_request = state
-        .crypto
-        .digest_secret(signup_otp_purpose(channel), &bound_code)
-        .map_err(|_| AppError::Internal {
-            category: "signup_verify_request_digest",
-        })?;
-    let request_version = keyed_request.key_version().to_be_bytes();
-    let request_digest = idempotency::digest_parts(
-        b"signup-contact-verify",
-        &[
-            signup_session_id.as_bytes(),
-            channel.database_value().as_bytes(),
-            &request_version,
-            keyed_request.as_bytes(),
-        ],
-    );
+    let request_digest = verify_contact_request_digest(signup_session_id, channel, &supplied_code);
     let mut transaction = serializable(&state.pool, "signup_verify_transaction").await?;
     let record_id = match idempotency::begin::<VerificationOutcome>(
         &mut transaction,
@@ -390,17 +565,17 @@ pub(super) async fn verify_contact(
     )
     .await?
     {
-        Claim::Replay { response, .. } => {
+        Claim::Replay { status, response } => {
             transaction.commit().await.map_err(|error| {
                 database_conflict(&error, "signup_verify_serialization_conflict")
             })?;
-            return Ok(response);
+            return Ok(Outcome::replay(status, response));
         }
         Claim::Acquired { record_id } => record_id,
     };
     let row = lock_signup_challenge(&mut transaction, signup_session_id, channel).await?;
     if !row.session_usable {
-        return Ok(VerificationOutcome::Expired);
+        return Ok(Outcome::fresh(410, VerificationOutcome::Expired));
     }
     if row.verified {
         let outcome = VerificationOutcome::Verified;
@@ -417,17 +592,19 @@ pub(super) async fn verify_contact(
             .commit()
             .await
             .map_err(|error| database_conflict(&error, "signup_verify_serialization_conflict"))?;
-        return Ok(outcome);
+        return Ok(Outcome::fresh(200, outcome));
     }
-    if !row.challenge_usable {
-        return Ok(VerificationOutcome::Expired);
+    if !row.challenge_active {
+        return Ok(Outcome::fresh(410, VerificationOutcome::Expired));
     }
-    if row.failed_attempts >= row.max_attempts {
+    if row.cooldown_retry_after_seconds > 0 {
+        let retry_after_seconds =
+            u64::try_from(row.cooldown_retry_after_seconds).unwrap_or(u64::MAX);
         return Err(AppError::RateLimited {
             limit: u64::try_from(row.max_attempts.max(1)).unwrap_or(1),
             remaining: 0,
-            reset_after_seconds: state.settings.security.otp_ttl.as_secs(),
-            retry_after_seconds: state.settings.security.otp_ttl.as_secs(),
+            reset_after_seconds: retry_after_seconds,
+            retry_after_seconds,
         });
     }
     let expected = SecretDigest::from_parts(row.digest_key_version, &row.code_digest).ok_or(
@@ -475,24 +652,38 @@ pub(super) async fn verify_contact(
         }
         VerificationOutcome::Verified
     } else {
-        sqlx::query(
+        let failure_update = sqlx::query(
             r"
             UPDATE iam.signup_otp_challenges
-            SET failed_attempts = LEAST(failed_attempts + 1, max_attempts),
-                superseded_at = CASE
+            SET failed_attempts = CASE
                     WHEN failed_attempts + 1 >= max_attempts
-                        THEN transaction_timestamp()
-                    ELSE superseded_at
+                        THEN 0
+                    ELSE failed_attempts + 1
+                END,
+                cooldown_until = CASE
+                    WHEN failed_attempts + 1 >= max_attempts
+                        THEN transaction_timestamp() + ($2::bigint * interval '1 second')
+                    ELSE NULL
                 END
-            WHERE id = $1 AND consumed_at IS NULL AND superseded_at IS NULL
+            WHERE id = $1
+              AND consumed_at IS NULL
+              AND superseded_at IS NULL
+              AND expires_at > transaction_timestamp()
+              AND (cooldown_until IS NULL OR cooldown_until <= transaction_timestamp())
             ",
         )
         .bind(row.challenge_id)
+        .bind(OTP_COOLDOWN_SECONDS)
         .execute(&mut *transaction)
         .await
         .map_err(|_| AppError::Internal {
             category: "signup_otp_failure_record",
         })?;
+        if failure_update.rows_affected() != 1 {
+            return Err(AppError::Conflict {
+                code: std::borrow::Cow::Borrowed("signup_verification_race"),
+            });
+        }
         VerificationOutcome::Invalid
     };
     let version = bump_signup_session(&mut transaction, signup_session_id).await?;
@@ -537,7 +728,7 @@ pub(super) async fn verify_contact(
         .commit()
         .await
         .map_err(|error| database_conflict(&error, "signup_verify_serialization_conflict"))?;
-    Ok(outcome)
+    Ok(Outcome::fresh(if success { 200 } else { 422 }, outcome))
 }
 
 #[allow(
@@ -549,7 +740,7 @@ pub(super) async fn complete_signup(
     key: &IdempotencyKey,
     signup_session_id: Uuid,
     input: ValidatedSignupCompletion,
-) -> Result<CarbonSelfResponse, AppError> {
+) -> Result<Outcome<CarbonSelfResponse>, AppError> {
     let profile_photo = match input.profile_photo {
         Some(url) => url,
         None => default_profile_photo(state, input.carbon_id.as_str())?,
@@ -562,6 +753,7 @@ pub(super) async fn complete_signup(
             signup_session_id.as_bytes(),
             input.carbon_id.as_str().as_bytes(),
             input.display_name.as_bytes(),
+            input.timezone.as_bytes(),
             &description_presence,
             description.as_bytes(),
             profile_photo.as_str().as_bytes(),
@@ -573,20 +765,28 @@ pub(super) async fn complete_signup(
         &state.crypto,
         key,
         signup_session_id.as_bytes(),
-        "/api/v1/signup/sessions/:session_id/complete",
+        "POST /api/v1/signup/sessions/{session_id}/complete",
         request_digest,
         false,
     )
     .await?
     {
-        Claim::Replay { response, .. } => {
+        Claim::Replay { status, response } => {
             transaction.commit().await.map_err(|error| {
                 database_conflict(&error, "signup_complete_serialization_conflict")
             })?;
-            return Ok(response);
+            return Ok(Outcome::replay(status, response));
         }
         Claim::Acquired { record_id } => record_id,
     };
+    super::http::enforce_limit(
+        state,
+        "signup_complete",
+        &SecretString::from(signup_session_id.to_string()),
+        10,
+        std::time::Duration::from_hours(1),
+    )
+    .await?;
     let session = lock_signup_session(&mut transaction, signup_session_id).await?;
     ensure_pending_session(&session)?;
     let candidates = verified_candidates(&mut transaction, signup_session_id).await?;
@@ -598,7 +798,7 @@ pub(super) async fn complete_signup(
     let completion = sqlx::query_as::<_, CompletionRow>(
         r"
         SELECT principal_id, carbon_handle, aggregate_version, created_at
-        FROM iam_private.complete_verified_signup($1, $2, $3, $4, $5, $6, $7, $8)
+        FROM iam_private.complete_verified_signup($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ",
     )
     .bind(signup_session_id)
@@ -607,6 +807,7 @@ pub(super) async fn complete_signup(
     .bind(&input.display_name)
     .bind(input.description.as_deref())
     .bind(profile_photo.as_str())
+    .bind(&input.timezone)
     .bind(email_id)
     .bind(phone_id)
     .fetch_one(&mut *transaction)
@@ -616,6 +817,7 @@ pub(super) async fn complete_signup(
         principal_id: completion.principal_id,
         carbon_id: completion.carbon_handle,
         display_name: input.display_name,
+        timezone: input.timezone,
         description: input.description,
         profile_photo: profile_photo.to_string(),
         email: email.expose_secret().to_owned(),
@@ -657,7 +859,7 @@ pub(super) async fn complete_signup(
         .commit()
         .await
         .map_err(|error| database_conflict(&error, "signup_complete_serialization_conflict"))?;
-    Ok(response)
+    Ok(Outcome::fresh(201, response))
 }
 
 async fn lock_signup_session(
@@ -695,11 +897,49 @@ async fn supersede_signup_contact(
     transaction: &mut Transaction<'_, Postgres>,
     signup_session_id: Uuid,
     channel: ContactChannel,
-) -> Result<(), AppError> {
+) -> Result<otp::AttemptState, AppError> {
+    let attempt_rows = sqlx::query_as::<_, otp::AttemptState>(
+        r"
+        SELECT
+            failed_attempts,
+            CASE
+                WHEN cooldown_until > transaction_timestamp() THEN cooldown_until
+                ELSE NULL
+            END AS cooldown_until
+        FROM iam.signup_otp_challenges
+        WHERE signup_session_id = $1
+          AND contact_kind = $2::iam.contact_kind
+          AND expires_at > transaction_timestamp()
+        ORDER BY created_at DESC, id DESC
+        FOR UPDATE
+        ",
+    )
+    .bind(signup_session_id)
+    .bind(channel.database_value())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|_| AppError::Internal {
+        category: "signup_attempt_scope_lock",
+    })?;
+    let attempt_state = otp::inherited_attempt_state(&attempt_rows);
+
     sqlx::query(
         r"
         UPDATE iam.signup_otp_challenges AS challenge
-        SET superseded_at = transaction_timestamp()
+        SET superseded_at = transaction_timestamp(),
+            delivery_status = CASE
+                WHEN challenge.delivery_status = 'pending' THEN 'failed'
+                ELSE challenge.delivery_status
+            END,
+            delivered_at = CASE
+                WHEN challenge.delivery_status = 'pending' THEN NULL
+                ELSE challenge.delivered_at
+            END,
+            delivery_failed_at = CASE
+                WHEN challenge.delivery_status = 'pending'
+                    THEN transaction_timestamp()
+                ELSE challenge.delivery_failed_at
+            END
         FROM iam.signup_contact_candidates AS candidate
         WHERE candidate.id = challenge.candidate_id
           AND candidate.signup_session_id = $1
@@ -734,7 +974,7 @@ async fn supersede_signup_contact(
     .map_err(|_| AppError::Internal {
         category: "signup_candidate_supersede",
     })?;
-    Ok(())
+    Ok(attempt_state)
 }
 
 async fn insert_candidate(
@@ -799,44 +1039,15 @@ async fn lock_signup_challenge(
     signup_session_id: Uuid,
     channel: ContactChannel,
 ) -> Result<SignupChallengeRow, AppError> {
-    sqlx::query_as::<_, SignupChallengeRow>(
-        r"
-        SELECT
-            challenge.id AS challenge_id,
-            candidate.id AS candidate_id,
-            challenge.code_digest,
-            challenge.digest_key_version,
-            challenge.failed_attempts,
-            challenge.max_attempts,
-            challenge.expires_at > transaction_timestamp()
-                AND challenge.superseded_at IS NULL
-                AND challenge.consumed_at IS NULL AS challenge_usable,
-            challenge.consumed_at IS NOT NULL
-                OR candidate.verified_at IS NOT NULL AS verified,
-            signup_session.status = 'pending'
-                AND signup_session.expires_at > transaction_timestamp() AS session_usable
-        FROM iam.signup_sessions AS signup_session
-        JOIN iam.signup_contact_candidates AS candidate
-          ON candidate.signup_session_id = signup_session.id
-         AND candidate.kind = $2::iam.contact_kind
-         AND candidate.superseded_at IS NULL
-        JOIN iam.signup_otp_challenges AS challenge
-          ON challenge.candidate_id = candidate.id
-         AND challenge.contact_kind = candidate.kind
-        WHERE signup_session.id = $1
-        ORDER BY challenge.created_at DESC, challenge.id DESC
-        LIMIT 1
-        FOR UPDATE OF signup_session, candidate, challenge
-        ",
-    )
-    .bind(signup_session_id)
-    .bind(channel.database_value())
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(|_| AppError::Internal {
-        category: "signup_challenge_lock",
-    })?
-    .ok_or(AppError::NotFound)
+    sqlx::query_as::<_, SignupChallengeRow>(SIGNUP_CHALLENGE_LOCK_QUERY)
+        .bind(signup_session_id)
+        .bind(channel.database_value())
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "signup_challenge_lock",
+        })?
+        .ok_or(AppError::NotFound)
 }
 
 async fn bump_signup_session(
@@ -938,6 +1149,32 @@ fn profile_photo_url(iris_base_url: &url::Url, carbon_id: &str) -> Result<url::U
     Ok(url)
 }
 
+fn start_contact_request_digest(signup_session_id: Uuid, contact: &ValidatedContact) -> [u8; 32] {
+    idempotency::digest_parts(
+        b"signup-contact-start",
+        &[
+            signup_session_id.as_bytes(),
+            contact.channel.database_value().as_bytes(),
+            contact.normalized.as_bytes(),
+        ],
+    )
+}
+
+fn verify_contact_request_digest(
+    signup_session_id: Uuid,
+    channel: ContactChannel,
+    supplied_code: &SecretString,
+) -> [u8; 32] {
+    idempotency::digest_parts(
+        b"signup-contact-verify",
+        &[
+            signup_session_id.as_bytes(),
+            channel.database_value().as_bytes(),
+            supplied_code.expose_secret().as_bytes(),
+        ],
+    )
+}
+
 const fn signup_otp_purpose(channel: ContactChannel) -> DigestPurpose {
     match channel {
         ContactChannel::Email => DigestPurpose::SignupEmailOtp,
@@ -947,15 +1184,22 @@ const fn signup_otp_purpose(channel: ContactChannel) -> DigestPurpose {
 
 const fn signup_start_route(channel: ContactChannel) -> &'static str {
     match channel {
-        ContactChannel::Email => "/api/v1/signup/sessions/:session_id/email",
-        ContactChannel::Phone => "/api/v1/signup/sessions/:session_id/phone",
+        ContactChannel::Email => "POST /api/v1/signup/sessions/{session_id}/email",
+        ContactChannel::Phone => "POST /api/v1/signup/sessions/{session_id}/phone",
+    }
+}
+
+const fn signup_start_limit_name(channel: ContactChannel) -> &'static str {
+    match channel {
+        ContactChannel::Email => "signup_email_start",
+        ContactChannel::Phone => "signup_phone_start",
     }
 }
 
 const fn signup_verify_route(channel: ContactChannel) -> &'static str {
     match channel {
-        ContactChannel::Email => "/api/v1/signup/sessions/:session_id/email/verify",
-        ContactChannel::Phone => "/api/v1/signup/sessions/:session_id/phone/verify",
+        ContactChannel::Email => "POST /api/v1/signup/sessions/{session_id}/email/verify",
+        ContactChannel::Phone => "POST /api/v1/signup/sessions/{session_id}/phone/verify",
     }
 }
 
@@ -971,10 +1215,89 @@ mod tests {
     use super::*;
 
     #[test]
-    fn omitted_profile_photo_uses_the_backend_owned_iris_default() {
-        let base = url::Url::parse("https://iris.teamofsilicons.com/").expect("valid base URL");
+    fn existing_contact_response_contains_no_code_or_expiry() {
+        let response = CodeDispatchResponse {
+            already_exists: true,
+            expires_in: None,
+            local_otp: None,
+        };
+        assert_eq!(
+            serde_json::to_value(response).ok(),
+            Some(json!({ "already_exists": true }))
+        );
+    }
 
-        let photo = profile_photo_url(&base, "ada").expect("profile URL");
+    #[test]
+    fn new_contact_response_exposes_the_code_lifetime() {
+        let response = CodeDispatchResponse {
+            already_exists: false,
+            expires_in: Some(600),
+            local_otp: None,
+        };
+        assert_eq!(
+            serde_json::to_value(response).ok(),
+            Some(json!({ "already_exists": false, "expires_in": 600 }))
+        );
+    }
+
+    #[test]
+    fn pending_or_failed_signup_delivery_cannot_verify() {
+        assert!(SIGNUP_CHALLENGE_LOCK_QUERY.contains("challenge.delivery_status = 'delivered'"));
+    }
+
+    #[test]
+    fn contact_and_otp_idempotency_material_is_key_version_independent() {
+        let session_id = Uuid::from_u128(1);
+        let contact = ValidatedContact {
+            channel: ContactChannel::Email,
+            normalized: "person@example.com".to_owned(),
+            presentation: SecretString::from("Person@example.com".to_owned()),
+        };
+        let code = SecretString::from("123456".to_owned());
+
+        let contact_digest = start_contact_request_digest(session_id, &contact);
+        let otp_digest = verify_contact_request_digest(session_id, ContactChannel::Email, &code);
+
+        // These canonical values intentionally have no CryptoService/key
+        // version input. The shared idempotency layer applies all retained
+        // HMAC versions after canonicalization, preserving rotation replays.
+        assert_eq!(
+            contact_digest,
+            start_contact_request_digest(session_id, &contact)
+        );
+        assert_eq!(
+            otp_digest,
+            verify_contact_request_digest(session_id, ContactChannel::Email, &code)
+        );
+        assert_ne!(
+            contact_digest,
+            start_contact_request_digest(
+                session_id,
+                &ValidatedContact {
+                    channel: ContactChannel::Email,
+                    normalized: "other@example.com".to_owned(),
+                    presentation: SecretString::from("other@example.com".to_owned()),
+                }
+            )
+        );
+        assert_ne!(
+            otp_digest,
+            verify_contact_request_digest(
+                session_id,
+                ContactChannel::Email,
+                &SecretString::from("654321".to_owned())
+            )
+        );
+    }
+
+    #[test]
+    fn omitted_profile_photo_uses_the_backend_owned_iris_default() {
+        let Ok(base) = url::Url::parse("https://iris.teamofsilicons.com/") else {
+            panic!("test base URL must be valid");
+        };
+        let Ok(photo) = profile_photo_url(&base, "ada") else {
+            panic!("profile URL must be constructible");
+        };
 
         assert_eq!(
             photo.as_str(),
@@ -984,9 +1307,12 @@ mod tests {
 
     #[test]
     fn carbon_id_is_encoded_as_one_query_parameter() {
-        let base = url::Url::parse("https://iris.example.test/root/").expect("valid base URL");
-
-        let photo = profile_photo_url(&base, "space & slash/").expect("profile URL");
+        let Ok(base) = url::Url::parse("https://iris.example.test/root/") else {
+            panic!("test base URL must be valid");
+        };
+        let Ok(photo) = profile_photo_url(&base, "space & slash/") else {
+            panic!("profile URL must be constructible");
+        };
 
         assert_eq!(
             photo.as_str(),

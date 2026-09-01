@@ -33,21 +33,18 @@ struct RetentionPhaseOutcome {
     affected_rows: i64,
 }
 
-const RETENTION_PHASES: [&str; 21] = [
+const RETENTION_PHASES: [&str; 18] = [
     "authentication_events",
     "signup_sessions",
     "login_challenges",
     "invitation_challenges",
-    "contact_change_sessions",
     "oauth_authorization_requests",
     "sso_authorization_transactions",
     "sso_setup_sessions",
     "governance_step_up_challenges_purge",
     "governance_step_up_assertions_purge",
-    "governance_webauthn_ceremonies_purge",
     "step_up_assertions_delete",
     "step_up_challenges_delete",
-    "webauthn_ceremonies_delete",
     "obo_proofs",
     "access_tokens",
     "refresh_token_families",
@@ -223,13 +220,17 @@ mod tests {
     #[test]
     fn retention_phase_seed_uses_the_global_sweep_slot() {
         let interval = Duration::from_secs(30);
+        let Ok(phase_count) = u32::try_from(RETENTION_PHASES.len()) else {
+            panic!("retention phase count must fit in a duration multiplier");
+        };
+        let last_slot = phase_count.saturating_sub(1);
         assert_eq!(retention_phase_seed(UNIX_EPOCH, interval), 0);
         assert_eq!(
-            retention_phase_seed(UNIX_EPOCH + interval * 20, interval),
-            20
+            retention_phase_seed(UNIX_EPOCH + interval * last_slot, interval),
+            RETENTION_PHASES.len() - 1
         );
         assert_eq!(
-            retention_phase_seed(UNIX_EPOCH + interval * 21, interval),
+            retention_phase_seed(UNIX_EPOCH + interval * phase_count, interval),
             0
         );
     }

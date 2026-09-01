@@ -307,10 +307,6 @@ fn security_notice(template_id: &str) -> Option<(&'static str, &'static str)> {
             "A Silicon IAM credential was rotated",
             "A credential associated with your Silicon IAM account was rotated. Review recent security activity if this was unexpected.",
         )),
-        "security.contact_changed" => Some((
-            "Your Silicon IAM contact changed",
-            "A verified contact on your Silicon IAM account changed. Review recent security activity and contact support if this was not you.",
-        )),
         _ => None,
     }
 }
@@ -392,7 +388,6 @@ mod tests {
     #[test]
     fn security_templates_are_closed_and_secret_free() {
         assert!(security_notice("security.session_revoked").is_some());
-        assert!(security_notice("security.contact_changed").is_some());
         assert!(security_notice("caller.supplied.template").is_none());
     }
 }

@@ -1,7 +1,5 @@
-//! Durable outbox, webhook, notification, and provisioning worker.
+//! Durable outbox, webhook, notification, and maintenance worker.
 
-mod account_deletion;
-mod hook;
 mod maintenance;
 mod notification;
 mod outbox;
@@ -20,11 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     config::WorkerProcessSettings,
-    infrastructure::{
-        crypto::EncryptionService,
-        postgres,
-        providers::{NotificationProviders, hook::HookClient},
-    },
+    infrastructure::{crypto::EncryptionService, postgres, providers::NotificationProviders},
     shutdown,
 };
 
@@ -33,7 +27,6 @@ pub(super) struct WorkerContext {
     settings: Arc<WorkerProcessSettings>,
     encryption: Arc<EncryptionService>,
     notifications: NotificationProviders,
-    hook_client: HookClient,
     outbound_stage_lock: Mutex<()>,
     retention_phase_cursor: AtomicUsize,
     instance_id: String,
@@ -66,7 +59,6 @@ pub async fn run(settings: WorkerProcessSettings) -> anyhow::Result<()> {
     postgres::register_runtime_encryption_key_versions(&pool, &settings.encryption_keys).await?;
     let encryption = EncryptionService::from_settings(&settings.encryption_keys)?;
     let notifications = NotificationProviders::from_worker_settings(&settings.providers)?;
-    let hook_client = HookClient::from_settings(&settings.providers)?;
     let poll_interval = settings.worker.poll_interval;
     let retention_sweep_interval = settings.worker.retention.sweep_interval;
     let retention_phase_seed =
@@ -77,7 +69,6 @@ pub async fn run(settings: WorkerProcessSettings) -> anyhow::Result<()> {
         settings: Arc::new(settings),
         encryption: Arc::new(encryption),
         notifications,
-        hook_client,
         outbound_stage_lock: Mutex::new(()),
         retention_phase_cursor: AtomicUsize::new(retention_phase_seed),
         instance_id: format!("iam-worker-{}", Uuid::now_v7()),
@@ -175,19 +166,11 @@ async fn run_maintenance(context: &WorkerContext) {
 }
 
 async fn run_once(context: &WorkerContext) {
-    let (deletion_result, hook_result, notification_result, outbox_result, webhook_result) = tokio::join!(
-        account_deletion::process_batch(context),
-        hook::process_batch(context),
+    let (notification_result, outbox_result, webhook_result) = tokio::join!(
         notification::process_batch(context),
         outbox::process_batch(context),
         webhook::process_batch(context),
     );
-    if let Err(error) = deletion_result {
-        error!(error = %error, worker.stage = "account_deletion", "worker stage failed");
-    }
-    if let Err(error) = hook_result {
-        error!(error = %error, worker.stage = "hook_provisioning", "worker stage failed");
-    }
     if let Err(error) = outbox_result {
         error!(error = %error, worker.stage = "outbox_expansion", "worker stage failed");
     }

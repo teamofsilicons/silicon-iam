@@ -16,6 +16,8 @@ use thiserror::Error;
 use url::Url;
 use zeroize::Zeroizing;
 
+use crate::domain::auth::OTP_MAX_FAILED_ATTEMPTS;
+
 const MAX_CORS_ORIGINS: usize = 16;
 const MAX_KEYRING_KEYS: usize = 16;
 const MAX_KEYRING_JSON_BYTES: usize = 4_096;
@@ -24,6 +26,10 @@ const WORKER_PROVIDER_DEADLINE_SECONDS: u64 = 10;
 const WORKER_LEASE_COMPLETION_MARGIN_SECONDS: u64 = 5;
 const MAXIMUM_RETENTION_DAYS: u16 = 36_500;
 const MAXIMUM_RETENTION_BATCH_SIZE: usize = 1_000;
+const ACCESS_TOKEN_TTL_SECONDS: u64 = 1_800;
+const REFRESH_FAMILY_TTL_SECONDS: u64 = 77_760_000;
+const AUTHORIZATION_CODE_TTL_SECONDS: u64 = 120;
+const OTP_TTL_SECONDS: u64 = 600;
 
 /// Fully validated process configuration.
 #[derive(Clone, Debug)]
@@ -34,8 +40,6 @@ pub struct Settings {
     pub server: ServerSettings,
     /// PostgreSQL pool settings.
     pub database: DatabaseSettings,
-    /// Optional Valkey/Redis settings.
-    pub redis: Option<RedisSettings>,
     /// Credential and data-protection settings.
     pub security: SecuritySettings,
     /// External provider settings.
@@ -71,7 +75,7 @@ pub struct KeyOperatorSettings {
 /// Minimal configuration and secrets available to the durable worker process.
 ///
 /// This composition root intentionally cannot hold token peppers, contact
-/// blind-index keys, browser-cookie keys, JWT signing material, Redis settings,
+/// blind-index keys or browser-cookie keys,
 /// or `WorkOS` authority credentials.
 #[derive(Clone, Debug)]
 pub struct WorkerProcessSettings {
@@ -85,7 +89,7 @@ pub struct WorkerProcessSettings {
     pub shutdown_timeout: Duration,
     /// Contact and protected-field AEAD keyring used by delivery jobs.
     pub encryption_keys: KeyringSettings,
-    /// Delivery and downstream provisioning providers used by the worker.
+    /// Delivery providers used by the worker.
     pub providers: WorkerProviderSettings,
     /// Polling, retry, and retention policy.
     pub worker: WorkerSettings,
@@ -140,17 +144,6 @@ pub struct DatabaseSettings {
     pub statement_timeout: Duration,
 }
 
-/// Optional Redis-compatible coordination service settings.
-#[derive(Clone, Debug)]
-pub struct RedisSettings {
-    /// Redis/Valkey connection URL.
-    pub url: SecretString,
-    /// Connection establishment deadline.
-    pub connect_timeout: Duration,
-    /// Individual command deadline.
-    pub command_timeout: Duration,
-}
-
 /// Secrets and credential lifetime policy.
 #[derive(Clone, Debug)]
 pub struct SecuritySettings {
@@ -162,10 +155,6 @@ pub struct SecuritySettings {
     pub encryption_keys: KeyringSettings,
     /// Browser session cookie integrity key.
     pub cookie_key: SecretString,
-    /// Ed25519 private signing key encoded as a raw 32-byte base64url seed.
-    pub jwt_ed25519_private_key: SecretString,
-    /// Public key identifier placed in signed tokens.
-    pub jwt_key_id: String,
     /// Opaque access-token lifetime.
     pub access_token_ttl: Duration,
     /// Absolute refresh-family lifetime.
@@ -174,7 +163,7 @@ pub struct SecuritySettings {
     pub authorization_code_ttl: Duration,
     /// OTP lifetime.
     pub otp_ttl: Duration,
-    /// Maximum verification attempts for one OTP.
+    /// Maximum failed verification attempts in one reusable OTP window.
     pub otp_max_attempts: u16,
 }
 
@@ -243,10 +232,6 @@ pub struct ProviderSettings {
     pub workos_client_id: Option<String>,
     /// `WorkOS` webhook verification secret.
     pub workos_webhook_secret: Option<SecretString>,
-    /// Silicon Hook API base URL.
-    pub hook_base_url: Url,
-    /// IAM service credential for Silicon Hook.
-    pub hook_service_token: Option<SecretString>,
     /// Silicon Iris public base URL.
     pub iris_base_url: Url,
     /// Whether deterministic local provider implementations are allowed.
@@ -271,10 +256,6 @@ pub struct WorkerProviderSettings {
     pub twilio_auth_token: Option<SecretString>,
     /// Twilio Messaging Service identifier used for notification delivery.
     pub twilio_messaging_service_sid: Option<SecretString>,
-    /// Silicon Hook API base URL.
-    pub hook_base_url: Url,
-    /// IAM service credential for Silicon Hook.
-    pub hook_service_token: Option<SecretString>,
     /// Silicon Iris public base URL.
     pub iris_base_url: Url,
     /// Whether deterministic local delivery adapters are allowed.
@@ -348,12 +329,11 @@ impl Settings {
         let environment = parse_or("IAM_ENVIRONMENT", "development")?;
         let server = server_settings(environment)?;
         let database = database_settings()?;
-        let redis = redis_settings()?;
         let security = security_settings(environment)?;
         let providers = provider_settings()?;
         let worker = worker_settings()?;
 
-        validate_environment_safety(environment, &server, &database, redis.as_ref(), &providers)?;
+        validate_environment_safety(environment, &server, &database, &providers)?;
         let log_filter = string_in_range(
             "IAM_LOG_FILTER",
             value_or("IAM_LOG_FILTER", "silicon_iam=info,tower_http=info"),
@@ -365,7 +345,6 @@ impl Settings {
             environment,
             server,
             database,
-            redis,
             security,
             providers,
             worker,
@@ -457,51 +436,26 @@ fn database_settings() -> Result<DatabaseSettings, SettingsError> {
     })
 }
 
-fn redis_settings() -> Result<Option<RedisSettings>, SettingsError> {
-    optional("IAM_REDIS_URL")
-        .map(|url| {
-            Ok(RedisSettings {
-                url: SecretString::from(url),
-                connect_timeout: duration_millis_in_range(
-                    "IAM_REDIS_CONNECT_TIMEOUT_MS",
-                    500,
-                    50,
-                    30_000,
-                )?,
-                command_timeout: duration_millis_in_range(
-                    "IAM_REDIS_COMMAND_TIMEOUT_MS",
-                    750,
-                    10,
-                    30_000,
-                )?,
-            })
-        })
-        .transpose()
-}
-
 fn security_settings(environment: RuntimeEnvironment) -> Result<SecuritySettings, SettingsError> {
     let settings = SecuritySettings {
         token_peppers: keyring("IAM_TOKEN_PEPPER")?,
         blind_index_keys: keyring("IAM_BLIND_INDEX")?,
         encryption_keys: keyring("IAM_ENCRYPTION")?,
         cookie_key: validated_key("IAM_COOKIE_KEY", 32)?,
-        jwt_ed25519_private_key: validated_key("IAM_JWT_ED25519_PRIVATE_KEY", 32)?,
-        jwt_key_id: string_in_range("IAM_JWT_KEY_ID", required("IAM_JWT_KEY_ID")?, 8, 128)?,
-        access_token_ttl: duration_secs_in_range("IAM_ACCESS_TOKEN_TTL_SECONDS", 900, 60, 900)?,
-        refresh_family_ttl: duration_secs_in_range(
+        access_token_ttl: exact_duration_secs(
+            "IAM_ACCESS_TOKEN_TTL_SECONDS",
+            ACCESS_TOKEN_TTL_SECONDS,
+        )?,
+        refresh_family_ttl: exact_duration_secs(
             "IAM_REFRESH_FAMILY_TTL_SECONDS",
-            31_536_000,
-            3_600,
-            31_536_000,
+            REFRESH_FAMILY_TTL_SECONDS,
         )?,
-        authorization_code_ttl: duration_secs_in_range(
+        authorization_code_ttl: exact_duration_secs(
             "IAM_AUTHORIZATION_CODE_TTL_SECONDS",
-            120,
-            30,
-            120,
+            AUTHORIZATION_CODE_TTL_SECONDS,
         )?,
-        otp_ttl: duration_secs_in_range("IAM_OTP_TTL_SECONDS", 600, 60, 600)?,
-        otp_max_attempts: u16_in_range("IAM_OTP_MAX_ATTEMPTS", 5, 1, 5)?,
+        otp_ttl: exact_duration_secs("IAM_OTP_TTL_SECONDS", OTP_TTL_SECONDS)?,
+        otp_max_attempts: exact_u16("IAM_OTP_MAX_ATTEMPTS", OTP_MAX_FAILED_ATTEMPTS)?,
     };
     validate_security_settings(environment, &settings)?;
     Ok(settings)
@@ -526,11 +480,6 @@ fn provider_settings() -> Result<ProviderSettings, SettingsError> {
         workos_api_key: optional_secret_in_range("IAM_WORKOS_API_KEY", 1, 4_096)?,
         workos_client_id: optional_string_in_range("IAM_WORKOS_CLIENT_ID", 1, 256)?,
         workos_webhook_secret: optional_secret_in_range("IAM_WORKOS_WEBHOOK_SECRET", 1, 4_096)?,
-        hook_base_url: parse_or(
-            "IAM_HOOK_BASE_URL",
-            "https://hook.teamofsilicons.com/api/v1",
-        )?,
-        hook_service_token: optional_secret_in_range("IAM_HOOK_SERVICE_TOKEN", 1, 4_096)?,
         iris_base_url: parse_or("IAM_IRIS_BASE_URL", "https://iris.teamofsilicons.com")?,
         allow_local_providers: parse_or("IAM_ALLOW_LOCAL_PROVIDERS", "false")?,
         expose_local_otps: parse_or("IAM_EXPOSE_LOCAL_OTPS", "false")?,
@@ -553,11 +502,6 @@ fn worker_provider_settings() -> Result<WorkerProviderSettings, SettingsError> {
             1,
             256,
         )?,
-        hook_base_url: parse_or(
-            "IAM_HOOK_BASE_URL",
-            "https://hook.teamofsilicons.com/api/v1",
-        )?,
-        hook_service_token: optional_secret_in_range("IAM_HOOK_SERVICE_TOKEN", 1, 4_096)?,
         iris_base_url: parse_or("IAM_IRIS_BASE_URL", "https://iris.teamofsilicons.com")?,
         allow_local_providers: parse_or("IAM_ALLOW_LOCAL_PROVIDERS", "false")?,
     })
@@ -788,7 +732,6 @@ fn validate_environment_safety(
     environment: RuntimeEnvironment,
     server: &ServerSettings,
     database: &DatabaseSettings,
-    redis: Option<&RedisSettings>,
     providers: &ProviderSettings,
 ) -> Result<(), SettingsError> {
     validate_http_base_url(
@@ -804,10 +747,6 @@ fn validate_environment_safety(
         &["/"],
     )?;
     validate_database_transport(environment, database, "IAM_DATABASE_URL")?;
-    if let Some(redis) = redis {
-        validate_redis_url(environment, redis)?;
-    }
-
     validate_provider_settings(environment, providers)?;
 
     if environment == RuntimeEnvironment::Production {
@@ -884,43 +823,10 @@ fn validate_database_transport(
     Ok(())
 }
 
-fn validate_redis_url(
-    environment: RuntimeEnvironment,
-    redis: &RedisSettings,
-) -> Result<(), SettingsError> {
-    let redis_url = Url::parse(redis.url.expose_secret())
-        .map_err(|_| invalid("IAM_REDIS_URL", "must be a valid Redis URL"))?;
-    if !matches!(redis_url.scheme(), "redis" | "rediss") {
-        return Err(invalid(
-            "IAM_REDIS_URL",
-            "scheme must be redis:// or rediss://",
-        ));
-    }
-    if redis_url.host_str().is_none() {
-        return Err(invalid("IAM_REDIS_URL", "must contain a hostname"));
-    }
-    if redis_url.port() == Some(0) {
-        return Err(invalid("IAM_REDIS_URL", "port must be greater than zero"));
-    }
-    if redis_url.fragment().is_some() {
-        return Err(invalid("IAM_REDIS_URL", "must not contain a fragment"));
-    }
-    if environment == RuntimeEnvironment::Production && redis_url.scheme() != "rediss" {
-        return Err(invalid("IAM_REDIS_URL", "must use rediss:// in production"));
-    }
-    Ok(())
-}
-
 fn validate_provider_settings(
     environment: RuntimeEnvironment,
     providers: &ProviderSettings,
 ) -> Result<(), SettingsError> {
-    validate_http_base_url(
-        "IAM_HOOK_BASE_URL",
-        &providers.hook_base_url,
-        environment,
-        &["/api/v1", "/api/v1/"],
-    )?;
     validate_http_base_url(
         "IAM_IRIS_BASE_URL",
         &providers.iris_base_url,
@@ -980,10 +886,6 @@ fn validate_provider_settings(
         )?;
         require_credential_group(&twilio)?;
         require_credential_group(&workos)?;
-        require_configured(
-            "IAM_HOOK_SERVICE_TOKEN",
-            providers.hook_service_token.is_some(),
-        )?;
     }
 
     Ok(())
@@ -993,12 +895,6 @@ fn validate_worker_provider_settings(
     environment: RuntimeEnvironment,
     providers: &WorkerProviderSettings,
 ) -> Result<(), SettingsError> {
-    validate_http_base_url(
-        "IAM_HOOK_BASE_URL",
-        &providers.hook_base_url,
-        environment,
-        &["/api/v1", "/api/v1/"],
-    )?;
     validate_http_base_url(
         "IAM_IRIS_BASE_URL",
         &providers.iris_base_url,
@@ -1035,10 +931,6 @@ fn validate_worker_provider_settings(
             providers.postmark_server_token.is_some(),
         )?;
         require_credential_group(&twilio)?;
-        require_configured(
-            "IAM_HOOK_SERVICE_TOKEN",
-            providers.hook_service_token.is_some(),
-        )?;
     }
 
     Ok(())
@@ -1169,16 +1061,6 @@ fn validate_security_settings(
     environment: RuntimeEnvironment,
     security: &SecuritySettings,
 ) -> Result<(), SettingsError> {
-    if !security
-        .jwt_key_id
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        return Err(invalid(
-            "IAM_JWT_KEY_ID",
-            "may contain only ASCII letters, digits, hyphens, and underscores",
-        ));
-    }
     if security.refresh_family_ttl <= security.access_token_ttl {
         return Err(invalid(
             "IAM_REFRESH_FAMILY_TTL_SECONDS",
@@ -1203,11 +1085,6 @@ fn validate_production_key_separation(security: &SecuritySettings) -> Result<(),
         }
     }
     add_distinct_key(&mut seen, "IAM_COOKIE_KEY", &security.cookie_key)?;
-    add_distinct_key(
-        &mut seen,
-        "IAM_JWT_ED25519_PRIVATE_KEY",
-        &security.jwt_ed25519_private_key,
-    )?;
     Ok(())
 }
 
@@ -1441,6 +1318,11 @@ fn u16_in_range(
     ensure_range(name, value, min, max)
 }
 
+fn exact_u16(name: &'static str, exact: u16) -> Result<u16, SettingsError> {
+    let value = parse_or(name, &exact.to_string())?;
+    ensure_range(name, value, exact, exact)
+}
+
 fn nonzero_u32_in_range(
     name: &'static str,
     default: u32,
@@ -1467,6 +1349,11 @@ fn duration_secs_in_range(
 ) -> Result<Duration, SettingsError> {
     let seconds = parse_or(name, &default.to_string())?;
     ensure_range(name, seconds, min, max).map(Duration::from_secs)
+}
+
+fn exact_duration_secs(name: &'static str, exact_seconds: u64) -> Result<Duration, SettingsError> {
+    let seconds = parse_or(name, &exact_seconds.to_string())?;
+    ensure_range(name, seconds, exact_seconds, exact_seconds).map(Duration::from_secs)
 }
 
 fn duration_millis_in_range(
@@ -1510,8 +1397,9 @@ mod tests {
     use url::Url;
 
     use super::{
-        DatabaseSettings, RuntimeEnvironment, SettingsError, UniqueStringMap,
-        WorkerProcessSettings, add_distinct_key, ensure_range, parse_cors_origins,
+        ACCESS_TOKEN_TTL_SECONDS, AUTHORIZATION_CODE_TTL_SECONDS, DatabaseSettings,
+        OTP_TTL_SECONDS, REFRESH_FAMILY_TTL_SECONDS, RuntimeEnvironment, SettingsError,
+        UniqueStringMap, WorkerProcessSettings, add_distinct_key, ensure_range, parse_cors_origins,
         validate_credential_group, validate_database_transport, validate_http_base_url,
         validate_retention_policy, validate_worker_database_lease_policy,
         validate_worker_lease_policy,
@@ -1530,6 +1418,19 @@ mod tests {
         assert!(ensure_range("TEST", 0_u16, 1, 5).is_err());
         assert!(matches!(ensure_range("TEST", 5_u16, 1, 5), Ok(5)));
         assert!(ensure_range("TEST", 6_u16, 1, 5).is_err());
+    }
+
+    #[test]
+    fn credential_and_challenge_values_are_exact_contract_constants() {
+        assert_eq!(ACCESS_TOKEN_TTL_SECONDS, 30 * 60);
+        assert_eq!(REFRESH_FAMILY_TTL_SECONDS, 900 * 24 * 60 * 60);
+        assert_eq!(AUTHORIZATION_CODE_TTL_SECONDS, 2 * 60);
+        assert_eq!(OTP_TTL_SECONDS, 10 * 60);
+        assert!(ensure_range("TEST", 10_u16, 10, 10).is_ok());
+        assert!(ensure_range("TEST", 9_u16, 10, 10).is_err());
+        assert!(ensure_range("TEST", 11_u16, 10, 10).is_err());
+        assert!(ensure_range("TEST", 1_799_u64, 1_800, 1_800).is_err());
+        assert!(ensure_range("TEST", 1_801_u64, 1_800, 1_800).is_err());
     }
 
     #[test]
@@ -1718,15 +1619,14 @@ mod tests {
     fn worker_process_settings_ignore_forbidden_secrets() -> anyhow::Result<()> {
         let mut command = worker_settings_child_command()?;
         let output = command
-            .env("IAM_REDIS_URL", "not-a-redis-url")
             .env("IAM_TOKEN_PEPPER_CURRENT_VERSION", "not-a-version")
             .env("IAM_TOKEN_PEPPER_KEYRING", "not-json")
             .env("IAM_BLIND_INDEX_CURRENT_VERSION", "not-a-version")
             .env("IAM_BLIND_INDEX_KEYRING", "not-json")
             .env("IAM_COOKIE_KEY", "not-a-key")
-            .env("IAM_JWT_ED25519_PRIVATE_KEY", "not-a-key")
-            .env("IAM_JWT_KEY_ID", "bad")
             .env("IAM_WORKOS_API_KEY", "partial-workos-credentials")
+            .env("IAM_HOOK_BASE_URL", "not-a-url")
+            .env("IAM_HOOK_SERVICE_TOKEN", "obsolete-provider-credential")
             .env("IAM_EXPOSE_LOCAL_OTPS", "not-a-boolean")
             .env("IAM_PUBLIC_BASE_URL", "not-a-url")
             .env("IAM_ACCESS_TOKEN_TTL_SECONDS", "not-a-duration")

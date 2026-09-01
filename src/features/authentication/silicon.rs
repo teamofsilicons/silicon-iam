@@ -28,7 +28,7 @@ use super::{
     validation,
 };
 
-const ROUTE: &str = "/api/v1/silicon-auth/token";
+const ROUTE: &str = "POST /api/v1/silicon-auth/token";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,23 +60,8 @@ pub(super) async fn authenticate(
         .map_err(|_| validation::validation("body", "must match the documented JSON schema"))?;
     validate_global_id(&input.silicon_id)?;
     let credential = validate_credential(input.silicon_token)?;
-    enforce_limit(&state, &input.silicon_id, &credential).await?;
     let key = IdempotencyKey::from_headers(&headers)?;
-    let request_key = state
-        .crypto
-        .digest_secret(DigestPurpose::SiliconCredential, &credential)
-        .map_err(|_| AppError::Internal {
-            category: "silicon_login_request_digest",
-        })?;
-    let request_version = request_key.key_version().to_be_bytes();
-    let request_digest = idempotency::digest_parts(
-        b"silicon-login",
-        &[
-            input.silicon_id.as_bytes(),
-            &request_version,
-            request_key.as_bytes(),
-        ],
-    );
+    let request_digest = silicon_login_request_digest(&input.silicon_id, &credential);
     let mut transaction = serializable(&state.pool, "silicon_login_transaction").await?;
     let record_id = match idempotency::begin::<TokenResponse>(
         &mut transaction,
@@ -89,15 +74,16 @@ pub(super) async fn authenticate(
     )
     .await?
     {
-        Claim::Replay { response } => {
+        Claim::Replay { status, response } => {
             transaction
                 .commit()
                 .await
                 .map_err(|error| database_conflict(&error, "silicon_login_conflict"))?;
-            return Ok(no_store(response));
+            return no_store(status, response, true);
         }
         Claim::Acquired { record_id } => record_id,
     };
+    enforce_limit(&state, &input.silicon_id, &credential).await?;
     let row = resolve_credential(&mut transaction, &state, &input.silicon_id, &credential)
         .await?
         .ok_or(AppError::Unauthenticated)?;
@@ -143,7 +129,7 @@ pub(super) async fn authenticate(
         .commit()
         .await
         .map_err(|error| database_conflict(&error, "silicon_login_conflict"))?;
-    Ok(no_store(response))
+    no_store(StatusCode::OK.as_u16(), response, false)
 }
 
 async fn resolve_credential(
@@ -240,7 +226,7 @@ fn valid_handle(value: &str, maximum: usize) -> bool {
 }
 
 fn validate_credential(value: String) -> Result<SecretString, AppError> {
-    if value.len() != 68
+    if value.len() != 36
         || !value.starts_with("stk-")
         || !value[4..]
             .bytes()
@@ -248,33 +234,66 @@ fn validate_credential(value: String) -> Result<SecretString, AppError> {
     {
         return Err(validation::validation(
             "silicon_token",
-            "must be an stk- prefixed 256-bit lowercase hexadecimal credential",
+            "must be an stk- prefixed 32-character lowercase hexadecimal credential",
         ));
     }
     Ok(SecretString::from(value))
 }
 
-fn no_store(body: TokenResponse) -> Response {
-    let mut response = (StatusCode::OK, Json(body)).into_response();
+fn silicon_login_request_digest(silicon_id: &str, credential: &SecretString) -> [u8; 32] {
+    idempotency::digest_parts(
+        b"silicon-login",
+        &[silicon_id.as_bytes(), credential.expose_secret().as_bytes()],
+    )
+}
+
+fn no_store(status: u16, body: TokenResponse, replayed: bool) -> Result<Response, AppError> {
+    let status = StatusCode::from_u16(status).map_err(|_| AppError::Internal {
+        category: "silicon_login_replay_status",
+    })?;
+    let mut response = (status, Json(body)).into_response();
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
         .headers_mut()
         .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
-    response
+    if replayed {
+        response.headers_mut().insert(
+            http::HeaderName::from_static("idempotency-replayed"),
+            HeaderValue::from_static("true"),
+        );
+    }
+    Ok(response)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_credential, validate_global_id};
+    use secrecy::SecretString;
+
+    use super::{silicon_login_request_digest, validate_credential, validate_global_id};
 
     #[test]
     fn silicon_login_inputs_use_exact_wire_formats() {
         assert!(validate_global_id("assistant:acme").is_ok());
         assert!(validate_global_id("Assistant:acme").is_err());
         assert!(validate_global_id("assistant:acme:extra").is_err());
-        assert!(validate_credential(format!("stk-{}", "a".repeat(64))).is_ok());
-        assert!(validate_credential(format!("stk-{}", "A".repeat(64))).is_err());
+        assert!(validate_credential(format!("stk-{}", "a".repeat(32))).is_ok());
+        assert!(validate_credential(format!("stk-{}", "A".repeat(32))).is_err());
+        assert!(validate_credential(format!("stk-{}", "a".repeat(64))).is_err());
+    }
+
+    #[test]
+    fn silicon_login_idempotency_material_is_pepper_version_independent() {
+        let credential = SecretString::from(format!("stk-{}", "a".repeat(32)));
+        let digest = silicon_login_request_digest("assistant:acme", &credential);
+        assert_eq!(
+            digest,
+            silicon_login_request_digest("assistant:acme", &credential)
+        );
+        assert_ne!(
+            digest,
+            silicon_login_request_digest("other:acme", &credential)
+        );
     }
 }
