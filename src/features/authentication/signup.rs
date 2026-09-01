@@ -925,10 +925,11 @@ fn candidate_id(candidates: &[CandidateRow], channel: ContactChannel) -> Result<
 }
 
 fn default_profile_photo(state: &ApiState, carbon_id: &str) -> Result<url::Url, AppError> {
-    let mut url = state
-        .settings
-        .providers
-        .iris_base_url
+    profile_photo_url(&state.settings.providers.iris_base_url, carbon_id)
+}
+
+fn profile_photo_url(iris_base_url: &url::Url, carbon_id: &str) -> Result<url::Url, AppError> {
+    let mut url = iris_base_url
         .join("pfp/carbon")
         .map_err(|_| AppError::Internal {
             category: "iris_profile_photo_url",
@@ -963,4 +964,33 @@ fn duration_seconds(
     category: &'static str,
 ) -> Result<i64, AppError> {
     i64::try_from(duration.as_secs()).map_err(|_| AppError::Internal { category })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn omitted_profile_photo_uses_the_backend_owned_iris_default() {
+        let base = url::Url::parse("https://iris.teamofsilicons.com/").expect("valid base URL");
+
+        let photo = profile_photo_url(&base, "ada").expect("profile URL");
+
+        assert_eq!(
+            photo.as_str(),
+            "https://iris.teamofsilicons.com/pfp/carbon?id=ada"
+        );
+    }
+
+    #[test]
+    fn carbon_id_is_encoded_as_one_query_parameter() {
+        let base = url::Url::parse("https://iris.example.test/root/").expect("valid base URL");
+
+        let photo = profile_photo_url(&base, "space & slash/").expect("profile URL");
+
+        assert_eq!(
+            photo.as_str(),
+            "https://iris.example.test/root/pfp/carbon?id=space+%26+slash%2F"
+        );
+    }
 }
