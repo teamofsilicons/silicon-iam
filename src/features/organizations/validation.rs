@@ -16,8 +16,9 @@ use crate::{
 };
 
 use super::model::{
-    CapabilitiesReplace, MembershipDirectoryPatch, OrganizationCreate, OrganizationPatch,
-    PageQuery, SiliconCreate, SiliconPatch, TagChangeRequestCreate, TagInput, TrustRulePatch,
+    CapabilitiesReplace, DirectTagSetReplace, MembershipDirectoryPatch, OrganizationCreate,
+    OrganizationPatch, PageQuery, SiliconCreate, SiliconPatch, TagChangeRequestCreate, TagInput,
+    TrustRulePatch,
 };
 
 const MAX_CURSOR_BYTES: usize = 128;
@@ -190,6 +191,10 @@ pub(super) fn tag_change_request(input: &mut TagChangeRequestCreate) -> Result<(
     Ok(())
 }
 
+pub(super) fn direct_tag_set(input: &mut DirectTagSetReplace) -> Result<(), AppError> {
+    validate_unique_ids("tag_ids", &mut input.tag_ids, 100)
+}
+
 pub(super) fn tag(input: &mut TagInput) -> Result<String, AppError> {
     input.name = bounded_text("name", std::mem::take(&mut input.name), 1, 100, false)?;
     let normalized = input
@@ -259,6 +264,24 @@ pub(super) fn page_parts(
 
 pub(super) fn encode_cursor(id: Uuid) -> String {
     URL_SAFE_NO_PAD.encode(id.as_bytes())
+}
+
+pub(super) fn delivery_ids(values: &[Uuid]) -> Result<(), AppError> {
+    if !(1..=100).contains(&values.len()) {
+        return Err(field(
+            "delivery_ids",
+            "must contain between 1 and 100 delivery IDs",
+        ));
+    }
+    if values
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        != values.len()
+    {
+        return Err(field("delivery_ids", "must not contain duplicates"));
+    }
+    Ok(())
 }
 
 pub(super) fn expected_version(headers: &HeaderMap) -> Result<i64, AppError> {

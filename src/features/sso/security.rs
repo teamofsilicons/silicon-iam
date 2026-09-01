@@ -125,6 +125,7 @@ mod tests {
                 id: Uuid::now_v7(),
             },
             client_application_id: None,
+            audience_application_id: None,
             audience: "silicon-iam".to_owned(),
             organization_id: None,
             membership_id: None,

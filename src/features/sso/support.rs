@@ -656,6 +656,19 @@ mod tests {
     }
 
     #[test]
+    fn every_sso_event_in_the_full_catalog_has_explicit_routing() {
+        for event_type in crate::domain::events::SILICON_FULL_EVENT_TYPES
+            .iter()
+            .filter(|event_type| event_type.starts_with("sso."))
+        {
+            assert!(
+                silicon_webhook_routing(event_type).is_some(),
+                "missing explicit Silicon Full routing for {event_type}"
+            );
+        }
+    }
+
+    #[test]
     fn idempotency_caller_scope_is_resource_qualified() {
         let carbon_id = uuid::Uuid::from_u128(1);
         let first = idempotency_caller_scope(carbon_id, "first-org");

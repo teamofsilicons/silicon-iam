@@ -28,8 +28,9 @@ use crate::{
 use super::{
     model::{
         ActorResponse, ApprovalDecisionCreate, ApprovalDecisionResponse, ApprovalQuery,
-        ApprovalRequestPage, ApprovalRequestResponse, ApprovalRequirementsResponse, PageInfo,
-        PageQuery, RoleChangeRequestCreate, RoleHistoryPage, RoleHistoryResponse,
+        ApprovalRequestPage, ApprovalRequestResponse, ApprovalRequirementsResponse,
+        DirectJobRoleReplace, DirectTagSetReplace, MembershipResponse, PageInfo, PageQuery,
+        RoleChangeRequestCreate, RoleHistoryPage, RoleHistoryResponse, SiliconResponse,
         SiliconTokenRotatedResponse, TagChangeRequestCreate, TagHistoryPage, TagHistoryResponse,
     },
     support::{self, Claim, MutationEvent},
@@ -39,6 +40,10 @@ use super::{
 const ROLE_REQUEST_ROUTE: &str = "POST /api/v1/organizations/{org_id}/role-change-requests";
 const TAG_REQUEST_ROUTE: &str =
     "POST /api/v1/organizations/{org_id}/members/{membership_id}/tag-change-requests";
+const DIRECT_ROLE_REPLACE_ROUTE: &str =
+    "PUT /api/v1/organizations/{org_id}/members/{membership_id}/job-role";
+const DIRECT_TAGS_REPLACE_ROUTE: &str =
+    "PUT /api/v1/organizations/{org_id}/members/{membership_id}/tags";
 const APPROVAL_DECISION_ROUTE: &str =
     "POST /api/v1/organizations/{org_id}/approval-requests/{request_id}/decisions";
 const ROTATION_REQUEST_ROUTE: &str =
@@ -88,6 +93,14 @@ struct TargetMembership {
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
+struct DirectTargetMembership {
+    principal_kind: String,
+    job_role: String,
+    status: String,
+    version: i64,
+}
+
+#[derive(Clone, Debug, sqlx::FromRow)]
 struct RequirementRow {
     id: Uuid,
     requirement_kind: String,
@@ -105,13 +118,25 @@ struct RotationTarget {
     credential_id: Uuid,
 }
 
+struct RotationInvalidation {
+    membership_id: Uuid,
+    before_member: MembershipResponse,
+    before_silicon: SiliconResponse,
+}
+
+struct AppliedSiliconProjection {
+    membership_id: Uuid,
+    before: SiliconResponse,
+    action: &'static str,
+}
+
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct RoleHistoryRow {
     id: Uuid,
     membership_id: Uuid,
     old_job_role: String,
     new_job_role: String,
-    approval_request_id: Uuid,
+    approval_request_id: Option<Uuid>,
     requested_by_principal_id: Uuid,
     requested_by_type: String,
     requested_by_public_id: String,
@@ -124,7 +149,7 @@ struct TagHistoryRow {
     membership_id: Uuid,
     previous_tag_ids: Vec<Uuid>,
     applied_tag_ids: Vec<Uuid>,
-    approval_request_id: Uuid,
+    approval_request_id: Option<Uuid>,
     membership_version: i64,
     requested_by_principal_id: Uuid,
     requested_by_type: String,
@@ -162,18 +187,8 @@ pub(super) async fn create_role_change_request(
         .take()
         .map(|value| validation::bounded_text("reason", value, 0, 2_000, true))
         .transpose()?;
+    require_silicon_governance_request(authenticated.0.subject.actor_type)?;
     let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
-    let target_kind = fetch_target_kind(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        input.target_membership_id,
-    )
-    .await?;
-    authorize_role_request(
-        authenticated.0.subject.actor_type,
-        &scope.access,
-        &target_kind,
-    )?;
     let lease = match support::claim(
         &mut scope.transaction,
         &state,
@@ -199,11 +214,6 @@ pub(super) async fn create_role_change_request(
             code: Cow::Borrowed("membership_not_active"),
         });
     }
-    authorize_role_request(
-        authenticated.0.subject.actor_type,
-        &scope.access,
-        &target.principal_kind,
-    )?;
     if target.job_role == input.proposed_job_role {
         return Err(AppError::Conflict {
             code: Cow::Borrowed("job_role_unchanged"),
@@ -312,41 +322,290 @@ pub(super) async fn create_role_change_request(
     support::json_response(StatusCode::CREATED, body, Some(approval.version), false)
 }
 
-fn authorize_role_request(
-    actor_type: ActorType,
-    access: &crate::infrastructure::postgres::authorization::OrganizationAccess,
-    target_kind: &str,
-) -> Result<(), AppError> {
-    let allowed = role_request_allowed(
-        actor_type,
-        access.authority.org_role,
-        access.authority.allows(Capability::RolesRequest),
-        target_kind,
-    );
-    if allowed {
+fn require_silicon_governance_request(actor_type: ActorType) -> Result<(), AppError> {
+    if actor_type == ActorType::Silicon {
         Ok(())
     } else {
         Err(AppError::Forbidden)
     }
 }
 
-fn role_request_allowed(
-    actor_type: ActorType,
-    org_role: OrgRole,
-    can_request_roles: bool,
-    target_kind: &str,
-) -> bool {
-    match (actor_type, target_kind) {
-        (ActorType::Carbon | ActorType::Silicon, "silicon") | (ActorType::Silicon, "carbon") => {
-            true
-        }
-        (ActorType::Carbon, "carbon") => match org_role {
-            OrgRole::Owner => true,
-            OrgRole::Admin => can_request_roles,
-            OrgRole::Member => false,
-        },
-        _ => false,
+pub(super) async fn replace_member_job_role(
+    State(state): State<ApiState>,
+    authenticated: Authenticated,
+    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    headers: HeaderMap,
+    Json(mut input): Json<DirectJobRoleReplace>,
+) -> Result<Response, AppError> {
+    let org_id = validation::organization_id(&org_id)?.to_string();
+    input.job_role = validation::job_role(std::mem::take(&mut input.job_role))?;
+    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    require_direct_governance_control(&authenticated, &scope.access, Capability::RolesApprove)?;
+    let lease = match support::claim_resource(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        &headers,
+        DIRECT_ROLE_REPLACE_ROUTE,
+        &membership_id.to_string(),
+        &input,
+        false,
+    )
+    .await?
+    {
+        Claim::Replay(response) => return Ok(response),
+        Claim::Acquired(lease) => lease,
+    };
+    let expected_version = validation::expected_version(&headers)?;
+    let target = lock_direct_target(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        membership_id,
+    )
+    .await?;
+    require_direct_target_version(&target, expected_version)?;
+    if target.job_role == input.job_role {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("job_role_unchanged"),
+        });
     }
+    if target.principal_kind == "silicon" {
+        lock_silicon_projection(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            membership_id,
+        )
+        .await?;
+    }
+    let before_member = super::directory::fetch_member(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        membership_id,
+    )
+    .await?;
+    let before_silicon = fetch_silicon_projection(
+        &mut scope.transaction,
+        &state,
+        scope.access.organization_id,
+        membership_id,
+        target.principal_kind == "silicon",
+    )
+    .await?;
+    let _membership_version = sqlx::query_scalar::<_, i64>(
+        r"
+        SELECT iam_private.replace_membership_job_role_direct(
+            $1, $2, $3, $4, $5, $6
+        )
+        ",
+    )
+    .bind(scope.access.organization_id)
+    .bind(membership_id)
+    .bind(scope.access.membership_id)
+    .bind(Uuid::now_v7())
+    .bind(expected_version)
+    .bind(&input.job_role)
+    .fetch_one(&mut *scope.transaction)
+    .await
+    .map_err(support::database)?;
+    touch_direct_silicon_projection(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        membership_id,
+        target.principal_kind == "silicon",
+    )
+    .await?;
+    let member = super::directory::fetch_member(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        membership_id,
+    )
+    .await?;
+    super::directory::record_member_mutation(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        scope.access.organization_id,
+        "membership.job_role_replaced",
+        "organization.membership.updated.v1",
+        &before_member,
+        &member,
+    )
+    .await?;
+    record_direct_silicon_projection(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        scope.access.organization_id,
+        membership_id,
+        before_silicon,
+        "silicon.job_role_replaced",
+    )
+    .await?;
+    let body = support::finish_json(
+        &mut scope.transaction,
+        &state,
+        lease,
+        StatusCode::OK,
+        &member,
+    )
+    .await?;
+    scope
+        .transaction
+        .commit()
+        .await
+        .map_err(support::database)?;
+    support::json_response(StatusCode::OK, body, Some(member.version), false)
+}
+
+pub(super) async fn replace_member_tags(
+    State(state): State<ApiState>,
+    authenticated: Authenticated,
+    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    headers: HeaderMap,
+    Json(mut input): Json<DirectTagSetReplace>,
+) -> Result<Response, AppError> {
+    let org_id = validation::organization_id(&org_id)?.to_string();
+    validation::direct_tag_set(&mut input)?;
+    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    require_direct_governance_control(&authenticated, &scope.access, Capability::TagsManage)?;
+    let lease = match support::claim_resource(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        &headers,
+        DIRECT_TAGS_REPLACE_ROUTE,
+        &membership_id.to_string(),
+        &input,
+        false,
+    )
+    .await?
+    {
+        Claim::Replay(response) => return Ok(response),
+        Claim::Acquired(lease) => lease,
+    };
+    let expected_version = validation::expected_version(&headers)?;
+    let target = lock_direct_target(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        membership_id,
+    )
+    .await?;
+    require_direct_target_version(&target, expected_version)?;
+    let previous_tag_ids = membership_tag_ids(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        membership_id,
+    )
+    .await?;
+    if previous_tag_ids == input.tag_ids {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("tag_set_unchanged"),
+        });
+    }
+    validate_active_tag_ids(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        &input.tag_ids,
+    )
+    .await?;
+    if target.principal_kind == "silicon" {
+        lock_silicon_projection(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            membership_id,
+        )
+        .await?;
+    }
+    let before_member = super::directory::fetch_member(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        membership_id,
+    )
+    .await?;
+    let before_silicon = fetch_silicon_projection(
+        &mut scope.transaction,
+        &state,
+        scope.access.organization_id,
+        membership_id,
+        target.principal_kind == "silicon",
+    )
+    .await?;
+    let _membership_version = sqlx::query_scalar::<_, i64>(
+        r"
+        SELECT iam_private.replace_membership_tags_direct(
+            $1, $2, $3, $4, $5, $6
+        )
+        ",
+    )
+    .bind(scope.access.organization_id)
+    .bind(membership_id)
+    .bind(scope.access.membership_id)
+    .bind(Uuid::now_v7())
+    .bind(expected_version)
+    .bind(&input.tag_ids)
+    .fetch_one(&mut *scope.transaction)
+    .await
+    .map_err(support::database)?;
+    touch_direct_silicon_projection(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        membership_id,
+        target.principal_kind == "silicon",
+    )
+    .await?;
+    let member = super::directory::fetch_member(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        membership_id,
+    )
+    .await?;
+    super::directory::record_member_mutation(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        scope.access.organization_id,
+        "membership.tags_replaced",
+        "organization.membership.updated.v1",
+        &before_member,
+        &member,
+    )
+    .await?;
+    record_direct_silicon_projection(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        scope.access.organization_id,
+        membership_id,
+        before_silicon,
+        "silicon.tags_replaced",
+    )
+    .await?;
+    let body = support::finish_json(
+        &mut scope.transaction,
+        &state,
+        lease,
+        StatusCode::OK,
+        &member,
+    )
+    .await?;
+    scope
+        .transaction
+        .commit()
+        .await
+        .map_err(support::database)?;
+    support::json_response(StatusCode::OK, body, Some(member.version), false)
+}
+
+fn require_direct_governance_control(
+    authenticated: &Authenticated,
+    access: &crate::infrastructure::postgres::authorization::OrganizationAccess,
+    capability: Capability,
+) -> Result<(), AppError> {
+    support::require_carbon(authenticated)?;
+    if !matches!(access.authority.org_role, OrgRole::Owner | OrgRole::Admin) {
+        return Err(AppError::Forbidden);
+    }
+    support::require_capability(access, capability)
 }
 
 pub(super) async fn create_tag_change_request(
@@ -358,12 +617,7 @@ pub(super) async fn create_tag_change_request(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     validation::tag_change_request(&mut input)?;
-    if !matches!(
-        authenticated.0.subject.actor_type,
-        ActorType::Carbon | ActorType::Silicon
-    ) {
-        return Err(AppError::Forbidden);
-    }
+    require_silicon_governance_request(authenticated.0.subject.actor_type)?;
     let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
     let claim = TagChangeClaim {
         target_membership_id: membership_id,
@@ -711,6 +965,8 @@ pub(super) async fn decide_approval_request(
 
     let mut applied_role_change = None;
     let mut applied_tag_change = None;
+    let mut applied_silicon_projection = None;
+    let mut invalidated_rotation = None;
     if input.decision == "reject" {
         update_approval_status(
             &mut scope.transaction,
@@ -729,28 +985,125 @@ pub(super) async fn decide_approval_request(
     {
         match approval.kind.as_str() {
             "carbon_job_role_change" | "silicon_job_role_change" => {
-                applied_role_change = Some(
-                    apply_job_role_change(
+                let target_membership_id = approval.target_membership_id;
+                let before_silicon = capture_approved_silicon_projection(
+                    &mut scope.transaction,
+                    &state,
+                    scope.access.organization_id,
+                    target_membership_id,
+                    &approval.kind,
+                )
+                .await?;
+                let applied = apply_job_role_change(
+                    &mut scope.transaction,
+                    scope.access.organization_id,
+                    request_id,
+                    expected_version,
+                )
+                .await?;
+                if applied.0 != target_membership_id {
+                    return Err(AppError::Internal {
+                        category: "role_change_target",
+                    });
+                }
+                if let Some((before, action)) = before_silicon {
+                    touch_direct_silicon_projection(
                         &mut scope.transaction,
                         scope.access.organization_id,
-                        request_id,
-                        expected_version,
+                        target_membership_id,
+                        true,
                     )
-                    .await?,
-                );
+                    .await?;
+                    applied_silicon_projection = Some(AppliedSiliconProjection {
+                        membership_id: target_membership_id,
+                        before,
+                        action,
+                    });
+                }
+                applied_role_change = Some(applied);
             }
             "carbon_tag_change" | "silicon_tag_change" => {
-                applied_tag_change = Some(
-                    sqlx::query_as::<_, AppliedTagChange>(
-                        "SELECT * FROM iam_private.apply_approved_tag_change($1, $2, $3)",
+                let target_membership_id = approval.target_membership_id;
+                let before_silicon = capture_approved_silicon_projection(
+                    &mut scope.transaction,
+                    &state,
+                    scope.access.organization_id,
+                    target_membership_id,
+                    &approval.kind,
+                )
+                .await?;
+                let applied = sqlx::query_as::<_, AppliedTagChange>(
+                    "SELECT * FROM iam_private.apply_approved_tag_change($1, $2, $3)",
+                )
+                .bind(scope.access.organization_id)
+                .bind(request_id)
+                .bind(expected_version)
+                .fetch_one(&mut *scope.transaction)
+                .await
+                .map_err(map_tag_change_apply_error)?;
+                if applied.applied_membership_id != target_membership_id {
+                    return Err(AppError::Internal {
+                        category: "tag_change_target",
+                    });
+                }
+                if let Some((before, action)) = before_silicon {
+                    touch_direct_silicon_projection(
+                        &mut scope.transaction,
+                        scope.access.organization_id,
+                        target_membership_id,
+                        true,
                     )
-                    .bind(scope.access.organization_id)
-                    .bind(request_id)
-                    .bind(expected_version)
-                    .fetch_one(&mut *scope.transaction)
-                    .await
-                    .map_err(map_tag_change_apply_error)?,
-                );
+                    .await?;
+                    applied_silicon_projection = Some(AppliedSiliconProjection {
+                        membership_id: target_membership_id,
+                        before,
+                        action,
+                    });
+                }
+                applied_tag_change = Some(applied);
+            }
+            "silicon_token_rotation" => {
+                let target = lock_rotation_target_for_approval(
+                    &mut scope.transaction,
+                    scope.access.organization_id,
+                    request_id,
+                )
+                .await?;
+                let before_member = super::directory::fetch_member(
+                    &mut scope.transaction,
+                    scope.access.organization_id,
+                    target.membership_id,
+                )
+                .await?;
+                let before_silicon = fetch_silicon_projection(
+                    &mut scope.transaction,
+                    &state,
+                    scope.access.organization_id,
+                    target.membership_id,
+                    true,
+                )
+                .await?
+                .ok_or(AppError::NotFound)?;
+                update_approval_status(
+                    &mut scope.transaction,
+                    scope.access.organization_id,
+                    request_id,
+                    expected_version,
+                    "approved",
+                )
+                .await?;
+                invalidate_rotation_credential(
+                    &mut scope.transaction,
+                    scope.access.organization_id,
+                    request_id,
+                    &target,
+                )
+                .await?;
+                invalidated_rotation = Some(RotationInvalidation {
+                    membership_id: target.membership_id,
+                    before_member,
+                    before_silicon,
+                });
             }
             _ => {
                 update_approval_status(
@@ -761,14 +1114,6 @@ pub(super) async fn decide_approval_request(
                     "approved",
                 )
                 .await?;
-                sqlx::query(
-                    "UPDATE iam.silicon_token_rotation_requests SET fulfillment_status = 'ready' WHERE organization_id = $1 AND approval_request_id = $2 AND fulfillment_status = 'awaiting_approval'",
-                )
-                .bind(scope.access.organization_id)
-                .bind(request_id)
-                .execute(&mut *scope.transaction)
-                .await
-                .map_err(support::database)?;
             }
         }
     } else {
@@ -855,6 +1200,47 @@ pub(super) async fn decide_approval_request(
         )
         .await?;
     }
+    if let Some(projection) = applied_silicon_projection {
+        record_direct_silicon_projection(
+            &mut scope.transaction,
+            &state,
+            &authenticated,
+            scope.access.organization_id,
+            projection.membership_id,
+            Some(projection.before),
+            projection.action,
+        )
+        .await?;
+    }
+    if let Some(invalidation) = invalidated_rotation {
+        let after_member = super::directory::fetch_member(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            invalidation.membership_id,
+        )
+        .await?;
+        super::directory::record_member_mutation(
+            &mut scope.transaction,
+            &state,
+            &authenticated,
+            scope.access.organization_id,
+            "membership.silicon_credential_invalidated",
+            "organization.membership.updated.v1",
+            &invalidation.before_member,
+            &after_member,
+        )
+        .await?;
+        record_direct_silicon_projection(
+            &mut scope.transaction,
+            &state,
+            &authenticated,
+            scope.access.organization_id,
+            invalidation.membership_id,
+            Some(invalidation.before_silicon),
+            "silicon.credential_invalidated",
+        )
+        .await?;
+    }
     let approval_tag_ids = approval_payload_tag_ids(&approval.immutable_payload);
     support::record_mutation(
         &mut scope.transaction,
@@ -920,7 +1306,10 @@ pub(super) async fn list_job_role_history(
         .map_err(support::database)?;
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
-        let approvers = decision_actors(&mut scope.transaction, row.approval_request_id).await?;
+        let approvers = match row.approval_request_id {
+            Some(request_id) => decision_actors(&mut scope.transaction, request_id).await?,
+            None => Vec::new(),
+        };
         items.push(RoleHistoryResponse {
             id: row.id,
             membership_id: row.membership_id,
@@ -973,7 +1362,10 @@ pub(super) async fn list_tag_history(
         .map_err(support::database)?;
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
-        let approvers = decision_actors(&mut scope.transaction, row.approval_request_id).await?;
+        let approvers = match row.approval_request_id {
+            Some(request_id) => decision_actors(&mut scope.transaction, request_id).await?,
+            None => Vec::new(),
+        };
         items.push(TagHistoryResponse {
             id: row.id,
             membership_id: row.membership_id,
@@ -1405,13 +1797,18 @@ pub(super) async fn complete_silicon_token_rotation(
     support::json_response(StatusCode::OK, body, None, true)
 }
 
-async fn fetch_target_kind(
+async fn lock_direct_target(
     transaction: &mut Transaction<'_, Postgres>,
     organization_id: Uuid,
     membership_id: Uuid,
-) -> Result<String, AppError> {
-    sqlx::query_scalar::<_, String>(
-        "SELECT principal_kind::text FROM iam.organization_memberships WHERE organization_id = $1 AND id = $2 LIMIT 1",
+) -> Result<DirectTargetMembership, AppError> {
+    sqlx::query_as::<_, DirectTargetMembership>(
+        r"
+        SELECT principal_kind::text AS principal_kind, job_role, status, version
+        FROM iam.organization_memberships
+        WHERE organization_id = $1 AND id = $2
+        FOR UPDATE
+        ",
     )
     .bind(organization_id)
     .bind(membership_id)
@@ -1419,6 +1816,156 @@ async fn fetch_target_kind(
     .await
     .map_err(support::database)?
     .ok_or(AppError::NotFound)
+}
+
+fn require_direct_target_version(
+    target: &DirectTargetMembership,
+    expected_version: i64,
+) -> Result<(), AppError> {
+    if target.status != "active" {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("membership_not_active"),
+        });
+    }
+    if target.version != expected_version {
+        return Err(precondition_failed());
+    }
+    Ok(())
+}
+
+async fn lock_silicon_projection(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    membership_id: Uuid,
+) -> Result<(), AppError> {
+    sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT id
+        FROM iam.silicons
+        WHERE organization_id = $1 AND membership_id = $2
+          AND provisioning_status <> 'deleted'
+        FOR UPDATE
+        ",
+    )
+    .bind(organization_id)
+    .bind(membership_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(support::database)?
+    .ok_or(AppError::NotFound)?;
+    Ok(())
+}
+
+async fn capture_approved_silicon_projection(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    organization_id: Uuid,
+    membership_id: Uuid,
+    approval_kind: &str,
+) -> Result<Option<(SiliconResponse, &'static str)>, AppError> {
+    let Some(action) = approved_silicon_projection_action(approval_kind) else {
+        return Ok(None);
+    };
+    let target = lock_direct_target(transaction, organization_id, membership_id).await?;
+    if target.principal_kind != "silicon" {
+        return Err(AppError::Internal {
+            category: "silicon_approval_target_kind",
+        });
+    }
+    lock_silicon_projection(transaction, organization_id, membership_id).await?;
+    let before = fetch_silicon_projection(transaction, state, organization_id, membership_id, true)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    Ok(Some((before, action)))
+}
+
+fn approved_silicon_projection_action(approval_kind: &str) -> Option<&'static str> {
+    match approval_kind {
+        "silicon_job_role_change" => Some("silicon.job_role_change_approved"),
+        "silicon_tag_change" => Some("silicon.tag_change_approved"),
+        _ => None,
+    }
+}
+
+async fn fetch_silicon_projection(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    organization_id: Uuid,
+    membership_id: Uuid,
+    enabled: bool,
+) -> Result<Option<SiliconResponse>, AppError> {
+    if !enabled {
+        return Ok(None);
+    }
+    let profile_base = super::silicons::silicon_profile_base(state)?;
+    let mut silicons = super::silicons::fetch_silicons(
+        transaction,
+        organization_id,
+        &[membership_id],
+        &profile_base,
+    )
+    .await?;
+    silicons.pop().map(Some).ok_or(AppError::NotFound)
+}
+
+async fn touch_direct_silicon_projection(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    membership_id: Uuid,
+    enabled: bool,
+) -> Result<(), AppError> {
+    if !enabled {
+        return Ok(());
+    }
+    let result = sqlx::query(
+        r"
+        UPDATE iam.silicons
+        SET updated_at = transaction_timestamp()
+        WHERE organization_id = $1 AND membership_id = $2
+          AND provisioning_status <> 'deleted'
+        ",
+    )
+    .bind(organization_id)
+    .bind(membership_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(support::database)?;
+    if result.rows_affected() != 1 {
+        return Err(AppError::NotFound);
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the direct control event keeps its exact actor, tenant, and projection explicit"
+)]
+async fn record_direct_silicon_projection(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    authenticated: &Authenticated,
+    organization_id: Uuid,
+    membership_id: Uuid,
+    before: Option<SiliconResponse>,
+    action: &'static str,
+) -> Result<(), AppError> {
+    let Some(before) = before else {
+        return Ok(());
+    };
+    let after = fetch_silicon_projection(transaction, state, organization_id, membership_id, true)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    super::silicons::record_silicon_change(
+        transaction,
+        state,
+        authenticated,
+        organization_id,
+        action,
+        "organization.silicon.updated.v1",
+        &before,
+        &after,
+    )
+    .await
 }
 
 async fn fetch_target(
@@ -1853,6 +2400,130 @@ async fn fetch_rotation_target(
     .ok_or(AppError::NotFound)
 }
 
+async fn lock_rotation_target_for_approval(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    request_id: Uuid,
+) -> Result<RotationTarget, AppError> {
+    sqlx::query_as::<_, RotationTarget>(
+        r"
+        SELECT silicon.id AS silicon_id, silicon.membership_id,
+               silicon.global_silicon_id,
+               rotation.previous_credential_id AS credential_id
+        FROM iam.silicon_token_rotation_requests AS rotation
+        JOIN iam.silicons AS silicon
+          ON silicon.organization_id = rotation.organization_id
+         AND silicon.id = rotation.silicon_id
+        JOIN iam.organization_memberships AS membership
+          ON membership.organization_id = silicon.organization_id
+         AND membership.id = silicon.membership_id
+        JOIN iam.silicon_credentials AS credential
+          ON credential.organization_id = rotation.organization_id
+         AND credential.silicon_id = rotation.silicon_id
+         AND credential.id = rotation.previous_credential_id
+        WHERE rotation.organization_id = $1
+          AND rotation.approval_request_id = $2
+          AND rotation.fulfillment_status = 'awaiting_approval'
+          AND silicon.provisioning_status <> 'deleted'
+          AND membership.status = 'active'
+        FOR UPDATE OF rotation, silicon, membership, credential
+        ",
+    )
+    .bind(organization_id)
+    .bind(request_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(support::database)?
+    .ok_or(AppError::Gone {
+        code: Cow::Borrowed("rotation_not_ready"),
+    })
+}
+
+async fn invalidate_rotation_credential(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    request_id: Uuid,
+    target: &RotationTarget,
+) -> Result<(), AppError> {
+    let active_credential_id = sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT id
+        FROM iam.silicon_credentials
+        WHERE organization_id = $1 AND silicon_id = $2 AND status = 'active'
+        FOR UPDATE
+        ",
+    )
+    .bind(organization_id)
+    .bind(target.silicon_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(support::database)?;
+    if active_credential_id.is_some_and(|credential_id| credential_id != target.credential_id) {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("rotation_credential_changed"),
+        });
+    }
+    sqlx::query(
+        r"
+        UPDATE iam.silicon_credentials
+        SET status = 'retired', retired_at = transaction_timestamp()
+        WHERE organization_id = $1 AND silicon_id = $2 AND id = $3 AND status = 'active'
+        ",
+    )
+    .bind(organization_id)
+    .bind(target.silicon_id)
+    .bind(target.credential_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(support::database)?;
+    let ready = sqlx::query(
+        r"
+        UPDATE iam.silicon_token_rotation_requests
+        SET fulfillment_status = 'ready'
+        WHERE organization_id = $1 AND approval_request_id = $2
+          AND silicon_id = $3 AND fulfillment_status = 'awaiting_approval'
+        ",
+    )
+    .bind(organization_id)
+    .bind(request_id)
+    .bind(target.silicon_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(support::database)?;
+    if ready.rows_affected() != 1 {
+        return Err(AppError::Gone {
+            code: Cow::Borrowed("rotation_not_ready"),
+        });
+    }
+    let principal = sqlx::query("UPDATE iam.principals SET auth_epoch = auth_epoch + 1 WHERE id = $1 AND kind = 'silicon' AND status = 'active'")
+        .bind(target.silicon_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(support::database)?;
+    let membership = sqlx::query(
+        r"
+        UPDATE iam.organization_memberships
+        SET authz_epoch = authz_epoch + 1
+        WHERE organization_id = $1 AND id = $2
+          AND principal_id = $3 AND principal_kind = 'silicon' AND status = 'active'
+        ",
+    )
+    .bind(organization_id)
+    .bind(target.membership_id)
+    .bind(target.silicon_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(support::database)?;
+    if principal.rows_affected() != 1 || membership.rows_affected() != 1 {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("membership_not_active"),
+        });
+    }
+    touch_direct_silicon_projection(transaction, organization_id, target.membership_id, true)
+        .await?;
+    revoke_silicon_sessions(transaction, target.silicon_id).await
+}
+
 async fn fetch_rotation_target_for_request(
     transaction: &mut Transaction<'_, Postgres>,
     organization_id: Uuid,
@@ -1893,6 +2564,31 @@ async fn revoke_silicon_sessions(
 ) -> Result<(), AppError> {
     sqlx::query(
         "UPDATE iam.authentication_sessions SET status = 'revoked', revoked_at = transaction_timestamp(), revocation_reason = 'Silicon credential rotated', version = version + 1 WHERE subject_principal_id = $1 AND status = 'active'",
+    )
+    .bind(silicon_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(support::database)?;
+    sqlx::query(
+        r"
+        UPDATE iam.refresh_token_families
+        SET status = 'revoked', revoked_at = transaction_timestamp(),
+            revocation_reason = 'Silicon credential rotated'
+        WHERE subject_principal_id = $1 AND status = 'active'
+        ",
+    )
+    .bind(silicon_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(support::database)?;
+    sqlx::query(
+        r"
+        UPDATE iam.refresh_tokens AS token
+        SET revoked_at = COALESCE(token.revoked_at, transaction_timestamp())
+        FROM iam.refresh_token_families AS family
+        WHERE token.family_id = family.id
+          AND family.subject_principal_id = $1
+        ",
     )
     .bind(silicon_id)
     .execute(&mut **transaction)
@@ -2145,10 +2841,11 @@ const ROLE_HISTORY_SQL: &str = r"
            CASE WHEN requester.principal_kind = 'carbon' THEN carbon.carbon_id ELSE silicon.global_silicon_id END AS requested_by_public_id,
            history.applied_at
     FROM iam.job_role_history history
-    JOIN iam.approval_requests request
+    LEFT JOIN iam.approval_requests request
       ON request.organization_id = history.organization_id AND request.id = history.approval_request_id
     JOIN iam.organization_memberships requester
-      ON requester.organization_id = request.organization_id AND requester.id = request.requested_by_membership_id
+      ON requester.organization_id = history.organization_id
+     AND requester.id = COALESCE(request.requested_by_membership_id, history.applied_by_membership_id)
     LEFT JOIN iam.carbons carbon ON carbon.id = requester.principal_id AND requester.principal_kind = 'carbon'
     LEFT JOIN iam.silicons silicon ON silicon.id = requester.principal_id AND requester.principal_kind = 'silicon'
     WHERE history.organization_id = $1 AND history.membership_id = $2
@@ -2165,10 +2862,11 @@ const TAG_HISTORY_SQL: &str = r"
            CASE WHEN requester.principal_kind = 'carbon' THEN carbon.carbon_id ELSE silicon.global_silicon_id END AS requested_by_public_id,
            history.applied_at
     FROM iam.membership_tag_change_history history
-    JOIN iam.approval_requests request
+    LEFT JOIN iam.approval_requests request
       ON request.organization_id = history.organization_id AND request.id = history.approval_request_id
     JOIN iam.organization_memberships requester
-      ON requester.organization_id = request.organization_id AND requester.id = request.requested_by_membership_id
+      ON requester.organization_id = history.organization_id
+     AND requester.id = COALESCE(request.requested_by_membership_id, history.applied_by_membership_id)
     LEFT JOIN iam.carbons carbon ON carbon.id = requester.principal_id AND requester.principal_kind = 'carbon'
     LEFT JOIN iam.silicons silicon ON silicon.id = requester.principal_id AND requester.principal_kind = 'silicon'
     WHERE history.organization_id = $1 AND history.membership_id = $2
@@ -2178,59 +2876,43 @@ const TAG_HISTORY_SQL: &str = r"
 
 #[cfg(test)]
 mod tests {
-    use super::{APPROVAL_BY_ID_SQL, APPROVAL_LIST_SQL, role_request_allowed};
-    use crate::domain::{actor::ActorType, organization::OrgRole};
+    use anyhow::ensure;
+    use sqlx::postgres::PgPoolOptions;
+    use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
+    use testcontainers_modules::postgres::Postgres;
+    use uuid::Uuid;
+
+    use super::{
+        APPROVAL_BY_ID_SQL, APPROVAL_LIST_SQL, approved_silicon_projection_action,
+        require_silicon_governance_request,
+    };
+    use crate::domain::actor::ActorType;
 
     #[test]
-    fn role_request_matrix_matches_the_documented_actor_rules() {
-        assert!(role_request_allowed(
-            ActorType::Silicon,
-            OrgRole::Member,
-            false,
-            "carbon",
-        ));
-        assert!(role_request_allowed(
-            ActorType::Silicon,
-            OrgRole::Member,
-            false,
-            "silicon",
-        ));
-        assert!(role_request_allowed(
-            ActorType::Carbon,
-            OrgRole::Member,
-            false,
-            "silicon",
-        ));
-        assert!(role_request_allowed(
-            ActorType::Carbon,
-            OrgRole::Owner,
-            false,
-            "carbon",
-        ));
-        assert!(role_request_allowed(
-            ActorType::Carbon,
-            OrgRole::Admin,
-            true,
-            "carbon",
-        ));
-        assert!(!role_request_allowed(
-            ActorType::Carbon,
-            OrgRole::Admin,
-            false,
-            "carbon",
-        ));
-        assert!(!role_request_allowed(
-            ActorType::Carbon,
-            OrgRole::Member,
-            true,
-            "carbon",
-        ));
-        assert!(!role_request_allowed(
-            ActorType::Application,
-            OrgRole::Member,
-            true,
-            "silicon",
-        ));
+    fn only_silicons_can_create_governance_requests() {
+        assert!(require_silicon_governance_request(ActorType::Silicon).is_ok());
+        assert!(require_silicon_governance_request(ActorType::Carbon).is_err());
+        assert!(require_silicon_governance_request(ActorType::Application).is_err());
+    }
+
+    #[test]
+    fn approved_silicon_directory_changes_emit_the_silicon_projection() {
+        assert_eq!(
+            approved_silicon_projection_action("silicon_job_role_change"),
+            Some("silicon.job_role_change_approved")
+        );
+        assert_eq!(
+            approved_silicon_projection_action("silicon_tag_change"),
+            Some("silicon.tag_change_approved")
+        );
+        assert_eq!(
+            approved_silicon_projection_action("carbon_job_role_change"),
+            None
+        );
+        assert_eq!(
+            approved_silicon_projection_action("carbon_tag_change"),
+            None
+        );
     }
 
     #[test]
@@ -2241,5 +2923,201 @@ mod tests {
         assert!(migration.contains("WHERE status IN ('pending', 'approved')"));
         assert!(!APPROVAL_LIST_SQL.contains("expires_at"));
         assert!(!APPROVAL_BY_ID_SQL.contains("expires_at"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Docker daemon"]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the fixture and both fixed-path direct governance transitions form one database contract test"
+    )]
+    async fn direct_admin_role_and_tag_control_is_atomic_and_historical() -> anyhow::Result<()> {
+        let container = Postgres::default().with_tag("16-alpine").start().await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(5432).await?;
+        let database_url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect(&database_url)
+            .await?;
+        crate::infrastructure::postgres::migrate(&pool).await?;
+
+        let owner_id = Uuid::from_u128(0x401);
+        let admin_id = Uuid::from_u128(0x402);
+        let target_id = Uuid::from_u128(0x403);
+        let organization_id = Uuid::from_u128(0x404);
+        let owner_membership_id = Uuid::from_u128(0x405);
+        let admin_membership_id = Uuid::from_u128(0x406);
+        let target_membership_id = Uuid::from_u128(0x407);
+        let tag_id = Uuid::from_u128(0x408);
+        let role_history_id = Uuid::from_u128(0x409);
+        let tag_history_id = Uuid::from_u128(0x40a);
+
+        let mut seed = pool.begin().await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.principals (id, kind, status, activated_at)
+            VALUES
+                ($1, 'carbon', 'active', transaction_timestamp()),
+                ($2, 'carbon', 'active', transaction_timestamp()),
+                ($3, 'carbon', 'active', transaction_timestamp())
+            ",
+        )
+        .bind(owner_id)
+        .bind(admin_id)
+        .bind(target_id)
+        .execute(&mut *seed)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.carbons (id, carbon_id, display_name)
+            VALUES
+                ($1, 'direct-owner', 'Direct Owner'),
+                ($2, 'direct-admin', 'Direct Admin'),
+                ($3, 'direct-target', 'Direct Target')
+            ",
+        )
+        .bind(owner_id)
+        .bind(admin_id)
+        .bind(target_id)
+        .execute(&mut *seed)
+        .await?;
+        sqlx::query(
+            "INSERT INTO iam.cryptographic_key_versions (purpose, key_version, status) VALUES ('contact_aead', 1, 'active')",
+        )
+        .execute(&mut *seed)
+        .await?;
+        for (contact_index, carbon_id) in [owner_id, admin_id, target_id].into_iter().enumerate() {
+            for (kind_index, kind) in ["email", "phone"].into_iter().enumerate() {
+                let discriminator = u8::try_from(contact_index * 2 + kind_index + 1)?;
+                sqlx::query(
+                    r"
+                    INSERT INTO iam.carbon_contacts (
+                        id, carbon_id, kind, ciphertext, nonce,
+                        encryption_key_version, verified_at
+                    ) VALUES ($1, $2, $3::iam.contact_kind, $4, $5, 1, transaction_timestamp())
+                    ",
+                )
+                .bind(Uuid::from_u128(0x410 + u128::from(discriminator)))
+                .bind(carbon_id)
+                .bind(kind)
+                .bind(vec![discriminator; 17])
+                .bind(vec![discriminator; 12])
+                .execute(&mut *seed)
+                .await?;
+            }
+        }
+        sqlx::query(
+            "INSERT INTO iam.organizations (id, org_id, created_by_carbon_id, name) VALUES ($1, 'direct-controls', $2, 'Direct Controls')",
+        )
+        .bind(organization_id)
+        .bind(owner_id)
+        .execute(&mut *seed)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.organization_memberships (
+                id, organization_id, principal_id, principal_kind, org_role,
+                job_role, role_granted_by_membership_id
+            ) VALUES
+                ($1, $4, $5, 'carbon', 'owner', 'Owner', NULL),
+                ($2, $4, $6, 'carbon', 'admin', 'Administrator', $1),
+                ($3, $4, $7, 'carbon', 'member', 'Engineer', NULL)
+            ",
+        )
+        .bind(owner_membership_id)
+        .bind(admin_membership_id)
+        .bind(target_membership_id)
+        .bind(organization_id)
+        .bind(owner_id)
+        .bind(admin_id)
+        .bind(target_id)
+        .execute(&mut *seed)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.organization_capability_grants (
+                id, organization_id, grantee_membership_id, capability,
+                granted_by_membership_id
+            ) VALUES
+                ($1, $3, $4, 'roles.approve', $5),
+                ($2, $3, $4, 'tags.manage', $5)
+            ",
+        )
+        .bind(Uuid::from_u128(0x40b))
+        .bind(Uuid::from_u128(0x40c))
+        .bind(organization_id)
+        .bind(admin_membership_id)
+        .bind(owner_membership_id)
+        .execute(&mut *seed)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.organization_tags (
+                id, organization_id, name, normalized_name,
+                created_by_membership_id
+            ) VALUES ($1, $2, 'Platform', 'platform', $3)
+            ",
+        )
+        .bind(tag_id)
+        .bind(organization_id)
+        .bind(owner_membership_id)
+        .execute(&mut *seed)
+        .await?;
+        seed.commit().await?;
+
+        let mut transaction = crate::infrastructure::postgres::context::begin(
+            &pool,
+            crate::infrastructure::postgres::context::DatabaseContext::organization(
+                admin_id,
+                organization_id,
+            ),
+        )
+        .await?;
+        let role_version = sqlx::query_scalar::<_, i64>(
+            "SELECT iam_private.replace_membership_job_role_direct($1, $2, $3, $4, 1, 'Staff Engineer')",
+        )
+        .bind(organization_id)
+        .bind(target_membership_id)
+        .bind(admin_membership_id)
+        .bind(role_history_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let tag_version = sqlx::query_scalar::<_, i64>(
+            "SELECT iam_private.replace_membership_tags_direct($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(organization_id)
+        .bind(target_membership_id)
+        .bind(admin_membership_id)
+        .bind(tag_history_id)
+        .bind(role_version)
+        .bind(vec![tag_id])
+        .fetch_one(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+
+        let membership = sqlx::query_as::<_, (String, i64, i64)>(
+            "SELECT job_role, authz_epoch, version FROM iam.organization_memberships WHERE id = $1",
+        )
+        .bind(target_membership_id)
+        .fetch_one(&pool)
+        .await?;
+        let role_history = sqlx::query_as::<_, (Option<Uuid>, Option<Uuid>)>(
+            "SELECT approval_request_id, applied_by_membership_id FROM iam.job_role_history WHERE id = $1",
+        )
+        .bind(role_history_id)
+        .fetch_one(&pool)
+        .await?;
+        let tag_history = sqlx::query_as::<_, (Option<Uuid>, Option<Uuid>, Vec<Uuid>)>(
+            "SELECT approval_request_id, applied_by_membership_id, applied_tag_ids FROM iam.membership_tag_change_history WHERE id = $1",
+        )
+        .bind(tag_history_id)
+        .fetch_one(&pool)
+        .await?;
+        ensure!(role_version == 2 && tag_version == 3);
+        ensure!(membership == ("Staff Engineer".to_owned(), 2, 3));
+        ensure!(role_history == (None, Some(admin_membership_id)));
+        ensure!(tag_history == (None, Some(admin_membership_id), vec![tag_id]));
+        Ok(())
     }
 }

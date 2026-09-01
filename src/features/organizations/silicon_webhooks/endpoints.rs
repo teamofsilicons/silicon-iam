@@ -7,6 +7,7 @@ use axum::{
     response::Response,
 };
 use secrecy::ExposeSecret as _;
+use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use sqlx::{FromRow, Postgres, Transaction};
@@ -38,6 +39,46 @@ struct EndpointIdentity {
     id: Uuid,
     status: String,
     version: i64,
+}
+
+#[derive(Clone, Debug)]
+struct SubscriptionSnapshot {
+    id: Uuid,
+    mode: String,
+    topics: Vec<String>,
+    tag_filter_enabled: bool,
+    additional_tag_ids: Vec<Uuid>,
+    version: i64,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+}
+
+#[derive(FromRow)]
+struct SubscriptionBaseSnapshot {
+    id: Uuid,
+    mode: String,
+    tag_filter_enabled: bool,
+    version: i64,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+}
+
+#[derive(Debug, Serialize)]
+struct SubscriptionBeforeState {
+    silicon_id: String,
+    mode: String,
+    topics: Vec<String>,
+    tag_filter: Option<SubscriptionTagFilterBeforeState>,
+    version: i64,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    updated_at: OffsetDateTime,
+}
+
+#[derive(Debug, Serialize)]
+struct SubscriptionTagFilterBeforeState {
+    additional_tag_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, FromRow)]
@@ -383,28 +424,45 @@ pub(in crate::features::organizations) async fn delete_webhook(
     .ok_or(AppError::NotFound)?;
     shared::lock_delivery_scope(&mut scope.transaction, endpoint.id).await?;
     enforce_existing_version(&headers, Some(endpoint.version))?;
-    sqlx::query(
-        r"
-        DELETE FROM iam.silicon_webhook_subscription_topics AS topic
-        USING iam.silicon_webhook_subscriptions AS subscription
-        WHERE topic.subscription_id = subscription.id
-          AND subscription.organization_id = $1
-          AND subscription.silicon_id = $2
-        ",
+    let subscription = lock_subscription_snapshot(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        target.principal_id,
+        endpoint.id,
     )
-    .bind(scope.access.organization_id)
-    .bind(target.principal_id)
-    .execute(&mut *scope.transaction)
-    .await
-    .map_err(support::database)?;
-    sqlx::query(
-        "DELETE FROM iam.silicon_webhook_subscriptions WHERE organization_id = $1 AND silicon_id = $2",
-    )
-    .bind(scope.access.organization_id)
-    .bind(target.principal_id)
-    .execute(&mut *scope.transaction)
-    .await
-    .map_err(support::database)?;
+    .await?;
+    if let Some(subscription) = subscription.as_ref() {
+        sqlx::query(
+            "DELETE FROM iam.silicon_webhook_subscription_topics WHERE subscription_id = $1",
+        )
+        .bind(subscription.id)
+        .execute(&mut *scope.transaction)
+        .await
+        .map_err(support::database)?;
+        let deleted_id = sqlx::query_scalar::<_, Uuid>(
+            r"
+            DELETE FROM iam.silicon_webhook_subscriptions
+            WHERE organization_id = $1 AND silicon_id = $2
+              AND endpoint_id = $3 AND id = $4
+            RETURNING id
+            ",
+        )
+        .bind(scope.access.organization_id)
+        .bind(target.principal_id)
+        .bind(endpoint.id)
+        .bind(subscription.id)
+        .fetch_optional(&mut *scope.transaction)
+        .await
+        .map_err(support::database)?
+        .ok_or(AppError::Internal {
+            category: "silicon_webhook_subscription_delete",
+        })?;
+        if deleted_id != subscription.id {
+            return Err(AppError::Internal {
+                category: "silicon_webhook_subscription_delete_identity",
+            });
+        }
+    }
     shared::cancel_deliveries(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -433,6 +491,21 @@ pub(in crate::features::organizations) async fn delete_webhook(
     .await
     .map_err(support::database)?
     .ok_or(AppError::NotFound)?;
+    if let Some(event) = subscription_deleted_event(
+        subscription.as_ref(),
+        &silicon_id,
+        target.principal_id,
+        target.membership_id,
+        endpoint.id,
+    )? {
+        support::record_mutation(
+            &mut scope.transaction,
+            &authenticated,
+            scope.access.organization_id,
+            event,
+        )
+        .await?;
+    }
     support::record_mutation(
         &mut scope.transaction,
         &authenticated,
@@ -468,6 +541,124 @@ pub(in crate::features::organizations) async fn delete_webhook(
         .await
         .map_err(support::database)?;
     Ok(support::empty(StatusCode::NO_CONTENT))
+}
+
+async fn lock_subscription_snapshot(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    silicon_id: Uuid,
+    endpoint_id: Uuid,
+) -> Result<Option<SubscriptionSnapshot>, AppError> {
+    let Some(subscription) = sqlx::query_as::<_, SubscriptionBaseSnapshot>(
+        r"
+        SELECT subscription.id, subscription.mode, subscription.tag_filter_enabled,
+               subscription.version, subscription.created_at, subscription.updated_at
+        FROM iam.silicon_webhook_subscriptions AS subscription
+        WHERE subscription.organization_id = $1
+          AND subscription.silicon_id = $2
+          AND subscription.endpoint_id = $3
+        FOR UPDATE OF subscription
+        ",
+    )
+    .bind(organization_id)
+    .bind(silicon_id)
+    .bind(endpoint_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(support::database)?
+    else {
+        return Ok(None);
+    };
+
+    let topics = if subscription.mode == "all" {
+        vec![
+            "membership_lifecycle".to_owned(),
+            "member_updates".to_owned(),
+            "trust_updates".to_owned(),
+        ]
+    } else {
+        sqlx::query_scalar::<_, String>(
+            r"
+            SELECT topic::text
+            FROM iam.silicon_webhook_subscription_topics
+            WHERE subscription_id = $1
+            ORDER BY topic
+            ",
+        )
+        .bind(subscription.id)
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(support::database)?
+    };
+    let additional_tag_ids = sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT tag_id
+        FROM iam.silicon_webhook_subscription_extra_tags
+        WHERE subscription_id = $1
+        ORDER BY tag_id
+        ",
+    )
+    .bind(subscription.id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(support::database)?;
+
+    Ok(Some(SubscriptionSnapshot {
+        id: subscription.id,
+        mode: subscription.mode,
+        topics,
+        tag_filter_enabled: subscription.tag_filter_enabled,
+        additional_tag_ids,
+        version: subscription.version,
+        created_at: subscription.created_at,
+        updated_at: subscription.updated_at,
+    }))
+}
+
+fn subscription_deleted_event(
+    subscription: Option<&SubscriptionSnapshot>,
+    global_silicon_id: &str,
+    silicon_id: Uuid,
+    membership_id: Uuid,
+    endpoint_id: Uuid,
+) -> Result<Option<MutationEvent<'static>>, AppError> {
+    let Some(subscription) = subscription else {
+        return Ok(None);
+    };
+    let before_state = serde_json::to_value(SubscriptionBeforeState {
+        silicon_id: global_silicon_id.to_owned(),
+        mode: subscription.mode.clone(),
+        topics: subscription.topics.clone(),
+        tag_filter: subscription
+            .tag_filter_enabled
+            .then(|| SubscriptionTagFilterBeforeState {
+                additional_tag_ids: subscription.additional_tag_ids.clone(),
+            }),
+        version: subscription.version,
+        created_at: subscription.created_at,
+        updated_at: subscription.updated_at,
+    })
+    .map_err(|_| AppError::Internal {
+        category: "silicon_webhook_subscription_delete_before_state",
+    })?;
+    Ok(Some(MutationEvent {
+        action: "silicon.webhook_subscription.delete",
+        target_type: "silicon_webhook_subscription",
+        target_id: subscription.id,
+        aggregate_type: "silicon_webhook_subscription",
+        aggregate_id: subscription.id,
+        aggregate_version: subscription.version + 1,
+        event_type: "organization.silicon.webhook_subscription.deleted.v1",
+        before_state: Some(before_state),
+        after_state: None,
+        metadata: json!({
+            "silicon_id": silicon_id,
+            "membership_id": membership_id,
+            "subscription_id": subscription.id,
+            "endpoint_id": endpoint_id,
+            "deletion_source": "endpoint_delete",
+        }),
+    }))
 }
 
 async fn lock_endpoint(
@@ -737,5 +928,80 @@ mod tests {
         let first = replace_claim_request(organization_id, Uuid::now_v7(), &input);
         let second = replace_claim_request(organization_id, Uuid::now_v7(), &input);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn endpoint_delete_emits_the_actual_subscription_snapshot() {
+        let subscription_id = Uuid::from_u128(1);
+        let silicon_id = Uuid::from_u128(2);
+        let membership_id = Uuid::from_u128(3);
+        let endpoint_id = Uuid::from_u128(4);
+        let additional_tag_id = Uuid::from_u128(5);
+        let snapshot = SubscriptionSnapshot {
+            id: subscription_id,
+            mode: "selected".to_owned(),
+            topics: vec!["member_updates".to_owned()],
+            tag_filter_enabled: true,
+            additional_tag_ids: vec![additional_tag_id],
+            version: 7,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        };
+
+        let Ok(Some(event)) = subscription_deleted_event(
+            Some(&snapshot),
+            "bot:acme",
+            silicon_id,
+            membership_id,
+            endpoint_id,
+        ) else {
+            panic!("an existing subscription snapshot must produce an event");
+        };
+
+        assert_eq!(event.target_id, subscription_id);
+        assert_eq!(event.aggregate_id, subscription_id);
+        assert_eq!(event.aggregate_version, 8);
+        assert_eq!(
+            event.event_type,
+            "organization.silicon.webhook_subscription.deleted.v1"
+        );
+        assert_eq!(
+            event.before_state,
+            Some(json!({
+                "silicon_id": "bot:acme",
+                "mode": "selected",
+                "topics": ["member_updates"],
+                "tag_filter": { "additional_tag_ids": [additional_tag_id] },
+                "version": 7,
+                "created_at": "1970-01-01T00:00:00Z",
+                "updated_at": "1970-01-01T00:00:00Z",
+            }))
+        );
+        assert_eq!(
+            event.metadata,
+            json!({
+                "silicon_id": silicon_id,
+                "membership_id": membership_id,
+                "subscription_id": subscription_id,
+                "endpoint_id": endpoint_id,
+                "deletion_source": "endpoint_delete",
+            })
+        );
+        assert!(event.after_state.is_none());
+    }
+
+    #[test]
+    fn endpoint_delete_does_not_emit_a_phantom_subscription_event() {
+        let Ok(event) = subscription_deleted_event(
+            None,
+            "bot:acme",
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            Uuid::from_u128(3),
+        ) else {
+            panic!("absence must not fail event construction");
+        };
+
+        assert!(event.is_none());
     }
 }

@@ -63,6 +63,10 @@ pub fn router() -> Router<ApiState> {
             post(governance::create_tag_change_request),
         )
         .route(
+            "/api/v1/organizations/{org_id}/members/{membership_id}/tags",
+            put(governance::replace_member_tags),
+        )
+        .route(
             "/api/v1/organizations/{org_id}/members/{membership_id}/tag-history",
             get(governance::list_tag_history),
         )
@@ -129,6 +133,14 @@ pub fn router() -> Router<ApiState> {
                 .delete(silicon_webhooks::delete_subscription),
         )
         .route(
+            "/api/v1/organizations/{org_id}/silicons/{silicon_id}/webhook/dead-letters",
+            get(silicon_webhooks::list_dead_letters),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/silicons/{silicon_id}/webhook/dead-letters/replays",
+            post(silicon_webhooks::replay_dead_letters),
+        )
+        .route(
             "/api/v1/organizations/{org_id}/silicons/{silicon_id}/token-rotation-requests",
             post(governance::request_silicon_token_rotation),
         )
@@ -185,5 +197,9 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/api/v1/organizations/{org_id}/members/{membership_id}/job-role-history",
             get(governance::list_job_role_history),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/members/{membership_id}/job-role",
+            put(governance::replace_member_job_role),
         )
 }

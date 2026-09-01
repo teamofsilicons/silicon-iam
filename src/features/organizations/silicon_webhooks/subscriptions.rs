@@ -23,7 +23,7 @@ use super::{
     super::{
         model::{
             SiliconWebhookSubscriptionMode, SiliconWebhookSubscriptionReplace,
-            SiliconWebhookSubscriptionResponse, SiliconWebhookTopic,
+            SiliconWebhookSubscriptionResponse, SiliconWebhookTagFilter, SiliconWebhookTopic,
         },
         silicons,
         support::{self, Claim, MutationEvent},
@@ -41,7 +41,7 @@ const SUBSCRIPTION_DELETE_ROUTE: &str =
 struct CanonicalSubscription {
     mode: SiliconWebhookSubscriptionMode,
     topics: Vec<SiliconWebhookTopic>,
-    own_tags_only: bool,
+    tag_filter: Option<SiliconWebhookTagFilter>,
 }
 
 #[derive(Debug, FromRow)]
@@ -49,7 +49,8 @@ struct SubscriptionRow {
     silicon_id: String,
     mode: String,
     topics: Vec<String>,
-    own_tags_only: bool,
+    tag_filter_enabled: bool,
+    additional_tag_ids: Vec<Uuid>,
     version: i64,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
@@ -180,7 +181,7 @@ pub(in crate::features::organizations) async fn replace_subscription(
         sqlx::query_scalar::<_, i64>(
             r"
             UPDATE iam.silicon_webhook_subscriptions
-            SET endpoint_id = $3, mode = $4, own_tags_only = $5,
+            SET endpoint_id = $3, mode = $4, tag_filter_enabled = $5,
                 updated_at = transaction_timestamp()
             WHERE organization_id = $1 AND silicon_id = $2
             RETURNING version
@@ -190,7 +191,7 @@ pub(in crate::features::organizations) async fn replace_subscription(
         .bind(target.principal_id)
         .bind(endpoint_id)
         .bind(canonical.mode.as_str())
-        .bind(canonical.own_tags_only)
+        .bind(canonical.tag_filter.is_some())
         .fetch_one(&mut *scope.transaction)
         .await
         .map_err(support::database)?
@@ -198,7 +199,7 @@ pub(in crate::features::organizations) async fn replace_subscription(
         sqlx::query_scalar::<_, i64>(
             r"
             INSERT INTO iam.silicon_webhook_subscriptions (
-                id, organization_id, silicon_id, endpoint_id, mode, own_tags_only
+                id, organization_id, silicon_id, endpoint_id, mode, tag_filter_enabled
             ) VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING version
             ",
@@ -208,7 +209,7 @@ pub(in crate::features::organizations) async fn replace_subscription(
         .bind(target.principal_id)
         .bind(endpoint_id)
         .bind(canonical.mode.as_str())
-        .bind(canonical.own_tags_only)
+        .bind(canonical.tag_filter.is_some())
         .fetch_one(&mut *scope.transaction)
         .await
         .map_err(support::database)?
@@ -228,6 +229,36 @@ pub(in crate::features::organizations) async fn replace_subscription(
             )
             .bind(subscription_id)
             .bind(topic.as_str())
+            .execute(&mut *scope.transaction)
+            .await
+            .map_err(support::database)?;
+        }
+    }
+    sqlx::query(
+        "DELETE FROM iam.silicon_webhook_subscription_extra_tags WHERE subscription_id = $1",
+    )
+    .bind(subscription_id)
+    .execute(&mut *scope.transaction)
+    .await
+    .map_err(support::database)?;
+    if let Some(tag_filter) = &canonical.tag_filter {
+        validate_active_filter_tags(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            &tag_filter.additional_tag_ids,
+        )
+        .await?;
+        for tag_id in &tag_filter.additional_tag_ids {
+            sqlx::query(
+                r"
+                INSERT INTO iam.silicon_webhook_subscription_extra_tags (
+                    organization_id, subscription_id, tag_id
+                ) VALUES ($1, $2, $3)
+                ",
+            )
+            .bind(scope.access.organization_id)
+            .bind(subscription_id)
+            .bind(tag_id)
             .execute(&mut *scope.transaction)
             .await
             .map_err(support::database)?;
@@ -260,7 +291,7 @@ pub(in crate::features::organizations) async fn replace_subscription(
             after_state: Some(json!({
                 "mode": canonical.mode,
                 "topics": canonical.topics,
-                "own_tags_only": canonical.own_tags_only,
+                "tag_filter": canonical.tag_filter,
             })),
             metadata: json!({
                 "silicon_id": target.principal_id,
@@ -438,10 +469,33 @@ fn canonicalize(
         }
         SiliconWebhookSubscriptionMode::Selected => {}
     }
+    let tag_filter = input
+        .tag_filter
+        .map(|mut tag_filter| {
+            if tag_filter.additional_tag_ids.len() > 100 {
+                return Err(validation::field(
+                    "tag_filter.additional_tag_ids",
+                    "must contain at most 100 tags",
+                ));
+            }
+            tag_filter.additional_tag_ids.sort_unstable();
+            if tag_filter
+                .additional_tag_ids
+                .windows(2)
+                .any(|pair| pair[0] == pair[1])
+            {
+                return Err(validation::field(
+                    "tag_filter.additional_tag_ids",
+                    "must contain unique values",
+                ));
+            }
+            Ok(tag_filter)
+        })
+        .transpose()?;
     Ok(CanonicalSubscription {
         mode: input.mode,
         topics,
-        own_tags_only: input.own_tags_only,
+        tag_filter,
     })
 }
 
@@ -507,7 +561,13 @@ async fn load_subscription(
                    WHERE topic.subscription_id = subscription.id
                    ORDER BY topic.topic
                ) AS topics,
-               subscription.own_tags_only,
+               subscription.tag_filter_enabled,
+               ARRAY(
+                   SELECT extra_tag.tag_id
+                   FROM iam.silicon_webhook_subscription_extra_tags AS extra_tag
+                   WHERE extra_tag.subscription_id = subscription.id
+                   ORDER BY extra_tag.tag_id
+               ) AS additional_tag_ids,
                subscription.version,
                subscription.created_at,
                subscription.updated_at
@@ -544,11 +604,38 @@ async fn load_subscription(
         silicon_id: row.silicon_id,
         mode,
         topics,
-        own_tags_only: row.own_tags_only,
+        tag_filter: row.tag_filter_enabled.then_some(SiliconWebhookTagFilter {
+            additional_tag_ids: row.additional_tag_ids,
+        }),
         version: row.version,
         created_at: row.created_at,
         updated_at: row.updated_at,
     })
+}
+
+async fn validate_active_filter_tags(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    tag_ids: &[Uuid],
+) -> Result<(), AppError> {
+    let count = sqlx::query_scalar::<_, i64>(
+        r"
+        SELECT count(*)
+        FROM iam.organization_tags
+        WHERE organization_id = $1 AND id = ANY($2) AND status = 'active'
+        ",
+    )
+    .bind(organization_id)
+    .bind(tag_ids)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(support::database)?;
+    if usize::try_from(count).ok() != Some(tag_ids.len()) {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("directory_reference_inactive"),
+        });
+    }
+    Ok(())
 }
 
 fn parse_mode(value: &str) -> Result<SiliconWebhookSubscriptionMode, AppError> {
@@ -581,12 +668,17 @@ mod tests {
         let Ok(canonical) = canonicalize(SiliconWebhookSubscriptionReplace {
             mode: SiliconWebhookSubscriptionMode::All,
             topics: vec![SiliconWebhookTopic::TrustUpdates],
-            own_tags_only: true,
+            tag_filter: Some(SiliconWebhookTagFilter {
+                additional_tag_ids: vec![Uuid::from_u128(2), Uuid::from_u128(1)],
+            }),
         }) else {
             panic!("all mode must be valid");
         };
         assert_eq!(canonical.topics, SiliconWebhookTopic::ALL);
-        assert!(canonical.own_tags_only);
+        assert_eq!(
+            canonical.tag_filter.map(|filter| filter.additional_tag_ids),
+            Some(vec![Uuid::from_u128(1), Uuid::from_u128(2)])
+        );
     }
 
     #[test]
@@ -598,7 +690,7 @@ mod tests {
                 SiliconWebhookTopic::MembershipLifecycle,
                 SiliconWebhookTopic::TrustUpdates,
             ],
-            own_tags_only: false,
+            tag_filter: None,
         }) else {
             panic!("selected mode with topics must be valid");
         };
@@ -617,7 +709,7 @@ mod tests {
             canonicalize(SiliconWebhookSubscriptionReplace {
                 mode: SiliconWebhookSubscriptionMode::Selected,
                 topics: Vec::new(),
-                own_tags_only: false,
+                tag_filter: None,
             })
             .is_err()
         );
@@ -629,7 +721,7 @@ mod tests {
         let input = CanonicalSubscription {
             mode: SiliconWebhookSubscriptionMode::All,
             topics: SiliconWebhookTopic::ALL.to_vec(),
-            own_tags_only: false,
+            tag_filter: None,
         };
         let first = replace_claim_request(organization_id, Uuid::now_v7(), &input);
         let second = replace_claim_request(organization_id, Uuid::now_v7(), &input);

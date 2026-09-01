@@ -1030,6 +1030,7 @@ mod tests {
                 id: Uuid::from_u128(3),
             },
             client_application_id: None,
+            audience_application_id: None,
             audience: "silicon-iam".to_owned(),
             organization_id: None,
             membership_id: None,
@@ -1240,6 +1241,29 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn every_organization_event_in_the_full_catalog_has_explicit_routing() {
+        let target_id = Uuid::from_u128(35);
+        for event_type in crate::domain::events::SILICON_FULL_EVENT_TYPES
+            .iter()
+            .filter(|event_type| event_type.starts_with("organization."))
+        {
+            assert!(
+                event_topics(
+                    event_type,
+                    "organization_membership",
+                    target_id,
+                    None,
+                    None,
+                    json!({}),
+                    [],
+                )
+                .is_some(),
+                "missing explicit Silicon Full routing for {event_type}"
+            );
+        }
     }
 
     #[test]

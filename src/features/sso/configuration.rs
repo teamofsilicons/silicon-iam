@@ -74,6 +74,13 @@ struct EntitlementMutationRow {
     version: i64,
 }
 
+#[derive(FromRow)]
+struct DisabledConnectionRow {
+    id: Uuid,
+    status: String,
+    version: i64,
+}
+
 #[derive(Serialize)]
 struct VersionRequest<'a> {
     org_id: &'a str,
@@ -365,15 +372,37 @@ pub(super) async fn disable(
     .ok_or_else(|| AppError::PreconditionFailed {
         code: "etag_mismatch".into(),
     })?;
+
+    let disabled_connections = sqlx::query_as::<_, DisabledConnectionRow>(
+        r"
+        SELECT id, status, version
+        FROM iam.sso_connections
+        WHERE organization_id = $1 AND status <> 'disabled'
+        ORDER BY id
+        FOR UPDATE
+        ",
+    )
+    .bind(scope.access.organization_id)
+    .fetch_all(&mut *scope.transaction)
+    .await
+    .map_err(support::database)?;
     sqlx::query(
         r"
         UPDATE iam.sso_connections
         SET status = 'disabled', disabled_at = transaction_timestamp(),
             updated_at = transaction_timestamp()
-        WHERE organization_id = $1 AND status <> 'disabled'
+        WHERE organization_id = $1
+          AND id = ANY($2::uuid[])
+          AND status <> 'disabled'
         ",
     )
     .bind(scope.access.organization_id)
+    .bind(
+        disabled_connections
+            .iter()
+            .map(|connection| connection.id)
+            .collect::<Vec<_>>(),
+    )
     .execute(&mut *scope.transaction)
     .await
     .map_err(support::database)?;
@@ -409,6 +438,26 @@ pub(super) async fn disable(
         },
     )
     .await?;
+    for connection in &disabled_connections {
+        support::record_mutation(
+            &mut scope.transaction,
+            &authenticated,
+            Some(scope.access.organization_id),
+            MutationEvent {
+                action: "sso.connection.deactivate",
+                target_type: "sso_connection",
+                target_id: Some(connection.id),
+                aggregate_type: "sso_connection",
+                aggregate_id: connection.id,
+                aggregate_version: next_connection_version(connection.version)?,
+                event_type: "sso.connection.deactivated.v1",
+                before_state: Some(json!({ "status": connection.status })),
+                after_state: Some(json!({ "status": "disabled" })),
+                metadata: json!({ "cause": "sso_configuration_disabled" }),
+            },
+        )
+        .await?;
+    }
     support::complete_empty(&mut scope.transaction, &state, lease).await?;
     scope
         .transaction
@@ -742,6 +791,15 @@ fn configuration_matches_provider(
         && connection.state == "active"
 }
 
+fn next_connection_version(version: i64) -> Result<i64, AppError> {
+    version
+        .checked_add(1)
+        .filter(|version| *version > 0)
+        .ok_or(AppError::Internal {
+            category: "sso_connection_version",
+        })
+}
+
 fn map_entitlement_error(error: sqlx::Error) -> AppError {
     if error
         .as_database_error()
@@ -757,7 +815,7 @@ fn map_entitlement_error(error: sqlx::Error) -> AppError {
 
 #[cfg(test)]
 mod tests {
-    use super::{TestContextRow, configuration_matches_provider};
+    use super::{TestContextRow, configuration_matches_provider, next_connection_version};
     use crate::infrastructure::providers::workos::{WorkOsConnection, WorkOsOrganization};
     use uuid::Uuid;
 
@@ -791,5 +849,11 @@ mod tests {
                 ..connection
             }
         ));
+    }
+
+    #[test]
+    fn configuration_disable_advances_each_connection_aggregate() {
+        assert_eq!(next_connection_version(1).ok(), Some(2));
+        assert!(next_connection_version(i64::MAX).is_err());
     }
 }

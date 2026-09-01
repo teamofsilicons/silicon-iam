@@ -365,17 +365,13 @@ pub(super) async fn remove_member(
     )
     .await?;
     require_active_version(&identity, expected_version)?;
+    require_carbon_removal(&identity)?;
     if identity.org_role == "owner" {
         return Err(AppError::Conflict {
             code: Cow::Borrowed("owner_cannot_be_removed"),
         });
     }
-    let capability = if identity.principal_kind == "silicon" {
-        Capability::SiliconsRemove
-    } else {
-        Capability::MembersRemove
-    };
-    support::require_capability(&scope.access, capability)?;
+    support::require_capability(&scope.access, Capability::MembersRemove)?;
     support::consume_step_up(
         &mut scope.transaction,
         &state,
@@ -408,31 +404,6 @@ pub(super) async fn remove_member(
         .into_iter()
         .map(|member| (member.id, member))
         .collect::<BTreeMap<_, _>>();
-    let expected_silicon_version = if identity.principal_kind == "silicon" {
-        Some(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT version FROM iam.silicons WHERE organization_id = $1 AND membership_id = $2 AND provisioning_status <> 'deleted'",
-            )
-            .bind(scope.access.organization_id)
-            .bind(membership_id)
-            .fetch_optional(&mut *scope.transaction)
-            .await
-            .map_err(support::database)?
-            .ok_or(AppError::NotFound)?,
-        )
-    } else {
-        None
-    };
-    if expected_silicon_version.is_some() {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT iam_private.deactivate_silicon_webhook_for_removal($1, $2)",
-        )
-        .bind(scope.access.organization_id)
-        .bind(before.principal.0.principal_id)
-        .fetch_one(&mut *scope.transaction)
-        .await
-        .map_err(support::database)?;
-    }
     let version = sqlx::query_scalar::<_, i64>(
         r"
         SELECT membership_version
@@ -442,7 +413,7 @@ pub(super) async fn remove_member(
     .bind(scope.access.organization_id)
     .bind(membership_id)
     .bind(expected_version)
-    .bind(expected_silicon_version)
+    .bind(None::<i64>)
     .bind(query.reassign_reports_to)
     .fetch_optional(&mut *scope.transaction)
     .await
@@ -510,6 +481,18 @@ pub(super) async fn remove_member(
         .await
         .map_err(support::database)?;
     Ok(support::empty(StatusCode::NO_CONTENT))
+}
+
+fn require_carbon_removal(identity: &MembershipIdentity) -> Result<(), AppError> {
+    match identity.principal_kind.as_str() {
+        "carbon" => Ok(()),
+        "silicon" => Err(AppError::Conflict {
+            code: Cow::Borrowed("silicon_requires_silicon_endpoint"),
+        }),
+        _ => Err(AppError::Internal {
+            category: "membership_kind",
+        }),
+    }
 }
 
 pub(super) async fn get_member_authorization(
@@ -1551,6 +1534,15 @@ mod tests {
                 &default_trust_patch(),
             ),
             Err(AppError::Validation { .. })
+        ));
+    }
+
+    #[test]
+    fn generic_member_removal_is_carbon_only() {
+        assert!(require_carbon_removal(&identity("carbon")).is_ok());
+        assert!(matches!(
+            require_carbon_removal(&identity("silicon")),
+            Err(AppError::Conflict { code }) if code == "silicon_requires_silicon_endpoint"
         ));
     }
 }

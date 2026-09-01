@@ -22,8 +22,8 @@ const MAX_TOP_LEVEL_PROPERTIES: usize = 100;
 #[derive(FromRow)]
 struct TransitionRow {
     organization_id: Uuid,
-    connection_id: Uuid,
-    config_version: i64,
+    connection_id: Option<Uuid>,
+    connection_version: Option<i64>,
     changed: bool,
     status: String,
 }
@@ -57,12 +57,13 @@ pub(super) async fn receive(
             serde_json::from_value(envelope.data).map_err(|_| invalid_webhook("data"))?;
         validate_connection_data(&data, transition)?;
         let receipt_id = Uuid::now_v7();
-        let row = sqlx::query_as::<_, TransitionRow>(
+        let rows = sqlx::query_as::<_, TransitionRow>(
             r"
-            SELECT organization_id, connection_id, config_version, changed, status
+            SELECT organization_id, connection_id, connection_version, changed, status
             FROM iam_private.apply_workos_connection_event(
                 $1, $2, $3, $4, $5, $6, $7, $8, $9
             )
+            ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, connection_id
             ",
         )
         .bind(receipt_id)
@@ -74,31 +75,15 @@ pub(super) async fn receive(
         .bind(data.connection_type.as_deref())
         .bind(payload_digest.as_slice())
         .bind(signature_timestamp)
-        .fetch_optional(&mut *transaction)
+        .fetch_all(&mut *transaction)
         .await
-        .map_err(map_transition_error)?
-        .ok_or_else(|| AppError::Conflict {
-            code: "workos_event_unknown_organization".into(),
-        })?;
-        if row.changed {
-            support::record_system_mutation(
-                &mut transaction,
-                row.organization_id,
-                MutationEvent {
-                    action: transition_audit_action(transition),
-                    target_type: "sso_connection",
-                    target_id: Some(row.connection_id),
-                    aggregate_type: "organization_sso_config",
-                    aggregate_id: row.organization_id,
-                    aggregate_version: row.config_version,
-                    event_type: transition_outbox_event(transition),
-                    before_state: None,
-                    after_state: Some(serde_json::json!({ "status": row.status })),
-                    metadata: serde_json::json!({ "provider_event_id": envelope.id }),
-                },
-            )
-            .await?;
+        .map_err(map_transition_error)?;
+        if rows.is_empty() {
+            return Err(AppError::Conflict {
+                code: "workos_event_unknown_organization".into(),
+            });
         }
+        record_connection_transitions(&mut transaction, &rows, transition, &envelope.id).await?;
     } else {
         record_ignored_receipt(
             &mut transaction,
@@ -113,6 +98,52 @@ pub(super) async fn receive(
         .await
         .map_err(|error| support::database_conflict(error, "workos_event_conflict"))?;
     Ok(StatusCode::ACCEPTED)
+}
+
+async fn record_connection_transitions(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    rows: &[TransitionRow],
+    incoming: ProviderConnectionTransition,
+    provider_event_id: &str,
+) -> Result<(), AppError> {
+    for row in rows.iter().filter(|row| row.changed) {
+        let emitted = emitted_transition(incoming, &row.status)?;
+        let connection_id = row.connection_id.ok_or(AppError::Internal {
+            category: "workos_connection_transition_target",
+        })?;
+        let connection_version = row.connection_version.ok_or(AppError::Internal {
+            category: "workos_connection_transition_version",
+        })?;
+        let is_activation_side_effect = incoming == ProviderConnectionTransition::Activated
+            && emitted == ProviderConnectionTransition::Deactivated;
+        let metadata = if is_activation_side_effect {
+            serde_json::json!({
+                "provider_event_id": provider_event_id,
+                "side_effect_of": "sso.connection.activated.v1",
+            })
+        } else {
+            serde_json::json!({ "provider_event_id": provider_event_id })
+        };
+        support::record_system_mutation(
+            transaction,
+            row.organization_id,
+            MutationEvent {
+                action: transition_audit_action(emitted),
+                target_type: "sso_connection",
+                target_id: Some(connection_id),
+                aggregate_type: "sso_connection",
+                aggregate_id: connection_id,
+                aggregate_version: connection_version,
+                event_type: transition_outbox_event(emitted),
+                before_state: is_activation_side_effect
+                    .then(|| serde_json::json!({ "status": "active" })),
+                after_state: Some(serde_json::json!({ "status": row.status })),
+                metadata,
+            },
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 fn parse_envelope(body: &[u8]) -> Result<WorkOsWebhookEnvelope, AppError> {
@@ -230,6 +261,27 @@ const fn transition_outbox_event(value: ProviderConnectionTransition) -> &'stati
     }
 }
 
+fn emitted_transition(
+    incoming: ProviderConnectionTransition,
+    status: &str,
+) -> Result<ProviderConnectionTransition, AppError> {
+    match (incoming, status) {
+        (ProviderConnectionTransition::Activated, "active") => {
+            Ok(ProviderConnectionTransition::Activated)
+        }
+        (
+            ProviderConnectionTransition::Activated | ProviderConnectionTransition::Deactivated,
+            "disabled",
+        ) => Ok(ProviderConnectionTransition::Deactivated),
+        (ProviderConnectionTransition::Deleted, "disabled") => {
+            Ok(ProviderConnectionTransition::Deleted)
+        }
+        _ => Err(AppError::Internal {
+            category: "workos_connection_transition_status",
+        }),
+    }
+}
+
 fn map_transition_error(error: sqlx::Error) -> AppError {
     let message = error
         .as_database_error()
@@ -262,7 +314,7 @@ const fn internal(category: &'static str) -> AppError {
 mod tests {
     use axum::http::{HeaderMap, HeaderValue};
 
-    use super::{exactly_one_signature, transition};
+    use super::{emitted_transition, exactly_one_signature, transition};
     use crate::features::sso::model::ProviderConnectionTransition;
 
     #[test]
@@ -281,5 +333,55 @@ mod tests {
             Some(ProviderConnectionTransition::Activated)
         );
         assert_eq!(transition("organization.updated"), None);
+    }
+
+    #[test]
+    fn activation_side_effect_rows_emit_deactivation_events() {
+        assert_eq!(
+            emitted_transition(ProviderConnectionTransition::Activated, "active").ok(),
+            Some(ProviderConnectionTransition::Activated)
+        );
+        assert_eq!(
+            emitted_transition(ProviderConnectionTransition::Activated, "disabled").ok(),
+            Some(ProviderConnectionTransition::Deactivated)
+        );
+    }
+
+    #[test]
+    fn provider_transition_status_contract_fails_closed() {
+        assert!(emitted_transition(ProviderConnectionTransition::Deactivated, "active").is_err());
+        assert!(emitted_transition(ProviderConnectionTransition::Deleted, "disabled").is_ok());
+    }
+
+    #[test]
+    fn deleted_connection_versions_once_even_when_already_disabled() {
+        let migration =
+            include_str!("../../../migrations/0043_sso_connection_side_effect_events.sql");
+        assert!(migration.contains(
+            "p_event_type = 'connection.deleted'\n                  OR connection.status <> 'disabled'"
+        ));
+        assert!(migration.contains(
+            "connection.version,\n            false,\n            COALESCE(connection.status"
+        ));
+    }
+
+    #[test]
+    fn forward_migration_returns_exact_activation_side_effects_in_stable_order() {
+        let migration =
+            include_str!("../../../migrations/0043_sso_connection_side_effect_events.sql");
+        assert!(
+            migration.contains("array_agg(locked_connection.id ORDER BY locked_connection.id)")
+        );
+        assert!(migration.contains("ADD COLUMN version bigint NOT NULL DEFAULT 1"));
+        assert!(migration.contains("CREATE TRIGGER sso_connections_bump_aggregate_version"));
+        assert!(migration.contains("target_connection_changed := FOUND"));
+        let target_event = migration.find("IF target_connection_changed THEN");
+        let side_events =
+            migration.find("FOREACH deactivated_connection_id IN ARRAY deactivated_connection_ids");
+        assert!(matches!(
+            (target_event, side_events),
+            (Some(target), Some(side)) if target < side
+        ));
+        assert!(migration.contains("changed := false;"));
     }
 }

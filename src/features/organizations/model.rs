@@ -288,6 +288,45 @@ pub(super) struct SiliconWebhookConfiguredResponse {
     pub(super) secret_replay_expires_at: OffsetDateTime,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct WebhookDeadLetterResponse {
+    pub(super) delivery_id: Uuid,
+    pub(super) event_id: Uuid,
+    pub(super) event_type: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub(super) occurred_at: OffsetDateTime,
+    pub(super) aggregate_type: String,
+    pub(super) aggregate_id: Uuid,
+    pub(super) aggregate_version: i64,
+    pub(super) status: String,
+    pub(super) attempt_count: i32,
+    pub(super) cycle_attempt_count: i32,
+    pub(super) manual_replay_count: i32,
+    pub(super) last_http_status: Option<i16>,
+    pub(super) last_error_code: Option<String>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub(super) dead_lettered_at: Option<OffsetDateTime>,
+    pub(super) version: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct WebhookDeadLetterPage {
+    pub(super) items: Vec<WebhookDeadLetterResponse>,
+    pub(super) page: PageInfo,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WebhookReplayRequest {
+    pub(super) delivery_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct WebhookReplayResponse {
+    pub(super) deliveries: Vec<WebhookDeadLetterResponse>,
+    pub(super) replayed_count: usize,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum SiliconWebhookSubscriptionMode {
@@ -334,8 +373,14 @@ pub(super) struct SiliconWebhookSubscriptionReplace {
     pub(super) mode: SiliconWebhookSubscriptionMode,
     #[serde(default)]
     pub(super) topics: Vec<SiliconWebhookTopic>,
+    pub(super) tag_filter: Option<SiliconWebhookTagFilter>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SiliconWebhookTagFilter {
     #[serde(default)]
-    pub(super) own_tags_only: bool,
+    pub(super) additional_tag_ids: Vec<Uuid>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -343,7 +388,7 @@ pub(super) struct SiliconWebhookSubscriptionResponse {
     pub(super) silicon_id: String,
     pub(super) mode: SiliconWebhookSubscriptionMode,
     pub(super) topics: Vec<SiliconWebhookTopic>,
-    pub(super) own_tags_only: bool,
+    pub(super) tag_filter: Option<SiliconWebhookTagFilter>,
     pub(super) version: i64,
     #[serde(with = "time::serde::rfc3339")]
     pub(super) created_at: OffsetDateTime,
@@ -476,6 +521,18 @@ pub(super) struct TagChangeRequestCreate {
     #[serde(default)]
     pub(super) remove_tag_ids: Vec<Uuid>,
     pub(super) reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DirectJobRoleReplace {
+    pub(super) job_role: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DirectTagSetReplace {
+    pub(super) tag_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -638,7 +695,7 @@ pub(super) struct RoleHistoryResponse {
     pub(super) new_job_role: String,
     pub(super) requested_by: ActorResponse,
     pub(super) approvers: Vec<ActorResponse>,
-    pub(super) approval_request_id: Uuid,
+    pub(super) approval_request_id: Option<Uuid>,
     #[serde(with = "time::serde::rfc3339")]
     pub(super) applied_at: OffsetDateTime,
 }
@@ -657,7 +714,7 @@ pub(super) struct TagHistoryResponse {
     pub(super) applied_tag_ids: Vec<Uuid>,
     pub(super) requested_by: ActorResponse,
     pub(super) approvers: Vec<ActorResponse>,
-    pub(super) approval_request_id: Uuid,
+    pub(super) approval_request_id: Option<Uuid>,
     pub(super) membership_version: i64,
     #[serde(with = "time::serde::rfc3339")]
     pub(super) applied_at: OffsetDateTime,
