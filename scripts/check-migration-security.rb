@@ -515,6 +515,41 @@ end
   end
 end
 
+# Row-level security hides rows from an integrity assertion that runs as the
+# invoking role, so every assertion trigger chain must run as the owner with a
+# pinned search_path. Signup completion was impossible until this held.
+row_security_assertions = File.read("migrations/0049_integrity_assertions_bypass_row_security.sql")
+%w[
+  assert_active_carbon_contacts
+  assert_active_principal_subtype
+  assert_approval_request_shape
+  assert_exactly_one_organization_owner
+  assert_outbox_event_affected_tag_tenant
+  assert_outbox_event_own_tag_membership_tenant
+  assert_silicon_webhook_subscription_topics
+  check_approval_shape_from_payload
+  check_approval_shape_from_request
+  check_carbon_contacts_from_contact
+  check_carbon_contacts_from_principal
+  check_owner_after_membership_change
+  check_owner_after_organization_change
+  check_principal_subtype_from_principal
+  check_principal_subtype_from_subtype
+  prevent_silicon_reporting_cycle
+].each do |name|
+  unless row_security_assertions.match?(/ALTER FUNCTION iam_private\.#{name}\([^)]*\) SECURITY DEFINER;/)
+    issues << "iam_private.#{name} must run as the owner so row-level security cannot hide the rows it asserts"
+  end
+  unless row_security_assertions.match?(
+    /ALTER FUNCTION iam_private\.#{name}\([^)]*\)\s*\n?\s*SET search_path TO 'pg_catalog', 'iam';/
+  )
+    issues << "iam_private.#{name} is SECURITY DEFINER and must pin its search_path"
+  end
+  unless File.read("deploy/postgres/runtime-grants.sql").include?("'#{name}'")
+    issues << "iam_private.#{name} must be classified in the runtime-grants definer allowlist"
+  end
+end
+
 unless issues.empty?
   issues.each { |issue| warn issue }
   exit 1

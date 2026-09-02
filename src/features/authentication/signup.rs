@@ -1261,6 +1261,158 @@ fn duration_seconds(
 mod tests {
     use super::*;
 
+    /// The restricted runtime roles live in `deploy/postgres`, not in the
+    /// migrations, so every other Docker-backed test connects as the schema
+    /// owner and never evaluates a row-level security policy. Signup
+    /// completion failed in production for exactly that reason, so this test
+    /// provisions the roles and completes a signup as the API role.
+    #[tokio::test]
+    #[ignore = "requires a local Docker daemon"]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the roles, grants, and verified-candidate fixture form one end-to-end contract"
+    )]
+    async fn a_signup_completes_for_the_restricted_api_role_under_row_level_security()
+    -> anyhow::Result<()> {
+        use anyhow::ensure;
+        use sqlx::postgres::PgPoolOptions;
+        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
+        use testcontainers_modules::postgres::Postgres as TestPostgres;
+
+        const RUNTIME_ROLES: &str = "
+            CREATE ROLE silicon_iam_api NOLOGIN NOSUPERUSER NOBYPASSRLS;
+            CREATE ROLE silicon_iam_worker NOLOGIN NOSUPERUSER NOBYPASSRLS;
+            CREATE ROLE silicon_iam_key_operator NOLOGIN NOSUPERUSER NOBYPASSRLS;
+            CREATE ROLE silicon_iam_api_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS
+                IN ROLE silicon_iam_api;
+        ";
+        let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('\\'))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let container = TestPostgres::default()
+            .with_tag("16-alpine")
+            .start()
+            .await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(5432).await?;
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&format!(
+                "postgres://postgres:postgres@{host}:{port}/postgres"
+            ))
+            .await?;
+        crate::infrastructure::postgres::migrate(&pool).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(RUNTIME_ROLES))
+            .execute(&pool)
+            .await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(grants))
+            .execute(&pool)
+            .await?;
+
+        let session_id = Uuid::from_u128(0x49_01);
+        let email_candidate = Uuid::from_u128(0x49_02);
+        let phone_candidate = Uuid::from_u128(0x49_03);
+        let principal_id = Uuid::from_u128(0x49_04);
+        let email_contact_id = Uuid::from_u128(0x49_05);
+        let phone_contact_id = Uuid::from_u128(0x49_06);
+
+        let mut fixture = pool.begin().await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.cryptographic_key_versions (purpose, key_version)
+            VALUES ('contact_aead', 1), ('contact_lookup_hmac', 1), ('token_hmac', 1)
+            ",
+        )
+        .execute(&mut *fixture)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.signup_sessions (id, expires_at)
+            VALUES ($1, transaction_timestamp() + interval '48 hours')
+            ",
+        )
+        .bind(session_id)
+        .execute(&mut *fixture)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.signup_contact_candidates (
+                id, signup_session_id, kind, ciphertext, nonce,
+                encryption_key_version, verified_at
+            ) VALUES
+                ($1, $3, 'email', decode(repeat('11', 17), 'hex'),
+                    decode(repeat('12', 12), 'hex'), 1, transaction_timestamp()),
+                ($2, $3, 'phone', decode(repeat('21', 17), 'hex'),
+                    decode(repeat('22', 12), 'hex'), 1, transaction_timestamp())
+            ",
+        )
+        .bind(email_candidate)
+        .bind(phone_candidate)
+        .bind(session_id)
+        .execute(&mut *fixture)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.signup_candidate_blind_indexes (
+                candidate_id, contact_kind, hmac_key_version, digest
+            ) VALUES
+                ($1, 'email', 1, decode(repeat('31', 32), 'hex')),
+                ($2, 'phone', 1, decode(repeat('41', 32), 'hex'))
+            ",
+        )
+        .bind(email_candidate)
+        .bind(phone_candidate)
+        .execute(&mut *fixture)
+        .await?;
+        fixture.commit().await?;
+
+        // Completion must commit: the contact invariant is a deferred trigger,
+        // so it only runs at COMMIT, and only then under the API role.
+        let mut completion = pool.begin().await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "SET LOCAL ROLE silicon_iam_api_runtime",
+        ))
+        .execute(&mut *completion)
+        .await?;
+        sqlx::query(
+            r"
+            SELECT principal_id
+            FROM iam_private.complete_verified_signup(
+                $1, $2, 'rls-signup-test', 'RLS Signup Test',
+                NULL, NULL, 'UTC', $3, $4
+            )
+            ",
+        )
+        .bind(session_id)
+        .bind(principal_id)
+        .bind(email_contact_id)
+        .bind(phone_contact_id)
+        .fetch_one(&mut *completion)
+        .await?;
+        completion.commit().await?;
+
+        let (carbons, contacts, status): (i64, i64, String) = sqlx::query_as(
+            r"
+            SELECT
+                (SELECT count(*) FROM iam.carbons WHERE id = $1),
+                (SELECT count(*) FROM iam.carbon_contacts WHERE carbon_id = $1),
+                (SELECT status FROM iam.signup_sessions WHERE id = $2)
+            ",
+        )
+        .bind(principal_id)
+        .bind(session_id)
+        .fetch_one(&pool)
+        .await?;
+        ensure!(carbons == 1, "expected one Carbon, found {carbons}");
+        ensure!(contacts == 2, "expected two contacts, found {contacts}");
+        ensure!(status == "completed", "session ended as {status}");
+
+        Ok(())
+    }
+
     #[tokio::test]
     #[ignore = "requires a local Docker daemon"]
     #[allow(
