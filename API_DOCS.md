@@ -283,12 +283,14 @@ All paths above are under `/api/v1/signup/sessions`.
 
 - Creating a session returns only its random UUID and expiry.
 - Email is delivered through Postmark from `auth@teamofsilicons.com`.
-- Phone verification sends IAM-generated codes through the Twilio Messages API
-  and requires E.164 input.
+- Phone verification uses Twilio Verify to generate, deliver, and validate SMS
+  codes and requires E.164 input. IAM retains the Verify attempt identifier but
+  never stores the submitted code.
 - Each send operation returns `already_exists`. When it is `true`, IAM sends no
   code; when it is `false`, the response also includes `expires_in: 600` and a
   new code is sent.
-- Codes are purpose-, channel-, and session-bound keyed digests.
+- Email codes are purpose-, channel-, and session-bound keyed digests. Phone
+  codes are scoped to a single stored Twilio Verify attempt.
 - Each still-unexpired email or phone code follows the ten-failure,
   one-minute-cooldown verification policy described above.
 - Completion requires both verified identities and atomically rechecks their
@@ -1421,12 +1423,14 @@ Implementations and contract tests must preserve at least these invariants:
 
 ## Provider and non-public boundaries
 
-Postmark, Twilio Messaging, WorkOS, and Iris are accessed behind application
-ports. Their raw provider-specific payloads and outbound management APIs are
-intentionally not public IAM endpoints. Production startup refuses local/no-op
-provider implementations. Subscriber-managed Silicon endpoints use IAM's
-shared SSRF-hardened outbound webhook transport rather than a provisioning
-provider.
+Postmark, Twilio Verify, Twilio Messaging, WorkOS, and Iris are accessed behind
+application ports. Twilio Verify owns phone-code generation, SMS routing, and
+code validation; Twilio Messaging remains the transport for non-OTP SMS
+notifications. Their raw provider-specific payloads and outbound management
+APIs are intentionally not public IAM endpoints. Production startup refuses
+local/no-op provider implementations. Subscriber-managed Silicon endpoints use
+IAM's shared SSRF-hardened outbound webhook transport rather than a
+provisioning provider.
 
 The public contract fixes IAM-visible behavior—timeouts, uniform OTP responses,
 callback/webhook validation, durable delivery state, idempotency, and error

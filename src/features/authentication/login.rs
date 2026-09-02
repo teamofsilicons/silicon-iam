@@ -37,6 +37,7 @@ struct LoginChannelRow {
     contact_kind: String,
     code_digest: Vec<u8>,
     digest_key_version: i16,
+    provider_verification_sid: Option<String>,
     usable: bool,
     cooldown_retry_after_seconds: i64,
 }
@@ -217,13 +218,14 @@ pub(super) async fn create_challenge(
         .map_err(|error| database_conflict(&error, "login_challenge_serialization_conflict"))?;
 
     match delivery::send_all_required(state, &deliveries).await {
-        Ok(()) => {
+        Ok(receipts) => {
             confirm_login_delivery(
                 state,
                 record_id,
                 carbon.principal_id,
                 challenge_id,
                 identifier.database_value(),
+                &receipts,
                 &response,
             )
             .await?;
@@ -336,9 +338,11 @@ async fn confirm_login_delivery(
     carbon_id: Uuid,
     challenge_id: Uuid,
     identifier_kind: &'static str,
+    receipts: &[delivery::RequiredDeliveryReceipt],
     response: &AuthSessionResponse,
 ) -> Result<(), AppError> {
     let mut transaction = serializable(&state.pool, "login_delivery_finalize_transaction").await?;
+    persist_login_phone_receipts(&mut transaction, challenge_id, receipts).await?;
     let activated = sqlx::query(
         r"
         UPDATE iam.login_challenges AS challenge
@@ -412,6 +416,42 @@ async fn confirm_login_delivery(
         .commit()
         .await
         .map_err(|error| database_conflict(&error, "login_delivery_finalize_conflict"))
+}
+
+async fn persist_login_phone_receipts(
+    transaction: &mut Transaction<'_, Postgres>,
+    challenge_id: Uuid,
+    receipts: &[delivery::RequiredDeliveryReceipt],
+) -> Result<(), AppError> {
+    for receipt in receipts {
+        if receipt.channel != ContactChannel::Phone {
+            continue;
+        }
+        let updated = sqlx::query(
+            r"
+            UPDATE iam.login_challenge_channels
+            SET provider_verification_sid = $2
+            WHERE login_challenge_id = $1
+              AND contact_kind = 'phone'
+              AND provider_verification_sid IS NULL
+              AND consumed_at IS NULL
+              AND superseded_at IS NULL
+            ",
+        )
+        .bind(challenge_id)
+        .bind(&receipt.provider_message_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "login_delivery_provider_reference",
+        })?;
+        if updated.rows_affected() != 1 {
+            return Err(AppError::Conflict {
+                code: std::borrow::Cow::Borrowed("otp_delivery_superseded"),
+            });
+        }
+    }
+    Ok(())
 }
 
 async fn fail_login_delivery(
@@ -526,16 +566,32 @@ pub(super) async fn verify_challenge(
             continue;
         }
         let contact_channel = contacts::parse_channel(&channel.contact_kind)?;
-        let expected = SecretDigest::from_parts(channel.digest_key_version, &channel.code_digest)
-            .ok_or(AppError::Internal {
-            category: "login_otp_digest_shape",
-        })?;
-        let matches = state
-            .crypto
-            .verify_secret(login_otp_purpose(contact_channel), &bound_code, expected)
-            .map_err(|_| AppError::Internal {
-                category: "login_otp_verify",
-            })?;
+        let managed_verification = if contact_channel == ContactChannel::Phone {
+            delivery::verify_managed_phone_otp(
+                state,
+                channel.provider_verification_sid.as_deref(),
+                &code,
+            )
+            .await?
+        } else {
+            None
+        };
+        let matches = if let Some(approved) = managed_verification {
+            approved
+        } else {
+            let expected =
+                SecretDigest::from_parts(channel.digest_key_version, &channel.code_digest).ok_or(
+                    AppError::Internal {
+                        category: "login_otp_digest_shape",
+                    },
+                )?;
+            state
+                .crypto
+                .verify_secret(login_otp_purpose(contact_channel), &bound_code, expected)
+                .map_err(|_| AppError::Internal {
+                    category: "login_otp_verify",
+                })?
+        };
         if matches && matched_channel.is_none() {
             matched_channel = Some(contact_channel);
         }
@@ -687,6 +743,7 @@ async fn lock_channels(
             contact_kind::text AS contact_kind,
             code_digest,
             digest_key_version,
+            provider_verification_sid,
             expires_at > transaction_timestamp()
                 AND superseded_at IS NULL
                 AND consumed_at IS NULL

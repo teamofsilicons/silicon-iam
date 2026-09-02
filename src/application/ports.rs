@@ -52,6 +52,12 @@ pub struct SmsOtp<'a> {
     pub expires_in_minutes: u16,
 }
 
+/// Managed phone one-time-code delivery command.
+pub struct PhoneOtp<'a> {
+    /// Recipient E.164 phone number.
+    pub recipient: &'a SecretString,
+}
+
 /// Organization invitation email command.
 pub struct InvitationEmail<'a> {
     /// Recipient email address.
@@ -118,4 +124,18 @@ pub trait SmsDelivery: Send + Sync {
         &self,
         command: SecurityNotice<'_>,
     ) -> Result<DeliveryReceipt, DeliveryError>;
+}
+
+/// Managed phone verification provider boundary.
+#[async_trait]
+pub trait PhoneOtpDelivery: Send + Sync {
+    /// Starts a provider-generated SMS verification.
+    async fn start(&self, command: PhoneOtp<'_>) -> Result<DeliveryReceipt, DeliveryError>;
+
+    /// Checks a submitted code against one provider verification attempt.
+    async fn check(
+        &self,
+        provider_verification_id: &str,
+        code: &SecretString,
+    ) -> Result<bool, DeliveryError>;
 }

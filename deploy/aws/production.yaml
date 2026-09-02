@@ -328,6 +328,7 @@ Resources:
             if ! printf '%s' "$APP_SECRET_JSON" | jq -e '
               [ .IAM_POSTMARK_SERVER_TOKEN, .IAM_TWILIO_ACCOUNT_SID,
                 .IAM_TWILIO_AUTH_TOKEN, .IAM_TWILIO_MESSAGING_SERVICE_SID,
+                .IAM_TWILIO_VERIFY_SERVICE_SID,
                 .IAM_WORKOS_API_KEY, .IAM_WORKOS_CLIENT_ID,
                 .IAM_WORKOS_WEBHOOK_SECRET ]
               | all(type == "string" and length > 0 and . != "REPLACE_IN_AWS_CONSOLE")
@@ -441,6 +442,7 @@ Resources:
                 "IAM_TWILIO_ACCOUNT_SID=" + .IAM_TWILIO_ACCOUNT_SID,
                 "IAM_TWILIO_AUTH_TOKEN=" + .IAM_TWILIO_AUTH_TOKEN,
                 "IAM_TWILIO_MESSAGING_SERVICE_SID=" + .IAM_TWILIO_MESSAGING_SERVICE_SID,
+                "IAM_TWILIO_VERIFY_SERVICE_SID=" + .IAM_TWILIO_VERIFY_SERVICE_SID,
                 "IAM_WORKOS_API_KEY=" + .IAM_WORKOS_API_KEY,
                 "IAM_WORKOS_CLIENT_ID=" + .IAM_WORKOS_CLIENT_ID,
                 "IAM_WORKOS_WEBHOOK_SECRET=" + .IAM_WORKOS_WEBHOOK_SECRET,

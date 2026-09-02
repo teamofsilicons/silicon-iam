@@ -92,6 +92,12 @@
 </p>
 
 <p>
+  Email codes are generated and digest-verified by IAM. Phone codes are generated, routed and
+  validated by Twilio Verify; IAM stores only the provider attempt identifier and its own
+  challenge lifecycle state. Phone numbers must be supplied in E.164 form.
+</p>
+
+<p>
   Login initiation answers <code>404</code> when no active Carbon owns the submitted identity.
   That is a documented, deliberate disclosure: an identity provider that pretends to send a code
   to a non-existent account teaches people to ignore a missing message.
