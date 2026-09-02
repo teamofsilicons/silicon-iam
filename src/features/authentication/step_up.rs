@@ -91,8 +91,8 @@ struct ChallengeRow {
     channel: String,
     purpose: String,
     resource_id: Option<Uuid>,
-    challenge_digest: Vec<u8>,
-    digest_key_version: i16,
+    challenge_digest: Option<Vec<u8>>,
+    digest_key_version: Option<i16>,
     provider_verification_sid: Option<String>,
     max_attempts: i16,
     status: String,
@@ -198,6 +198,9 @@ pub(super) async fn create_challenge(
         .map_err(|_| AppError::Internal {
             category: "step_up_otp_digest",
         })?;
+    // A provider-managed phone code never passes through IAM, so no digest is
+    // stored for it.
+    let local_digest = (!delivery::provider_manages_otp(state, input.channel)).then_some(digest);
     let otp_seconds = duration_seconds(state.settings.security.otp_ttl, "step_up_otp_ttl")?;
     let cancelled = sqlx::query_as::<_, CancelledChallengeRow>(
         r"
@@ -298,8 +301,12 @@ pub(super) async fn create_challenge(
     .bind(input.channel.database_value())
     .bind(input.action.database_value())
     .bind(input.resource_id)
-    .bind(digest.as_bytes().as_slice())
-    .bind(digest.key_version())
+    .bind(
+        local_digest
+            .as_ref()
+            .map(|digest| digest.as_bytes().as_slice()),
+    )
+    .bind(local_digest.as_ref().map(SecretDigest::key_version))
     .bind(attempt_state.failed_attempts)
     .bind(max_attempts)
     .bind(attempt_state.cooldown_until)
@@ -585,11 +592,19 @@ pub(super) async fn verify_challenge(
     let matches = if let Some(approved) = managed_verification {
         approved
     } else {
-        let expected =
-            SecretDigest::from_parts(challenge.digest_key_version, &challenge.challenge_digest)
-                .ok_or(AppError::Internal {
-                    category: "step_up_otp_digest_shape",
-                })?;
+        let (Some(key_version), Some(digest)) = (
+            challenge.digest_key_version,
+            challenge.challenge_digest.as_deref(),
+        ) else {
+            // Only a provider-managed challenge stores no digest, and that path
+            // is answered above. Fail closed rather than guess.
+            return Err(AppError::Internal {
+                category: "step_up_otp_digest_missing",
+            });
+        };
+        let expected = SecretDigest::from_parts(key_version, digest).ok_or(AppError::Internal {
+            category: "step_up_otp_digest_shape",
+        })?;
         state
             .crypto
             .verify_secret(DigestPurpose::StepUpOtp, &bound_otp, expected)

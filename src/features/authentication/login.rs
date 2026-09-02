@@ -35,8 +35,8 @@ struct LoginChallengeRow {
 struct LoginChannelRow {
     id: Uuid,
     contact_kind: String,
-    code_digest: Vec<u8>,
-    digest_key_version: i16,
+    code_digest: Option<Vec<u8>>,
+    digest_key_version: Option<i16>,
     provider_verification_sid: Option<String>,
     usable: bool,
     cooldown_retry_after_seconds: i64,
@@ -155,6 +155,10 @@ pub(super) async fn create_challenge(
             .map_err(|_| AppError::Internal {
                 category: "login_otp_digest",
             })?;
+        // A provider-managed phone code never passes through IAM, so no digest
+        // is stored for that channel.
+        let local_digest =
+            (!delivery::provider_manages_otp(state, contact.channel)).then_some(digest);
         sqlx::query(
             r"
             INSERT INTO iam.login_challenge_channels (
@@ -181,8 +185,12 @@ pub(super) async fn create_challenge(
         .bind(carbon.principal_id)
         .bind(contact.id)
         .bind(contact.channel.database_value())
-        .bind(digest.as_bytes().as_slice())
-        .bind(digest.key_version())
+        .bind(
+            local_digest
+                .as_ref()
+                .map(|digest| digest.as_bytes().as_slice()),
+        )
+        .bind(local_digest.as_ref().map(SecretDigest::key_version))
         .bind(attempt_state.failed_attempts)
         .bind(max_attempts)
         .bind(attempt_state.cooldown_until)
@@ -579,12 +587,19 @@ pub(super) async fn verify_challenge(
         let matches = if let Some(approved) = managed_verification {
             approved
         } else {
+            let (Some(key_version), Some(digest)) =
+                (channel.digest_key_version, channel.code_digest.as_deref())
+            else {
+                // Only a provider-managed channel stores no digest, and that
+                // path is answered above. Fail closed rather than guess.
+                return Err(AppError::Internal {
+                    category: "login_otp_digest_missing",
+                });
+            };
             let expected =
-                SecretDigest::from_parts(channel.digest_key_version, &channel.code_digest).ok_or(
-                    AppError::Internal {
-                        category: "login_otp_digest_shape",
-                    },
-                )?;
+                SecretDigest::from_parts(key_version, digest).ok_or(AppError::Internal {
+                    category: "login_otp_digest_shape",
+                })?;
             state
                 .crypto
                 .verify_secret(login_otp_purpose(contact_channel), &bound_code, expected)

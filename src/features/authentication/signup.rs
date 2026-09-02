@@ -73,8 +73,8 @@ struct SignupSessionRow {
 struct SignupChallengeRow {
     challenge_id: Uuid,
     candidate_id: Uuid,
-    code_digest: Vec<u8>,
-    digest_key_version: i16,
+    code_digest: Option<Vec<u8>>,
+    digest_key_version: Option<i16>,
     provider_verification_sid: Option<String>,
     max_attempts: i16,
     challenge_active: bool,
@@ -300,6 +300,10 @@ pub(super) async fn start_contact(
             category: "signup_otp_digest",
         })?;
 
+    // A provider-managed phone code never passes through IAM, so no digest is
+    // stored for it rather than one that could never be delivered.
+    let local_digest = (!delivery::provider_manages_otp(state, channel)).then_some(otp_digest);
+
     let attempt_state =
         supersede_signup_contact(&mut transaction, signup_session_id, channel).await?;
     insert_candidate(
@@ -344,8 +348,12 @@ pub(super) async fn start_contact(
     .bind(signup_session_id)
     .bind(candidate_id)
     .bind(channel.database_value())
-    .bind(otp_digest.as_bytes().as_slice())
-    .bind(otp_digest.key_version())
+    .bind(
+        local_digest
+            .as_ref()
+            .map(|digest| digest.as_bytes().as_slice()),
+    )
+    .bind(local_digest.as_ref().map(SecretDigest::key_version))
     .bind(attempt_state.failed_attempts)
     .bind(max_attempts)
     .bind(attempt_state.cooldown_until)
@@ -635,11 +643,19 @@ pub(super) async fn verify_contact(
     let matches = if let Some(approved) = managed_verification {
         approved
     } else {
-        let expected = SecretDigest::from_parts(row.digest_key_version, &row.code_digest).ok_or(
-            AppError::Internal {
-                category: "signup_otp_digest_shape",
-            },
-        )?;
+        let (Some(key_version), Some(digest)) =
+            (row.digest_key_version, row.code_digest.as_deref())
+        else {
+            // Only a provider-managed challenge stores no digest, and that path
+            // is answered above. Reaching here means the provider vanished
+            // between dispatch and verification, so fail closed.
+            return Err(AppError::Internal {
+                category: "signup_otp_digest_missing",
+            });
+        };
+        let expected = SecretDigest::from_parts(key_version, digest).ok_or(AppError::Internal {
+            category: "signup_otp_digest_shape",
+        })?;
         state
             .crypto
             .verify_secret(signup_otp_purpose(channel), &bound_code, expected)
@@ -1244,6 +1260,148 @@ fn duration_seconds(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires a local Docker daemon"]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fresh-database fixture pins every arm of the local-digest constraint"
+    )]
+    async fn a_local_digest_is_absent_only_for_a_provider_managed_phone_challenge()
+    -> anyhow::Result<()> {
+        use anyhow::ensure;
+        use sqlx::postgres::PgPoolOptions;
+        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
+        use testcontainers_modules::postgres::Postgres as TestPostgres;
+
+        let container = TestPostgres::default()
+            .with_tag("16-alpine")
+            .start()
+            .await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(5432).await?;
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&format!(
+                "postgres://postgres:postgres@{host}:{port}/postgres"
+            ))
+            .await?;
+        crate::infrastructure::postgres::migrate(&pool).await?;
+
+        let session_id = Uuid::from_u128(0x48_01);
+        let email_candidate = Uuid::from_u128(0x48_02);
+        let phone_candidate = Uuid::from_u128(0x48_03);
+        let mut fixture = pool.begin().await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.cryptographic_key_versions (purpose, key_version)
+            VALUES ('contact_aead', 1), ('token_hmac', 1)
+            ",
+        )
+        .execute(&mut *fixture)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.signup_sessions (id, expires_at)
+            VALUES ($1, transaction_timestamp() + interval '48 hours')
+            ",
+        )
+        .bind(session_id)
+        .execute(&mut *fixture)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.signup_contact_candidates (
+                id, signup_session_id, kind, ciphertext, nonce, encryption_key_version
+            ) VALUES
+                ($1, $3, 'email', decode(repeat('11', 17), 'hex'),
+                    decode(repeat('12', 12), 'hex'), 1),
+                ($2, $3, 'phone', decode(repeat('21', 17), 'hex'),
+                    decode(repeat('22', 12), 'hex'), 1)
+            ",
+        )
+        .bind(email_candidate)
+        .bind(phone_candidate)
+        .bind(session_id)
+        .execute(&mut *fixture)
+        .await?;
+        fixture.commit().await?;
+
+        // Each arm runs in its own transaction so no case can disturb another.
+        let insert = r"
+            INSERT INTO iam.signup_otp_challenges (
+                id, signup_session_id, candidate_id, contact_kind,
+                code_digest, digest_key_version, max_attempts, expires_at,
+                delivery_status, delivered_at
+            )
+            VALUES (
+                $1, $2, $3, $4::iam.contact_kind, $5, $6, 10,
+                transaction_timestamp() + interval '10 minutes', 'pending', NULL
+            )
+        ";
+        let full_digest = vec![0x48_u8; 32];
+
+        for (label, candidate, kind, digest, key_version, accepted) in [
+            (
+                "a provider-managed phone challenge stores no digest",
+                phone_candidate,
+                "phone",
+                None,
+                None,
+                true,
+            ),
+            (
+                "a locally delivered phone challenge still stores one",
+                phone_candidate,
+                "phone",
+                Some(full_digest.clone()),
+                Some(1_i16),
+                true,
+            ),
+            (
+                "an email challenge may never lose its digest",
+                email_candidate,
+                "email",
+                None,
+                None,
+                false,
+            ),
+            (
+                "a digest without its key version is rejected",
+                phone_candidate,
+                "phone",
+                None,
+                Some(1_i16),
+                false,
+            ),
+            (
+                "a key version without its digest is rejected",
+                phone_candidate,
+                "phone",
+                Some(full_digest.clone()),
+                None,
+                false,
+            ),
+        ] {
+            let mut attempt = pool.begin().await?;
+            let outcome = sqlx::query(insert)
+                .bind(Uuid::now_v7())
+                .bind(session_id)
+                .bind(candidate)
+                .bind(kind)
+                .bind(digest)
+                .bind(key_version)
+                .execute(&mut *attempt)
+                .await;
+            ensure!(
+                outcome.is_ok() == accepted,
+                "{label}: expected accepted={accepted}, got {outcome:?}"
+            );
+            drop(attempt);
+        }
+
+        Ok(())
+    }
 
     #[test]
     fn existing_contact_response_contains_no_code_or_expiry() {

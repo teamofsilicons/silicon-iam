@@ -293,8 +293,11 @@ All paths above are under `/api/v1/signup/sessions`.
 - Creating a session returns only its random UUID and expiry.
 - Email is delivered through Postmark from `auth@teamofsilicons.com`.
 - Phone verification uses Twilio Verify to generate, deliver, and validate SMS
-  codes and requires E.164 input. IAM retains the Verify attempt identifier but
-  never stores the submitted code.
+  codes and requires E.164 input. IAM retains the Verify attempt identifier and
+  stores no code digest at all for a provider-managed phone challenge, so no
+  undelivered secret exists at rest. Verification of such a challenge is
+  answered only by the provider; a missing attempt identifier or an unavailable
+  provider fails closed rather than falling back to a local comparison.
 - Each send operation returns `already_exists`. When it is `true`, IAM sends no
   code; when it is `false`, the response also includes `expires_in: 600` and a
   new code is sent.
