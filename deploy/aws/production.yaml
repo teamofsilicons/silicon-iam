@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Silicon IAM production on private EC2 and RDS behind the shared Team of Silicons ALB.
+Description: Silicon IAM backend on private EC2 and RDS behind the shared Team of Silicons ALB.
 
 Parameters:
   VpcId:
@@ -17,8 +17,6 @@ Parameters:
   AppSecretArn:
     Type: String
   BackendImageUri:
-    Type: String
-  FrontendImageUri:
     Type: String
   AmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
@@ -41,9 +39,9 @@ Resources:
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 8080
-          ToPort: 8082
+          ToPort: 8080
           SourceSecurityGroupId: !Ref AlbSecurityGroupId
-          Description: Shared ALB to IAM API and frontend listeners
+          Description: Shared ALB to IAM API
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -54,6 +52,16 @@ Resources:
           Value: silicon-iam
         - Key: Environment
           Value: production
+
+  AlbToInstanceEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref AlbSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      DestinationSecurityGroupId: !GetAtt InstanceSecurityGroup.GroupId
+      Description: Shared ALB to Silicon IAM production API
 
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -143,14 +151,6 @@ Resources:
       LogGroupName: /silicon-iam/production/worker
       RetentionInDays: 30
 
-  FrontendLogGroup:
-    Type: AWS::Logs::LogGroup
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      LogGroupName: /silicon-iam/production/frontend
-      RetentionInDays: 30
-
   InstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -180,7 +180,6 @@ Resources:
                   - ecr:GetDownloadUrlForLayer
                 Resource:
                   - !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/silicon-iam-production
-                  - !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/silicon-iam-frontend-production
               - Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
@@ -197,8 +196,6 @@ Resources:
                   - !Sub ${ApiLogGroup.Arn}:*
                   - !GetAtt WorkerLogGroup.Arn
                   - !Sub ${WorkerLogGroup.Arn}:*
-                  - !GetAtt FrontendLogGroup.Arn
-                  - !Sub ${FrontendLogGroup.Arn}:*
       Tags:
         - Key: Service
           Value: silicon-iam
@@ -237,48 +234,6 @@ Resources:
         - Key: Environment
           Value: production
 
-  AuthTargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      Name: silicon-iam-prod-auth
-      VpcId: !Ref VpcId
-      Protocol: HTTP
-      Port: 8081
-      TargetType: instance
-      HealthCheckPath: /healthz
-      HealthCheckProtocol: HTTP
-      Matcher:
-        HttpCode: "200"
-      TargetGroupAttributes:
-        - Key: deregistration_delay.timeout_seconds
-          Value: "30"
-      Tags:
-        - Key: Service
-          Value: silicon-iam
-        - Key: Environment
-          Value: production
-
-  ConsoleTargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      Name: silicon-iam-prod-console
-      VpcId: !Ref VpcId
-      Protocol: HTTP
-      Port: 8082
-      TargetType: instance
-      HealthCheckPath: /healthz
-      HealthCheckProtocol: HTTP
-      Matcher:
-        HttpCode: "200"
-      TargetGroupAttributes:
-        - Key: deregistration_delay.timeout_seconds
-          Value: "30"
-      Tags:
-        - Key: Service
-          Value: silicon-iam
-        - Key: Environment
-          Value: production
-
   ListenerCertificate:
     Type: AWS::ElasticLoadBalancingV2::ListenerCertificate
     Properties:
@@ -298,32 +253,6 @@ Resources:
       Actions:
         - Type: forward
           TargetGroupArn: !Ref ApiTargetGroup
-
-  AuthListenerRule:
-    Type: AWS::ElasticLoadBalancingV2::ListenerRule
-    Properties:
-      ListenerArn: !Ref HttpsListenerArn
-      Priority: 21
-      Conditions:
-        - Field: host-header
-          HostHeaderConfig:
-            Values: [auth.iam.teamofsilicons.com]
-      Actions:
-        - Type: forward
-          TargetGroupArn: !Ref AuthTargetGroup
-
-  ConsoleListenerRule:
-    Type: AWS::ElasticLoadBalancingV2::ListenerRule
-    Properties:
-      ListenerArn: !Ref HttpsListenerArn
-      Priority: 22
-      Conditions:
-        - Field: host-header
-          HostHeaderConfig:
-            Values: [iam.teamofsilicons.com]
-      Actions:
-        - Type: forward
-          TargetGroupArn: !Ref ConsoleTargetGroup
 
   LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
@@ -376,7 +305,6 @@ Resources:
             DB_SECRET_ARN='${Database.MasterUserSecret.SecretArn}'
             DB_HOST='${Database.Endpoint.Address}'
             BACKEND_IMAGE='${BackendImageUri}'
-            FRONTEND_IMAGE='${FrontendImageUri}'
 
             dnf install --assumeyes docker jq postgresql15
             systemctl enable --now docker
@@ -391,7 +319,6 @@ Resources:
             aws ecr get-login-password --region "$REGION" \
               | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
             docker pull "$BACKEND_IMAGE"
-            docker pull "$FRONTEND_IMAGE"
 
             APP_SECRET_JSON=$(aws secretsmanager get-secret-value --region "$REGION" \
               --secret-id "$APP_SECRET_ARN" --query SecretString --output text)
@@ -579,33 +506,13 @@ Resources:
             WantedBy=multi-user.target
             EOF
 
-            cat > /etc/systemd/system/silicon-iam-frontend.service <<EOF
-            [Unit]
-            Description=Silicon IAM production auth and console frontends
-            Requires=docker.service
-            After=docker.service network-online.target
-
-            [Service]
-            Restart=always
-            RestartSec=5
-            TimeoutStopSec=20
-            ExecStartPre=-/usr/bin/docker rm -f silicon-iam-frontend
-            ExecStart=/usr/bin/docker run --name silicon-iam-frontend --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 --publish 8081:8081 --publish 8082:8082 --log-driver awslogs --log-opt awslogs-region=$REGION --log-opt awslogs-group=/silicon-iam/production/frontend --log-opt tag=frontend "$FRONTEND_IMAGE"
-            ExecStop=/usr/bin/docker stop --time 15 silicon-iam-frontend
-
-            [Install]
-            WantedBy=multi-user.target
-            EOF
-
             systemctl daemon-reload
-            systemctl enable --now silicon-iam-api silicon-iam-worker silicon-iam-frontend
+            systemctl enable --now silicon-iam-api silicon-iam-worker
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     DependsOn:
       - ApiListenerRule
-      - AuthListenerRule
-      - ConsoleListenerRule
     Properties:
       AutoScalingGroupName: silicon-iam-production
       MinSize: "1"
@@ -619,8 +526,6 @@ Resources:
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
       TargetGroupARNs:
         - !Ref ApiTargetGroup
-        - !Ref AuthTargetGroup
-        - !Ref ConsoleTargetGroup
       HealthCheckType: ELB
       HealthCheckGracePeriod: 1200
       NewInstancesProtectedFromScaleIn: false
@@ -641,7 +546,3 @@ Outputs:
     Value: !Ref AutoScalingGroup
   ApiTargetGroupArn:
     Value: !Ref ApiTargetGroup
-  AuthTargetGroupArn:
-    Value: !Ref AuthTargetGroup
-  ConsoleTargetGroupArn:
-    Value: !Ref ConsoleTargetGroup
