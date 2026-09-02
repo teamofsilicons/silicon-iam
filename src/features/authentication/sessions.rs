@@ -274,6 +274,36 @@ pub(super) async fn list_sessions(
     })
 }
 
+/// Every selected column is qualified.
+///
+/// `iam.authentication_events`, `iam.applications` and `iam.organizations` all
+/// have an `id`, so a bare one is ambiguous and PostgreSQL rejects the
+/// statement at parse time — the endpoint answered 500 for every request until
+/// this was qualified. The alias is cheap insurance on the columns that happen
+/// to be unique today, too: adding a column to either joined table must not be
+/// able to break this query.
+const LOGIN_HISTORY_QUERY: &str = r"
+    SELECT
+        event.id,
+        event.event_type,
+        event.outcome,
+        application.app_id,
+        organization.org_id,
+        event.request_id,
+        event.occurred_at
+    FROM iam.authentication_events AS event
+    LEFT JOIN iam.applications AS application ON application.id = event.application_id
+    LEFT JOIN iam.organizations AS organization ON organization.id = event.organization_id
+    WHERE event.subject_principal_id = $1
+      AND event.event_type = ANY($2::text[])
+      AND (
+          $3::timestamptz IS NULL
+          OR (event.occurred_at, event.id) < ($3, $4)
+      )
+    ORDER BY event.occurred_at DESC, event.id DESC
+    LIMIT $5
+";
+
 pub(super) async fn list_login_history(
     state: &ApiState,
     context: &AccessContext,
@@ -290,47 +320,25 @@ pub(super) async fn list_login_history(
     })?;
     set_principal_context(&mut transaction, principal_id).await?;
     let carbon_id = carbon_handle(&mut transaction, principal_id).await?;
-    let rows = sqlx::query_as::<_, LoginEventRow>(
-        r"
-        SELECT
-            id,
-            event_type,
-            outcome,
-            application.app_id,
-            organization.org_id,
-            request_id,
-            occurred_at
-        FROM iam.authentication_events AS event
-        LEFT JOIN iam.applications AS application ON application.id = event.application_id
-        LEFT JOIN iam.organizations AS organization ON organization.id = event.organization_id
-        WHERE event.subject_principal_id = $1
-          AND event.event_type = ANY($2::text[])
-          AND (
-              $3::timestamptz IS NULL
-              OR (event.occurred_at, event.id) < ($3, $4)
-          )
-        ORDER BY event.occurred_at DESC, event.id DESC
-        LIMIT $5
-        ",
-    )
-    .bind(principal_id)
-    .bind([
-        "login.challenge",
-        "login.success",
-        "login.failure",
-        "logout.success",
-        "refresh.replay",
-        "oauth.authorization",
-        "oauth.token_exchange",
-    ])
-    .bind(cursor.map(|value| value.occurred_at))
-    .bind(cursor.map(|value| value.id))
-    .bind(fetch_limit)
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(|_| AppError::Internal {
-        category: "login_history_list",
-    })?;
+    let rows = sqlx::query_as::<_, LoginEventRow>(LOGIN_HISTORY_QUERY)
+        .bind(principal_id)
+        .bind([
+            "login.challenge",
+            "login.success",
+            "login.failure",
+            "logout.success",
+            "refresh.replay",
+            "oauth.authorization",
+            "oauth.token_exchange",
+        ])
+        .bind(cursor.map(|value| value.occurred_at))
+        .bind(cursor.map(|value| value.id))
+        .bind(fetch_limit)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "login_history_list",
+        })?;
     transaction.commit().await.map_err(|_| AppError::Internal {
         category: "login_history_commit",
     })?;
@@ -2004,6 +2012,54 @@ mod tests {
             recipient_endpoint_ids.contains(&endpoint_b),
             "refresh-authorized Application with an expired access token missed global logout"
         );
+        Ok(())
+    }
+
+    /// Executes the login-history statement against a migrated schema.
+    ///
+    /// Nothing but a real server catches this class of fault. The statement
+    /// type-checked, compiled, and passed review while selecting a bare `id`
+    /// that three joined tables each define, so PostgreSQL rejected it at parse
+    /// time and `/api/v1/me/login-history` answered 500 to every request. An
+    /// empty database is enough: ambiguity is resolved during analysis, long
+    /// before a row is read.
+    #[tokio::test]
+    #[ignore = "requires a local Docker daemon"]
+    async fn the_login_history_statement_is_accepted_by_postgres() -> anyhow::Result<()> {
+        let container = Postgres::default().with_tag("16-alpine").start().await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(5432).await?;
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&format!(
+                "postgres://postgres:postgres@{host}:{port}/postgres"
+            ))
+            .await?;
+        crate::infrastructure::postgres::migrate(&pool).await?;
+
+        let rows = sqlx::query(super::LOGIN_HISTORY_QUERY)
+            .bind(Uuid::from_u128(0x5e_01))
+            .bind(["login.success".to_owned(), "login.failure".to_owned()])
+            .bind(None::<time::OffsetDateTime>)
+            .bind(None::<Uuid>)
+            .bind(51_i64)
+            .fetch_all(&pool)
+            .await?;
+
+        ensure!(rows.is_empty(), "the fixture database has no events");
+
+        // The cursor branch plans a different comparison, so it is exercised too.
+        let paged = sqlx::query(super::LOGIN_HISTORY_QUERY)
+            .bind(Uuid::from_u128(0x5e_01))
+            .bind(["login.success".to_owned()])
+            .bind(Some(datetime!(2026-09-02 12:00 UTC)))
+            .bind(Some(Uuid::from_u128(0x5e_02)))
+            .bind(51_i64)
+            .fetch_all(&pool)
+            .await?;
+
+        ensure!(paged.is_empty(), "the fixture database has no events");
+
         Ok(())
     }
 }
