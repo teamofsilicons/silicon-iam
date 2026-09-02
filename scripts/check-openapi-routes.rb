@@ -104,6 +104,37 @@ unless idempotent_responses_missing_replay_header.empty?
     "#{idempotent_responses_missing_replay_header.join(", ")}"
 end
 
+# The HTML surfaces in src/web are deliberately outside the JSON contract:
+# /admin is an interface and /docs/api is a document, and neither belongs in
+# openapi.yaml. That exemption is only safe while it stays narrow, so it is
+# policed rather than assumed — every route declared there must sit under one
+# of these prefixes, and none of them may appear in the specification.
+WEB_ROUTER = "src/web/mod.rs"
+WEB_ALLOWED_PREFIXES = %w[/admin /docs /_static /openapi.yaml].freeze
+
+if File.exist?(WEB_ROUTER)
+  web_routes = extract_routes(WEB_ROUTER)
+  misplaced = web_routes.keys.reject do |route|
+    WEB_ALLOWED_PREFIXES.any? { |prefix| route == prefix || route.start_with?("#{prefix}/") }
+  end
+  unless misplaced.empty?
+    misplaced.each do |route|
+      warn "#{WEB_ROUTER}: #{route} is outside the HTML surface prefixes " \
+        "(#{WEB_ALLOWED_PREFIXES.join(", ")})"
+    end
+    warn "Contract routes belong in src/api/mod.rs or a feature router, and in openapi.yaml."
+    exit 1
+  end
+
+  documented = web_routes.keys.select { |route| document.fetch("paths").key?(route) }
+  unless documented.empty?
+    documented.each do |route|
+      warn "#{WEB_ROUTER}: #{route} is an HTML surface but is declared in openapi.yaml"
+    end
+    exit 1
+  end
+end
+
 router_files = Dir["src/features/*/mod.rs"].sort + ["src/api/mod.rs"]
 actual = router_files.each_with_object({}) do |path, routes|
   extract_routes(path).each do |route, methods|
@@ -137,4 +168,7 @@ unless missing.empty? && extra.empty? && unmerged_features.empty?
   exit 1
 end
 
-puts "OpenAPI and Axum agree on #{expected.length} paths and #{expected_operations.length} operations; idempotent success responses expose replay state."
+web_route_count = File.exist?(WEB_ROUTER) ? extract_routes(WEB_ROUTER).length : 0
+puts "OpenAPI and Axum agree on #{expected.length} paths and #{expected_operations.length} " \
+  "operations; idempotent success responses expose replay state; " \
+  "#{web_route_count} HTML surface routes are correctly outside the contract."

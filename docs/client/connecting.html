@@ -1,0 +1,113 @@
+<p class="lede">
+  A client is created once, at startup, and reused. Creating one performs a compatibility
+  handshake that either agrees on an API major or returns no client at all.
+</p>
+
+<h2>Install</h2>
+
+<p>The package name uses a hyphen; Rust imports it with an underscore.</p>
+
+<pre><code>[dependencies]
+silicon-iam = "0.1.0"</code></pre>
+
+<p>
+  View releases, dependency metadata and installation details on
+  <a href="https://crates.io/crates/silicon-iam" rel="external noreferrer">the silicon-iam
+    package page on crates.io</a>. Keep the dependency version explicit: this client fails closed
+  on a contract mismatch, and an unplanned SDK upgrade should not accompany an unrelated backend
+  deployment.
+</p>
+
+<p>The minimum supported Rust version is 1.88.</p>
+
+<h2>Credentials</h2>
+
+<p>
+  An Application authenticates with its ID and secret, the pair issued once when it was
+  registered. Both come from the environment or a secret store — never from source.
+</p>
+
+<pre><code>use silicon_iam::prelude::*;
+
+let credentials = ApplicationCredentials::new(
+    std::env::var("SILICON_IAM_APP_ID")?,
+    std::env::var("SILICON_IAM_APP_SECRET")?,
+)?;
+
+let client = Client::connect(credentials).await?;
+assert_eq!(client.service_info().api_version(), ApiVersion::V1);</code></pre>
+
+<p>
+  <code>ApplicationCredentials</code> redacts itself from <code>Debug</code>. Reaching the wire
+  value requires an explicit <code>expose_secret</code> call, so a credential cannot reach a log
+  line by accident.
+</p>
+
+<h2>The handshake</h2>
+
+<p>
+  <code>Client::connect</code> always calls the unversioned
+  <code>GET /api/version</code> first, advertising the majors this SDK implements:
+</p>
+
+<pre><code>Silicon-IAM-Supported-API-Versions: v1</code></pre>
+
+<p>
+  The server replies with the highest mutually supported version, its own catalog, and a
+  <code>Silicon-IAM-API-Version</code> header. The SDK then verifies all of it before returning a
+  client:
+</p>
+
+<ul>
+  <li>the service identifies itself as <code>silicon-iam</code>;</li>
+  <li>the advertised catalog is non-empty, bounded, well-formed, free of duplicates, and in
+    descending order;</li>
+  <li>the selected version is exactly the highest version both sides support — not merely
+    <em>a</em> version both support;</li>
+  <li>the response header agrees with the body.</li>
+</ul>
+
+<div class="banner banner-danger">
+  <div>
+    <strong>It fails closed.</strong>
+    If any of those checks fails, <code>connect</code> returns an error and no client exists. There
+    is no degraded mode and no way to skip the handshake, because a client that guesses at the
+    wire contract is a client that will eventually send a well-formed request that means something
+    different from what its author intended.
+  </div>
+</div>
+
+<p>
+  Every later request is pinned to the negotiated major. The SDK builds its own paths from it, so
+  an Application never writes <code>/api/v1/…</code> anywhere.
+</p>
+
+<h2>Choosing an origin</h2>
+
+<p>
+  The default is <code>https://backend.iam.teamofsilicons.com</code>, exposed as
+  <code>silicon_iam::DEFAULT_BASE_URL</code>. Override it through the builder:
+</p>
+
+<pre><code>let client = Client::builder(credentials)
+    .base_url("https://iam.staging.example.com")?
+    .connect()
+    .await?;</code></pre>
+
+<p>
+  A custom origin must be HTTPS. Literal loopback HTTP has to be enabled explicitly, which keeps
+  a local-development shortcut from surviving into a production configuration by accident.
+</p>
+
+<h2>Lifetime</h2>
+
+<p>
+  Connect once and share the client. It owns a connection pool and the negotiated version, and
+  reconnecting per request would repeat the handshake on every call for no benefit.
+</p>
+
+<p>
+  <code>client.service_info()</code> exposes the negotiated version, the server's advertised
+  catalog, and its build and commit — useful in a health endpoint, and the first thing worth
+  attaching to a bug report.
+</p>

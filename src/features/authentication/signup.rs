@@ -31,6 +31,7 @@ const SIGNUP_CHALLENGE_LOCK_QUERY: &str = r"
         candidate.id AS candidate_id,
         challenge.code_digest,
         challenge.digest_key_version,
+        challenge.provider_verification_sid,
         challenge.max_attempts,
         challenge.expires_at > transaction_timestamp()
             AND challenge.superseded_at IS NULL
@@ -74,6 +75,7 @@ struct SignupChallengeRow {
     candidate_id: Uuid,
     code_digest: Vec<u8>,
     digest_key_version: i16,
+    provider_verification_sid: Option<String>,
     max_attempts: i16,
     challenge_active: bool,
     cooldown_retry_after_seconds: i64,
@@ -377,7 +379,7 @@ pub(super) async fn start_contact(
         .map_err(|error| database_conflict(&error, "signup_contact_serialization_conflict"))?;
 
     match delivery::send_required(state, &required_delivery).await {
-        Ok(()) => {
+        Ok(receipt) => {
             confirm_signup_delivery(
                 state,
                 record_id,
@@ -385,6 +387,7 @@ pub(super) async fn start_contact(
                 candidate_id,
                 challenge_id,
                 channel,
+                &receipt.provider_message_id,
                 &response,
             )
             .await?;
@@ -403,6 +406,10 @@ pub(super) async fn start_contact(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the exact challenge authority, provider receipt, and response are required for atomic activation"
+)]
 async fn confirm_signup_delivery(
     state: &ApiState,
     record_id: idempotency::Lease,
@@ -410,6 +417,7 @@ async fn confirm_signup_delivery(
     candidate_id: Uuid,
     challenge_id: Uuid,
     channel: ContactChannel,
+    provider_message_id: &str,
     response: &CodeDispatchResponse,
 ) -> Result<(), AppError> {
     let mut transaction = serializable(&state.pool, "signup_delivery_finalize_transaction").await?;
@@ -417,7 +425,11 @@ async fn confirm_signup_delivery(
         r"
         UPDATE iam.signup_otp_challenges AS challenge
         SET delivery_status = 'delivered',
-            delivered_at = transaction_timestamp()
+            delivered_at = transaction_timestamp(),
+            provider_verification_sid = CASE
+                WHEN challenge.contact_kind = 'phone' THEN $4
+                ELSE NULL
+            END
         FROM iam.signup_contact_candidates AS candidate,
              iam.signup_sessions AS signup_session
         WHERE challenge.id = $1
@@ -440,6 +452,7 @@ async fn confirm_signup_delivery(
     .bind(challenge_id)
     .bind(candidate_id)
     .bind(signup_session_id)
+    .bind(provider_message_id)
     .execute(&mut *transaction)
     .await
     .map_err(|_| AppError::Internal {
@@ -609,17 +622,31 @@ pub(super) async fn verify_contact(
             retry_after_seconds,
         });
     }
-    let expected = SecretDigest::from_parts(row.digest_key_version, &row.code_digest).ok_or(
-        AppError::Internal {
-            category: "signup_otp_digest_shape",
-        },
-    )?;
-    let matches = state
-        .crypto
-        .verify_secret(signup_otp_purpose(channel), &bound_code, expected)
-        .map_err(|_| AppError::Internal {
-            category: "signup_otp_verify",
-        })?;
+    let managed_verification = if channel == ContactChannel::Phone {
+        delivery::verify_managed_phone_otp(
+            state,
+            row.provider_verification_sid.as_deref(),
+            &supplied_code,
+        )
+        .await?
+    } else {
+        None
+    };
+    let matches = if let Some(approved) = managed_verification {
+        approved
+    } else {
+        let expected = SecretDigest::from_parts(row.digest_key_version, &row.code_digest).ok_or(
+            AppError::Internal {
+                category: "signup_otp_digest_shape",
+            },
+        )?;
+        state
+            .crypto
+            .verify_secret(signup_otp_purpose(channel), &bound_code, expected)
+            .map_err(|_| AppError::Internal {
+                category: "signup_otp_verify",
+            })?
+    };
     let outcome = if matches {
         let challenge_update = sqlx::query(
             r"

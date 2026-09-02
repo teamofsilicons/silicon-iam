@@ -36,6 +36,7 @@ struct EmailRequest<'a> {
 #[serde(rename_all = "PascalCase")]
 struct EmailResponse {
     error_code: i64,
+    #[serde(rename = "MessageID")]
     message_id: Option<String>,
 }
 
@@ -128,5 +129,24 @@ impl EmailDelivery for PostmarkEmail {
     ) -> Result<DeliveryReceipt, DeliveryError> {
         self.send(command.recipient, command.subject, command.body)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EmailResponse;
+
+    #[test]
+    fn success_response_preserves_postmark_message_id_acronym() {
+        let body = r#"{"ErrorCode":0,"Message":"OK","MessageID":"b7bc2f4a-95f9-4d67-bdf9-4ecb4f367add","SubmittedAt":"2026-09-02T07:46:36Z","To":"test@example.com"}"#;
+        let Ok(response) = serde_json::from_str::<EmailResponse>(body) else {
+            panic!("valid Postmark success response should deserialize");
+        };
+
+        assert_eq!(response.error_code, 0);
+        assert_eq!(
+            response.message_id.as_deref(),
+            Some("b7bc2f4a-95f9-4d67-bdf9-4ecb4f367add")
+        );
     }
 }

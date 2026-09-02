@@ -1,0 +1,119 @@
+<p class="lede">
+  Refresh, introspection, revocation and logout are modelled as <em>operation values</em>: you
+  build one, read its idempotency key, persist that key with your input, and only then send it.
+  The shape exists because of one contract fact.
+</p>
+
+<div class="banner banner-danger">
+  <div>
+    <strong>Refresh tokens rotate on every use, and reuse revokes the family.</strong>
+    Presenting a consumed refresh token revokes every session in the 900-day family — every
+    device — and raises a security audit event. A careless retry does not fail; it signs your user
+    out everywhere.
+  </div>
+</div>
+
+<h2>Refresh</h2>
+
+<pre><code>let operation = client.oauth().refresh(OAuthRefreshToken::new(stored)?);
+let operation_key = operation.idempotency_key();
+
+// Persist `operation_key` alongside the old token BEFORE sending.
+let replacement = operation.send().await?;
+let _was_replayed = replacement.operation().idempotency_replayed();
+
+// Atomically replace the stored refresh token with the new one.
+Ok(replacement.into_parts())</code></pre>
+
+<p>Two rules, both load-bearing:</p>
+
+<ul>
+  <li>
+    <strong>One refresh at a time per token family.</strong> Two concurrent workers, two browser
+    tabs, or a retry racing its own first attempt will each present the same token. Serialise it —
+    a database row lock, a distributed lease, whatever your deployment already has.
+  </li>
+  <li>
+    <strong>Replace the old token atomically on success.</strong> A crash between receiving the
+    replacement and storing it leaves you holding a token that no longer works, with no way back.
+  </li>
+</ul>
+
+<p>
+  <code>idempotency_replayed()</code> reports whether the server returned a stored result rather
+  than performing a fresh rotation. It is the signal that your recovery path worked.
+</p>
+
+<h2>Recovering an uncertain refresh</h2>
+
+<p>
+  If the process restarts mid-refresh, rebuild the <em>same</em> operation rather than starting a
+  new one:
+</p>
+
+<pre><code>let operation = client
+    .oauth()
+    .refresh_with_idempotency_key(OAuthRefreshToken::new(stored)?, saved_key);
+let replacement = operation.send().await?;</code></pre>
+
+<p>
+  Same key, same input, same result — the server replays its stored response. Issuing a
+  <em>new</em> key for the same mutation is what triggers the family revocation, so never
+  "recover" that way.
+</p>
+
+<h2>Introspection</h2>
+
+<p>
+  Tokens are opaque; there is nothing to verify locally. When an Application needs to know whether
+  a token is good <strong>right now</strong> — after a revocation, or a membership change — it
+  asks:
+</p>
+
+<pre><code>let introspection = client
+    .oauth()
+    .introspect(&access_token)
+    .send()
+    .await?;
+
+if let ActiveToken::Active(active) = introspection.token() {
+    let _actor = active.actor();
+}</code></pre>
+
+<p>
+  The response reflects current revocation and organization-membership state. A webhook is a
+  notification channel, never an authorization one: do not substitute a delivered event for an
+  online check on a request that matters.
+</p>
+
+<h2>Revocation and global logout</h2>
+
+<p>Both follow the same operation pattern as refresh.</p>
+
+<pre><code>// Revoke one token this Application issued.
+client.oauth().revoke(token).send().await?;
+
+// End the user's IAM session across every configured Application.
+client.oauth().global_logout(&access_token).send().await?;</code></pre>
+
+<p>
+  Global logout is only available when the Application is the token's own audience, and it revokes
+  every IAM and Application authority bound to that parent session — not just yours. Reach for it
+  when the user asked to sign out of everything, not merely out of your product.
+</p>
+
+<h2>The operation pattern, in one place</h2>
+
+<ol>
+  <li>Build the operation. Nothing has been sent.</li>
+  <li>Read <code>idempotency_key()</code> and persist it with the input.</li>
+  <li><code>send().await</code>.</li>
+  <li>On success, commit the result and the key's retirement together.</li>
+  <li>On a transport or protocol error, keep both and rebuild the same operation later.</li>
+  <li>On an authoritative terminal error, retire the key.</li>
+</ol>
+
+<p>
+  Every mutating call in this SDK works this way, which means one recovery routine covers all of
+  them. The general rules are in <a href="/docs/client/errors">Errors and recovery</a>.
+</p>

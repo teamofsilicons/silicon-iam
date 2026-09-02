@@ -1,4 +1,4 @@
-//! Twilio Messaging API adapter for IAM-generated SMS OTPs.
+//! Twilio Messaging and Verify API adapters.
 
 use std::time::Duration;
 
@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::application::ports::{
-    DeliveryError, DeliveryReceipt, InvitationSms, SecurityNotice, SmsDelivery, SmsOtp,
+    DeliveryError, DeliveryReceipt, InvitationSms, PhoneOtp, PhoneOtpDelivery, SecurityNotice,
+    SmsDelivery, SmsOtp,
 };
 
 use super::{ProviderBuildError, http};
@@ -20,6 +21,14 @@ pub(super) struct TwilioSms {
     account_sid: SecretString,
     auth_token: SecretString,
     messaging_service_sid: SecretString,
+}
+
+pub(super) struct TwilioVerify {
+    client: Client,
+    verification_endpoint: String,
+    check_endpoint: String,
+    account_sid: SecretString,
+    auth_token: SecretString,
 }
 
 #[derive(Serialize)]
@@ -33,6 +42,30 @@ struct MessageRequest<'a> {
 #[derive(Deserialize)]
 struct MessageResponse {
     sid: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct VerificationRequest<'a> {
+    to: &'a str,
+    channel: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct VerificationCheckRequest<'a> {
+    verification_sid: &'a str,
+    code: &'a str,
+}
+
+#[derive(Deserialize)]
+struct VerificationResponse {
+    sid: String,
+}
+
+#[derive(Deserialize)]
+struct VerificationCheckResponse {
+    status: String,
 }
 
 impl TwilioSms {
@@ -67,6 +100,32 @@ impl TwilioSms {
     }
 }
 
+impl TwilioVerify {
+    pub(super) fn new(
+        account_sid: SecretString,
+        auth_token: SecretString,
+        verify_service_sid: &SecretString,
+    ) -> Result<Self, ProviderBuildError> {
+        if !valid_sid(account_sid.expose_secret(), "AC")
+            || !valid_sid(verify_service_sid.expose_secret(), "VA")
+        {
+            return Err(ProviderBuildError::InvalidConfiguration);
+        }
+        let client = provider_client()?;
+        let base = format!(
+            "https://verify.twilio.com/v2/Services/{}",
+            verify_service_sid.expose_secret()
+        );
+        Ok(Self {
+            client,
+            verification_endpoint: format!("{base}/Verifications"),
+            check_endpoint: format!("{base}/VerificationCheck"),
+            account_sid,
+            auth_token,
+        })
+    }
+}
+
 #[async_trait]
 impl SmsDelivery for TwilioSms {
     async fn send_otp(&self, command: SmsOtp<'_>) -> Result<DeliveryReceipt, DeliveryError> {
@@ -94,6 +153,69 @@ impl SmsDelivery for TwilioSms {
             command.organization_name, command.join_url,
         ));
         self.send_message(command.recipient, message.as_str()).await
+    }
+}
+
+#[async_trait]
+impl PhoneOtpDelivery for TwilioVerify {
+    async fn start(&self, command: PhoneOtp<'_>) -> Result<DeliveryReceipt, DeliveryError> {
+        let response = self
+            .client
+            .post(&self.verification_endpoint)
+            .basic_auth(
+                self.account_sid.expose_secret(),
+                Some(self.auth_token.expose_secret()),
+            )
+            .form(&VerificationRequest {
+                to: command.recipient.expose_secret(),
+                channel: "sms",
+            })
+            .send()
+            .await
+            .map_err(|_| DeliveryError::Unavailable)?;
+        if !response.status().is_success() {
+            return Err(http::classify_status(response.status()));
+        }
+        let body: VerificationResponse = http::decode_json(response).await?;
+        if !valid_sid(&body.sid, "VE") {
+            return Err(DeliveryError::Unavailable);
+        }
+        Ok(DeliveryReceipt {
+            provider_message_id: body.sid,
+        })
+    }
+
+    async fn check(
+        &self,
+        provider_verification_id: &str,
+        code: &SecretString,
+    ) -> Result<bool, DeliveryError> {
+        if !valid_sid(provider_verification_id, "VE") {
+            return Err(DeliveryError::Rejected);
+        }
+        let response = self
+            .client
+            .post(&self.check_endpoint)
+            .basic_auth(
+                self.account_sid.expose_secret(),
+                Some(self.auth_token.expose_secret()),
+            )
+            .form(&VerificationCheckRequest {
+                verification_sid: provider_verification_id,
+                code: code.expose_secret(),
+            })
+            .send()
+            .await
+            .map_err(|_| DeliveryError::Unavailable)?;
+        if !response.status().is_success() {
+            return if http::status_is_retryable(response.status()) {
+                Err(DeliveryError::Unavailable)
+            } else {
+                Ok(false)
+            };
+        }
+        let body: VerificationCheckResponse = http::decode_json(response).await?;
+        Ok(body.status == "approved")
     }
 }
 
@@ -137,6 +259,16 @@ fn valid_sid(value: &str, prefix: &str) -> bool {
         && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn provider_client() -> Result<Client, ProviderBuildError> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(5))
+        .redirect(Policy::none())
+        .user_agent(concat!("silicon-iam/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|_| ProviderBuildError::InvalidConfiguration)
+}
+
 #[cfg(test)]
 mod tests {
     use super::valid_sid;
@@ -145,6 +277,8 @@ mod tests {
     fn provider_sids_have_exact_type_and_shape() {
         assert!(valid_sid(&format!("AC{}", "a".repeat(32)), "AC"));
         assert!(!valid_sid(&format!("MG{}", "a".repeat(32)), "AC"));
+        assert!(valid_sid(&format!("VA{}", "a".repeat(32)), "VA"));
+        assert!(valid_sid(&format!("VE{}", "a".repeat(32)), "VE"));
         assert!(!valid_sid("ACshort", "AC"));
     }
 }

@@ -1,0 +1,107 @@
+<p class="lede">
+  Silicon IAM pushes directory changes to every Application authorized for the affected resource.
+  The SDK verifies the signature over the exact bytes and hands you a parsed event; deduplication
+  is yours, because only your database can do it durably.
+</p>
+
+<h2>Verifying a delivery</h2>
+
+<pre><code>let mut keyring = WebhookSecretKeyring::new(7, WebhookSecret::new(secret)?)?;
+let verified = WebhookVerifier::new(keyring).verify(headers, body)?;
+
+// In ONE database transaction: insert this ID into a unique
+// deduplication table, and apply the event's local side effect.
+let event_id = verified.event_id();
+let event = verified.event();</code></pre>
+
+<div class="banner banner-danger">
+  <div>
+    <strong>Pass the framework's exact, unparsed body bytes.</strong>
+    The signature covers <code>{timestamp}.{exact body}</code>. Re-serialising the JSON changes
+    whitespace and key order, and the signature will never match. Capture the body as bytes in
+    your framework's earliest hook, before any middleware deserialises it.
+  </div>
+</div>
+
+<p>What the verifier does before you see anything:</p>
+
+<ul>
+  <li>authenticates the HMAC over the timestamp and the raw body, in constant time;</li>
+  <li>rejects duplicate security headers, which is how a proxy-confusion attack starts;</li>
+  <li>rejects stale timestamps, which is what stops a replay;</li>
+  <li>bounds the body to 1 MiB by default;</li>
+  <li>only then parses JSON.</li>
+</ul>
+
+<h2>Secret versions</h2>
+
+<p>
+  The <code>whs_</code> secret is returned exactly once, when the Application is registered.
+  Replacing the webhook URL does <strong>not</strong> rotate it and does not return it again: IAM
+  rebinds the same secret under an incremented version.
+</p>
+
+<p>
+  Keep every version that can still have an in-flight delivery:
+</p>
+
+<pre><code>let mut keyring = WebhookSecretKeyring::new(7, WebhookSecret::new(secret)?)?;
+
+// A URL replacement created version 8 while v7 deliveries can still retry.
+keyring.rebind_version(7, 8)?;</code></pre>
+
+<p>
+  Deliveries carry <code>X-Silicon-IAM-Key-Version</code>, so the verifier selects by version
+  rather than trying each secret in turn. Without the rebind, in-flight v7 retries fail
+  verification and dead-letter — a self-inflicted outage that looks like an IAM problem.
+</p>
+
+<h2>Deduplicate, and order by version</h2>
+
+<p>
+  Delivery is <strong>at least once</strong>. A duplicate is normal, not exceptional, and arrival
+  order is not guaranteed.
+</p>
+
+<table>
+  <thead><tr><th>Use</th><th>For</th></tr></thead>
+  <tbody>
+    <tr><td><code>verified.event_id()</code></td>
+      <td>Deduplication. Insert into a unique index in the same transaction as the side effect.</td></tr>
+    <tr><td>The aggregate version on the event</td>
+      <td>Ordering. It is the only reliable sequencing signal.</td></tr>
+  </tbody>
+</table>
+
+<p>
+  Respond <code>2xx</code> quickly and do the work asynchronously. A slow endpoint becomes a
+  retrying endpoint, and a retrying endpoint becomes a dead-lettered one.
+</p>
+
+<h2>Event catalogs</h2>
+
+<table>
+  <thead><tr><th>Constant</th><th>Contents</th></tr></thead>
+  <tbody>
+    <tr><td><code>webhook::APPLICATION_EVENT_TYPES</code></td>
+      <td>The events actually delivered to Applications.</td></tr>
+    <tr><td><code>webhook::SILICON_FULL_EVENT_TYPES</code></td>
+      <td>The complete 38-event Silicon catalog. Reference data only — the
+        <code>whs_</code> Application verifier does not accept these.</td></tr>
+  </tbody>
+</table>
+
+<p>
+  Match on <code>EventType</code> rather than on the string. It is
+  <code>#[non_exhaustive]</code>, so a new event type added to the contract will not break your
+  build, and your wildcard arm will keep doing something sensible with it.
+</p>
+
+<h2>Recovering missed deliveries</h2>
+
+<p>
+  Anything that exhausts its retry cycle is dead-lettered and stays readable and replayable
+  through the API. Replays preserve the original event ID, so your existing deduplication table
+  handles them without any special case — see
+  <a href="/docs/api/webhooks">the contract's webhook section</a> for the replay semantics.
+</p>

@@ -37,6 +37,7 @@ const STEP_UP_CHALLENGE_LOCK_QUERY: &str = r"
         resource_id,
         challenge_digest,
         digest_key_version,
+        provider_verification_sid,
         max_attempts,
         status,
         expires_at > transaction_timestamp()
@@ -92,6 +93,7 @@ struct ChallengeRow {
     resource_id: Option<Uuid>,
     challenge_digest: Vec<u8>,
     digest_key_version: i16,
+    provider_verification_sid: Option<String>,
     max_attempts: i16,
     status: String,
     active: bool,
@@ -332,7 +334,7 @@ pub(super) async fn create_challenge(
         .map_err(|error| database_conflict(&error, "step_up_create_serialization_conflict"))?;
 
     match delivery::send_required(state, &required_delivery).await {
-        Ok(()) => {
+        Ok(receipt) => {
             confirm_step_up_delivery(
                 state,
                 record_id,
@@ -340,6 +342,7 @@ pub(super) async fn create_challenge(
                 context.authentication_session_id,
                 challenge_id,
                 input.channel,
+                &receipt.provider_message_id,
                 input.action,
                 input.resource_id,
                 &response,
@@ -366,6 +369,7 @@ async fn confirm_step_up_delivery(
     authentication_session_id: Uuid,
     challenge_id: Uuid,
     channel: ContactChannel,
+    provider_message_id: &str,
     action: StepUpAction,
     resource_id: Uuid,
     response: &AuthSessionResponse,
@@ -377,7 +381,11 @@ async fn confirm_step_up_delivery(
         r"
         UPDATE iam.step_up_challenges AS challenge
         SET delivery_status = 'delivered',
-            delivered_at = transaction_timestamp()
+            delivered_at = transaction_timestamp(),
+            provider_verification_sid = CASE
+                WHEN challenge.channel = 'phone' THEN $4
+                ELSE NULL
+            END
         WHERE challenge.id = $1
           AND challenge.carbon_id = $2
           AND challenge.authentication_session_id = $3
@@ -405,6 +413,7 @@ async fn confirm_step_up_delivery(
     .bind(challenge_id)
     .bind(principal_id)
     .bind(authentication_session_id)
+    .bind(provider_message_id)
     .execute(&mut *transaction)
     .await
     .map_err(|_| AppError::Internal {
@@ -563,18 +572,31 @@ pub(super) async fn verify_challenge(
             retry_after_seconds,
         });
     }
-    let expected =
-        SecretDigest::from_parts(challenge.digest_key_version, &challenge.challenge_digest).ok_or(
-            AppError::Internal {
-                category: "step_up_otp_digest_shape",
-            },
-        )?;
-    let matches = state
-        .crypto
-        .verify_secret(DigestPurpose::StepUpOtp, &bound_otp, expected)
-        .map_err(|_| AppError::Internal {
-            category: "step_up_otp_verify",
-        })?;
+    let managed_verification = if challenge.channel == "phone" {
+        delivery::verify_managed_phone_otp(
+            state,
+            challenge.provider_verification_sid.as_deref(),
+            &code,
+        )
+        .await?
+    } else {
+        None
+    };
+    let matches = if let Some(approved) = managed_verification {
+        approved
+    } else {
+        let expected =
+            SecretDigest::from_parts(challenge.digest_key_version, &challenge.challenge_digest)
+                .ok_or(AppError::Internal {
+                    category: "step_up_otp_digest_shape",
+                })?;
+        state
+            .crypto
+            .verify_secret(DigestPurpose::StepUpOtp, &bound_otp, expected)
+            .map_err(|_| AppError::Internal {
+                category: "step_up_otp_verify",
+            })?
+    };
     if !matches {
         let failure = sqlx::query(
             r"

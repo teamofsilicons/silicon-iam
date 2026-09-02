@@ -4,7 +4,7 @@ use futures::future;
 
 use crate::{
     api::ApiState,
-    application::ports::{DeliveryError, EmailOtp, SmsOtp},
+    application::ports::{DeliveryError, DeliveryReceipt, EmailOtp, PhoneOtp, SmsOtp},
     error::AppError,
 };
 
@@ -20,6 +20,12 @@ pub(super) enum RequiredDeliveryError {
     OutcomeUnknown,
 }
 
+#[derive(Debug)]
+pub(super) struct RequiredDeliveryReceipt {
+    pub(super) channel: ContactChannel,
+    pub(super) provider_message_id: String,
+}
+
 /// Redacts definitive and ambiguous provider outcomes to one public shape. In
 /// particular, login must not reveal recipient/provider classification.
 pub(super) const fn public_error() -> AppError {
@@ -32,14 +38,24 @@ pub(super) const fn public_error() -> AppError {
 pub(super) async fn send_all_required(
     state: &ApiState,
     deliveries: &[Delivery],
-) -> Result<(), RequiredDeliveryError> {
+) -> Result<Vec<RequiredDeliveryReceipt>, RequiredDeliveryError> {
     let results = future::join_all(
         deliveries
             .iter()
             .map(|delivery| send_required(state, delivery)),
     )
     .await;
-    classify_batch(&results)
+    classify_batch(&results)?;
+    Ok(deliveries
+        .iter()
+        .zip(results)
+        .filter_map(|(delivery, result)| {
+            result.ok().map(|receipt| RequiredDeliveryReceipt {
+                channel: delivery.channel,
+                provider_message_id: receipt.provider_message_id,
+            })
+        })
+        .collect())
 }
 
 /// Sends one required OTP without exposing the provider's recipient-specific
@@ -47,7 +63,7 @@ pub(super) async fn send_all_required(
 pub(super) async fn send_required(
     state: &ApiState,
     delivery: &Delivery,
-) -> Result<(), RequiredDeliveryError> {
+) -> Result<DeliveryReceipt, RequiredDeliveryError> {
     let minutes = state.settings.security.otp_ttl.as_secs().div_ceil(60);
     let expires_in_minutes = u16::try_from(minutes).unwrap_or(u16::MAX);
     let result = match delivery.channel {
@@ -64,18 +80,26 @@ pub(super) async fn send_required(
                 .await
         }
         ContactChannel::Phone => {
-            state
-                .notifications
-                .sms
-                .send_otp(SmsOtp {
-                    recipient: &delivery.recipient,
-                    code: &delivery.code,
-                    expires_in_minutes,
-                })
-                .await
+            if let Some(provider) = &state.notifications.phone_otp {
+                provider
+                    .start(PhoneOtp {
+                        recipient: &delivery.recipient,
+                    })
+                    .await
+            } else {
+                state
+                    .notifications
+                    .sms
+                    .send_otp(SmsOtp {
+                        recipient: &delivery.recipient,
+                        code: &delivery.code,
+                        expires_in_minutes,
+                    })
+                    .await
+            }
         }
     };
-    result.map(|_| ()).map_err(|error| {
+    result.map_err(|error| {
         tracing::warn!(
             channel = delivery.channel.database_value(),
             purpose = delivery.purpose,
@@ -86,8 +110,26 @@ pub(super) async fn send_required(
     })
 }
 
+pub(super) async fn verify_managed_phone_otp(
+    state: &ApiState,
+    provider_verification_id: Option<&str>,
+    code: &secrecy::SecretString,
+) -> Result<Option<bool>, AppError> {
+    let Some(provider) = &state.notifications.phone_otp else {
+        return Ok(None);
+    };
+    let provider_verification_id = provider_verification_id.ok_or(AppError::Internal {
+        category: "phone_otp_provider_reference_missing",
+    })?;
+    match provider.check(provider_verification_id, code).await {
+        Ok(approved) => Ok(Some(approved)),
+        Err(DeliveryError::Rejected) => Ok(Some(false)),
+        Err(DeliveryError::Unavailable) => Err(AppError::ProviderUnavailable),
+    }
+}
+
 fn classify_batch(
-    results: &[Result<(), RequiredDeliveryError>],
+    results: &[Result<DeliveryReceipt, RequiredDeliveryError>],
 ) -> Result<(), RequiredDeliveryError> {
     if results.is_empty() {
         return Err(RequiredDeliveryError::OutcomeUnknown);
@@ -126,11 +168,20 @@ const fn provider_error_code(error: DeliveryError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use crate::{application::ports::DeliveryError, error::AppError};
+    use crate::{
+        application::ports::{DeliveryError, DeliveryReceipt},
+        error::AppError,
+    };
 
     use super::{
         RequiredDeliveryError, classify_batch, classify_provider_error, provider_error_code,
     };
+
+    fn receipt() -> DeliveryReceipt {
+        DeliveryReceipt {
+            provider_message_id: "provider-id".to_owned(),
+        }
+    }
 
     #[test]
     fn provider_failure_classification_is_redacted_from_the_public_error() {
@@ -159,9 +210,9 @@ mod tests {
 
     #[test]
     fn partial_or_ambiguous_delivery_is_never_safe_to_retry_in_place() {
-        assert_eq!(classify_batch(&[Ok(()), Ok(())]), Ok(()));
+        assert_eq!(classify_batch(&[Ok(receipt()), Ok(receipt())]), Ok(()));
         assert_eq!(
-            classify_batch(&[Ok(()), Err(RequiredDeliveryError::Definitive),]),
+            classify_batch(&[Ok(receipt()), Err(RequiredDeliveryError::Definitive),]),
             Err(RequiredDeliveryError::OutcomeUnknown)
         );
         assert_eq!(

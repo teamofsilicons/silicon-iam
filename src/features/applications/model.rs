@@ -283,6 +283,16 @@ pub(super) struct ConsentDecision {
     #[serde(rename = "authorization_transaction_id")]
     pub(super) authorization_request_id: Uuid,
     pub(super) decision: String,
+    /// Present only on the form-encoded path.
+    ///
+    /// A browser form cannot set `X-CSRF-Token` or `Idempotency-Key`, so the
+    /// consent page renders both into hidden fields and the handler lifts them
+    /// into a synthetic header map. The header path is unchanged, and both
+    /// paths are validated by exactly the same code.
+    #[serde(default)]
+    pub(super) csrf_token: Option<String>,
+    #[serde(default)]
+    pub(super) idempotency_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

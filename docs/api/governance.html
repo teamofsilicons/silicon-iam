@@ -1,0 +1,128 @@
+<p class="lede">
+  Three mechanisms decide who can reach what inside an organization: tags, which grant access;
+  trust, which describes it; and governance, which controls who may change either.
+</p>
+
+<h2>Tags are access grants</h2>
+
+<div class="banner banner-info">
+  <div>
+    <strong>Assigning a tag to a Carbon grants them every Silicon carrying the same tag.</strong>
+    A tag is not a label. Renaming one is harmless; reassigning one changes who can reach what.
+  </div>
+</div>
+
+<p>
+  Tags also scope trust rules and Silicon webhook subscriptions, which makes them the single
+  highest-leverage object in the model. <code>GET …/tags/{tag_id}/members</code> returns both
+  sides of the grant — every Carbon and every Silicon carrying it — and is the right screen to
+  read before changing anything.
+</p>
+
+<p>
+  A member's tag set is replaced wholesale by
+  <code>PUT …/members/{membership_id}/tags</code>. There is no partial add or remove on that
+  endpoint; send the complete intended set.
+</p>
+
+<h2>Trust has two dimensions</h2>
+
+<table>
+  <thead><tr><th>Dimension</th><th>Values</th><th>Means</th></tr></thead>
+  <tbody>
+    <tr><td><code>boundary</code></td><td><code>internal</code>, <code>external</code></td>
+      <td>Whether the principal is inside the organization's circle. A contractor or freelancer
+        is typically <code>external</code>.</td></tr>
+    <tr><td><code>level</code></td>
+      <td><code>not_trusted</code>, <code>needs_approval</code>, <code>trusted</code></td>
+      <td>How far that relationship extends.</td></tr>
+  </tbody>
+</table>
+
+<p>The default is <code>internal</code> and <code>not_trusted</code>. Resolution is strictly:</p>
+
+<pre><code>organization default  →  tag rule  →  exact Silicon rule</code></pre>
+
+<p>
+  Later entries win. <code>POST …/trust/effective</code> resolves a specific subject and target
+  pair and reports which rule matched, which is the only reliable way to answer "why does this
+  read as it does".
+</p>
+
+<div class="banner banner-info">
+  <div>
+    <strong>Trust is advisory.</strong>
+    Silicon IAM records it faithfully and enforces nothing. Applications read it and decide.
+    Treating a stored trust value as an access-control decision is a misreading of the model.
+  </div>
+</div>
+
+<h3>Trust is directional</h3>
+
+<p>
+  Tag-to-tag rules form a matrix, and the matrix is not symmetric. "Tech trusts legal" says
+  nothing whatsoever about "legal trusts tech" — they are two independent rules, and an interface
+  that renders them as one is lying about the model.
+</p>
+
+<h2>Governance: who may change a role or a tag</h2>
+
+<table>
+  <thead><tr><th>Actor</th><th>Job roles and tags</th></tr></thead>
+  <tbody>
+    <tr><td>Owner or administrator</td><td>Changes them directly</td></tr>
+    <tr><td>Silicon</td><td>May only <em>request</em> a change</td></tr>
+    <tr><td>Ordinary member</td><td>Neither</td></tr>
+  </tbody>
+</table>
+
+<p>The quorum then depends on <em>who the change is about</em>:</p>
+
+<table>
+  <thead><tr><th>Target</th><th>Approvals required</th></tr></thead>
+  <tbody>
+    <tr><td>A Carbon</td><td>That Carbon <strong>and</strong> an owner or administrator</td></tr>
+    <tr><td>A Silicon</td><td>An owner or administrator only</td></tr>
+    <tr><td>A Silicon token rotation</td><td>The organization owner</td></tr>
+  </tbody>
+</table>
+
+<p>
+  Show the quorum per party, not as a single total. "1 of 2" hides which of the two is still
+  missing, and that is precisely the thing a reader needs.
+</p>
+
+<h3>The request lifecycle</h3>
+
+<ol>
+  <li>A Silicon opens a request via <code>POST …/role-change-requests</code> or
+    <code>POST …/members/{membership_id}/tag-change-requests</code>.</li>
+  <li>Each required party records a decision at
+    <code>POST …/approval-requests/{request_id}/decisions</code>, with
+    <code>If-Match</code> on the request version.</li>
+  <li>Once the quorum is met the change applies atomically and the request completes.</li>
+</ol>
+
+<p>
+  <code>immutable_payload</code> is fixed when the request opens, so nobody can approve one change
+  and have another take effect. A token-rotation decision additionally requires a
+  verified-channel step-up token.
+</p>
+
+<p>
+  <code>actionable_by_me=true</code> narrows the list to requests the caller can act on now, which
+  is the only filter most people want.
+</p>
+
+<h2>History</h2>
+
+<p>
+  <code>GET …/members/{membership_id}/job-role-history</code> and
+  <code>…/tag-history</code> record who requested each change, who approved it, when it applied,
+  and the linked approval request. A direct owner or administrator change has no
+  <code>approval_request_id</code> and no approvers, which is how you tell the two apart.
+</p>
+
+<p>
+  Audit records are retained for seven years.
+</p>

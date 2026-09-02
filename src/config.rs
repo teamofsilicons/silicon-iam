@@ -224,8 +224,10 @@ pub struct ProviderSettings {
     pub twilio_account_sid: Option<SecretString>,
     /// Twilio account authentication token.
     pub twilio_auth_token: Option<SecretString>,
-    /// Twilio Messaging Service identifier used to deliver IAM-generated OTPs.
+    /// Twilio Messaging Service identifier used for notification delivery.
     pub twilio_messaging_service_sid: Option<SecretString>,
+    /// Twilio Verify Service identifier used for managed phone OTPs.
+    pub twilio_verify_service_sid: Option<SecretString>,
     /// `WorkOS` API key.
     pub workos_api_key: Option<SecretString>,
     /// `WorkOS` client identifier.
@@ -474,6 +476,11 @@ fn provider_settings() -> Result<ProviderSettings, SettingsError> {
         twilio_auth_token: optional_secret_in_range("IAM_TWILIO_AUTH_TOKEN", 1, 4_096)?,
         twilio_messaging_service_sid: optional_secret_in_range(
             "IAM_TWILIO_MESSAGING_SERVICE_SID",
+            1,
+            256,
+        )?,
+        twilio_verify_service_sid: optional_secret_in_range(
+            "IAM_TWILIO_VERIFY_SERVICE_SID",
             1,
             256,
         )?,
@@ -847,6 +854,10 @@ fn validate_provider_settings(
         (
             "IAM_TWILIO_MESSAGING_SERVICE_SID",
             providers.twilio_messaging_service_sid.is_some(),
+        ),
+        (
+            "IAM_TWILIO_VERIFY_SERVICE_SID",
+            providers.twilio_verify_service_sid.is_some(),
         ),
     ];
     let workos = [

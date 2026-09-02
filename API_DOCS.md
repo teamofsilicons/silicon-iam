@@ -11,8 +11,33 @@ The production origin is:
 https://backend.iam.teamofsilicons.com
 ```
 
-JSON APIs are under `/api/v1`. Liveness and readiness remain at `/healthz`
-and `/readyz`.
+Versioned JSON APIs are under `/api/v1`. The compatibility handshake is the
+unversioned `/api/version`; liveness and readiness remain at `/healthz` and
+`/readyz`.
+
+The same origin also serves three HTML surfaces, which are deliberately outside
+the JSON contract and are not described in `openapi.yaml`:
+
+| Path | Surface |
+| --- | --- |
+| `/docs/api/` | The HTTP contract, in eleven sections |
+| `/docs/client/` | The official Rust SDK, in seven sections |
+| `/openapi.yaml` | The normative contract itself |
+| `/admin` | The platform-administration console |
+
+`scripts/check-openapi-routes.rb` enforces that separation: a route declared in
+`src/web/mod.rs` must sit under `/admin`, `/docs`, `/_static` or
+`/openapi.yaml`, and must not appear in the specification. Contract routes
+belong in a feature router and in `openapi.yaml`, as they always have.
+
+Applications integrating in Rust should use the official SDK rather than this
+document. It implements the version handshake, PKCE, proof signing, signature
+verification and the retry policy, and fails closed where this contract expects
+a client to. See `/docs/client/`.
+
+The `/admin` console is a thin client over `/api/v1/admin/*`. It performs no
+authentication of its own and executes no SQL; authority stays entirely in the
+endpoints the contract already publishes.
 
 ## Security model
 
@@ -164,6 +189,11 @@ OAuth redirect errors are returned to the exact registered redirect URI using
 OAuth protocol query fields and the unchanged `state`; JSON errors before a
 redirect URI is trusted use the envelope above.
 
+The HTML surfaces answer with HTML rather than this envelope. They are merged
+outside the JSON router's error normalisation, so an unknown documentation
+section returns a readable page with a way back rather than a machine-readable
+code that no reader asked for.
+
 | HTTP | Meaning | Typical codes |
 | --- | --- | --- |
 | 400 | Malformed or unsupported request/protocol input | `invalid_request`, `unsupported_grant_type` |
@@ -180,6 +210,15 @@ redirect URI is trusted use the envelope above.
 | 502 | Upstream provider returned a failed or invalid response | `provider_error` |
 | 503 | A required dependency is unavailable | `service_unavailable` |
 | 504 | A bounded server or provider deadline elapsed | `gateway_timeout` |
+
+A `validation_failed` body carries `details.fields`, each entry naming the
+offending `field`. A body that cannot be decoded at all still names the
+responsible property: an unrecognized property reports that property with
+`is not a recognized field`, a missing required property reports it with
+`is required`, a request without `Content-Type: application/json` reports
+`content-type`, and malformed JSON reports `body`. Submitted values are never
+echoed back, so any rejection whose explanation would have to quote a value
+degrades to `body` with `must match the documented JSON schema`.
 
 `429` includes `Retry-After`, `RateLimit-Limit`,
 `RateLimit-Remaining`, and `RateLimit-Reset`. Carbon login initiation returns
@@ -214,9 +253,27 @@ and complete retry/rate-limit header set.
 | --- | --- | --- |
 | GET | `/healthz` | Process liveness only |
 | GET | `/readyz` | Readiness of required dependencies |
+| GET | `/api/version` | Negotiate the highest mutually supported public API version |
 | GET | `/api/v1/version` | Service, API, build, and commit versions |
 
 Health responses contain no dependency credentials or sensitive topology.
+
+Every official client performs the unversioned `/api/version` handshake before
+making a versioned request. It sends its distinct supported versions in
+descending preference order:
+
+```http
+Silicon-IAM-Supported-API-Versions: v1
+```
+
+IAM selects the highest mutually supported version and returns it in both
+`selected_api_version` and `Silicon-IAM-API-Version`; `Vary` identifies the
+advertisement header for intermediary caches. The response also lists the
+server's supported versions in descending preference order. A client must
+fail closed if the response disagrees with the advertised intersection. When
+there is no common version, IAM returns `406 api_version_not_acceptable` with
+the server's supported version list. `/api/v1/version` remains available as a
+version-specific diagnostic endpoint; it is not the negotiation handshake.
 
 ## Carbon signup
 
@@ -235,17 +292,19 @@ All paths above are under `/api/v1/signup/sessions`.
 
 - Creating a session returns only its random UUID and expiry.
 - Email is delivered through Postmark from `auth@teamofsilicons.com`.
-- Phone verification sends IAM-generated codes through the Twilio Messages API
-  and requires E.164 input.
+- Phone verification uses Twilio Verify to generate, deliver, and validate SMS
+  codes and requires E.164 input. IAM retains the Verify attempt identifier but
+  never stores the submitted code.
 - Each send operation returns `already_exists`. When it is `true`, IAM sends no
   code; when it is `false`, the response also includes `expires_in: 600` and a
   new code is sent.
-- Codes are purpose-, channel-, and session-bound keyed digests.
+- Email codes are purpose-, channel-, and session-bound keyed digests. Phone
+  codes are scoped to a single stored Twilio Verify attempt.
 - Each still-unexpired email or phone code follows the ten-failure,
   one-minute-cooldown verification policy described above.
 - Completion requires both verified identities and atomically rechecks their
   uniqueness before inserting the Carbon.
-- Completion accepts optional `time_zone` as an exact IANA TZDB identifier such
+- Completion accepts optional `timezone` as an exact IANA TZDB identifier such
   as `UTC` or `Asia/Kolkata`; omission defaults it to `UTC`. Unknown identifiers
   and whitespace variants are rejected.
 - `profile_photo` defaults to
@@ -421,6 +480,18 @@ approved scopes or bypass organization checks.
 | --- | --- | --- |
 | GET | `/api/v1/oauth/authorize` | Validate request and show consent or redirect with code |
 | POST | `/api/v1/oauth/authorize/decisions` | CSRF-protected consent decision |
+
+The decision endpoint accepts two equivalent encodings. JSON callers send
+`X-CSRF-Token` and `Idempotency-Key` as headers. The IAM-rendered consent
+screen submits `application/x-www-form-urlencoded` and carries the same two
+values as the `csrf_token` and `idempotency_key` fields, because a browser form
+cannot set request headers and only a top-level form navigation lets the user
+agent follow the `302` into a working application session. Both encodings are
+validated by the same code and produce the same idempotency digest.
+
+The consent page's Content-Security-Policy is `default-src 'none'` widened only
+to `style-src 'self'`, `img-src 'self' data:`, `font-src` for the webfont, and
+`form-action 'self'`. It has no `script-src` at all.
 | POST | `/api/v1/oauth/token` | Exchange code or rotate OAuth refresh token |
 | POST | `/api/v1/oauth/introspect` | Authenticated current-state introspection |
 | POST | `/api/v1/oauth/revoke` | Idempotent token/family revocation |
@@ -1361,12 +1432,14 @@ Implementations and contract tests must preserve at least these invariants:
 
 ## Provider and non-public boundaries
 
-Postmark, Twilio Messaging, WorkOS, and Iris are accessed behind application
-ports. Their raw provider-specific payloads and outbound management APIs are
-intentionally not public IAM endpoints. Production startup refuses local/no-op
-provider implementations. Subscriber-managed Silicon endpoints use IAM's
-shared SSRF-hardened outbound webhook transport rather than a provisioning
-provider.
+Postmark, Twilio Verify, Twilio Messaging, WorkOS, and Iris are accessed behind
+application ports. Twilio Verify owns phone-code generation, SMS routing, and
+code validation; Twilio Messaging remains the transport for non-OTP SMS
+notifications. Their raw provider-specific payloads and outbound management
+APIs are intentionally not public IAM endpoints. Production startup refuses
+local/no-op provider implementations. Subscriber-managed Silicon endpoints use
+IAM's shared SSRF-hardened outbound webhook transport rather than a
+provisioning provider.
 
 The public contract fixes IAM-visible behavior—timeouts, uniform OTP responses,
 callback/webhook validation, durable delivery state, idempotency, and error

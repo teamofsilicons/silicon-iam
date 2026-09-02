@@ -1,0 +1,161 @@
+<p class="lede">
+  A Carbon is a human account. Creating one requires a verified email address and a verified
+  phone number, both bound to a single 48-hour signup session.
+</p>
+
+<h2>Signup</h2>
+
+<p>Six calls, in order. Every one takes an <code>Idempotency-Key</code>.</p>
+
+<table>
+  <thead><tr><th></th><th>Call</th><th>Returns</th></tr></thead>
+  <tbody>
+    <tr><td><span class="verb verb-post">POST</span></td>
+      <td><code>/api/v1/signup/sessions</code></td><td>A 48-hour session</td></tr>
+    <tr><td><span class="verb verb-post">POST</span></td>
+      <td><code>/api/v1/signup/sessions/{session_id}/email</code></td>
+      <td><code>already_exists</code>, and a code if false</td></tr>
+    <tr><td><span class="verb verb-post">POST</span></td>
+      <td><code>/api/v1/signup/sessions/{session_id}/email/verify</code></td>
+      <td><code>verified: true</code></td></tr>
+    <tr><td><span class="verb verb-post">POST</span></td>
+      <td><code>/api/v1/signup/sessions/{session_id}/phone</code></td>
+      <td><code>already_exists</code>, and a code if false</td></tr>
+    <tr><td><span class="verb verb-post">POST</span></td>
+      <td><code>/api/v1/signup/sessions/{session_id}/phone/verify</code></td>
+      <td><code>verified: true</code></td></tr>
+    <tr><td><span class="verb verb-post">POST</span></td>
+      <td><code>/api/v1/signup/sessions/{session_id}/complete</code></td>
+      <td>The new <code>CarbonSelf</code></td></tr>
+  </tbody>
+</table>
+
+<div class="banner banner-info">
+  <div>
+    <strong>The <code>already_exists</code> short-circuit.</strong>
+    When a contact already belongs to an account, the server returns
+    <code>already_exists: true</code> and deliberately sends nothing. Rendering "check your inbox"
+    here strands the user forever — route them to sign-in instead.
+  </div>
+</div>
+
+<p>
+  Completion requires both channels verified <em>in that session</em>, and neither may belong to
+  another account. Availability of a candidate handle is a separate public probe:
+  <code>GET /api/v1/carbon-ids/{carbon_id}/availability</code>.
+</p>
+
+<p>
+  New Carbon IDs accept lowercase <code>a–z</code>, the digits <code>1–9</code>,
+  <code>_</code> and <code>-</code>, and are 3–30 characters. Note the absence of
+  <code>0</code>: immutable legacy IDs containing it remain addressable for login and lookup, but
+  cannot be newly registered. Rejecting it client-side is far kinder than a <code>422</code>
+  after somebody has settled on a name.
+</p>
+
+<p>
+  Completion does not sign the new Carbon in. It returns the profile; the client then runs the
+  ordinary login flow.
+</p>
+
+<h2>Login</h2>
+
+<p>
+  Two calls, covered in <a href="/docs/api/authentication">Authentication</a>. The verification
+  response is the credential pair plus the actor and session ID, and it also sets the
+  <code>iam_session</code> cookie.
+</p>
+
+<h2>The account surface</h2>
+
+<table>
+  <thead><tr><th></th><th>Endpoint</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><span class="verb verb-get">GET</span></td><td><code>/api/v1/me</code></td>
+      <td>The authenticated Carbon. The <code>ETag</code> is the precondition for the patch.</td></tr>
+    <tr><td><span class="verb verb-patch">PATCH</span></td><td><code>/api/v1/me</code></td>
+      <td><code>application/merge-patch+json</code>. Requires <code>If-Match</code>.</td></tr>
+    <tr><td><span class="verb verb-get">GET</span></td><td><code>/api/v1/me/sessions</code></td>
+      <td>Active refresh families</td></tr>
+    <tr><td><span class="verb verb-delete">DELETE</span></td>
+      <td><code>/api/v1/me/sessions/{session_id}</code></td>
+      <td>Requires step-up bound to that session</td></tr>
+    <tr><td><span class="verb verb-get">GET</span></td><td><code>/api/v1/me/login-history</code></td>
+      <td>Retained one year</td></tr>
+  </tbody>
+</table>
+
+<p>
+  The profile patch is a <strong>JSON Merge Patch</strong>. Omitting a key leaves it alone;
+  sending <code>null</code> clears it. That distinction is load-bearing — a client that
+  serialises an absent optional as <code>null</code> will delete the field.
+</p>
+
+<h2>Session revocation and the twelve-hour rule</h2>
+
+<div class="banner banner-danger">
+  <div>
+    <strong>Both the target and the calling session must be at least 12 hours old.</strong>
+    The operation fails atomically if any target is younger.
+  </div>
+</div>
+
+<p>
+  This exists to stop somebody who has just taken over an account from immediately locking out
+  the real owner. It has a real consequence for interfaces: a freshly signed-in user
+  <em>cannot</em> revoke anything, and the screen should say so up front rather than letting them
+  discover it through a <code>403</code>.
+</p>
+
+<p>
+  Revocation also needs a verified-channel step-up token carrying an
+  <code>account.session_revoke</code> assertion bound to the specific session — one prompt per
+  session, by design.
+</p>
+
+<h2>Logout</h2>
+
+<p>
+  <code>POST /api/v1/logout</code> revokes the current session by default and propagates to every
+  configured application. <code>mode: "all_sessions"</code> extends that to every device, and
+  then the twelve-hour rule and a
+  <code>account.sessions_revoke_all</code> step-up assertion both apply.
+</p>
+
+<p>
+  Cookie-authenticated logout additionally requires <code>X-CSRF-Token</code> matching the token
+  bound into the signed session cookie. Bearer-authenticated logout does not.
+</p>
+
+<h2>Finding other Carbons</h2>
+
+<table>
+  <thead><tr><th></th><th>Endpoint</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><span class="verb verb-get">GET</span></td><td><code>/api/v1/carbons/search</code></td>
+      <td>Fuzzy Carbon-ID suggestions, 0–10 results</td></tr>
+    <tr><td><span class="verb verb-post">POST</span></td>
+      <td><code>/api/v1/carbons/resolve/email</code></td><td>Exact match on a verified address</td></tr>
+    <tr><td><span class="verb verb-post">POST</span></td>
+      <td><code>/api/v1/carbons/resolve/phone</code></td><td>Exact match on a verified number</td></tr>
+  </tbody>
+</table>
+
+<p>
+  These exist for invitation pickers: you cannot invite a Carbon that does not exist, so
+  resolving first turns a guaranteed <code>404</code> into a working autocomplete. Search returns
+  handles only — never contact details.
+</p>
+
+<h2>How contact identities are stored</h2>
+
+<p>
+  Normalised email addresses and phone numbers are authenticated-encrypted at the application
+  boundary. Exact lookup and uniqueness use a versioned HMAC blind index, so the server can answer
+  "is this address taken?" without holding a searchable plaintext column.
+</p>
+
+<p>
+  Raw contact identities, credentials, OTPs and provider records never appear in logs, traces,
+  metrics, error details, audit diffs or webhooks.
+</p>

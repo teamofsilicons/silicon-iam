@@ -60,6 +60,42 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/HealthOk' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/version:
+    get:
+      tags: [System]
+      operationId: negotiateApiVersion
+      summary: Negotiate a public API version before using any versioned route.
+      description: >-
+        The client advertises every API major it implements in descending
+        preference order. IAM selects the highest common version. Official
+        clients fail closed when no common version exists or the response does
+        not match the advertised intersection.
+      security: []
+      parameters:
+        - name: Silicon-IAM-Supported-API-Versions
+          in: header
+          required: true
+          description: Comma-separated distinct API majors in descending client preference order.
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 255
+            pattern: '^v[1-9][0-9]{0,8}(, *v[1-9][0-9]{0,8}){0,15}$'
+      responses:
+        '200':
+          description: The client and server agreed on the highest common API version.
+          headers:
+            Silicon-IAM-API-Version:
+              required: true
+              schema: { type: string, pattern: '^v[1-9][0-9]{0,8}$' }
+            Vary:
+              required: true
+              schema: { const: Silicon-IAM-Supported-API-Versions }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiVersionNegotiation' }
+        '406': { $ref: '#/components/responses/NotAcceptable' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
   /api/v1/version:
     get:
       tags: [System]
@@ -299,15 +335,34 @@ paths:
     post:
       tags: [OAuth]
       operationId: decideOAuthConsent
+      description: >-
+        Records the user's consent decision. Two equivalent encodings are
+        accepted. JSON callers send X-CSRF-Token and Idempotency-Key as headers.
+        The IAM-rendered consent screen submits application/x-www-form-urlencoded,
+        because only a top-level form navigation lets a browser follow the 302 to
+        the Application's redirect URI into a working session; a browser form
+        cannot set request headers, so that encoding carries csrf_token and
+        idempotency_key as fields instead. Both encodings are validated
+        identically and produce the same idempotency digest.
       security: [{ sessionCookie: [] }]
       parameters:
-        - { $ref: '#/components/parameters/CsrfToken' }
-        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - name: X-CSRF-Token
+          in: header
+          required: false
+          description: Required for the JSON encoding. The form encoding supplies csrf_token instead.
+          schema: { type: string, minLength: 32, maxLength: 512 }
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Required for the JSON encoding. The form encoding supplies idempotency_key instead.
+          schema: { type: string, minLength: 16, maxLength: 255 }
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/OAuthConsentDecision' }
+          application/x-www-form-urlencoded:
+            schema: { $ref: '#/components/schemas/OAuthConsentFormDecision' }
       responses:
         '302':
           description: Exact registered redirect containing code or access_denied and unchanged state.
@@ -2891,11 +2946,6 @@ components:
       required: true
       description: Strong ETag containing the expected aggregate version.
       schema: { type: string, pattern: '^"[0-9]+"$' }
-    CsrfToken:
-      name: X-CSRF-Token
-      in: header
-      required: true
-      schema: { type: string, minLength: 32, maxLength: 512 }
     OrgContext:
       name: X-Org-ID
       in: header
@@ -3057,6 +3107,9 @@ components:
     Conflict:
       description: Unique, idempotency, replay, terminal-state, or concurrent-state conflict.
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    NotAcceptable:
+      description: The client and server do not support a common public API version.
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
     Gone:
       description: One-time challenge, authorization code, invitation, proof, or response window expired.
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
@@ -3112,6 +3165,22 @@ components:
       properties:
         service: { const: silicon-iam }
         api_version: { const: v1 }
+        build: { type: string }
+        commit: { type: string }
+    ApiVersionNegotiation:
+      type: object
+      required: [service, selected_api_version, supported_api_versions, build, commit]
+      additionalProperties: false
+      properties:
+        service: { const: silicon-iam }
+        selected_api_version: { type: string, pattern: '^v[1-9][0-9]{0,8}$' }
+        supported_api_versions:
+          type: array
+          minItems: 1
+          maxItems: 16
+          uniqueItems: true
+          description: Server-supported API majors in descending preference order.
+          items: { type: string, pattern: '^v[1-9][0-9]{0,8}$' }
         build: { type: string }
         commit: { type: string }
     VerificationCode:
@@ -3227,7 +3296,7 @@ components:
       properties:
         carbon_id: { $ref: '#/components/schemas/CarbonId' }
         display_name: { type: string, minLength: 1, maxLength: 200 }
-        time_zone:
+        timezone:
           allOf: [{ $ref: '#/components/schemas/TimeZoneId' }]
           description: Defaults to UTC when omitted.
         description: { type: [string, 'null'], maxLength: 5000 }
@@ -3396,6 +3465,20 @@ components:
       properties:
         authorization_transaction_id: { type: string, format: uuid }
         decision: { type: string, enum: [approve, deny] }
+    OAuthConsentFormDecision:
+      type: object
+      description: >-
+        The form encoding used by the IAM-rendered consent screen. A browser form
+        cannot set request headers, so the CSRF token and the idempotency key are
+        fields. They are lifted into the equivalent headers server-side and
+        validated by the same code as the JSON encoding.
+      required: [authorization_transaction_id, decision, csrf_token, idempotency_key]
+      additionalProperties: false
+      properties:
+        authorization_transaction_id: { type: string, format: uuid }
+        decision: { type: string, enum: [approve, deny] }
+        csrf_token: { type: string, minLength: 32, maxLength: 512 }
+        idempotency_key: { type: string, minLength: 16, maxLength: 255 }
     OAuthTokenRequest:
       type: object
       oneOf:

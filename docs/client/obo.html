@@ -1,0 +1,126 @@
+<p class="lede">
+  On-behalf-of lets your Application call another one in the same organization, without either
+  holding the other's credentials. The SDK signs the exchange and binds the resulting proof to one
+  exact downstream request.
+</p>
+
+<h2>Discover, then exchange</h2>
+
+<pre><code>let catalog = client.discover_obo_endpoints("billing_app").await?;
+let endpoint = catalog
+    .endpoint("create_invoice")
+    .ok_or("OBO endpoint not registered")?;
+
+let body = br#"{"amount":1200}"#;
+
+let exchange = client
+    .exchange_obo(endpoint, &subject_token)
+    .metadata(json!({"reason": "checkout"}))?
+    .request_bytes(Method::POST, body)?;
+
+let _operation_key = exchange.idempotency_key();
+let proof = exchange.send().await?;</code></pre>
+
+<p>
+  Discovery returns the audience's registered endpoints and the metadata each one requires. The
+  SDK signs the <em>registered</em> path from the catalog rather than a path you type, so a
+  mismatch is impossible.
+</p>
+
+<div class="banner banner-info">
+  <div>
+    <strong>The bytes never go to IAM.</strong>
+    <code>request_bytes</code> hashes the body and sends only the digest. The payload — a file, an
+    invoice, whatever it is — travels directly from your Application to the audience.
+  </div>
+</div>
+
+<h2>What the proof is bound to</h2>
+
+<p>
+  The proof commits to the method, the registered path, the body digest and the idempotency key.
+  It cannot be lifted and replayed against a different call, even by the Application that
+  legitimately obtained it.
+</p>
+
+<p>
+  It is valid for <strong>one request or sixty seconds, whichever comes first</strong>. Exchange
+  immediately before dispatching, not in advance.
+</p>
+
+<h2>Consuming a proof</h2>
+
+<p>On the audience side, verify against the request you actually received:</p>
+
+<pre><code>let result = client
+    .verify_obo(proof)
+    .request_bytes(Method::POST, "/v1/invoices", body)?
+    .send()
+    .await?;
+
+// Only now execute. `result` carries the bound actor, endpoint and metadata.</code></pre>
+
+<div class="banner banner-danger">
+  <div>
+    <strong>Verification is single-use and must never be retried.</strong>
+    It accepts no idempotency key, no successful response is ever stored, and every attempt after
+    the proof is consumed returns <code>409</code>. If your HTTP layer retries automatically,
+    exempt this call — a retry after a successful verification is indistinguishable from a replay
+    attack and will be refused as one.
+  </div>
+</div>
+
+<p>
+  When the SDK cannot tell whether a verification succeeded it returns
+  <code>Error::AmbiguousOboVerification</code>. The proof may already be consumed. Fail the
+  request; do not retry.
+</p>
+
+<h2>Recovering an uncertain exchange</h2>
+
+<p>
+  The <em>exchange</em> is idempotent, so it can be rebuilt after a restart with
+  <code>exchange_obo_with_idempotency_key</code> — but only after rediscovering the endpoint and
+  restoring the same subject token, metadata, method and body digest. Any difference produces a
+  different canonical request and a <code>409 idempotency_conflict</code> rather than a replay.
+</p>
+
+<p>
+  Note the asymmetry: the exchange is recoverable, the verification is not. That is deliberate.
+  Minting a proof twice is harmless because a proof is single-use anyway; consuming one twice is
+  exactly the thing single-use exists to prevent.
+</p>
+
+<h2>How the proof reaches the audience</h2>
+
+<p>
+  It does not travel by a header the SDK invents. The backend contract does not define how the
+  issuer places a proof on the downstream request, so the SDK deliberately leaves that to the two
+  Applications to agree — a header, a field, a wrapper envelope, whatever fits their protocol.
+</p>
+
+<p>
+  Inventing one here would look like a standard without being one, and the first Application to
+  assume it was would be wrong.
+</p>
+
+<h2>Failure modes</h2>
+
+<table>
+  <thead><tr><th>Condition</th><th>Meaning</th><th>Do</th></tr></thead>
+  <tbody>
+    <tr><td><code>403</code></td><td>The two Applications are not in one organization</td>
+      <td>Nothing. This is not retryable and never will be.</td></tr>
+    <tr><td><code>409</code></td><td>The proof was already consumed</td>
+      <td>Do not retry. Mint a new proof for a new request.</td></tr>
+    <tr><td><code>410 proof_expired</code></td><td>More than 60 seconds elapsed</td>
+      <td>Exchange again, and look at why the gap was that long.</td></tr>
+    <tr><td><code>422</code></td><td>Metadata does not satisfy the declared schema</td>
+      <td>Re-read the catalog; the audience may have changed it.</td></tr>
+  </tbody>
+</table>
+
+<p>
+  The language-independent description of all of this is in
+  <a href="/docs/api/obo">the contract's OBO section</a>.
+</p>

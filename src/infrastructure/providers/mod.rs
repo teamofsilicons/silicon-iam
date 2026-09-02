@@ -12,11 +12,15 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::{
-    application::ports::{EmailDelivery, SmsDelivery},
+    application::ports::{EmailDelivery, PhoneOtpDelivery, SmsDelivery},
     config::{ProviderSettings, WorkerProviderSettings},
 };
 
-use self::{local::LocalDelivery, postmark::PostmarkEmail, twilio::TwilioSms};
+use self::{
+    local::LocalDelivery,
+    postmark::PostmarkEmail,
+    twilio::{TwilioSms, TwilioVerify},
+};
 
 /// Notification providers selected from validated runtime settings.
 #[derive(Clone)]
@@ -25,6 +29,8 @@ pub struct NotificationProviders {
     pub email: Arc<dyn EmailDelivery>,
     /// Transactional SMS delivery.
     pub sms: Arc<dyn SmsDelivery>,
+    /// Managed phone OTP delivery and verification, when configured.
+    pub phone_otp: Option<Arc<dyn PhoneOtpDelivery>>,
 }
 
 /// Notification-adapter construction failure.
@@ -46,7 +52,7 @@ impl NotificationProviders {
     /// Returns an error when credentials are absent while local adapters are
     /// disabled, or a hardened HTTP client cannot be constructed.
     pub fn from_settings(settings: &ProviderSettings) -> Result<Self, ProviderBuildError> {
-        Self::from_worker_settings(&WorkerProviderSettings {
+        let mut providers = Self::from_worker_settings(&WorkerProviderSettings {
             postmark_server_token: settings.postmark_server_token.clone(),
             postmark_from_email: settings.postmark_from_email.clone(),
             twilio_account_sid: settings.twilio_account_sid.clone(),
@@ -54,7 +60,20 @@ impl NotificationProviders {
             twilio_messaging_service_sid: settings.twilio_messaging_service_sid.clone(),
             iris_base_url: settings.iris_base_url.clone(),
             allow_local_providers: settings.allow_local_providers,
-        })
+        })?;
+        providers.phone_otp = match (
+            &settings.twilio_account_sid,
+            &settings.twilio_auth_token,
+            &settings.twilio_verify_service_sid,
+        ) {
+            (Some(account_sid), Some(auth_token), Some(verify_service_sid)) => Some(Arc::new(
+                TwilioVerify::new(account_sid.clone(), auth_token.clone(), verify_service_sid)?,
+            )
+                as Arc<dyn PhoneOtpDelivery>),
+            (None, None, None) if settings.allow_local_providers => None,
+            _ => return Err(ProviderBuildError::MissingConfiguration),
+        };
+        Ok(providers)
     }
 
     /// Constructs notification adapters from the restricted worker provider
@@ -95,6 +114,10 @@ impl NotificationProviders {
             _ => return Err(ProviderBuildError::MissingConfiguration),
         };
 
-        Ok(Self { email, sms })
+        Ok(Self {
+            email,
+            sms,
+            phone_otp: None,
+        })
     }
 }
