@@ -110,6 +110,15 @@ pub(super) async fn send_required(
     })
 }
 
+/// Reports whether the provider generates and validates the code for this
+/// channel.
+///
+/// IAM holds no code in that case, so persisting a digest would leave a secret
+/// at rest that is never delivered to anyone.
+pub(super) fn provider_manages_otp(state: &ApiState, channel: ContactChannel) -> bool {
+    matches!(channel, ContactChannel::Phone) && state.notifications.phone_otp.is_some()
+}
+
 pub(super) async fn verify_managed_phone_otp(
     state: &ApiState,
     provider_verification_id: Option<&str>,

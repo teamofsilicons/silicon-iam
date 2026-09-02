@@ -493,6 +493,28 @@ unless worker_outbox.match?(
   issues << "captured Application events must not fall through to later-state recipient discovery"
 end
 
+provider_managed_digest = File.read("migrations/0048_provider_managed_phone_digest.sql")
+provider_managed_digest_requirements = {
+  "admits an absent local digest on all three challenge tables" =>
+    /iam\.signup_otp_challenges[\s\S]*ALTER COLUMN code_digest DROP NOT NULL[\s\S]*iam\.login_challenge_channels[\s\S]*ALTER COLUMN code_digest DROP NOT NULL[\s\S]*iam\.step_up_challenges[\s\S]*ALTER COLUMN challenge_digest DROP NOT NULL/,
+  "keeps a digest and its key version inseparable" =>
+    /\(code_digest IS NULL\) = \(digest_key_version IS NULL\)[\s\S]*\(code_digest IS NULL\) = \(digest_key_version IS NULL\)[\s\S]*\(challenge_digest IS NULL\) = \(digest_key_version IS NULL\)/,
+  "permits the absence only on a phone challenge" =>
+    /code_digest IS NOT NULL OR contact_kind = 'phone'[\s\S]*code_digest IS NOT NULL OR contact_kind = 'phone'[\s\S]*challenge_digest IS NOT NULL OR channel = 'phone'/
+}
+provider_managed_digest_requirements.each do |description, pattern|
+  issues << "provider-managed digest migration #{description}" unless provider_managed_digest.match?(pattern)
+end
+
+# The local-digest fallback must never be reachable for a challenge that stored
+# no digest: each flow has to fail closed rather than treat absence as a match.
+%w[signup login step_up].each do |flow|
+  source = File.read("src/features/authentication/#{flow}.rs")
+  unless source.match?(/#{flow}_otp_digest_missing/)
+    issues << "#{flow} verification must fail closed when no local digest was stored"
+  end
+end
+
 unless issues.empty?
   issues.each { |issue| warn issue }
   exit 1
