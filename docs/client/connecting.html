@@ -8,12 +8,14 @@
 <p>The package name uses a hyphen; Rust imports it with an underscore.</p>
 
 <pre><code>[dependencies]
-silicon-iam = { path = "../iam-rust-library" }</code></pre>
+silicon-iam = "0.1.0"</code></pre>
 
 <p>
-  The crate is not yet published to crates.io, so depend on it by path or by git revision. Pin a
-  revision rather than tracking a branch: this client fails closed on a contract mismatch, and an
-  unpinned dependency turns a backend deploy into an unplanned client upgrade.
+  View releases, dependency metadata and installation details on
+  <a href="https://crates.io/crates/silicon-iam" rel="external noreferrer">the silicon-iam
+    package page on crates.io</a>. Keep the dependency version explicit: this client fails closed
+  on a contract mismatch, and an unplanned SDK upgrade should not accompany an unrelated backend
+  deployment.
 </p>
 
 <p>The minimum supported Rust version is 1.88.</p>
