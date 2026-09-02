@@ -32,7 +32,7 @@ For the endpoint rate limit it at 10 then needs to wait for 10 minutes before co
 
 For the verification code, after 10 failed tries, there's a cooldown of 1 minute before trying again.  
 
-For the final Sign Up request, it would take in the `session_id, carbon_id, description, display_name, profile_photo, time_zone` Every field except description, profile_photo, and time_zone is compulsory.
+For the final Sign Up request, it would take in the `session_id, carbon_id, description, display_name, profile_photo, timezone` Every field except description, profile_photo, and timezone is compulsory.
 
 By default, set the profile_photo to: https://iris.teamofsilicons.com/pfp/carbon?id={carbon_id}.
 

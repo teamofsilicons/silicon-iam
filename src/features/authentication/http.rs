@@ -416,7 +416,7 @@ pub(super) fn login_scope(identifier: &super::model::ValidatedLoginIdentifier) -
 fn json_body<T>(payload: Result<Json<T>, JsonRejection>) -> Result<T, AppError> {
     payload
         .map(|Json(value)| value)
-        .map_err(|_| validation::validation("body", "must match the documented JSON schema"))
+        .map_err(|rejection| AppError::from_json_rejection(&rejection))
 }
 
 fn malformed_query() -> AppError {

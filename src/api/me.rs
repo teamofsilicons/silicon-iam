@@ -804,7 +804,7 @@ fn raw_json_with_etag(
 fn json_body<T>(payload: Result<Json<T>, JsonRejection>) -> Result<T, AppError> {
     payload
         .map(|Json(value)| value)
-        .map_err(|_| validation("body", "must be valid JSON matching the schema"))
+        .map_err(|rejection| AppError::from_json_rejection(&rejection))
 }
 
 fn validation(field: &'static str, message: &'static str) -> AppError {

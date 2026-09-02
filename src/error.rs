@@ -4,6 +4,7 @@ use std::borrow::Cow;
 
 use axum::{
     Json,
+    extract::rejection::JsonRejection,
     http::{HeaderName, HeaderValue, StatusCode, header},
     response::IntoResponse,
 };
@@ -193,6 +194,32 @@ impl IntoResponse for AppError {
 }
 
 impl AppError {
+    /// Validation failure describing exactly one offending request field.
+    pub(crate) fn invalid_field(field: impl Into<String>, message: &'static str) -> Self {
+        Self::Validation {
+            details: serde_json::json!({
+                "fields": [{ "field": field.into(), "message": message }],
+            }),
+        }
+    }
+
+    /// Maps a rejected JSON body onto a validation error that names the
+    /// offending field.
+    ///
+    /// Serde knows precisely why deserialization failed, but its message can
+    /// embed the submitted value, so only the field name is surfaced, and only
+    /// when it is a plain identifier. Every other shape stays generic.
+    pub(crate) fn from_json_rejection(rejection: &JsonRejection) -> Self {
+        match rejection {
+            JsonRejection::MissingJsonContentType(_) => {
+                Self::invalid_field("content-type", "must be application/json")
+            }
+            JsonRejection::JsonSyntaxError(_) => Self::invalid_field("body", "must be valid JSON"),
+            JsonRejection::JsonDataError(error) => json_data_error(&error.body_text()),
+            _ => Self::invalid_field("body", "must match the documented JSON schema"),
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one exhaustive mapping keeps every public status, code, and message auditable"
@@ -349,6 +376,36 @@ fn request_id() -> String {
     crate::request_context::current_request_id().unwrap_or_else(|| "unavailable".to_owned())
 }
 
+/// Longest field name reflected back to a caller.
+const MAX_REFLECTED_FIELD_BYTES: usize = 64;
+
+/// Names the field serde rejected, falling back to the generic body message.
+fn json_data_error(detail: &str) -> AppError {
+    if let Some(field) = plain_identifier_after(detail, "unknown field ") {
+        return AppError::invalid_field(field, "is not a recognized field");
+    }
+    if let Some(field) = plain_identifier_after(detail, "missing field ") {
+        return AppError::invalid_field(field, "is required");
+    }
+    AppError::invalid_field("body", "must match the documented JSON schema")
+}
+
+/// Extracts the backtick-quoted identifier following `needle`.
+///
+/// An unknown field name originates in the request body, so anything that is
+/// not a bounded plain identifier is discarded rather than reflected.
+fn plain_identifier_after(haystack: &str, needle: &str) -> Option<String> {
+    let start = haystack.find(needle)? + needle.len();
+    let rest = haystack.get(start..)?.strip_prefix('`')?;
+    let name = rest.get(..rest.find('`')?)?;
+    let plain = !name.is_empty()
+        && name.len() <= MAX_REFLECTED_FIELD_BYTES
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-');
+    plain.then(|| name.to_owned())
+}
+
 impl From<sqlx::Error> for AppError {
     fn from(error: sqlx::Error) -> Self {
         let category = match error {
@@ -363,7 +420,11 @@ impl From<sqlx::Error> for AppError {
 
 #[cfg(test)]
 mod tests {
-    use axum::{http::header, response::IntoResponse as _};
+    use axum::{
+        body::Body,
+        http::{HeaderValue, Method, Request, header},
+        response::IntoResponse as _,
+    };
 
     use super::AppError;
 
@@ -447,5 +508,187 @@ mod tests {
                 Some("5")
             );
         }
+    }
+
+    fn field_details(error: AppError) -> serde_json::Value {
+        match error {
+            AppError::Validation { details } => details,
+            other => panic!("expected a validation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_body_field_is_named_in_the_validation_details() {
+        let details = field_details(super::json_data_error(
+            "Failed to deserialize the JSON body into the target type: unknown field `timezone`, expected one of `carbon_id`, `display_name` at line 1 column 63",
+        ));
+
+        assert_eq!(
+            details,
+            serde_json::json!({
+                "fields": [{ "field": "timezone", "message": "is not a recognized field" }],
+            })
+        );
+    }
+
+    #[test]
+    fn missing_body_field_is_named_in_the_validation_details() {
+        let details = field_details(super::json_data_error(
+            "Failed to deserialize the JSON body into the target type: missing field `display_name` at line 1 column 30",
+        ));
+
+        assert_eq!(
+            details,
+            serde_json::json!({
+                "fields": [{ "field": "display_name", "message": "is required" }],
+            })
+        );
+    }
+
+    #[test]
+    fn a_submitted_value_is_never_reflected_back_to_the_caller() {
+        let details = field_details(super::json_data_error(
+            "Failed to deserialize the JSON body into the target type: invalid type: string \"664503\", expected a u64 at line 1 column 20",
+        ));
+
+        assert_eq!(
+            details,
+            serde_json::json!({
+                "fields": [{ "field": "body", "message": "must match the documented JSON schema" }],
+            })
+        );
+    }
+
+    #[test]
+    fn an_unknown_field_name_that_is_not_a_plain_identifier_stays_generic() {
+        for detail in [
+            "unknown field `<script>alert(1)</script>`, expected one of `carbon_id`",
+            "unknown field `a.b`, expected one of `carbon_id`",
+            "unknown field ``, expected one of `carbon_id`",
+        ] {
+            let details = field_details(super::json_data_error(detail));
+            assert_eq!(
+                details,
+                serde_json::json!({
+                    "fields": [{ "field": "body", "message": "must match the documented JSON schema" }],
+                }),
+                "reflected an unsafe field name from {detail}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_over_long_unknown_field_name_stays_generic() {
+        let name = "f".repeat(super::MAX_REFLECTED_FIELD_BYTES + 1);
+        let details = field_details(super::json_data_error(&format!(
+            "unknown field `{name}`, expected one of `carbon_id`"
+        )));
+
+        assert_eq!(
+            details,
+            serde_json::json!({
+                "fields": [{ "field": "body", "message": "must match the documented JSON schema" }],
+            })
+        );
+    }
+
+    #[test]
+    fn an_unknown_field_name_at_the_maximum_length_is_still_named() {
+        let name = "f".repeat(super::MAX_REFLECTED_FIELD_BYTES);
+        let details = field_details(super::json_data_error(&format!(
+            "unknown field `{name}`, expected one of `carbon_id`"
+        )));
+
+        assert_eq!(
+            details,
+            serde_json::json!({
+                "fields": [{ "field": name, "message": "is not a recognized field" }],
+            })
+        );
+    }
+
+    /// Guards the parser against a change in axum's or serde's rejection text:
+    /// these drive a real extractor rather than a hand-written message.
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[allow(
+        dead_code,
+        reason = "the fields exist to give the extractor a realistic shape to reject"
+    )]
+    struct Completion {
+        carbon_id: String,
+        display_name: String,
+        timezone: Option<String>,
+    }
+
+    fn json_post(body: &'static str, content_type: Option<&'static str>) -> Request<Body> {
+        let mut request = Request::new(Body::from(body));
+        *request.method_mut() = Method::POST;
+        if let Some(content_type) = content_type {
+            request
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+        }
+        request
+    }
+
+    async fn rejection_of(request: Request<Body>) -> AppError {
+        use axum::extract::FromRequest as _;
+
+        match axum::Json::<Completion>::from_request(request, &()).await {
+            Ok(_) => panic!("the extractor was expected to reject this body"),
+            Err(rejection) => AppError::from_json_rejection(&rejection),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_real_unknown_field_rejection_names_that_field() {
+        let request = json_post(
+            r#"{"carbon_id":"a-b","display_name":"A","time_zone":"Asia/Kolkata"}"#,
+            Some("application/json"),
+        );
+
+        assert_eq!(
+            field_details(rejection_of(request).await),
+            serde_json::json!({
+                "fields": [{ "field": "time_zone", "message": "is not a recognized field" }],
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_real_missing_field_rejection_names_that_field() {
+        let request = json_post(r#"{"carbon_id":"a-b"}"#, Some("application/json"));
+
+        assert_eq!(
+            field_details(rejection_of(request).await),
+            serde_json::json!({
+                "fields": [{ "field": "display_name", "message": "is required" }],
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_json_content_type_is_reported_as_such() {
+        let request = json_post("{}", None);
+
+        assert_eq!(
+            field_details(rejection_of(request).await),
+            serde_json::json!({
+                "fields": [{ "field": "content-type", "message": "must be application/json" }],
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_json_is_reported_as_invalid_json() {
+        let request = json_post("{not json", Some("application/json"));
+
+        assert_eq!(
+            field_details(rejection_of(request).await),
+            serde_json::json!({
+                "fields": [{ "field": "body", "message": "must be valid JSON" }],
+            })
+        );
     }
 }

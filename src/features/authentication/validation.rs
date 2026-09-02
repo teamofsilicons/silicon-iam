@@ -2,7 +2,6 @@ use std::str::FromStr as _;
 
 use garde::rules::email::parse_email;
 use secrecy::SecretString;
-use serde_json::json;
 use url::Url;
 
 use crate::{domain::auth::CarbonId, error::AppError};
@@ -87,12 +86,9 @@ pub(super) fn signup_completion(
     let carbon_id = CarbonId::from_str(&input.carbon_id)
         .map_err(|_| validation("carbon_id", "has an invalid format"))?;
     let display_name = bounded_text("display_name", input.display_name, 1, 200, false)?;
-    let timezone = input.time_zone.unwrap_or_else(|| "UTC".to_owned());
+    let timezone = input.timezone.unwrap_or_else(|| "UTC".to_owned());
     if !crate::domain::timezone::is_valid_identifier(&timezone) {
-        return Err(validation(
-            "time_zone",
-            "must be a valid IANA TZ identifier",
-        ));
+        return Err(validation("timezone", "must be a valid IANA TZ identifier"));
     }
     let description = input
         .description
@@ -169,11 +165,7 @@ fn profile_photo(value: &str, production: bool) -> Result<Url, AppError> {
 }
 
 pub(super) fn validation(field: &'static str, message: &'static str) -> AppError {
-    AppError::Validation {
-        details: json!({
-            "fields": [{ "field": field, "message": message }],
-        }),
-    }
+    AppError::invalid_field(field, message)
 }
 
 #[cfg(test)]
@@ -209,7 +201,7 @@ mod tests {
         let valid = SignupCompletionInput {
             carbon_id: "timezone_test".to_owned(),
             display_name: "Time Zone Test".to_owned(),
-            time_zone: Some("Asia/Kolkata".to_owned()),
+            timezone: Some("Asia/Kolkata".to_owned()),
             description: None,
             profile_photo: None,
         };
@@ -221,7 +213,7 @@ mod tests {
         let invalid = SignupCompletionInput {
             carbon_id: "timezone_test".to_owned(),
             display_name: "Time Zone Test".to_owned(),
-            time_zone: Some("Mars/Olympus_Mons".to_owned()),
+            timezone: Some("Mars/Olympus_Mons".to_owned()),
             description: None,
             profile_photo: None,
         };
@@ -230,7 +222,7 @@ mod tests {
         let defaulted = SignupCompletionInput {
             carbon_id: "timezone_test".to_owned(),
             display_name: "Time Zone Test".to_owned(),
-            time_zone: None,
+            timezone: None,
             description: None,
             profile_photo: None,
         };

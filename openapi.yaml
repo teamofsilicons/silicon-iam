@@ -3296,7 +3296,7 @@ components:
       properties:
         carbon_id: { $ref: '#/components/schemas/CarbonId' }
         display_name: { type: string, minLength: 1, maxLength: 200 }
-        time_zone:
+        timezone:
           allOf: [{ $ref: '#/components/schemas/TimeZoneId' }]
           description: Defaults to UTC when omitted.
         description: { type: [string, 'null'], maxLength: 5000 }

@@ -211,6 +211,15 @@ code that no reader asked for.
 | 503 | A required dependency is unavailable | `service_unavailable` |
 | 504 | A bounded server or provider deadline elapsed | `gateway_timeout` |
 
+A `validation_failed` body carries `details.fields`, each entry naming the
+offending `field`. A body that cannot be decoded at all still names the
+responsible property: an unrecognized property reports that property with
+`is not a recognized field`, a missing required property reports it with
+`is required`, a request without `Content-Type: application/json` reports
+`content-type`, and malformed JSON reports `body`. Submitted values are never
+echoed back, so any rejection whose explanation would have to quote a value
+degrades to `body` with `must match the documented JSON schema`.
+
 `429` includes `Retry-After`, `RateLimit-Limit`,
 `RateLimit-Remaining`, and `RateLimit-Reset`. Carbon login initiation returns
 `404` when the submitted identity is not registered. Signup contact initiation
@@ -295,7 +304,7 @@ All paths above are under `/api/v1/signup/sessions`.
   one-minute-cooldown verification policy described above.
 - Completion requires both verified identities and atomically rechecks their
   uniqueness before inserting the Carbon.
-- Completion accepts optional `time_zone` as an exact IANA TZDB identifier such
+- Completion accepts optional `timezone` as an exact IANA TZDB identifier such
   as `UTC` or `Asia/Kolkata`; omission defaults it to `UTC`. Unknown identifiers
   and whitespace variants are rejected.
 - `profile_photo` defaults to
