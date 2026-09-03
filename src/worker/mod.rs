@@ -3,6 +3,7 @@
 mod maintenance;
 mod notification;
 mod outbox;
+mod testing_environments;
 mod webhook;
 
 use std::sync::{Arc, atomic::AtomicUsize};
@@ -24,6 +25,13 @@ use crate::{
 
 pub(super) struct WorkerContext {
     pool: PgPool,
+    /// Shared testing database, present only where the feature is deployed.
+    ///
+    /// The worker reaches it for exactly one purpose: erasing an environment
+    /// whose recovery window has closed. No delivery, outbox or retention
+    /// stage runs against it, which is what keeps a testing environment from
+    /// ever sending a real message or a real webhook.
+    testing_pool: Option<PgPool>,
     settings: Arc<WorkerProcessSettings>,
     encryption: Arc<EncryptionService>,
     notifications: NotificationProviders,
@@ -57,6 +65,10 @@ pub async fn run(settings: WorkerProcessSettings) -> anyhow::Result<()> {
         anyhow::bail!("database migrations are not current");
     }
     postgres::register_runtime_encryption_key_versions(&pool, &settings.encryption_keys).await?;
+    let testing_pool = match settings.testing.as_ref() {
+        Some(testing) => Some(postgres::connect(&testing.database, "iam-worker-testing").await?),
+        None => None,
+    };
     let encryption = EncryptionService::from_settings(&settings.encryption_keys)?;
     let notifications = NotificationProviders::from_worker_settings(&settings.providers)?;
     let poll_interval = settings.worker.poll_interval;
@@ -66,6 +78,7 @@ pub async fn run(settings: WorkerProcessSettings) -> anyhow::Result<()> {
     let shutdown_timeout = settings.shutdown_timeout;
     let context = Arc::new(WorkerContext {
         pool,
+        testing_pool,
         settings: Arc::new(settings),
         encryption: Arc::new(encryption),
         notifications,
@@ -130,6 +143,13 @@ pub async fn run(settings: WorkerProcessSettings) -> anyhow::Result<()> {
     {
         error!("worker shutdown deadline elapsed while closing database pool");
     }
+    if let Some(testing_pool) = context.testing_pool.as_ref()
+        && tokio::time::timeout_at(shutdown_deadline, testing_pool.close())
+            .await
+            .is_err()
+    {
+        error!("worker shutdown deadline elapsed while closing testing database pool");
+    }
     Ok(())
 }
 
@@ -162,6 +182,13 @@ fn report_worker_task_result(result: Result<(), JoinError>) {
 async fn run_maintenance(context: &WorkerContext) {
     if let Err(error) = maintenance::process_batch(context).await {
         error!(error = %error, worker.stage = "retention_maintenance", "worker stage failed");
+    }
+    if let Err(error) = testing_environments::process_batch(context).await {
+        error!(
+            error = %error,
+            worker.stage = "testing_environment_maintenance",
+            "worker stage failed"
+        );
     }
 }
 
