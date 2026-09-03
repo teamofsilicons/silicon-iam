@@ -69,7 +69,7 @@ Each carbon can also create their own organisation. While creating an organisati
 ### Inviting an carbon
 
 The org admins should be able to invite carbon's into the organisation, while inviting a carbon it would need to define:
-`carbon_id/email` - any of the given one's can be used to identify the user. There should also be endpoints to fetch a carbon_id via their email or phone number itself for the registered carbons. For the carbon_id/email invited into the org, mail to the email adress of the carbon with all the required info to join the organisation. And the link to `{frontend_url}/join/{org_id}?app={app_id}`. For the defined app_id once the user logs in successfully they would be redirected to the application. It isn't possible to invite an carbon_id that doesen't exist yet. For the carbon_id invited mail on the registered email adress, say if it's invited via email so the entered email would get the request. 
+`carbon_id/email` - any of the given one's can be used to identify the user. There should also be endpoints to fetch a carbon_id via their email or phone number itself for the registered carbons. For the carbon_id/email invited into the org, mail to the email adress of the carbon with all the required info to join the organisation. And the link to `{frontend_url}/join/{org_id}`. It isn't possible to invite an carbon_id that doesen't exist yet. For the carbon_id invited mail on the registered email adress, say if it's invited via email so the entered email would get the request. 
 
 There should also be an search carbon endpoint which shows me via fuzzy search the carbon_id i might likely be looking for based on our system. So say i wrote `sak` and out of all the carbon_id's you suggest `saket, sakamm, saket2103`, etc. Show upwards to 10 suggestions, the range of suggestions can be 0 to 10 inclusive of the limits.  
 
@@ -302,7 +302,7 @@ For each role change maintain a history, who triggered the change, who approved 
 
 ## Tags
 
-Tags are a way of grouping in the system and it also gives the carbon access to the silicons with the same tag. Tags is a list that can be defined and further updated via the org_admins or org_owner. 
+Tags are a way of grouping in the system and it also gives the carbon access to the silicons with the same tag. Tags is a list that can be defined and further updated via the org_admins or org_owner. Tags can also be deleted by the org_admins or org_owner. 
 
 Each silicon and carbon can have a single or multiple tags assigned to them. 
 
@@ -505,8 +505,14 @@ Only above this line is what the IAm backend would hold, below this would be the
 
 The Rust package & cli using that rust package are first hand client with an always running deamon if needed in the background. the UI will be a subset of the cli. make sure everything works via the CLI first, and then we'll make the UI. Everyone should be able to use the CLI/Rust Package (carbons, silicons, org, access keys, api keys, read, write, patch, delete, everything).
 
+The rust package would be stateless whereas the cli would be statefull. CLI built on top of the rust package.
+
 For how this CLI is built, rust as the programming language, but can use anything under the hood that is needed. Maybe rust, or node, or shell, as and when the work comes. That is decided by the implementor based on the work. If something requirs a UI (like graph, live, video, images etc). for that the UI has an endpoint that can be viewed/used/downloaded and the cli gives the link to that.
 
 The primary Interface is the Rust Package. CLI is built using the Rust Package only and doesn't have any feature that the Rust package does not.
 
 if you need a local store for auth or something else, use ~/.{appname}/ dir.
+
+For both package and the cli write detailed docs on how to use the package and how to use the cli, and also another doc on how to use the package. 
+
+Package and CLI must only expose the client side actions, and not the internal actions performed by the backend. For the CLI follow the standard command line grammar rules, and also include a -h command that shows all the possible commands.

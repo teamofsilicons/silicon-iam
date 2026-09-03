@@ -61,13 +61,18 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Lint every target
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: Run tests
-        run: cargo test --all-targets --all-features --locked
+        run: cargo test --workspace --all-targets --all-features --locked
+
+      - name: Confirm the client wire types still match the contract
+        run: |
+          ruby scripts/generate-client-models.rb
+          git diff --exit-code crates/client/src/models.rs
 
       - name: Run live PostgreSQL protocol tests
-        run: cargo test --all-features --locked --lib -- --ignored --test-threads=1
+        run: cargo test -p silicon-iam --all-features --locked --lib -- --ignored --test-threads=1
 
       - name: Validate OpenAPI document
         run: ruby scripts/check-openapi-routes.rb

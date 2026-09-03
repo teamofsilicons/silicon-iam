@@ -1,0 +1,30 @@
+[package]
+name = "silicon-iam-cli"
+version = "0.1.0"
+description = "Command-line client for Silicon IAM, built on the silicon-iam-client crate."
+keywords = ["iam", "identity", "cli", "authentication", "authorization"]
+categories = ["command-line-utilities", "authentication"]
+readme = "README.md"
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "siam"
+path = "src/main.rs"
+
+[dependencies]
+silicon-iam-client = { version = "0.1.0", path = "../client" }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true
