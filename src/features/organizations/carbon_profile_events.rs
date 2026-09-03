@@ -19,6 +19,7 @@ const EVENT_TYPE: &str = "organization.membership.profile_updated.v1";
 struct ActiveCarbonMembership {
     organization_id: Uuid,
     membership_id: Uuid,
+    affected_tag_ids: Vec<Uuid>,
 }
 
 /// Same-transaction organization and tag scope for one Carbon membership.
@@ -36,25 +37,20 @@ pub(crate) struct CarbonProfileSiliconRoute {
 }
 
 /// Locks and snapshots every active organization membership for a Carbon.
+///
+/// The lock is taken through a fixed-path boundary rather than here. A locking
+/// clause makes PostgreSQL apply a table's UPDATE policies as well as its
+/// SELECT policies, and the membership UPDATE policy needs a selected
+/// organization that a profile update never has -- so taking these locks from
+/// the API role matched nothing and captured an empty audience. The tag lock
+/// additionally needs write privilege the API role does not hold on membership
+/// assignments.
 pub(crate) async fn capture_carbon_profile_silicon_routes(
     transaction: &mut Transaction<'_, Postgres>,
     carbon_id: Uuid,
 ) -> Result<Vec<CarbonProfileSiliconRoute>, AppError> {
     let memberships = sqlx::query_as::<_, ActiveCarbonMembership>(
-        r"
-        SELECT
-            membership.organization_id,
-            membership.id AS membership_id
-        FROM iam.organization_memberships AS membership
-        JOIN iam.organizations AS organization
-          ON organization.id = membership.organization_id
-         AND organization.status = 'active'
-        WHERE membership.principal_id = $1
-          AND membership.principal_kind = 'carbon'
-          AND membership.status = 'active'
-        ORDER BY membership.organization_id, membership.id
-        FOR SHARE OF membership, organization
-        ",
+        "SELECT * FROM iam_private.lock_carbon_profile_silicon_routes($1)",
     )
     .bind(carbon_id)
     .fetch_all(&mut **transaction)
@@ -63,25 +59,7 @@ pub(crate) async fn capture_carbon_profile_silicon_routes(
 
     let mut routes = Vec::with_capacity(memberships.len());
     for membership in memberships {
-        let affected_tag_ids = sqlx::query_scalar::<_, Uuid>(
-            r"
-            SELECT assignment.tag_id
-            FROM iam.membership_tags AS assignment
-            JOIN iam.organization_tags AS tag
-              ON tag.organization_id = assignment.organization_id
-             AND tag.id = assignment.tag_id
-             AND tag.status = 'active'
-            WHERE assignment.organization_id = $1
-              AND assignment.membership_id = $2
-            ORDER BY assignment.tag_id
-            FOR SHARE OF assignment, tag
-            ",
-        )
-        .bind(membership.organization_id)
-        .bind(membership.membership_id)
-        .fetch_all(&mut **transaction)
-        .await
-        .map_err(support::database)?;
+        let affected_tag_ids = membership.affected_tag_ids;
         let current = directory::fetch_member(
             transaction,
             membership.organization_id,

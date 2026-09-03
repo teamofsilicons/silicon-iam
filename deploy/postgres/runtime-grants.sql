@@ -538,6 +538,7 @@ DECLARE
         'list_organization_member_webhook_projection_sources',
         'list_profile_webhook_authorization_scopes',
         'lock_application_creation_organization',
+        'lock_carbon_profile_silicon_routes',
         'lock_invitation_verification_challenge',
         'lock_organization_tag_scope',
         'lock_membership_removal_event_scope',

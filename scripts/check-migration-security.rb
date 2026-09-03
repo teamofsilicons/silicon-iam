@@ -439,8 +439,8 @@ carbon_profile_silicon_events = File.read(
   "src/features/organizations/carbon_profile_events.rs"
 )
 carbon_profile_silicon_requirements = {
-  "locks active membership and tag scope before profile mutation" =>
-    /capture_carbon_profile_silicon_routes[\s\S]*FOR SHARE OF membership, organization[\s\S]*FOR SHARE OF assignment, tag/,
+  "captures the locked membership and tag scope before profile mutation" =>
+    /capture_carbon_profile_silicon_routes[\s\S]*iam_private\.lock_carbon_profile_silicon_routes/,
   "captures the complete current same-organization directory state" =>
     /directory::fetch_member\([\s\S]*membership\.membership_id/,
   "uses a distinct per-membership aggregate at the exact Carbon version" =>
@@ -450,6 +450,26 @@ carbon_profile_silicon_requirements = {
   "carries exact before, after, and current state without later delivery hydration" =>
     /"before": before,[\s\S]*"after": current,[\s\S]*"current": current/
 }
+# The locks those routes depend on moved behind a fixed-path boundary: taken
+# from the API role they applied the membership UPDATE policy, which needs an
+# organization a profile update never selects, and silently captured nothing.
+carbon_profile_route_lock = File.read(
+  "migrations/0055_lock_carbon_profile_silicon_routes.sql"
+)
+carbon_profile_route_lock_requirements = {
+  "locks membership and organization scope for the Carbon's own audience" =>
+    /lock_carbon_profile_silicon_routes[\s\S]*current_principal_id\(\) IS DISTINCT FROM p_carbon_id[\s\S]*FOR SHARE OF membership, organization/,
+  "locks the active tag audience of each membership" =>
+    /FOR SHARE OF assignment, tag/,
+  "revokes Public execution of the profile audience lock" =>
+    /REVOKE ALL ON FUNCTION iam_private\.lock_carbon_profile_silicon_routes\(uuid\) FROM PUBLIC;/
+}
+carbon_profile_route_lock_requirements.each do |description, pattern|
+  unless carbon_profile_route_lock.match?(pattern)
+    issues << "Carbon profile audience lock #{description}"
+  end
+end
+
 carbon_profile_silicon_requirements.each do |description, pattern|
   issues << "Carbon profile Silicon webhook #{description}" unless carbon_profile_silicon_events.match?(pattern)
 end
