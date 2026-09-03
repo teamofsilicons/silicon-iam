@@ -581,6 +581,7 @@ DECLARE
         'check_principal_subtype_from_subtype',
         'complete_worker_silicon_hook',
         'expire_idle_testing_environments',
+        'erase_testing_environment',
         'fail_worker_silicon_hook',
         'get_audit_public_identifiers',
         'get_worker_application_webhook_event_projection',
@@ -756,6 +757,51 @@ BEGIN
     END LOOP;
 END;
 $worker_functions$;
+
+-- Functions that exist only in a testing database.
+--
+-- The testing overlay in migrations/testing adds per-environment row scoping
+-- on top of the identical production schema. Its helpers are absent from a
+-- production database, so each grant here is conditional: applying this file
+-- to either database must succeed unchanged.
+--
+-- current_testing_environment_id is what every environment policy calls, so
+-- both runtime roles need EXECUTE on it or nothing in that database is
+-- readable at all. erase_testing_environment backs the API's "clean this
+-- environment" operation and the worker's final purge.
+DO $testing_plane_functions$
+DECLARE
+    allowed_function_name text;
+    function_record record;
+    testing_plane_function_names text[] := ARRAY[
+        'current_testing_environment_id',
+        'erase_testing_environment'
+    ];
+BEGIN
+    FOREACH allowed_function_name IN ARRAY testing_plane_function_names
+    LOOP
+        SELECT
+            namespace.nspname,
+            procedure.proname,
+            pg_catalog.pg_get_function_identity_arguments(procedure.oid) AS arguments
+        INTO function_record
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = 'iam_private'
+          AND procedure.proname = allowed_function_name;
+
+        CONTINUE WHEN NOT FOUND;
+
+        EXECUTE pg_catalog.format(
+            'GRANT EXECUTE ON FUNCTION %I.%I(%s) TO silicon_iam_api, silicon_iam_worker',
+            function_record.nspname,
+            function_record.proname,
+            function_record.arguments
+        );
+    END LOOP;
+END;
+$testing_plane_functions$;
 
 -- The operator role has no IAM table access. Its only authority is the
 -- compare-and-swap transition implemented by this fixed-path definer function.

@@ -1,7 +1,12 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-migration_paths = Dir["migrations/*.sql"].sort
+# The testing overlay is a second, separate migration set: it is applied only
+# to a testing database, on top of the same production schema. It defines
+# iam_private functions like any other migration, so it is held to the same
+# fixed-search-path and revoked-from-PUBLIC rules rather than being exempt for
+# living in a subdirectory.
+migration_paths = (Dir["migrations/*.sql"] + Dir["migrations/testing/*.sql"]).sort
 raise "no SQL migrations found" if migration_paths.empty?
 
 source = migration_paths.map do |path|
