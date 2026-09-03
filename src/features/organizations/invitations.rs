@@ -56,35 +56,19 @@ const INVITATION_JOIN_ROUTE: &str = "POST /api/v1/organizations/{org_id}/join";
 const INVITATION_CODE_SEND_LIMIT: u32 = 10;
 const INVITATION_CODE_SEND_WINDOW: Duration = Duration::from_secs(60);
 const INVITATION_OTP_PROVIDER_TIMEOUT: Duration = Duration::from_secs(5);
+/// Locks the invitation and its latest verification challenge for the invitee.
+///
+/// Routed through an owner-rights function. The lock is the point — the attempt
+/// counter and the acceptance must not race — but PostgreSQL applies a table's
+/// UPDATE policies to a locking read, and the only policy governing UPDATE on
+/// `iam.organization_invitations` requires an organization context the invitee
+/// does not have: they are not a member yet, which is what holding an
+/// invitation means. Run inline, the row row security explicitly lets the
+/// target read could never be locked, and every acceptance reported the
+/// challenge missing.
 const INVITATION_CHALLENGE_LOCK_QUERY: &str = r"
-    SELECT invitation.organization_id, invitation.target_carbon_id,
-           invitation.status AS invitation_status,
-           invitation.expires_at AS invitation_expires_at,
-           challenge.id AS challenge_id, challenge.code_digest,
-           challenge.digest_key_version, challenge.failed_attempts,
-           challenge.max_attempts, challenge.delivery_status,
-           CASE
-               WHEN challenge.expires_at > transaction_timestamp()
-                    AND challenge.consumed_at IS NULL
-                    AND challenge.superseded_at IS NULL
-                    AND challenge.cooldown_until > transaction_timestamp()
-                   THEN GREATEST(
-                       1,
-                       CEIL(EXTRACT(EPOCH FROM challenge.cooldown_until - transaction_timestamp()))::bigint
-                   )
-               ELSE 0
-           END AS cooldown_retry_after_seconds,
-           challenge.expires_at AS challenge_expires_at,
-           challenge.consumed_at, challenge.superseded_at
-    FROM iam.organization_invitations AS invitation
-    JOIN iam.invitation_verification_challenges AS challenge
-      ON challenge.organization_id = invitation.organization_id
-     AND challenge.invitation_id = invitation.id
-     AND challenge.target_carbon_id = invitation.target_carbon_id
-    WHERE invitation.id = $1 AND invitation.target_carbon_id = $2
-    ORDER BY challenge.created_at DESC
-    LIMIT 1
-    FOR UPDATE OF invitation, challenge
+    SELECT *
+    FROM iam_private.lock_invitation_verification_challenge($1, $2)
 ";
 
 #[derive(Clone, Debug, sqlx::FromRow)]
@@ -1959,8 +1943,13 @@ mod tests {
 
     #[test]
     fn invitation_join_locks_delivery_state_with_the_challenge() {
-        assert!(INVITATION_CHALLENGE_LOCK_QUERY.contains("challenge.delivery_status"));
-        assert!(INVITATION_CHALLENGE_LOCK_QUERY.contains("FOR UPDATE OF invitation, challenge"));
+        // The lock now lives in `iam_private.lock_invitation_verification_challenge`,
+        // because an invitee holds no organization context and so could not
+        // lock the invitation row row security lets them read.
+        assert!(
+            INVITATION_CHALLENGE_LOCK_QUERY
+                .contains("iam_private.lock_invitation_verification_challenge")
+        );
     }
 
     #[test]
@@ -2042,6 +2031,222 @@ mod tests {
             database_error.code().as_deref() == Some("23514"),
             "pending consumption must violate a check constraint"
         );
+        Ok(())
+    }
+
+    /// An invitee locks their own invitation, as the restricted API role.
+    ///
+    /// Accepting an invitation always answered 404. Submitting the code locks
+    /// the invitation and its challenge, PostgreSQL applies a table's UPDATE
+    /// policies to a locking read, and the only policy governing UPDATE on
+    /// `iam.organization_invitations` requires an organization context the
+    /// invitee does not have — they are not a member yet, which is what
+    /// holding an invitation means. The row row security explicitly lets the
+    /// target read could therefore never be locked.
+    ///
+    /// Every other Docker-backed test connects as the schema owner, where row
+    /// security does not apply and the fault is invisible.
+    #[tokio::test]
+    #[ignore = "requires a local Docker daemon"]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fixture spans the organization, the inviter, the invitee and the challenge"
+    )]
+    async fn an_invitee_can_lock_their_own_invitation() -> anyhow::Result<()> {
+        use anyhow::ensure;
+        use sqlx::postgres::PgPoolOptions;
+        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
+        use testcontainers_modules::postgres::Postgres as TestPostgres;
+
+        const RUNTIME_ROLES: &str = "
+            CREATE ROLE silicon_iam_api NOLOGIN NOSUPERUSER NOBYPASSRLS;
+            CREATE ROLE silicon_iam_worker NOLOGIN NOSUPERUSER NOBYPASSRLS;
+            CREATE ROLE silicon_iam_key_operator NOLOGIN NOSUPERUSER NOBYPASSRLS;
+            CREATE ROLE silicon_iam_api_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS
+                IN ROLE silicon_iam_api;
+        ";
+        let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('\\'))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let container = TestPostgres::default()
+            .with_tag("16-alpine")
+            .start()
+            .await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(5432).await?;
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&format!(
+                "postgres://postgres:postgres@{host}:{port}/postgres"
+            ))
+            .await?;
+        crate::infrastructure::postgres::migrate(&pool).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(RUNTIME_ROLES))
+            .execute(&pool)
+            .await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(grants))
+            .execute(&pool)
+            .await?;
+
+        let admin = Uuid::from_u128(0x52_01);
+        let recipient = Uuid::from_u128(0x52_02);
+        let organization = Uuid::from_u128(0x52_03);
+        let admin_membership = Uuid::from_u128(0x52_04);
+        let invitation = Uuid::from_u128(0x52_05);
+        let challenge = Uuid::from_u128(0x52_06);
+        let invitee_email_contact = Uuid::from_u128(0x52_07);
+
+        let mut fixture = pool.begin().await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "INSERT INTO iam.cryptographic_key_versions (purpose, key_version)
+             VALUES ('contact_aead', 1), ('token_hmac', 1)",
+        ))
+        .execute(&mut *fixture)
+        .await?;
+
+        for (principal, handle, email_contact, phone_contact) in [
+            (
+                admin,
+                "admin",
+                Uuid::from_u128(0x52_11),
+                Uuid::from_u128(0x52_12),
+            ),
+            (
+                recipient,
+                "recipient",
+                invitee_email_contact,
+                Uuid::from_u128(0x52_13),
+            ),
+        ] {
+            sqlx::query(
+                r"
+                INSERT INTO iam.principals (id, kind, status, activated_at)
+                VALUES ($1, 'carbon', 'active', transaction_timestamp())
+                ",
+            )
+            .bind(principal)
+            .execute(&mut *fixture)
+            .await?;
+            sqlx::query(
+                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $2, $2)",
+            )
+            .bind(principal)
+            .bind(handle)
+            .execute(&mut *fixture)
+            .await?;
+            sqlx::query(
+                r"
+                INSERT INTO iam.carbon_contacts (
+                    id, carbon_id, kind, ciphertext, nonce, encryption_key_version, verified_at
+                ) VALUES
+                    ($1, $3, 'email', decode(repeat('11', 17), 'hex'),
+                        decode(repeat('12', 12), 'hex'), 1, transaction_timestamp()),
+                    ($2, $3, 'phone', decode(repeat('21', 17), 'hex'),
+                        decode(repeat('22', 12), 'hex'), 1, transaction_timestamp())
+                ",
+            )
+            .bind(email_contact)
+            .bind(phone_contact)
+            .bind(principal)
+            .execute(&mut *fixture)
+            .await?;
+        }
+
+        sqlx::query(
+            r"
+            INSERT INTO iam.organizations (id, org_id, created_by_carbon_id, name)
+            VALUES ($1, 'tos', $2, 'Team of Silicons')
+            ",
+        )
+        .bind(organization)
+        .bind(admin)
+        .execute(&mut *fixture)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.organization_memberships (
+                id, organization_id, principal_id, principal_kind, org_role
+            ) VALUES ($1, $2, $3, 'carbon', 'owner')
+            ",
+        )
+        .bind(admin_membership)
+        .bind(organization)
+        .bind(admin)
+        .execute(&mut *fixture)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.organization_invitations (
+                id, organization_id, target_carbon_id, invited_by_membership_id,
+                destination_contact_id, job_role, default_trust_boundary,
+                default_trust_level, expires_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, 'Engineer', 'internal', 'not_trusted',
+                transaction_timestamp() + interval '7 days'
+            )
+            ",
+        )
+        .bind(invitation)
+        .bind(organization)
+        .bind(recipient)
+        .bind(admin_membership)
+        .bind(invitee_email_contact)
+        .execute(&mut *fixture)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.invitation_verification_challenges (
+                id, organization_id, invitation_id, target_carbon_id,
+                destination_contact_id, code_digest, digest_key_version,
+                max_attempts, expires_at, delivery_status, delivered_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, decode(repeat('33', 32), 'hex'), 1,
+                10, transaction_timestamp() + interval '10 minutes',
+                'delivered', transaction_timestamp()
+            )
+            ",
+        )
+        .bind(challenge)
+        .bind(organization)
+        .bind(invitation)
+        .bind(recipient)
+        .bind(invitee_email_contact)
+        .execute(&mut *fixture)
+        .await?;
+        fixture.commit().await?;
+
+        // Exactly the recipient's context: their principal is known, and they
+        // belong to no organization.
+        let mut accepting = pool.begin().await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "SET LOCAL ROLE silicon_iam_api_runtime",
+        ))
+        .execute(&mut *accepting)
+        .await?;
+        sqlx::query("SELECT set_config('iam.principal_id', $1::text, true)")
+            .bind(recipient)
+            .execute(&mut *accepting)
+            .await?;
+
+        let row = super::fetch_challenge(&mut accepting, invitation, recipient)
+            .await
+            .map_err(|_| anyhow::anyhow!("the recipient could not lock their own invitation"))?;
+
+        ensure!(row.challenge_id == challenge, "locked the wrong challenge");
+        ensure!(row.invitation_status == "pending", "unexpected status");
+        ensure!(row.max_attempts == 10, "unexpected attempt ceiling");
+
+        // Somebody else's invitation must still be refused.
+        ensure!(
+            super::fetch_challenge(&mut accepting, invitation, admin)
+                .await
+                .is_err(),
+            "an invitation addressed to another Carbon must not resolve"
+        );
+
         Ok(())
     }
 }
