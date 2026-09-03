@@ -136,6 +136,7 @@ DECLARE
         'step_up_assertions',
         'step_up_challenges',
         'tag_change_requests',
+        'testing_environments',
         'trust_rules',
         'webhook_deliveries'
     ];
@@ -208,6 +209,7 @@ DECLARE
         'step_up_assertions',
         'step_up_challenges',
         'tag_change_requests',
+        'testing_environments',
         'trust_rules'
     ];
     update_table_names text[] := ARRAY[
@@ -258,6 +260,7 @@ DECLARE
         'sso_setup_sessions',
         'step_up_assertions',
         'step_up_challenges',
+        'testing_environments',
         'trust_rules',
         'webhook_deliveries'
     ];
@@ -497,6 +500,7 @@ DECLARE
     matched_function_count integer;
     function_record record;
     api_function_names text[] := ARRAY[
+        'active_organization_membership_id',
         'apply_approved_tag_change',
         'apply_workos_connection_event',
         'assert_active_carbon_contacts',
@@ -525,6 +529,7 @@ DECLARE
         'is_active_organization_member',
         'is_active_organization_owner_or_admin',
         'is_organization_creator',
+        'is_testing_environment_administrator',
         'is_valid_sso_callback_correlation',
         'list_active_carbon_login_contacts',
         'list_organization_member_webhook_authorizations',
@@ -553,7 +558,9 @@ DECLARE
         'resolve_pending_email_join_invitation',
         'resolve_platform_sso_organization',
         'resolve_silicon_webhook_replay_target',
-        'set_organization_admin_role'
+        'resolve_testing_environment',
+        'set_organization_admin_role',
+        'touch_testing_environment'
     ];
     non_api_definer_names text[] := ARRAY[
         'activate_runtime_key_version',
@@ -573,6 +580,7 @@ DECLARE
         'check_principal_subtype_from_principal',
         'check_principal_subtype_from_subtype',
         'complete_worker_silicon_hook',
+        'expire_idle_testing_environments',
         'fail_worker_silicon_hook',
         'get_audit_public_identifiers',
         'get_worker_application_webhook_event_projection',
@@ -582,11 +590,13 @@ DECLARE
         'get_worker_security_notice_contact',
         'get_worker_silicon_hook_identity',
         'get_worker_silicon_webhook_material',
+        'list_testing_environments_for_purge',
         'list_worker_application_webhook_recipients',
         'list_worker_captured_application_webhook_recipients',
         'list_worker_silicon_webhook_recipients',
         'prevent_oauth_refresh_family_scope_mutation',
         'prevent_silicon_reporting_cycle',
+        'purge_testing_environment',
         'reconcile_worker_contact_aead_keyring',
         'reject_audit_mutation',
         'reject_immutable_history_mutation',
@@ -691,6 +701,7 @@ DECLARE
     matched_function_count integer;
     function_record record;
     worker_function_names text[] := ARRAY[
+        'expire_idle_testing_environments',
         'get_worker_application_webhook_material',
         'get_worker_application_webhook_event_projection',
         'get_worker_invitation_context',
@@ -700,7 +711,9 @@ DECLARE
         'list_worker_application_webhook_recipients',
         'list_worker_captured_application_webhook_recipients',
         'list_worker_silicon_webhook_recipients',
+        'list_testing_environments_for_purge',
         'lock_silicon_webhook_delivery_scope',
+        'purge_testing_environment',
         'reconcile_worker_contact_aead_keyring',
         'run_worker_ephemeral_maintenance',
         'run_worker_retention_maintenance'
