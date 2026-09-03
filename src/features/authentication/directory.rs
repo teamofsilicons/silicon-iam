@@ -69,7 +69,7 @@ pub(super) async fn search(
         category: "carbon_search_rate_policy",
     })?;
     rate_limit::enforce(
-        &state.pool,
+        state.db(),
         &state.crypto,
         "carbon_directory_search_actor",
         &actor_scope,
@@ -77,7 +77,7 @@ pub(super) async fn search(
     )
     .await?;
     rate_limit::enforce(
-        &state.pool,
+        state.db(),
         &state.crypto,
         "carbon_directory_search_query",
         &query_scope,
@@ -85,7 +85,7 @@ pub(super) async fn search(
     )
     .await?;
 
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(principal_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(principal_id))
         .await
         .map_err(|_| AppError::Internal {
             category: "carbon_search_context",
@@ -163,7 +163,7 @@ async fn resolve_contact(
 ) -> Result<Json<CarbonResolutionResponse>, AppError> {
     let principal_id = sessions::carbon_context(&authenticated.0)?;
     enforce_resolution_rate_limits(state, principal_id, &contact).await?;
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(principal_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(principal_id))
         .await
         .map_err(|_| AppError::Internal {
             category: "carbon_resolution_context",
@@ -197,7 +197,7 @@ async fn enforce_resolution_rate_limits(
         contact.normalized,
     ));
     rate_limit::enforce(
-        &state.pool,
+        state.db(),
         &state.crypto,
         "carbon_resolution_actor",
         &actor_scope,
@@ -205,7 +205,7 @@ async fn enforce_resolution_rate_limits(
     )
     .await?;
     rate_limit::enforce(
-        &state.pool,
+        state.db(),
         &state.crypto,
         "carbon_resolution_contact",
         &contact_scope,

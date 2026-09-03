@@ -130,7 +130,7 @@ pub(super) async fn create_challenge(
             input.resource_id.as_bytes(),
         ],
     );
-    let mut transaction = serializable(&state.pool, "step_up_create_transaction").await?;
+    let mut transaction = serializable(state.db(), "step_up_create_transaction").await?;
     let record_id = match idempotency::begin::<AuthSessionResponse>(
         &mut transaction,
         &state.crypto,
@@ -381,8 +381,7 @@ async fn confirm_step_up_delivery(
     resource_id: Uuid,
     response: &AuthSessionResponse,
 ) -> Result<(), AppError> {
-    let mut transaction =
-        serializable(&state.pool, "step_up_delivery_finalize_transaction").await?;
+    let mut transaction = serializable(state.db(), "step_up_delivery_finalize_transaction").await?;
     set_principal_context(&mut transaction, principal_id).await?;
     let activated = sqlx::query(
         r"
@@ -484,7 +483,7 @@ async fn fail_step_up_delivery(
     principal_id: Uuid,
     challenge_id: Uuid,
 ) -> Result<(), AppError> {
-    let mut transaction = serializable(&state.pool, "step_up_delivery_failure_transaction").await?;
+    let mut transaction = serializable(state.db(), "step_up_delivery_failure_transaction").await?;
     set_principal_context(&mut transaction, principal_id).await?;
     sqlx::query(
         r"
@@ -535,7 +534,7 @@ pub(super) async fn verify_challenge(
             code.expose_secret().as_bytes(),
         ],
     );
-    let mut transaction = serializable(&state.pool, "step_up_verify_transaction").await?;
+    let mut transaction = serializable(state.db(), "step_up_verify_transaction").await?;
     let record_id = match idempotency::begin::<StepUpVerificationOutcome>(
         &mut transaction,
         &state.crypto,

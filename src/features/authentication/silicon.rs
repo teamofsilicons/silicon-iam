@@ -62,7 +62,7 @@ pub(super) async fn authenticate(
     let credential = validate_credential(input.silicon_token)?;
     let key = IdempotencyKey::from_headers(&headers)?;
     let request_digest = silicon_login_request_digest(&input.silicon_id, &credential);
-    let mut transaction = serializable(&state.pool, "silicon_login_transaction").await?;
+    let mut transaction = serializable(state.db(), "silicon_login_transaction").await?;
     let record_id = match idempotency::begin::<TokenResponse>(
         &mut transaction,
         &state.crypto,
@@ -181,7 +181,7 @@ async fn enforce_limit(
         category: "silicon_login_rate_policy",
     })?;
     rate_limit::enforce(
-        &state.pool,
+        state.db(),
         &state.crypto,
         "silicon_login_identity",
         &identity_scope,
@@ -189,7 +189,7 @@ async fn enforce_limit(
     )
     .await?;
     rate_limit::enforce(
-        &state.pool,
+        state.db(),
         &state.crypto,
         "silicon_login_credential",
         &credential_scope,

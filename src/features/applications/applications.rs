@@ -145,7 +145,7 @@ pub(super) async fn list(
     }) {
         return Err(ApiError::validation("status", "contains an invalid status"));
     }
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_list_context"))?;
     let (cursor_at, cursor_id) =
@@ -229,7 +229,7 @@ pub(super) async fn create(
         "obo_endpoints": input.obo_endpoints,
     }))
     .map_err(|_| ApiError::internal("application_create_canonical"))?;
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_create_context"))?;
     let organization_id =
@@ -496,7 +496,7 @@ pub(super) async fn get(
 ) -> Result<Response, ApiError> {
     let carbon_id = require_carbon(&access)?;
     validation::app_id(&path.app_id)?;
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_get_context"))?;
     let application =
@@ -518,7 +518,7 @@ pub(super) async fn rotate_client_secret(
     let carbon_id = require_carbon(&access)?;
     validation::app_id(&path.app_id)?;
     let canonical = b"{}";
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_secret_rotation_context"))?;
     let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
@@ -678,7 +678,7 @@ pub(super) async fn list_redirect_uris(
     validation::app_id(&path.app_id)?;
     let cursor = cursor::decode(query.cursor.as_deref())?;
     let limit = cursor::limit(query.limit);
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_redirect_list_context"))?;
     let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
@@ -733,7 +733,7 @@ pub(super) async fn add_redirect_uri(
     validation::redirect_uri(&input.redirect_uri)?;
     let canonical = serde_json::to_vec(&input)
         .map_err(|_| ApiError::internal("application_redirect_add_canonical"))?;
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_redirect_add_context"))?;
     let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
@@ -825,7 +825,7 @@ pub(super) async fn retire_redirect_uri(
     let carbon_id = require_carbon(&access)?;
     validation::app_id(&path.app_id)?;
     let canonical = b"{}";
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_redirect_retire_context"))?;
     let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
@@ -936,7 +936,7 @@ pub(super) async fn patch(
     validation::application_patch(&input)?;
     let canonical = serde_json::to_vec(&input_as_json(&input))
         .map_err(|_| ApiError::internal("application_patch_canonical"))?;
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_patch_context"))?;
     let claim_app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
@@ -1121,7 +1121,7 @@ pub(super) async fn admin_list(
     let carbon_id = require_carbon(&access)?;
     let cursor = cursor::decode(query.cursor.as_deref())?;
     let limit = cursor::limit(query.limit);
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("admin_application_list_context"))?;
     require_platform_capability(&mut transaction, carbon_id, "applications.review").await?;
@@ -1190,7 +1190,7 @@ pub(super) async fn admin_decide(
         "notify_users": input.notify_users,
     }))
     .map_err(|_| ApiError::internal("admin_decision_canonical"))?;
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("admin_decision_context"))?;
     if input.decision == "delete" {

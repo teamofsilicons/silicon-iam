@@ -46,8 +46,28 @@ pub struct Settings {
     pub providers: ProviderSettings,
     /// Outbox-worker settings.
     pub worker: WorkerSettings,
+    /// Testing-environment plane, absent when the feature is not deployed.
+    pub testing: Option<TestingSettings>,
     /// Tracing filter directive.
     pub log_filter: String,
+}
+
+/// Shared testing database and testing-environment lifecycle policy.
+///
+/// Absent unless `IAM_TESTING_DATABASE_URL` is configured. Every testing
+/// surface answers 503 in that case rather than silently degrading, because a
+/// testing environment with nowhere to put its data is not a testing
+/// environment.
+#[derive(Clone, Debug)]
+pub struct TestingSettings {
+    /// Pool settings for the shared testing database.
+    pub database: DatabaseSettings,
+    /// Days without activity after which an environment is auto-deleted.
+    pub idle_days: u16,
+    /// Days a deleted environment remains recoverable before permanent purge.
+    pub recovery_days: u16,
+    /// Environments one organization may hold at once.
+    pub max_per_organization: u16,
 }
 
 /// Minimal configuration accepted by the privileged migration process.
@@ -57,6 +77,8 @@ pub struct MigrationSettings {
     pub environment: RuntimeEnvironment,
     /// Privileged PostgreSQL connection used only for schema migrations.
     pub database: DatabaseSettings,
+    /// Privileged connection to the shared testing database, when deployed.
+    pub testing_database: Option<DatabaseSettings>,
     /// Tracing filter directive.
     pub log_filter: String,
 }
@@ -93,6 +115,8 @@ pub struct WorkerProcessSettings {
     pub providers: WorkerProviderSettings,
     /// Polling, retry, and retention policy.
     pub worker: WorkerSettings,
+    /// Testing-environment plane, absent when the feature is not deployed.
+    pub testing: Option<TestingSettings>,
     /// Tracing filter directive.
     pub log_filter: String,
 }
@@ -334,6 +358,7 @@ impl Settings {
         let security = security_settings(environment)?;
         let providers = provider_settings()?;
         let worker = worker_settings()?;
+        let testing = testing_settings(environment)?;
 
         validate_environment_safety(environment, &server, &database, &providers)?;
         let log_filter = string_in_range(
@@ -350,6 +375,7 @@ impl Settings {
             security,
             providers,
             worker,
+            testing,
             log_filter,
         })
     }
@@ -370,6 +396,7 @@ impl WorkerProcessSettings {
         let encryption_keys = keyring("IAM_ENCRYPTION")?;
         let providers = worker_provider_settings()?;
         let worker = worker_settings()?;
+        let testing = testing_settings(environment)?;
         let log_filter = string_in_range(
             "IAM_LOG_FILTER",
             value_or("IAM_LOG_FILTER", "silicon_iam=info"),
@@ -394,6 +421,7 @@ impl WorkerProcessSettings {
             encryption_keys,
             providers,
             worker,
+            testing,
             log_filter,
         })
     }
@@ -436,6 +464,61 @@ fn database_settings() -> Result<DatabaseSettings, SettingsError> {
             300,
         )?,
     })
+}
+
+/// Loads the testing plane, which is present only when its database is.
+///
+/// The whole feature is keyed on one variable. A deployment that does not want
+/// testing environments simply omits `IAM_TESTING_DATABASE_URL`, and the
+/// routes disappear rather than failing at the first query.
+fn testing_settings(
+    environment: RuntimeEnvironment,
+) -> Result<Option<TestingSettings>, SettingsError> {
+    let Some(url) = optional("IAM_TESTING_DATABASE_URL") else {
+        return Ok(None);
+    };
+
+    let max_connections = nonzero_u32_in_range("IAM_TESTING_DATABASE_MAX_CONNECTIONS", 8, 256)?;
+    let database = DatabaseSettings {
+        url: SecretString::from(url),
+        max_connections,
+        min_connections: u32_in_range(
+            "IAM_TESTING_DATABASE_MIN_CONNECTIONS",
+            0,
+            0,
+            max_connections.get(),
+        )?,
+        acquire_timeout: duration_secs_in_range(
+            "IAM_TESTING_DATABASE_ACQUIRE_TIMEOUT_SECONDS",
+            3,
+            1,
+            60,
+        )?,
+        statement_timeout: duration_secs_in_range(
+            "IAM_TESTING_DATABASE_STATEMENT_TIMEOUT_SECONDS",
+            10,
+            1,
+            300,
+        )?,
+    };
+    validate_database_transport(environment, &database, "IAM_TESTING_DATABASE_URL")?;
+
+    let settings = TestingSettings {
+        database,
+        idle_days: u16_in_range("IAM_TESTING_IDLE_DAYS", 30, 1, 3_650)?,
+        recovery_days: u16_in_range("IAM_TESTING_RECOVERY_DAYS", 30, 1, 3_650)?,
+        max_per_organization: u16_in_range("IAM_TESTING_MAX_PER_ORGANIZATION", 25, 1, 1_000)?,
+    };
+
+    // A testing environment pointed at production would hand every holder of a
+    // 32-character key unrestricted authority over real identities.
+    if settings.database.url.expose_secret() == required("IAM_DATABASE_URL")?.as_str() {
+        return Err(invalid(
+            "IAM_TESTING_DATABASE_URL",
+            "must not be the production database",
+        ));
+    }
+    Ok(Some(settings))
 }
 
 fn security_settings(environment: RuntimeEnvironment) -> Result<SecuritySettings, SettingsError> {
@@ -672,6 +755,37 @@ impl MigrationSettings {
             )?,
         };
         validate_database_transport(environment, &database, "IAM_MIGRATOR_DATABASE_URL")?;
+        let testing_database = optional("IAM_TESTING_MIGRATOR_DATABASE_URL")
+            .map(|url| -> Result<DatabaseSettings, SettingsError> {
+                let database = DatabaseSettings {
+                    url: SecretString::from(url),
+                    max_connections: nonzero_u32_in_range(
+                        "IAM_MIGRATOR_DATABASE_MAX_CONNECTIONS",
+                        2,
+                        16,
+                    )?,
+                    min_connections: 0,
+                    acquire_timeout: duration_secs_in_range(
+                        "IAM_MIGRATOR_DATABASE_ACQUIRE_TIMEOUT_SECONDS",
+                        10,
+                        1,
+                        300,
+                    )?,
+                    statement_timeout: duration_secs_in_range(
+                        "IAM_MIGRATOR_DATABASE_STATEMENT_TIMEOUT_SECONDS",
+                        120,
+                        1,
+                        86_400,
+                    )?,
+                };
+                validate_database_transport(
+                    environment,
+                    &database,
+                    "IAM_TESTING_MIGRATOR_DATABASE_URL",
+                )?;
+                Ok(database)
+            })
+            .transpose()?;
         let log_filter = string_in_range(
             "IAM_LOG_FILTER",
             value_or("IAM_LOG_FILTER", "silicon_iam=info"),
@@ -682,6 +796,7 @@ impl MigrationSettings {
         Ok(Self {
             environment,
             database,
+            testing_database,
             log_filter,
         })
     }

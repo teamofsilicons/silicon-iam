@@ -132,7 +132,7 @@ pub(super) async fn discover_endpoints(
     reject_organization_header(&headers)?;
     validation::app_id(&path.app_id)?;
     let mut transaction = context::begin(
-        &state.pool,
+        state.db(),
         DatabaseContext {
             principal_id: Some(client.application_id),
             organization_id: Some(client.organization_id),
@@ -208,7 +208,7 @@ pub(super) async fn exchange(
     let request = canonical_request(&input.request.method, &input.request.body_sha256)?;
     let canonical = exchange_canonical(&input)?;
     let mut transaction = context::begin(
-        &state.pool,
+        state.db(),
         DatabaseContext {
             principal_id: Some(client.application_id),
             organization_id: Some(client.organization_id),
@@ -225,7 +225,7 @@ pub(super) async fn exchange(
     let signed = signed_exchange(&headers, transaction_now)?;
 
     let subject_token = SecretString::from(input.subject_token.clone());
-    let access = match tokens::authenticate(&state.pool, &state.crypto, &subject_token).await {
+    let access = match tokens::authenticate(state.db(), &state.crypto, &subject_token).await {
         Ok(Some(access)) => access,
         Ok(None) | Err(tokens::AccessTokenError::InvalidFormat) => {
             return Err(ApiError::bad_request(
@@ -538,7 +538,7 @@ pub(super) async fn verify(
         .map(|digest| digest.as_bytes().to_vec())
         .collect::<Vec<_>>();
     let mut transaction = context::begin(
-        &state.pool,
+        state.db(),
         DatabaseContext {
             principal_id: Some(client.application_id),
             organization_id: Some(client.organization_id),

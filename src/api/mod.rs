@@ -29,12 +29,13 @@ use tracing::{Instrument as _, info, info_span};
 use uuid::Uuid;
 
 use crate::{
-    config::Settings,
+    config::{Settings, TestingSettings},
     error::AppError,
     infrastructure::{
         crypto::CryptoService,
         postgres,
         providers::{NotificationProviders, workos::WorkOsClient},
+        testing_plane,
     },
     request_context, shutdown,
 };
@@ -46,6 +47,30 @@ pub(crate) struct ApiState {
     pub(crate) crypto: Arc<CryptoService>,
     pub(crate) notifications: NotificationProviders,
     pub(crate) workos: Option<Arc<WorkOsClient>>,
+    pub(crate) testing: Option<TestingPlane>,
+}
+
+/// The shared testing database, present only where the feature is deployed.
+#[derive(Clone)]
+pub(crate) struct TestingPlane {
+    pub(crate) pool: PgPool,
+    pub(crate) settings: Arc<TestingSettings>,
+}
+
+impl ApiState {
+    /// The pool for the plane this request is executing in.
+    ///
+    /// Handlers are written once and serve both planes. A request that
+    /// presented a valid environment key runs against the shared testing
+    /// database; everything else runs against production. Reading the
+    /// selection here rather than at each call site is what keeps a testing
+    /// environment an identical copy of the API instead of a parallel one.
+    pub(crate) fn db(&self) -> &PgPool {
+        match (&self.testing, testing_plane::is_active()) {
+            (Some(testing), true) => &testing.pool,
+            _ => &self.pool,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -87,12 +112,28 @@ pub async fn serve(settings: Settings) -> anyhow::Result<()> {
     let crypto = CryptoService::from_settings(&settings.security)?;
     let notifications = NotificationProviders::from_settings(&settings.providers)?;
     let workos = WorkOsClient::from_settings(&settings.providers)?.map(Arc::new);
+    let testing = match settings.testing.as_ref() {
+        Some(testing) => {
+            let testing_pool = postgres::connect(&testing.database, "iam-api-testing").await?;
+            // The testing database carries the same key-version metadata as
+            // production: nearly every scoped table has a foreign key into it,
+            // so an environment could not store a single credential without
+            // this reconciliation having run there too.
+            postgres::register_runtime_key_versions(&testing_pool, &settings.security).await?;
+            Some(TestingPlane {
+                pool: testing_pool,
+                settings: Arc::new(testing.clone()),
+            })
+        }
+        None => None,
+    };
     let state = ApiState {
         pool,
         settings: Arc::new(settings),
         crypto: Arc::new(crypto),
         notifications,
         workos,
+        testing,
     };
     let app = router(state.clone())?;
     let listener = TcpListener::bind(bind_addr).await?;
@@ -124,6 +165,13 @@ pub async fn serve(settings: Settings) -> anyhow::Result<()> {
         .is_err()
     {
         tracing::error!("API database-pool shutdown deadline elapsed");
+    }
+    if let Some(testing) = state.testing.as_ref()
+        && tokio::time::timeout(shutdown_timeout, testing.pool.close())
+            .await
+            .is_err()
+    {
+        tracing::error!("API testing database-pool shutdown deadline elapsed");
     }
     Ok(())
 }

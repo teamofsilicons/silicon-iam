@@ -23,6 +23,9 @@ use crate::config::{KeyringSettings, SecuritySettings};
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// Fixed wire length of a testing environment key.
+pub const TESTING_ENVIRONMENT_KEY_LENGTH: usize = 32;
+
 const DIGEST_DOMAIN: &[u8] = b"silicon-iam:v1:digest";
 const BLIND_INDEX_DOMAIN: &[u8] = b"silicon-iam:v1:blind-index";
 const ENCRYPTION_DOMAIN: &[u8] = b"silicon-iam:v1:encryption";
@@ -149,6 +152,8 @@ pub enum DigestPurpose {
     IdempotencyKey,
     /// Canonical mutation request body.
     IdempotencyRequest,
+    /// Testing environment key lookup.
+    TestingEnvironmentKey,
 }
 
 /// Closed domain separation for exact contact lookup.
@@ -185,6 +190,8 @@ pub enum ProtectedField {
     SiliconWebhookSigningSecret,
     /// Legacy provisioned Silicon Hook endpoint URL retained for ciphertext compatibility.
     SiliconHookUrl,
+    /// Testing environment key, which administrators can read back on demand.
+    TestingEnvironmentKey,
 }
 
 /// Typed, row-bound associated data for authenticated encryption.
@@ -268,6 +275,40 @@ impl CryptoService {
             "stk-{}",
             hex::encode(bytes.as_ref())
         )))
+    }
+
+    /// Generates a 32-character alphanumeric testing environment key.
+    ///
+    /// The product contract fixes both the length and the alphabet, so this
+    /// cannot go through [`Self::generate_secret`], whose values are
+    /// prefixed base64url. Rejection sampling keeps the 62-symbol alphabet
+    /// uniform; the result carries roughly 190 bits.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::EntropyUnavailable`] if secure bytes cannot be
+    /// obtained from the operating system.
+    pub fn generate_testing_environment_key(&self) -> Result<SecretString, CryptoError> {
+        const ALPHABET: &[u8; 62] =
+            b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+        const ACCEPTANCE_ZONE: u8 = 248; // 256 - (256 % 62)
+
+        let mut key = Zeroizing::new(Vec::with_capacity(TESTING_ENVIRONMENT_KEY_LENGTH));
+        let mut candidates = Zeroizing::new([0_u8; 64]);
+        while key.len() < TESTING_ENVIRONMENT_KEY_LENGTH {
+            fill_random(candidates.as_mut())?;
+            for candidate in candidates.iter().copied() {
+                if candidate < ACCEPTANCE_ZONE {
+                    key.push(ALPHABET[usize::from(candidate % 62)]);
+                    if key.len() == TESTING_ENVIRONMENT_KEY_LENGTH {
+                        break;
+                    }
+                }
+            }
+        }
+        String::from_utf8(key.to_vec())
+            .map(SecretString::from)
+            .map_err(|_| CryptoError::EntropyUnavailable)
     }
 
     /// Generates an unbiased, zero-padded six-digit verification code.
@@ -613,6 +654,7 @@ impl DigestPurpose {
             Self::IdempotencyCallerScope => b"idempotency-caller-scope",
             Self::IdempotencyKey => b"idempotency-key",
             Self::IdempotencyRequest => b"idempotency-request",
+            Self::TestingEnvironmentKey => b"testing-environment-key",
         }
     }
 }
@@ -640,6 +682,7 @@ impl ProtectedField {
             Self::SiliconWebhookUrl => b"silicon-webhook-url",
             Self::SiliconWebhookSigningSecret => b"silicon-webhook-signing-secret",
             Self::SiliconHookUrl => b"silicon-hook-url",
+            Self::TestingEnvironmentKey => b"testing-environment-key",
         }
     }
 }

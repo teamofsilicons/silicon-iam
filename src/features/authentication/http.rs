@@ -132,9 +132,11 @@ pub(super) async fn carbon_id_availability(
         Duration::from_mins(1),
     )
     .await?;
-    let mut transaction = state.pool.begin().await.map_err(|_| AppError::Internal {
-        category: "carbon_id_availability_transaction",
-    })?;
+    let mut transaction = crate::infrastructure::postgres::context::begin_scoped(state.db())
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "carbon_id_availability_transaction",
+        })?;
     let available = contacts::carbon_id_available(&mut transaction, carbon_id.as_str()).await?;
     transaction.commit().await.map_err(|_| AppError::Internal {
         category: "carbon_id_availability_commit",
@@ -378,7 +380,7 @@ pub(super) async fn enforce_limit(
     let policy = RateLimitPolicy::new(maximum, window, window).map_err(|_| AppError::Internal {
         category: "rate_limit_policy",
     })?;
-    rate_limit::enforce(&state.pool, &state.crypto, name, scope, policy).await?;
+    rate_limit::enforce(state.db(), &state.crypto, name, scope, policy).await?;
     Ok(())
 }
 
@@ -396,7 +398,7 @@ async fn enforce_burst_limit(
         RateLimitPolicy::new(maximum, cooldown, cooldown).map_err(|_| AppError::Internal {
             category: "rate_limit_policy",
         })?;
-    rate_limit::enforce_burst_cooldown(&state.pool, &state.crypto, name, scope, policy).await?;
+    rate_limit::enforce_burst_cooldown(state.db(), &state.crypto, name, scope, policy).await?;
     Ok(())
 }
 

@@ -109,7 +109,7 @@ pub(super) async fn get(
     authenticated: Authenticated,
 ) -> Result<Response, AppError> {
     let carbon_id = require_self_service(&authenticated)?;
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| internal("carbon_profile_context"))?;
     let profile = read_profile(&mut transaction, &state, carbon_id, false).await?;

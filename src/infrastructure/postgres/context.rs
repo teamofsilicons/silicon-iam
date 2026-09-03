@@ -3,6 +3,8 @@
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
+use crate::infrastructure::testing_plane;
+
 /// Identity and tenant boundary applied to one database transaction.
 #[derive(Clone, Copy, Debug)]
 pub struct DatabaseContext {
@@ -76,6 +78,12 @@ impl DatabaseContext {
 
 /// Begins a transaction and installs RLS context with transaction-local scope.
 ///
+/// The testing environment is not part of [`DatabaseContext`] because it is
+/// not a choice any caller makes: it is fixed for the whole request by the
+/// middleware that verified the environment key, and is read here so that no
+/// handler can open a transaction against the testing database without it.
+/// Against production it is always empty.
+///
 /// # Errors
 ///
 /// Returns an error when the transaction cannot begin or PostgreSQL rejects a
@@ -92,7 +100,8 @@ pub async fn begin(
             set_config('iam.principal_id', $1, true),
             set_config('iam.organization_id', $2, true),
             set_config('iam.application_id', $3, true),
-            set_config('iam.signup_session_id', $4, true)
+            set_config('iam.signup_session_id', $4, true),
+            set_config('iam.testing_environment_id', $5, true)
         ",
     )
     .bind(
@@ -119,8 +128,39 @@ pub async fn begin(
             .map(|id| id.to_string())
             .unwrap_or_default(),
     )
+    .bind(
+        testing_plane::current_id()
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
+    )
     .execute(&mut *transaction)
     .await?;
+    Ok(transaction)
+}
+
+/// Begins a transaction carrying only the testing-environment scope.
+///
+/// A handful of flows install their identity settings themselves, or must
+/// raise the isolation level before anything else runs. They still must not
+/// reach the shared testing database without an environment selected -- row
+/// security would answer with nothing and the failure would look like missing
+/// data rather than a missing scope -- so they begin here instead of calling
+/// `PgPool::begin` directly.
+///
+/// # Errors
+///
+/// Returns an error when the transaction cannot begin or PostgreSQL rejects
+/// the setting.
+pub async fn begin_scoped(pool: &PgPool) -> Result<Transaction<'_, Postgres>, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query("SELECT set_config('iam.testing_environment_id', $1, true)")
+        .bind(
+            testing_plane::current_id()
+                .map(|id| id.to_string())
+                .unwrap_or_default(),
+        )
+        .execute(&mut *transaction)
+        .await?;
     Ok(transaction)
 }
 

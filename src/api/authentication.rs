@@ -105,7 +105,7 @@ impl FromRequestParts<ApiState> for LogoutAuthenticated {
                 .map_err(map_browser_cookie_error)?;
         require_matching_csrf(&parts.headers, &verified.csrf_token)?;
 
-        let mut transaction = context::begin(&state.pool, DatabaseContext::anonymous())
+        let mut transaction = context::begin(state.db(), DatabaseContext::anonymous())
             .await
             .map_err(|_| AppError::Internal {
                 category: "logout_browser_session_context",
@@ -139,7 +139,7 @@ async fn authenticate_bearer(
     headers: &HeaderMap,
 ) -> Result<AccessContext, AppError> {
     let credential = bearer_credential(headers)?;
-    tokens::authenticate(&state.pool, &state.crypto, &credential)
+    tokens::authenticate(state.db(), &state.crypto, &credential)
         .await
         .map_err(|error| map_access_token_error(&error))?
         .ok_or(AppError::Unauthenticated)
@@ -150,7 +150,7 @@ async fn authenticate_logout_bearer(
     headers: &HeaderMap,
 ) -> Result<LogoutAuthenticated, AppError> {
     let credential = bearer_credential(headers)?;
-    if let Some(context) = tokens::authenticate(&state.pool, &state.crypto, &credential)
+    if let Some(context) = tokens::authenticate(state.db(), &state.crypto, &credential)
         .await
         .map_err(|error| map_access_token_error(&error))?
     {
@@ -159,7 +159,7 @@ async fn authenticate_logout_bearer(
             LogoutCredentialState::Active,
         )
     } else {
-        let identity = tokens::identify_for_logout_replay(&state.pool, &state.crypto, &credential)
+        let identity = tokens::identify_for_logout_replay(state.db(), &state.crypto, &credential)
             .await
             .map_err(|error| map_access_token_error(&error))?
             .ok_or(AppError::Unauthenticated)?;

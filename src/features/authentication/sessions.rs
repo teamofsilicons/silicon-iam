@@ -208,9 +208,11 @@ pub(super) async fn list_sessions(
     let fetch_limit = limit.checked_add(1).ok_or(AppError::Internal {
         category: "session_page_limit",
     })?;
-    let mut transaction = state.pool.begin().await.map_err(|_| AppError::Internal {
-        category: "session_list_transaction",
-    })?;
+    let mut transaction = crate::infrastructure::postgres::context::begin_scoped(state.db())
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "session_list_transaction",
+        })?;
     set_principal_context(&mut transaction, principal_id).await?;
     let carbon_id = carbon_handle(&mut transaction, principal_id).await?;
     let rows = sqlx::query_as::<_, SessionRow>(
@@ -315,9 +317,11 @@ pub(super) async fn list_login_history(
     let fetch_limit = limit.checked_add(1).ok_or(AppError::Internal {
         category: "login_history_page_limit",
     })?;
-    let mut transaction = state.pool.begin().await.map_err(|_| AppError::Internal {
-        category: "login_history_transaction",
-    })?;
+    let mut transaction = crate::infrastructure::postgres::context::begin_scoped(state.db())
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "login_history_transaction",
+        })?;
     set_principal_context(&mut transaction, principal_id).await?;
     let carbon_id = carbon_handle(&mut transaction, principal_id).await?;
     let rows = sqlx::query_as::<_, LoginEventRow>(LOGIN_HISTORY_QUERY)
@@ -381,7 +385,7 @@ pub(super) async fn revoke_session(
         b"session-revoke",
         &[principal_id.as_bytes(), session_id.as_bytes()],
     );
-    let mut transaction = serializable(&state.pool, "session_revoke_transaction").await?;
+    let mut transaction = serializable(state.db(), "session_revoke_transaction").await?;
     let record_id = match idempotency::begin::<EmptyMutationOutcome>(
         &mut transaction,
         &state.crypto,
@@ -482,7 +486,7 @@ pub(super) async fn logout(
         command.trigger,
         command.mode,
     );
-    let mut transaction = serializable(&state.pool, "logout_transaction").await?;
+    let mut transaction = serializable(state.db(), "logout_transaction").await?;
 
     if matches!(command.credential_state, LogoutCredentialState::ReplayOnly) {
         return replay_completed_logout(transaction, &state.crypto, command.key, &binding).await;

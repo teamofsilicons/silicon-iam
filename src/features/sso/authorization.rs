@@ -126,7 +126,7 @@ pub(super) async fn authorize(
         .map_err(|_| internal("sso_return_uri_encrypt"))?;
     let expires_at = OffsetDateTime::now_utc() + time::Duration::seconds(AUTHORIZATION_TTL_SECONDS);
     let mut transaction = context::begin(
-        &state.pool,
+        state.db(),
         DatabaseContext::principal(browser_session.carbon_id),
     )
     .await
@@ -385,7 +385,7 @@ pub(super) async fn callback(
         .collect::<Vec<_>>();
 
     let mut transaction = context::begin(
-        &state.pool,
+        state.db(),
         DatabaseContext::principal(browser_session.carbon_id),
     )
     .await
@@ -497,7 +497,7 @@ async fn require_valid_callback_correlation(
     candidates: &CorrelationCandidates,
 ) -> Result<(), AppError> {
     let mut transaction = context::begin(
-        &state.pool,
+        state.db(),
         DatabaseContext::principal(browser_session.carbon_id),
     )
     .await

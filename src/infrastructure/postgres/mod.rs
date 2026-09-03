@@ -73,6 +73,28 @@ pub async fn migrate(pool: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Brings the shared testing database up to date.
+///
+/// The testing database runs the production schema and then one overlay that
+/// scopes every row to a testing environment. They are two migration sets
+/// sharing one ledger, which is why both runs tolerate entries they do not
+/// own: the base set must not trip over the overlay's version, and the overlay
+/// must not trip over the base set's.
+///
+/// # Errors
+///
+/// Returns an error if migration locking or a migration statement fails.
+pub async fn migrate_testing(pool: &PgPool) -> anyhow::Result<()> {
+    let mut base = sqlx::migrate!("./migrations");
+    base.set_ignore_missing(true);
+    base.run(pool).await?;
+
+    let mut overlay = sqlx::migrate!("./migrations/testing");
+    overlay.set_ignore_missing(true);
+    overlay.run(pool).await?;
+    Ok(())
+}
+
 /// Reconciles non-secret database metadata for configured runtime keyrings.
 ///
 /// The runtime role must receive an explicit `EXECUTE` grant on

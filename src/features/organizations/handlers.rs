@@ -55,7 +55,7 @@ pub(super) async fn organization_id_availability(
     enforce_actor_rate_limit(&state, &authenticated, "organization_id_availability").await?;
 
     let mut transaction = context::begin(
-        &state.pool,
+        state.db(),
         DatabaseContext::principal(authenticated.0.subject.id),
     )
     .await
@@ -77,7 +77,7 @@ pub(super) async fn list_organizations(
 ) -> Result<Response, AppError> {
     let carbon_id = support::require_carbon(&authenticated)?;
     let (cursor, limit) = validation::page(&query)?;
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(support::database)?;
     let mut organizations = sqlx::query_as::<_, OrganizationResponse>(
@@ -138,7 +138,7 @@ pub(super) async fn create_organization(
     let carbon_id = support::require_carbon(&authenticated)?;
     validation::organization_create(&mut input, state.settings.environment)?;
 
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(support::database)?;
     let lease = match support::claim(
@@ -1037,7 +1037,7 @@ async fn enforce_actor_rate_limit(
         authenticated.0.subject.actor_type.as_str(),
         authenticated.0.subject.id
     ));
-    rate_limit::enforce(&state.pool, &state.crypto, name, &scope, policy).await?;
+    rate_limit::enforce(state.db(), &state.crypto, name, &scope, policy).await?;
     Ok(())
 }
 

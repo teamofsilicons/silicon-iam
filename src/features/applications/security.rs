@@ -78,7 +78,7 @@ impl FromRequestParts<ApiState> for Bearer {
         )
         .await?;
         let token = SecretString::from(credential.to_owned());
-        match tokens::authenticate(&state.pool, &state.crypto, &token).await {
+        match tokens::authenticate(state.db(), &state.crypto, &token).await {
             Ok(Some(access)) => {
                 enforce_request_rate_limit(
                     state,
@@ -131,7 +131,7 @@ impl FromRequestParts<ApiState> for BrowserSession {
             60,
         )
         .await?;
-        let mut transaction = context::begin(&state.pool, DatabaseContext::principal(Uuid::nil()))
+        let mut transaction = context::begin(state.db(), DatabaseContext::principal(Uuid::nil()))
             .await
             .map_err(|_| ApiError::internal("browser_session_context"))?;
         let row = sqlx::query_as::<_, BrowserSessionRow>(
@@ -198,7 +198,7 @@ impl FromRequestParts<ApiState> for ApplicationClient {
             .map(|digest| digest.as_bytes().to_vec())
             .collect::<Vec<_>>();
         let mut transaction = context::begin(
-            &state.pool,
+            state.db(),
             DatabaseContext {
                 principal_id: None,
                 organization_id: None,
@@ -343,7 +343,7 @@ async fn enforce_request_rate_limit(
         .ok_or_else(|| ApiError::internal("application_rate_limit_policy"))?;
     let policy = RateLimitPolicy::new(maximum, Duration::from_secs(60), Duration::from_secs(60))
         .map_err(|_| ApiError::internal("application_rate_limit_policy"))?;
-    match rate_limit::enforce(&state.pool, &state.crypto, name, &scope, policy).await {
+    match rate_limit::enforce(state.db(), &state.crypto, name, &scope, policy).await {
         Ok(_) => Ok(()),
         Err(crate::error::AppError::RateLimited {
             limit,

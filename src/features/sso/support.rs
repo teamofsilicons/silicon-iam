@@ -74,7 +74,7 @@ pub(super) async fn begin_organization<'a>(
     let mut transaction = if serializable {
         begin_serializable(state, Some(carbon_id), None).await?
     } else {
-        context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+        context::begin(state.db(), DatabaseContext::principal(carbon_id))
             .await
             .map_err(database)?
     };
@@ -474,7 +474,7 @@ pub(super) async fn enforce_rate_limit(
     let maximum = NonZeroU32::new(maximum).ok_or_else(|| internal("sso_rate_limit_policy"))?;
     let policy = RateLimitPolicy::new(maximum, window, window)
         .map_err(|_| internal("sso_rate_limit_policy"))?;
-    rate_limit::enforce(&state.pool, &state.crypto, name, &raw_scope, policy).await?;
+    rate_limit::enforce(state.db(), &state.crypto, name, &raw_scope, policy).await?;
     Ok(())
 }
 
@@ -558,7 +558,7 @@ async fn begin_serializable(
     principal_id: Option<Uuid>,
     organization_id: Option<Uuid>,
 ) -> Result<Transaction<'_, Postgres>, AppError> {
-    let mut transaction = state.pool.begin().await.map_err(database)?;
+    let mut transaction = context::begin_scoped(state.db()).await.map_err(database)?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
         .execute(&mut *transaction)
         .await

@@ -67,7 +67,7 @@ pub(super) async fn create_challenge(
         b"login-challenge-create",
         &[identifier.database_value().as_bytes(), &caller_scope],
     );
-    let mut transaction = serializable(&state.pool, "login_challenge_transaction").await?;
+    let mut transaction = serializable(state.db(), "login_challenge_transaction").await?;
     let record_id = match idempotency::begin::<AuthSessionResponse>(
         &mut transaction,
         &state.crypto,
@@ -349,7 +349,7 @@ async fn confirm_login_delivery(
     receipts: &[delivery::RequiredDeliveryReceipt],
     response: &AuthSessionResponse,
 ) -> Result<(), AppError> {
-    let mut transaction = serializable(&state.pool, "login_delivery_finalize_transaction").await?;
+    let mut transaction = serializable(state.db(), "login_delivery_finalize_transaction").await?;
     persist_login_phone_receipts(&mut transaction, challenge_id, receipts).await?;
     let activated = sqlx::query(
         r"
@@ -467,7 +467,7 @@ async fn fail_login_delivery(
     record_id: idempotency::Lease,
     challenge_id: Uuid,
 ) -> Result<(), AppError> {
-    let mut transaction = serializable(&state.pool, "login_delivery_failure_transaction").await?;
+    let mut transaction = serializable(state.db(), "login_delivery_failure_transaction").await?;
     sqlx::query(
         r"
         UPDATE iam.login_challenges
@@ -523,7 +523,7 @@ pub(super) async fn verify_challenge(
         b"login-challenge-verify",
         &[challenge_id.as_bytes(), code.expose_secret().as_bytes()],
     );
-    let mut transaction = serializable(&state.pool, "login_verify_transaction").await?;
+    let mut transaction = serializable(state.db(), "login_verify_transaction").await?;
     let record_id = match idempotency::begin::<LoginVerificationOutcome>(
         &mut transaction,
         &state.crypto,

@@ -86,7 +86,7 @@ pub(super) async fn get(
 ) -> Result<Response, ApiError> {
     let carbon_id = require_carbon(&access)?;
     validation::app_id(&path.app_id)?;
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("webhook_get_context"))?;
     let app = resolve_readable_app(&mut transaction, carbon_id, &path.app_id, false).await?;
@@ -109,7 +109,7 @@ pub(super) async fn replace(
     validation::app_id(&path.app_id)?;
     let url = validation::webhook_url(&input.url)?;
     let canonical = input.url.as_bytes();
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("webhook_replace_context"))?;
     let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
@@ -140,7 +140,7 @@ pub(super) async fn replace(
         .await
         .map_err(|message| ApiError::validation("webhook_url", message))?;
 
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("webhook_replace_context"))?;
     let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
@@ -308,7 +308,7 @@ pub(super) async fn list_dead_letters(
     validation::app_id(&path.app_id)?;
     let cursor = cursor::decode(query.cursor.as_deref())?;
     let limit = cursor::limit(query.limit);
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_dead_letter_list_context"))?;
     let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
@@ -352,7 +352,7 @@ pub(super) async fn replay_dead_letters(
     validation::delivery_ids(&input.delivery_ids)?;
     let canonical = serde_json::to_vec(&input)
         .map_err(|_| ApiError::internal("application_dead_letter_replay_canonical"))?;
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_dead_letter_replay_context"))?;
     let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
@@ -456,7 +456,7 @@ pub(super) async fn login_history(
     validation::app_id(&path.app_id)?;
     let cursor = cursor::decode(query.cursor.as_deref())?;
     let limit = cursor::limit(query.limit);
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("login_history_context"))?;
     let app = resolve_readable_app(&mut transaction, carbon_id, &path.app_id, false).await?;

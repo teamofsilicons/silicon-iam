@@ -496,7 +496,7 @@ pub(super) async fn send_invitation_email_code(
     let carbon_id = support::require_carbon(&authenticated)?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     input.email = validate_invitation_email(&input.email)?;
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(support::database)?;
     let lease = match support::claim_resource(
@@ -725,7 +725,7 @@ async fn confirm_invitation_otp_delivery(
     destination_contact_id: Uuid,
     response: &InvitationEmailCodeResponse,
 ) -> Result<Vec<u8>, AppError> {
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(support::database)?;
     context::select_organization(&mut transaction, organization_id)
@@ -798,7 +798,7 @@ async fn fail_invitation_otp_delivery(
     invitation_id: Uuid,
     challenge_id: Uuid,
 ) -> Result<(), AppError> {
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(carbon_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(support::database)?;
     context::select_organization(&mut transaction, organization_id)
@@ -1233,7 +1233,7 @@ async fn enforce_invitation_code_send_limit(
     })?;
     let scope = SecretString::from(invitation_code_send_scope(carbon_id, organization_handle));
     rate_limit::enforce_burst_cooldown(
-        &state.pool,
+        state.db(),
         &state.crypto,
         "organization_invitation_email_join_send",
         &scope,
@@ -1307,7 +1307,7 @@ async fn begin_invitation<'a>(
 ) -> Result<(Transaction<'a, Postgres>, Uuid), AppError> {
     support::require_carbon(authenticated)?;
     let mut transaction = context::begin(
-        &state.pool,
+        state.db(),
         DatabaseContext::principal(authenticated.0.subject.id),
     )
     .await

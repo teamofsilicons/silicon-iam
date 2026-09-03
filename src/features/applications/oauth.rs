@@ -394,10 +394,9 @@ pub(super) async fn authorize(
 ) -> Result<Response, ApiError> {
     let scopes = validation::authorize(&query)?;
     let redirect_digest = Sha256::digest(query.redirect_uri.as_bytes());
-    let mut transaction =
-        context::begin(&state.pool, DatabaseContext::principal(session.carbon_id))
-            .await
-            .map_err(|_| ApiError::internal("oauth_authorize_context"))?;
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(session.carbon_id))
+        .await
+        .map_err(|_| ApiError::internal("oauth_authorize_context"))?;
     let app = sqlx::query_as::<_, AuthorizeApplicationRow>(
         r"
         SELECT application.id, application.app_id, application.app_name,
@@ -777,10 +776,9 @@ pub(super) async fn decide_consent(
         "decision": input.decision,
     }))
     .map_err(|_| ApiError::internal("oauth_decision_canonical"))?;
-    let mut transaction =
-        context::begin(&state.pool, DatabaseContext::principal(session.carbon_id))
-            .await
-            .map_err(|_| ApiError::internal("oauth_decision_context"))?;
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(session.carbon_id))
+        .await
+        .map_err(|_| ApiError::internal("oauth_decision_context"))?;
     let caller_scope = format!("browser-session:{}", session.session_id);
     let claim = idempotency::claim::<RedirectReplay>(
         &mut transaction,
@@ -906,7 +904,7 @@ pub(super) async fn token(
     }))
     .map_err(|_| ApiError::internal("oauth_token_canonical"))?;
     let mut transaction = context::begin(
-        &state.pool,
+        state.db(),
         DatabaseContext::application(client.application_id, client.application_id),
     )
     .await
@@ -990,7 +988,7 @@ pub(super) async fn introspect(
         return introspect_refresh_token(&state, &client, &headers, &input.token).await;
     }
     let token = SecretString::from(input.token);
-    let access = match tokens::authenticate(&state.pool, &state.crypto, &token).await {
+    let access = match tokens::authenticate(state.db(), &state.crypto, &token).await {
         Ok(Some(access)) if access.client_application_id == Some(client.application_id) => access,
         Ok(_) | Err(crate::infrastructure::postgres::tokens::AccessTokenError::InvalidFormat) => {
             return Ok(Json(inactive_introspection()));
@@ -1011,7 +1009,7 @@ pub(super) async fn introspect(
         )
         .bind(access.organization_id)
         .bind(org_handle)
-        .fetch_one(&state.pool)
+        .fetch_one(state.db())
         .await
         .map_err(|_| ApiError::internal("oauth_introspection_org"))?;
         if !matches {
@@ -1030,7 +1028,7 @@ pub(super) async fn introspect(
         ",
     )
     .bind(access.token_id)
-    .fetch_one(&state.pool)
+    .fetch_one(state.db())
     .await
     .map_err(|_| ApiError::internal("oauth_introspection_metadata"))?;
     Ok(Json(IntrospectionResponse {
@@ -1076,7 +1074,7 @@ async fn introspect_refresh_token(
         .map(|digest| digest.as_bytes().to_vec())
         .collect::<Vec<_>>();
     let mut transaction = context::begin(
-        &state.pool,
+        state.db(),
         DatabaseContext::application(client.application_id, client.application_id),
     )
     .await
@@ -1216,7 +1214,7 @@ pub(super) async fn revoke(
     }
     let token = SecretString::from(input.token);
     let mut transaction = context::begin(
-        &state.pool,
+        state.db(),
         DatabaseContext::application(client.application_id, client.application_id),
     )
     .await

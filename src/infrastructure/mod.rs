@@ -4,3 +4,4 @@ pub(crate) mod browser_session;
 pub mod crypto;
 pub mod postgres;
 pub mod providers;
+pub mod testing_plane;

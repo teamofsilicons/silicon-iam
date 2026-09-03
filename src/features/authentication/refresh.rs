@@ -21,7 +21,7 @@ pub(super) async fn rotate(
         b"refresh-token-caller",
         &[supplied.expose_secret().as_bytes()],
     );
-    let mut transaction = serializable(&state.pool, "refresh_transaction").await?;
+    let mut transaction = serializable(state.db(), "refresh_transaction").await?;
     let record_id = match idempotency::begin::<RefreshMutationOutcome>(
         &mut transaction,
         &state.crypto,

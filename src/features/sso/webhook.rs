@@ -47,7 +47,9 @@ pub(super) async fn receive(
     validate_provider_id(&envelope.id, "event_", 512)?;
     let transition = transition(&envelope.event);
 
-    let mut transaction = state.pool.begin().await.map_err(support::database)?;
+    let mut transaction = crate::infrastructure::postgres::context::begin_scoped(state.db())
+        .await
+        .map_err(support::database)?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
         .execute(&mut *transaction)
         .await

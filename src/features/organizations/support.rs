@@ -69,7 +69,7 @@ pub(super) async fn begin_organization<'a>(
 ) -> Result<OrganizationTransaction<'a>, AppError> {
     let credential_binding = direct_iam_binding(authenticated)?;
     let principal_id = authenticated.0.subject.id;
-    let mut transaction = context::begin(&state.pool, DatabaseContext::principal(principal_id))
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(principal_id))
         .await
         .map_err(database)?;
     let access = authorization::resolve_organization_access(

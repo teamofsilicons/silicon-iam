@@ -104,7 +104,7 @@ pub(super) async fn create_session(
     state: &ApiState,
     key: &IdempotencyKey,
 ) -> Result<Outcome<AuthSessionResponse>, AppError> {
-    let mut transaction = serializable(&state.pool, "signup_session_transaction").await?;
+    let mut transaction = serializable(state.db(), "signup_session_transaction").await?;
     let request_digest = idempotency::digest_parts(b"signup-session-create", &[]);
     match idempotency::begin::<AuthSessionResponse>(
         &mut transaction,
@@ -196,7 +196,7 @@ pub(super) async fn start_contact(
 ) -> Result<Outcome<CodeDispatchResponse>, AppError> {
     let channel = contact.channel;
     let request_digest = start_contact_request_digest(signup_session_id, &contact);
-    let mut transaction = serializable(&state.pool, "signup_contact_transaction").await?;
+    let mut transaction = serializable(state.db(), "signup_contact_transaction").await?;
     let record_id = match idempotency::begin::<CodeDispatchResponse>(
         &mut transaction,
         &state.crypto,
@@ -428,7 +428,7 @@ async fn confirm_signup_delivery(
     provider_message_id: &str,
     response: &CodeDispatchResponse,
 ) -> Result<(), AppError> {
-    let mut transaction = serializable(&state.pool, "signup_delivery_finalize_transaction").await?;
+    let mut transaction = serializable(state.db(), "signup_delivery_finalize_transaction").await?;
     let activated = sqlx::query(
         r"
         UPDATE iam.signup_otp_challenges AS challenge
@@ -522,7 +522,7 @@ async fn fail_signup_delivery(
     candidate_id: Uuid,
     challenge_id: Uuid,
 ) -> Result<(), AppError> {
-    let mut transaction = serializable(&state.pool, "signup_delivery_failure_transaction").await?;
+    let mut transaction = serializable(state.db(), "signup_delivery_failure_transaction").await?;
     sqlx::query(
         r"
         UPDATE iam.signup_otp_challenges
@@ -576,7 +576,7 @@ pub(super) async fn verify_contact(
 ) -> Result<Outcome<VerificationOutcome>, AppError> {
     let bound_code = otp::bound_secret("signup", signup_session_id, &supplied_code);
     let request_digest = verify_contact_request_digest(signup_session_id, channel, &supplied_code);
-    let mut transaction = serializable(&state.pool, "signup_verify_transaction").await?;
+    let mut transaction = serializable(state.db(), "signup_verify_transaction").await?;
     let record_id = match idempotency::begin::<VerificationOutcome>(
         &mut transaction,
         &state.crypto,
@@ -805,7 +805,7 @@ pub(super) async fn complete_signup(
             profile_photo.as_str().as_bytes(),
         ],
     );
-    let mut transaction = serializable(&state.pool, "signup_complete_transaction").await?;
+    let mut transaction = serializable(state.db(), "signup_complete_transaction").await?;
     let record_id = match idempotency::begin::<CarbonSelfResponse>(
         &mut transaction,
         &state.crypto,

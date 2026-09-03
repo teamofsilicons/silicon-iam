@@ -40,7 +40,7 @@ impl FromRequestParts<ApiState> for BrowserSession {
         let verified =
             browser_session::verify_headers(&parts.headers, &state.settings.security.cookie_key)
                 .map_err(map_cookie_error)?;
-        let mut transaction = context::begin(&state.pool, DatabaseContext::principal(Uuid::nil()))
+        let mut transaction = context::begin(state.db(), DatabaseContext::principal(Uuid::nil()))
             .await
             .map_err(|_| internal("sso_browser_session_context"))?;
         let row = sqlx::query_as::<_, BrowserSessionRow>(
