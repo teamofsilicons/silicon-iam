@@ -721,6 +721,49 @@ async fn change_admin_role(
     .await
     .map_err(support::transition_database)?
     .ok_or(AppError::NotFound)?;
+    // A new administrator starts with the whole catalogue except the authority
+    // to make or unmake other administrators: that one stays with the owner,
+    // and with whoever the owner grants it to explicitly. Promotion used to
+    // grant nothing at all, which left every fresh admin unable to act until
+    // someone set their capabilities by hand.
+    if promote {
+        let defaults = sqlx::query_scalar::<_, String>(
+            r"
+            SELECT capability
+            FROM iam.organization_capability_catalog
+            WHERE allowed_for_carbon
+              AND capability NOT IN ('admins.create', 'admins.manage')
+            ORDER BY capability
+            ",
+        )
+        .fetch_all(&mut *scope.transaction)
+        .await
+        .map_err(support::database)?;
+        for capability in &defaults {
+            sqlx::query(
+                r"
+                INSERT INTO iam.organization_capability_grants (
+                    id, organization_id, grantee_membership_id, capability,
+                    granted_by_membership_id, reason
+                )
+                SELECT $1, $2, $3, $4, $5, 'administrator promoted'
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM iam.organization_capability_grants
+                    WHERE organization_id = $2 AND grantee_membership_id = $3
+                      AND capability = $4 AND revoked_at IS NULL
+                )
+                ",
+            )
+            .bind(Uuid::now_v7())
+            .bind(scope.access.organization_id)
+            .bind(membership_id)
+            .bind(capability)
+            .bind(scope.access.membership_id)
+            .execute(&mut *scope.transaction)
+            .await
+            .map_err(support::database)?;
+        }
+    }
     let authorization = fetch_authorization(
         &mut scope.transaction,
         scope.access.organization_id,
