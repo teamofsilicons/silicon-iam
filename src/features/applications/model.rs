@@ -38,7 +38,6 @@ pub(super) struct ApplicationCreate {
     #[serde(rename = "app_logo")]
     pub(super) app_logo_uri: Option<String>,
     pub(super) webhook_url: String,
-    pub(super) requested_scopes: Vec<String>,
     #[serde(default)]
     pub(super) obo_endpoints: Vec<ApplicationOboEndpoint>,
 }
@@ -51,7 +50,6 @@ pub(super) struct ApplicationPatch {
     #[serde(rename = "app_logo")]
     #[allow(clippy::option_option)]
     pub(super) app_logo_uri: Option<Option<String>>,
-    pub(super) requested_scopes: Option<Vec<String>>,
     pub(super) obo_endpoints: Option<Vec<ApplicationOboEndpoint>>,
 }
 

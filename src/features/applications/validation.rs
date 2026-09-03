@@ -31,7 +31,6 @@ pub(super) fn application_create(input: &model::ApplicationCreate) -> Result<(),
     optional_text("app_name", input.app_name.as_deref(), 1, 200)?;
     optional_https_uri("app_logo_uri", input.app_logo_uri.as_deref(), 2_048)?;
     webhook_url(&input.webhook_url)?;
-    scopes(&input.requested_scopes)?;
     obo_endpoints(&input.obo_endpoints)?;
     Ok(())
 }
@@ -39,7 +38,6 @@ pub(super) fn application_create(input: &model::ApplicationCreate) -> Result<(),
 pub(super) fn application_patch(input: &model::ApplicationPatch) -> Result<(), ApiError> {
     if input.app_name.is_none()
         && input.app_logo_uri.is_none()
-        && input.requested_scopes.is_none()
         && input.obo_endpoints.is_none()
     {
         return Err(ApiError::validation(
@@ -56,9 +54,6 @@ pub(super) fn application_patch(input: &model::ApplicationPatch) -> Result<(), A
         .and_then(|value| value.as_deref())
     {
         optional_https_uri("app_logo_uri", Some(value), 2_048)?;
-    }
-    if let Some(values) = &input.requested_scopes {
-        scopes(values)?;
     }
     if let Some(values) = &input.obo_endpoints {
         obo_endpoints(values)?;

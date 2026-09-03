@@ -223,7 +223,6 @@ pub(super) async fn create(
         "app_name": input.app_name,
         "app_logo_uri": input.app_logo_uri,
         "webhook_url": input.webhook_url,
-        "requested_scopes": input.requested_scopes,
         "obo_endpoints": input.obo_endpoints,
     }))
     .map_err(|_| ApiError::internal("application_create_canonical"))?;
@@ -330,27 +329,6 @@ pub(super) async fn create(
     .execute(&mut *transaction)
     .await
     .map_err(map_application_write)?;
-    for scope in &input.requested_scopes {
-        let result = sqlx::query(
-            r"
-            INSERT INTO iam.application_requested_scopes (application_id, scope)
-            SELECT $1, catalog.scope
-            FROM iam.oauth_scope_catalog AS catalog
-            WHERE catalog.scope = $2
-            ",
-        )
-        .bind(application_id)
-        .bind(scope)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|_| ApiError::internal("application_scope_insert"))?;
-        if result.rows_affected() != 1 {
-            return Err(ApiError::validation(
-                "requested_scopes",
-                format!("unknown scope: {scope}"),
-            ));
-        }
-    }
     // The login carries the whole catalogue -- "scope of the login is always
     // everything" -- and a login's request-scope rows are foreign-keyed to the
     // approved set, so "everything" has to exist as rows rather than as a
@@ -483,7 +461,6 @@ pub(super) async fn create(
                 "application_id": application_id,
                 "organization_id": organization_id,
                 "org_id": input.org_id,
-                "requested_scope_count": input.requested_scopes.len(),
                 "obo_endpoint_count": input.obo_endpoints.len(),
             }),
             event_type: "application.created",
@@ -755,55 +732,6 @@ pub(super) async fn patch(
         .execute(&mut *transaction)
         .await
         .map_err(|_| ApiError::internal("application_patch_metadata"))?;
-    }
-    if let Some(scopes) = &input.requested_scopes {
-        for scope in scopes {
-            let result = sqlx::query(
-                r"
-                INSERT INTO iam.application_requested_scopes (application_id, scope)
-                SELECT $1, scope FROM iam.oauth_scope_catalog WHERE scope = $2
-                ON CONFLICT DO NOTHING
-                ",
-            )
-            .bind(before.id)
-            .bind(scope)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|_| ApiError::internal("application_scope_patch"))?;
-            if result.rows_affected() == 0 {
-                let exists = sqlx::query_scalar::<_, bool>(
-                    "SELECT EXISTS (SELECT 1 FROM iam.oauth_scope_catalog WHERE scope = $1)",
-                )
-                .bind(scope)
-                .fetch_one(&mut *transaction)
-                .await
-                .map_err(|_| ApiError::internal("application_scope_validate"))?;
-                if !exists {
-                    return Err(ApiError::validation(
-                        "requested_scopes",
-                        format!("unknown scope: {scope}"),
-                    ));
-                }
-            }
-        }
-        sqlx::query(
-            r"
-            DELETE FROM iam.application_requested_scopes AS requested
-            WHERE requested.application_id = $1
-              AND NOT (requested.scope = ANY($2::text[]))
-              AND NOT EXISTS (
-                  SELECT 1 FROM iam.application_approved_scopes AS approved
-                  WHERE approved.application_id = requested.application_id
-                    AND approved.scope = requested.scope
-                    AND approved.revoked_at IS NULL
-              )
-            ",
-        )
-        .bind(before.id)
-        .bind(scopes)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|_| ApiError::internal("application_scope_remove"))?;
     }
     if let Some(endpoints) = &input.obo_endpoints {
         replace_obo_endpoints(&mut transaction, before.id, endpoints).await?;
@@ -1858,7 +1786,6 @@ fn input_as_json(input: &ApplicationPatch) -> serde_json::Value {
     json!({
         "app_name": input.app_name,
         "app_logo_uri": input.app_logo_uri,
-        "requested_scopes": input.requested_scopes,
         "obo_endpoints": input.obo_endpoints,
     })
 }
