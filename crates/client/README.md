@@ -178,4 +178,6 @@ reviewable diff.
 
 ## License
 
-Proprietary. See `LICENSE`.
+Licensed under the Apache License, Version 2.0. See `LICENSE`.
+
+Copyright 2026 Team of Silicons.

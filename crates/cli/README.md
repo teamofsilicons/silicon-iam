@@ -6,7 +6,7 @@ Silicon IAM from the command line. Installs a single binary, `siam`.
 cargo install silicon-iam-cli
 ```
 
-Everything the CLI can do, the [`silicon-iam-client`](../client) crate can do —
+Everything the CLI can do, the [`silicon-iam-client`](https://crates.io/crates/silicon-iam-client) crate can do —
 the CLI is a shell over it and has no capability of its own. What it adds is
 memory: which service, which profile, whose session, and a terminal to read a
 verification code from.
@@ -147,4 +147,6 @@ not to a command-line caller.
 
 ## License
 
-Proprietary. See `LICENSE`.
+Licensed under the Apache License, Version 2.0. See `LICENSE`.
+
+Copyright 2026 Team of Silicons.

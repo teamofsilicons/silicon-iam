@@ -7,9 +7,7 @@ categories = ["api-bindings", "authentication"]
 readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
-# Points at the copy in this crate root, which is what the packaged
-# archive carries; the workspace value would resolve outside it.
-license-file = "LICENSE"
+license = "Apache-2.0"
 repository.workspace = true
 authors.workspace = true
 
