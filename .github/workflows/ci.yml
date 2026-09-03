@@ -69,6 +69,10 @@ jobs:
       - name: Confirm the client wire types still match the contract
         run: |
           ruby scripts/generate-client-models.rb
+          # The committed file is generator output *and* rustfmt output, since
+          # it is ordinary source held to the same formatting as the rest. The
+          # check has to reproduce both steps or it only measures line wrapping.
+          cargo fmt -p silicon-iam-client
           git diff --exit-code crates/client/src/models.rs
 
       - name: Run live PostgreSQL protocol tests
