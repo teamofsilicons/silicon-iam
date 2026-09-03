@@ -67,28 +67,28 @@ async fn resolve_creation_organization(
     carbon_id: Uuid,
     organization_handle: &str,
 ) -> Result<Uuid, ApiError> {
-    sqlx::query_scalar::<_, Uuid>(
+    // Resolved through an owner-rights function on purpose.
+    //
+    // The lock is the point of this lookup — the authority check and the insert
+    // must see the same membership — but PostgreSQL applies a table's UPDATE
+    // policy to a locking read, and `organizations_authorized_update` requires
+    // `current_organization_id()`. That setting is chosen from this query's own
+    // result, so run inline the statement had to know its answer to produce it:
+    // it matched nothing and every registration reported the organization
+    // missing. The predicate is unchanged and still evaluated inside the
+    // function, so this narrows nothing.
+    // `SELECT f(...)` always yields a row, so the absent case arrives as a NULL
+    // inside it rather than as no row at all. Decoded as `Option` so a caller
+    // without the authority still receives the not-found this returns, not a
+    // decode failure reported as an internal error.
+    sqlx::query_scalar::<_, Option<Uuid>>(
         r"
-        SELECT organization.id
-        FROM iam.organizations AS organization
-        JOIN iam.organization_memberships AS membership
-          ON membership.organization_id = organization.id
-         AND membership.principal_id = $2
-         AND membership.principal_kind = 'carbon'
-         AND membership.org_role IN ('owner', 'admin')
-         AND membership.status = 'active'
-        JOIN iam.principals AS principal
-          ON principal.id = membership.principal_id
-         AND principal.kind = 'carbon'
-         AND principal.status = 'active'
-        WHERE organization.org_id = $1
-          AND organization.status = 'active'
-        FOR SHARE OF organization, membership, principal
+        SELECT iam_private.lock_application_creation_organization($1, $2)
         ",
     )
     .bind(organization_handle)
     .bind(carbon_id)
-    .fetch_optional(&mut **transaction)
+    .fetch_one(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("application_creation_organization"))?
     .ok_or_else(ApiError::not_found)
@@ -2500,5 +2500,170 @@ mod tests {
         }
         assert!(!REVOKE_ACCESS_TOKENS_FOR_REMOVED_SCOPES_QUERY.contains("refresh_tokens"));
         assert!(!REVOKE_ACCESS_TOKENS_FOR_REMOVED_SCOPES_QUERY.contains("authentication_sessions"));
+    }
+
+    /// Resolves the owning organization as the restricted API role.
+    ///
+    /// Registering an application always answered 404. The lookup share-locks
+    /// the organization and the caller's membership, PostgreSQL applies a
+    /// table's UPDATE policy to a locking read, and
+    /// `organizations_authorized_update` requires `current_organization_id()` —
+    /// a setting chosen from this lookup's own result. The statement therefore
+    /// had to know its answer before it could produce it.
+    ///
+    /// Every other Docker-backed test connects as the schema owner, where row
+    /// security does not apply and the fault is invisible. This one provisions
+    /// the restricted roles so the lookup runs exactly as production runs it.
+    #[tokio::test]
+    #[ignore = "requires a local Docker daemon"]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the roles, grants and organization fixture form one end-to-end contract"
+    )]
+    async fn the_owning_organization_resolves_for_the_restricted_api_role() -> anyhow::Result<()> {
+        use anyhow::ensure;
+        use sqlx::postgres::PgPoolOptions;
+        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
+        use testcontainers_modules::postgres::Postgres as TestPostgres;
+        use uuid::Uuid;
+
+        const RUNTIME_ROLES: &str = "
+            CREATE ROLE silicon_iam_api NOLOGIN NOSUPERUSER NOBYPASSRLS;
+            CREATE ROLE silicon_iam_worker NOLOGIN NOSUPERUSER NOBYPASSRLS;
+            CREATE ROLE silicon_iam_key_operator NOLOGIN NOSUPERUSER NOBYPASSRLS;
+            CREATE ROLE silicon_iam_api_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS
+                IN ROLE silicon_iam_api;
+        ";
+        let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('\\'))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let container = TestPostgres::default()
+            .with_tag("16-alpine")
+            .start()
+            .await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(5432).await?;
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&format!(
+                "postgres://postgres:postgres@{host}:{port}/postgres"
+            ))
+            .await?;
+        crate::infrastructure::postgres::migrate(&pool).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(RUNTIME_ROLES))
+            .execute(&pool)
+            .await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(grants))
+            .execute(&pool)
+            .await?;
+
+        let carbon_id = Uuid::from_u128(0x51_01);
+        let organization_id = Uuid::from_u128(0x51_02);
+        let membership_id = Uuid::from_u128(0x51_03);
+
+        let mut fixture = pool.begin().await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.principals (id, kind, status, activated_at)
+            VALUES ($1, 'carbon', 'active', transaction_timestamp())
+            ",
+        )
+        .bind(carbon_id)
+        .execute(&mut *fixture)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.carbons (id, carbon_id, display_name)
+            VALUES ($1, 'owner-under-rls', 'Owner Under Row Security')
+            ",
+        )
+        .bind(carbon_id)
+        .execute(&mut *fixture)
+        .await?;
+        // An active Carbon must hold one verified primary contact of each kind;
+        // a deferred assertion enforces it at commit.
+        sqlx::query(
+            r"
+            INSERT INTO iam.cryptographic_key_versions (purpose, key_version)
+            VALUES ('contact_aead', 1)
+            ",
+        )
+        .execute(&mut *fixture)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.carbon_contacts (
+                id, carbon_id, kind, ciphertext, nonce, encryption_key_version, verified_at
+            ) VALUES
+                ($1, $3, 'email', decode(repeat('11', 17), 'hex'),
+                    decode(repeat('12', 12), 'hex'), 1, transaction_timestamp()),
+                ($2, $3, 'phone', decode(repeat('21', 17), 'hex'),
+                    decode(repeat('22', 12), 'hex'), 1, transaction_timestamp())
+            ",
+        )
+        .bind(Uuid::from_u128(0x51_05))
+        .bind(Uuid::from_u128(0x51_06))
+        .bind(carbon_id)
+        .execute(&mut *fixture)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.organizations (id, org_id, created_by_carbon_id, name)
+            VALUES ($1, 'tos', $2, 'Team of Silicons')
+            ",
+        )
+        .bind(organization_id)
+        .bind(carbon_id)
+        .execute(&mut *fixture)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.organization_memberships (
+                id, organization_id, principal_id, principal_kind, org_role
+            ) VALUES ($1, $2, $3, 'carbon', 'owner')
+            ",
+        )
+        .bind(membership_id)
+        .bind(organization_id)
+        .bind(carbon_id)
+        .execute(&mut *fixture)
+        .await?;
+        fixture.commit().await?;
+
+        // Exactly the context the handler has at this point: the principal is
+        // known, the organization is not — that is what the lookup decides.
+        let mut resolving = pool.begin().await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "SET LOCAL ROLE silicon_iam_api_runtime",
+        ))
+        .execute(&mut *resolving)
+        .await?;
+        sqlx::query("SELECT set_config('iam.principal_id', $1::text, true)")
+            .bind(carbon_id)
+            .execute(&mut *resolving)
+            .await?;
+
+        let resolved = super::resolve_creation_organization(&mut resolving, carbon_id, "tos")
+            .await
+            .map_err(|_| anyhow::anyhow!("the owning organization did not resolve"))?;
+
+        ensure!(
+            resolved == organization_id,
+            "resolved {resolved} instead of {organization_id}"
+        );
+
+        // A Carbon with no membership must still be refused.
+        let stranger = Uuid::from_u128(0x51_04);
+        ensure!(
+            super::resolve_creation_organization(&mut resolving, stranger, "tos")
+                .await
+                .is_err(),
+            "a Carbon outside the organization must not resolve it"
+        );
+
+        Ok(())
     }
 }
