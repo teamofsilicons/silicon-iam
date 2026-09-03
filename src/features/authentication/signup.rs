@@ -429,13 +429,18 @@ async fn confirm_signup_delivery(
     response: &CodeDispatchResponse,
 ) -> Result<(), AppError> {
     let mut transaction = serializable(state.db(), "signup_delivery_finalize_transaction").await?;
+    // Only Twilio Verify produces a verification SID, and the column is
+    // constrained to that shape. Any other transport -- a plain SMS provider,
+    // or a testing environment that sent nothing at all -- has no SID to
+    // record, and writing its receipt id there would violate the constraint
+    // and fail the delivery.
     let activated = sqlx::query(
         r"
         UPDATE iam.signup_otp_challenges AS challenge
         SET delivery_status = 'delivered',
             delivered_at = transaction_timestamp(),
             provider_verification_sid = CASE
-                WHEN challenge.contact_kind = 'phone' THEN $4
+                WHEN challenge.contact_kind = 'phone' AND $5 THEN $4
                 ELSE NULL
             END
         FROM iam.signup_contact_candidates AS candidate,
@@ -461,6 +466,7 @@ async fn confirm_signup_delivery(
     .bind(candidate_id)
     .bind(signup_session_id)
     .bind(provider_message_id)
+    .bind(delivery::provider_manages_otp(state, channel))
     .execute(&mut *transaction)
     .await
     .map_err(|_| AppError::Internal {

@@ -350,7 +350,13 @@ async fn confirm_login_delivery(
     response: &AuthSessionResponse,
 ) -> Result<(), AppError> {
     let mut transaction = serializable(state.db(), "login_delivery_finalize_transaction").await?;
-    persist_login_phone_receipts(&mut transaction, challenge_id, receipts).await?;
+    persist_login_phone_receipts(
+        &mut transaction,
+        challenge_id,
+        receipts,
+        delivery::provider_manages_otp(state, ContactChannel::Phone),
+    )
+    .await?;
     let activated = sqlx::query(
         r"
         UPDATE iam.login_challenges AS challenge
@@ -426,10 +432,18 @@ async fn confirm_login_delivery(
         .map_err(|error| database_conflict(&error, "login_delivery_finalize_conflict"))
 }
 
+/// Records the provider's verification reference for a delivered phone code.
+///
+/// Only Twilio Verify produces a verification SID, and the column is
+/// constrained to that shape. Any other transport -- a plain SMS provider, or a
+/// testing environment that sent nothing at all -- has no SID to record, and
+/// writing its receipt id there would violate the constraint and fail the
+/// delivery.
 async fn persist_login_phone_receipts(
     transaction: &mut Transaction<'_, Postgres>,
     challenge_id: Uuid,
     receipts: &[delivery::RequiredDeliveryReceipt],
+    provider_manages_otp: bool,
 ) -> Result<(), AppError> {
     for receipt in receipts {
         if receipt.channel != ContactChannel::Phone {
@@ -438,7 +452,7 @@ async fn persist_login_phone_receipts(
         let updated = sqlx::query(
             r"
             UPDATE iam.login_challenge_channels
-            SET provider_verification_sid = $2
+            SET provider_verification_sid = CASE WHEN $3 THEN $2 ELSE NULL END
             WHERE login_challenge_id = $1
               AND contact_kind = 'phone'
               AND provider_verification_sid IS NULL
@@ -448,6 +462,7 @@ async fn persist_login_phone_receipts(
         )
         .bind(challenge_id)
         .bind(&receipt.provider_message_id)
+        .bind(provider_manages_otp)
         .execute(&mut **transaction)
         .await
         .map_err(|_| AppError::Internal {

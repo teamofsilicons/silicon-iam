@@ -383,13 +383,18 @@ async fn confirm_step_up_delivery(
 ) -> Result<(), AppError> {
     let mut transaction = serializable(state.db(), "step_up_delivery_finalize_transaction").await?;
     set_principal_context(&mut transaction, principal_id).await?;
+    // Only Twilio Verify produces a verification SID, and the column is
+    // constrained to that shape. Any other transport -- a plain SMS provider,
+    // or a testing environment that sent nothing at all -- has no SID to
+    // record, and writing its receipt id there would violate the constraint
+    // and fail the delivery.
     let activated = sqlx::query(
         r"
         UPDATE iam.step_up_challenges AS challenge
         SET delivery_status = 'delivered',
             delivered_at = transaction_timestamp(),
             provider_verification_sid = CASE
-                WHEN challenge.channel = 'phone' THEN $4
+                WHEN challenge.channel = 'phone' AND $5 THEN $4
                 ELSE NULL
             END
         WHERE challenge.id = $1
@@ -420,6 +425,7 @@ async fn confirm_step_up_delivery(
     .bind(principal_id)
     .bind(authentication_session_id)
     .bind(provider_message_id)
+    .bind(delivery::provider_manages_otp(state, ContactChannel::Phone))
     .execute(&mut *transaction)
     .await
     .map_err(|_| AppError::Internal {
