@@ -1757,6 +1757,34 @@ paths:
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
+    delete:
+      tags: [Tags]
+      operationId: deleteOrganizationTag
+      security: [{ iamBearer: [] }]
+      description: >-
+        Deletes a tag. Requires `tags.manage`, which owners hold implicitly and
+        admins by grant. The tag stops existing for every caller: it leaves
+        listings and member projections immediately, stops conferring Silicon
+        access, and its name becomes available again. The cascade is atomic --
+        assignments are removed from every member who held it, tag-scoped trust
+        rules are archived, and the affected members' authorization epochs
+        advance so cached authority is invalidated at once. The removal is
+        recorded in each affected member's tag history and published as
+        `organization.tag_archived.v1`.
+      parameters:
+        - { $ref: '#/components/parameters/IfMatch' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '204':
+          description: Tag deleted.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
   /api/v1/organizations/{org_id}/tags/{tag_id}/members:
     get:
       tags: [Tags, Memberships]

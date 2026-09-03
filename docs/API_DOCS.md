@@ -760,13 +760,36 @@ strings embedded in memberships.
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
 | GET/POST | `/api/v1/organizations/{org_id}/tags` | List or create tags |
-| GET/PATCH | `.../tags/{tag_id}` | Read or rename |
+| GET/PATCH/DELETE | `.../tags/{tag_id}` | Read, rename, or delete |
 | GET | `.../tags/{tag_id}/members` | List attached Carbons and Silicons |
 | PUT | `.../members/{membership_id}/tags` | Owner/admin directly replaces the complete tag set |
 | POST | `.../members/{membership_id}/tag-change-requests` | Request tag additions or removals |
 | GET | `.../members/{membership_id}/tag-history` | List applied tag sets with requester and approvers |
 
 Renaming preserves the tag UUID and therefore does not break references.
+
+Deleting a tag requires `tags.manage`, which an owner holds implicitly and an
+admin by grant, and takes `If-Match` on the tag version. It is archival
+underneath, because the tag identifier is referenced by append-only tag
+history, by trust rules, by pending invitations and by Silicon webhook
+subscription filters. What a caller observes is nonetheless a tag that no
+longer exists:
+
+- it leaves tag listings, and reads of it answer `404`;
+- it disappears from every member's tag set;
+- it stops conferring Silicon access and stops matching Silicon delivery
+  filters;
+- its name becomes immediately available for a new tag.
+
+The cascade is atomic with the deletion. Assignments are removed from every
+member that held the tag, tag-scoped trust rules are archived, and the affected
+memberships' authorization epochs advance so any cached authority is invalidated
+at once. Each affected member's tag history gains a row recording the tag set
+before and after, attributed to the deleting owner or admin. The change is
+published as `organization.tag_archived.v1`, carrying the affected memberships
+and the archived trust rules as disjoint sets, and routed to Silicon
+subscribers on `member_updates`, on `trust_updates`, or both, according to what
+the deletion actually changed.
 
 Only an active Silicon may request a tag addition or removal for any active
 Carbon or Silicon membership, including itself. A Carbon target requires

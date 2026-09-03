@@ -155,7 +155,9 @@ pub fn router() -> Router<ApiState> {
         )
         .route(
             "/api/v1/organizations/{org_id}/tags/{tag_id}",
-            get(handlers::get_tag).patch(handlers::update_tag),
+            get(handlers::get_tag)
+                .patch(handlers::update_tag)
+                .delete(handlers::delete_tag),
         )
         .route(
             "/api/v1/organizations/{org_id}/tags/{tag_id}/members",

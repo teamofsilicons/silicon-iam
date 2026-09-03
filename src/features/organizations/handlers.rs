@@ -40,9 +40,17 @@ const ORGANIZATION_UPDATE_ROUTE: &str = "PATCH /api/v1/organizations/{org_id}";
 const OWNERSHIP_TRANSFER_ROUTE: &str = "POST /api/v1/organizations/{org_id}/ownership-transfers";
 const TAG_CREATE_ROUTE: &str = "POST /api/v1/organizations/{org_id}/tags";
 const TAG_UPDATE_ROUTE: &str = "PATCH /api/v1/organizations/{org_id}/tags/{tag_id}";
+const TAG_DELETE_ROUTE: &str = "DELETE /api/v1/organizations/{org_id}/tags/{tag_id}";
 
 struct TagWebhookScope {
     assigned_membership_ids: Vec<Uuid>,
+}
+
+#[derive(sqlx::FromRow)]
+struct ArchivedTag {
+    tag_version: i64,
+    assignment_membership_ids: Vec<Uuid>,
+    archived_trust_rule_ids: Vec<Uuid>,
 }
 
 pub(super) async fn organization_id_availability(
@@ -854,6 +862,133 @@ pub(super) async fn update_tag(
     support::json_response(StatusCode::OK, body, Some(tag.version), false)
 }
 
+/// Deletes a tag, releasing everything it conferred.
+///
+/// Deletion is archival: the identifier survives because governed tag history,
+/// trust rules and invitations reference it, and every consumer of a tag
+/// already requires it to be active. What the caller observes is a tag that no
+/// longer exists -- it disappears from listings, from member projections, and
+/// from trust and Silicon delivery decisions -- and whose name is immediately
+/// available again.
+///
+/// The cascade runs inside one fixed-path function, because it removes
+/// membership assignments, archives tag-scoped trust rules and re-epochs the
+/// affected members, none of which the HTTP layer may write directly.
+pub(super) async fn delete_tag(
+    State(state): State<ApiState>,
+    authenticated: Authenticated,
+    Path((org_id, tag_id)): Path<(String, Uuid)>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let org_id = validation::organization_id(&org_id)?.to_string();
+    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    support::require_capability(&scope.access, Capability::TagsManage)?;
+    let lease = match support::claim_resource(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        &headers,
+        TAG_DELETE_ROUTE,
+        &tag_id.to_string(),
+        &json!({}),
+        false,
+    )
+    .await?
+    {
+        Claim::Replay(response) => return Ok(response),
+        Claim::Acquired(lease) => lease,
+    };
+    let expected_version = validation::expected_version(&headers)?;
+    let before = fetch_tag(&mut scope.transaction, scope.access.organization_id, tag_id).await?;
+    if before.version != expected_version {
+        return Err(precondition_failed());
+    }
+
+    // Establishes the audience under the same lock the cascade will hold, so
+    // the history identifiers generated from it cannot be the wrong size.
+    let webhook_scope = lock_tag_webhook_scope(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        tag_id,
+        expected_version,
+    )
+    .await?;
+    let history_ids = webhook_scope
+        .assigned_membership_ids
+        .iter()
+        .map(|_| Uuid::now_v7())
+        .collect::<Vec<_>>();
+
+    let archived = sqlx::query_as::<_, ArchivedTag>(
+        r"
+        SELECT *
+        FROM iam_private.archive_organization_tag($1, $2, $3, $4, $5)
+        ",
+    )
+    .bind(scope.access.organization_id)
+    .bind(tag_id)
+    .bind(expected_version)
+    .bind(scope.access.membership_id)
+    .bind(&history_ids)
+    .fetch_one(&mut *scope.transaction)
+    .await
+    .map_err(map_tag_transition_error)?;
+
+    support::record_application_mutation(
+        &mut scope.transaction,
+        &state,
+        &authenticated,
+        scope.access.organization_id,
+        MutationEvent {
+            action: "tag.archived",
+            target_type: "tag",
+            target_id: tag_id,
+            aggregate_type: "organization_tag",
+            aggregate_id: tag_id,
+            aggregate_version: archived.tag_version,
+            event_type: "organization.tag_archived.v1",
+            before_state: redacted_value(&before)?,
+            after_state: None,
+            metadata: json!({
+                "tag_id": tag_id,
+                "cascade": true,
+                "affected_membership_ids": archived.assignment_membership_ids,
+                "tag_assignment_membership_ids": archived.assignment_membership_ids,
+                "before_tag_membership_ids": archived.assignment_membership_ids,
+                "archived_trust_rule_ids": archived.archived_trust_rule_ids,
+            }),
+        },
+    )
+    .await?;
+    support::finish_empty(
+        &mut scope.transaction,
+        &state,
+        lease,
+        StatusCode::NO_CONTENT,
+    )
+    .await?;
+    scope
+        .transaction
+        .commit()
+        .await
+        .map_err(support::database)?;
+    Ok(support::empty(StatusCode::NO_CONTENT))
+}
+
+/// Translates the tag boundaries' refusals into their public shapes.
+fn map_tag_transition_error(error: sqlx::Error) -> AppError {
+    match error
+        .as_database_error()
+        .map(sqlx::error::DatabaseError::message)
+    {
+        Some("tag_scope_forbidden" | "tag_archive_forbidden") => AppError::Forbidden,
+        // The audience changing under the tag lock should not be reachable; a
+        // stale precondition is the honest answer either way.
+        Some("tag_version_mismatch" | "tag_archive_audience_changed") => precondition_failed(),
+        _ => support::database(error),
+    }
+}
+
 pub(super) async fn list_tag_members(
     State(state): State<ApiState>,
     authenticated: Authenticated,
@@ -918,69 +1053,33 @@ async fn fetch_tag(
     .ok_or(AppError::NotFound)
 }
 
+/// Locks the tag and the members holding it, returning that audience.
+///
+/// Delegated to a fixed-path boundary because any row-locking clause needs
+/// write privilege on the locked table, and the API role holds only SELECT on
+/// membership assignments -- those belong to the governed tag-change
+/// machinery. The boundary owns the lock order too: memberships first, then
+/// the tag, then a second pass over memberships, so an assignment that
+/// committed just before the tag lock is still caught and later additions
+/// block on the tag itself.
 async fn lock_tag_webhook_scope(
     transaction: &mut Transaction<'_, Postgres>,
     organization_id: Uuid,
     tag_id: Uuid,
     expected_version: i64,
 ) -> Result<TagWebhookScope, AppError> {
-    // Match governed tag-assignment lock order: membership rows first, then
-    // tag rows. The second pass captures an assignment that committed before
-    // the tag lock was acquired; later additions block on that tag lock.
-    let _initial_assigned_membership_ids =
-        lock_tag_memberships(transaction, organization_id, tag_id).await?;
-    let locked_tag_id = sqlx::query_scalar::<_, Uuid>(
-        r"
-        SELECT tag.id
-        FROM iam.organization_tags AS tag
-        WHERE tag.organization_id = $1
-          AND tag.id = $2
-          AND tag.version = $3
-          AND tag.status = 'active'
-        FOR UPDATE OF tag
-        ",
+    let assigned_membership_ids = sqlx::query_scalar::<_, Vec<Uuid>>(
+        "SELECT iam_private.lock_organization_tag_scope($1, $2, $3)",
     )
     .bind(organization_id)
     .bind(tag_id)
     .bind(expected_version)
-    .fetch_optional(&mut **transaction)
+    .fetch_one(&mut **transaction)
     .await
-    .map_err(support::database)?;
-    if locked_tag_id.is_none() {
-        return Err(precondition_failed());
-    }
-
-    let assigned_membership_ids =
-        lock_tag_memberships(transaction, organization_id, tag_id).await?;
+    .map_err(map_tag_transition_error)?;
     Ok(TagWebhookScope {
         assigned_membership_ids,
     })
-}
-
-async fn lock_tag_memberships(
-    transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    tag_id: Uuid,
-) -> Result<Vec<Uuid>, AppError> {
-    sqlx::query_scalar::<_, Uuid>(
-        r"
-        SELECT assignment.membership_id
-        FROM iam.membership_tags AS assignment
-        JOIN iam.organization_memberships AS membership
-          ON membership.organization_id = assignment.organization_id
-         AND membership.id = assignment.membership_id
-         AND membership.status = 'active'
-        WHERE assignment.organization_id = $1
-          AND assignment.tag_id = $2
-        ORDER BY assignment.membership_id
-        FOR SHARE OF assignment, membership
-        ",
-    )
-    .bind(organization_id)
-    .bind(tag_id)
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(support::database)
 }
 
 async fn fetch_organization(

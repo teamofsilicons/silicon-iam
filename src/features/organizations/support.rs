@@ -624,6 +624,21 @@ fn silicon_webhook_topics(
                 Vec::new()
             }
         }
+        // Archiving a tag changes two separate things, and a subscriber may
+        // care about either: the tag list of every member who held it, and the
+        // trust rules that were scoped to it. The payload carries those as
+        // disjoint sets, so the topics follow whichever the event actually
+        // affected rather than both by default.
+        "organization.tag_archived.v1" => {
+            let mut topics = Vec::new();
+            if metadata_has_uuid_array_value(&event.metadata, "tag_assignment_membership_ids") {
+                topics.push(SiliconWebhookTopic::MemberUpdates);
+            }
+            if metadata_has_uuid_array_value(&event.metadata, "archived_trust_rule_ids") {
+                topics.push(SiliconWebhookTopic::TrustUpdates);
+            }
+            topics
+        }
         "organization.created.v1"
         | "organization.updated.v1"
         | "organization.tag_created.v1"
