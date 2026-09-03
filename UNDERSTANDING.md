@@ -509,4 +509,4 @@ For how this CLI is built, rust as the programming language, but can use anythin
 
 The primary Interface is the Rust Package. CLI is built using the Rust Package only and doesn't have any feature that the Rust package does not.
 
-if you need a local store for auth or something else, use ~/.{appname}/ dir
+if you need a local store for auth or something else, use ~/.{appname}/ dir.

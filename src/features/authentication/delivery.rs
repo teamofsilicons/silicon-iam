@@ -64,6 +64,16 @@ pub(super) async fn send_required(
     state: &ApiState,
     delivery: &Delivery,
 ) -> Result<DeliveryReceipt, RequiredDeliveryError> {
+    // A testing environment sends nothing. Its contacts are invented, and a
+    // real message to an invented address is at best noise and at worst a way
+    // to have this service mail a stranger on request. The flow still needs a
+    // successful delivery to activate the challenge, so it gets one.
+    if crate::infrastructure::testing_plane::is_active() {
+        return Ok(DeliveryReceipt {
+            provider_message_id: "testing-environment".to_owned(),
+        });
+    }
+
     let minutes = state.settings.security.otp_ttl.as_secs().div_ceil(60);
     let expires_in_minutes = u16::try_from(minutes).unwrap_or(u16::MAX);
     let result = match delivery.channel {
@@ -116,7 +126,9 @@ pub(super) async fn send_required(
 /// IAM holds no code in that case, so persisting a digest would leave a secret
 /// at rest that is never delivered to anyone.
 pub(super) fn provider_manages_otp(state: &ApiState, channel: ContactChannel) -> bool {
-    matches!(channel, ContactChannel::Phone) && state.notifications.phone_otp.is_some()
+    !crate::infrastructure::testing_plane::is_active()
+        && matches!(channel, ContactChannel::Phone)
+        && state.notifications.phone_otp.is_some()
 }
 
 pub(super) async fn verify_managed_phone_otp(
@@ -124,6 +136,12 @@ pub(super) async fn verify_managed_phone_otp(
     provider_verification_id: Option<&str>,
     code: &secrecy::SecretString,
 ) -> Result<Option<bool>, AppError> {
+    // A testing environment never registered a verification with the provider,
+    // so there is nothing to check against. Verification falls through to the
+    // fixed environment code handled by the caller.
+    if crate::infrastructure::testing_plane::is_active() {
+        return Ok(None);
+    }
     let Some(provider) = &state.notifications.phone_otp else {
         return Ok(None);
     };

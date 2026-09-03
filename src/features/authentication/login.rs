@@ -574,16 +574,22 @@ pub(super) async fn verify_challenge(
             continue;
         }
         let contact_channel = contacts::parse_channel(&channel.contact_kind)?;
-        let managed_verification = if contact_channel == ContactChannel::Phone {
-            delivery::verify_managed_phone_otp(
-                state,
-                channel.provider_verification_sid.as_deref(),
-                &code,
-            )
-            .await?
-        } else {
-            None
-        };
+        // Inside a testing environment the fixed code stands in for a
+        // delivered one: nothing was ever sent, so there is nothing to
+        // compare against.
+        let managed_verification =
+            if crate::infrastructure::testing_plane::accepts_verification_code(&code) {
+                Some(true)
+            } else if contact_channel == ContactChannel::Phone {
+                delivery::verify_managed_phone_otp(
+                    state,
+                    channel.provider_verification_sid.as_deref(),
+                    &code,
+                )
+                .await?
+            } else {
+                None
+            };
         let matches = if let Some(approved) = managed_verification {
             approved
         } else {
