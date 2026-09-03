@@ -468,12 +468,15 @@ pub(crate) fn expected_version(headers: &HeaderMap) -> Result<i64, AppError> {
 
 async fn serializable(state: &ApiState) -> Result<Transaction<'_, Postgres>, AppError> {
     let mut transaction = state
-        .pool
+        .db()
         .begin()
         .await
         .map_err(|_| internal("carbon_account_transaction"))?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
         .execute(&mut *transaction)
+        .await
+        .map_err(|_| internal("carbon_account_transaction"))?;
+    crate::infrastructure::postgres::context::apply_testing_scope(&mut transaction)
         .await
         .map_err(|_| internal("carbon_account_transaction"))?;
     Ok(transaction)

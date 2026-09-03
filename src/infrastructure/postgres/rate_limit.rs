@@ -180,6 +180,11 @@ pub async fn enforce(
     let window_seconds = duration_seconds(policy.window)?;
     let block_seconds = duration_seconds(policy.block_for)?;
 
+    // The bucket write needs its own transaction rather than a bare pool
+    // statement: the testing-environment scope is transaction-local, and a
+    // request inside an environment must land its bucket there. The consumption
+    // statement is atomic on its own, so the transaction adds no contention.
+    let mut transaction = super::context::begin_scoped(pool).await?;
     let row = sqlx::query_as::<_, ConsumptionRow>(
         r"
         WITH timing AS MATERIALIZED (
@@ -248,8 +253,9 @@ pub async fn enforce(
     .bind(maximum_requests)
     .bind(window_seconds)
     .bind(block_seconds)
-    .fetch_one(pool)
+    .fetch_one(&mut *transaction)
     .await?;
+    transaction.commit().await?;
 
     if !row.allowed {
         let retry_after_seconds = u64::try_from(row.retry_after_seconds.max(1)).unwrap_or(1);
@@ -302,14 +308,20 @@ pub async fn enforce_burst_cooldown(
     let interval_seconds = duration_seconds(policy.window)?;
     let block_seconds = duration_seconds(policy.block_for)?;
 
+    // The bucket write needs its own transaction rather than a bare pool
+    // statement: the testing-environment scope is transaction-local, and a
+    // request inside an environment must land its bucket there. The consumption
+    // statement is atomic on its own, so the transaction adds no contention.
+    let mut transaction = super::context::begin_scoped(pool).await?;
     let row = sqlx::query_as::<_, ConsumptionRow>(BURST_COOLDOWN_CONSUMPTION_SQL)
         .bind(scope_digest.as_bytes().as_slice())
         .bind(limit_name)
         .bind(maximum_requests)
         .bind(interval_seconds)
         .bind(block_seconds)
-        .fetch_one(pool)
+        .fetch_one(&mut *transaction)
         .await?;
+    transaction.commit().await?;
 
     if !row.allowed {
         let retry_after_seconds = u64::try_from(row.retry_after_seconds.max(1)).unwrap_or(1);

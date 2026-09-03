@@ -117,6 +117,17 @@ const GET_ORGANIZATION_ENVIRONMENT_QUERY: &str = r"
     WHERE environment.id = $1 AND environment.organization_id = $2
 ";
 
+#[derive(sqlx::FromRow)]
+struct DescribedEnvironment {
+    #[sqlx(rename = "testing_environment_id")]
+    id: Uuid,
+    name: String,
+    description: Option<String>,
+    key_generation: i32,
+    version: i64,
+    created_at: time::OffsetDateTime,
+}
+
 pub(super) async fn list_environments(
     State(state): State<ApiState>,
     authenticated: Authenticated,
@@ -878,28 +889,17 @@ pub(super) async fn describe_current_environment(
     let mut transaction = context::begin(&state.pool, context::DatabaseContext::anonymous())
         .await
         .map_err(support::database)?;
-    let view = sqlx::query_as::<_, (Uuid, String, Option<String>, i32, time::OffsetDateTime)>(
-        r"
-        SELECT id, name, description, key_generation, created_at
-        FROM iam.testing_environments
-        WHERE id = $1 AND status = 'active'
-        ",
-    )
-    .bind(holder.environment.id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(support::database)?
-    .ok_or(AppError::NotFound)?;
+    let described = describe(&mut transaction, holder.environment.id).await?;
     transaction.commit().await.map_err(support::database)?;
 
     support::json(
         StatusCode::OK,
         &EnvironmentSelfView {
-            id: view.0,
-            name: view.1,
-            description: view.2,
-            key_generation: view.3,
-            created_at: view.4,
+            id: described.id,
+            name: described.name,
+            description: described.description,
+            key_generation: described.key_generation,
+            created_at: described.created_at,
         },
         None,
     )
@@ -933,14 +933,7 @@ pub(super) async fn clean_current_environment(
         Claim::Acquired(lease) => lease,
     };
 
-    let version = sqlx::query_scalar::<_, i64>(
-        "SELECT version FROM iam.testing_environments WHERE id = $1 AND status = 'active'",
-    )
-    .bind(environment_id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(support::database)?
-    .ok_or(AppError::NotFound)?;
+    let version = describe(&mut transaction, environment_id).await?.version;
 
     let result = erase(&state, environment_id).await?;
     support::record_audit(
@@ -1003,23 +996,42 @@ async fn erase(state: &ApiState, environment_id: Uuid) -> Result<CleaningResult,
     })
 }
 
+/// Describes one live environment regardless of who is asking.
+///
+/// A key holder has no IAM principal, so row security hides every environment
+/// from them -- correctly, since membership is what makes an environment
+/// visible to a person. This is the narrow, secret-free read for the credential
+/// that is the environment's own authority. Authority is settled before it is
+/// called.
+async fn describe(
+    transaction: &mut Transaction<'_, Postgres>,
+    environment_id: Uuid,
+) -> Result<DescribedEnvironment, AppError> {
+    sqlx::query_as::<_, DescribedEnvironment>(
+        "SELECT * FROM iam_private.describe_testing_environment($1)",
+    )
+    .bind(environment_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(support::database)?
+    .ok_or(AppError::NotFound)
+}
+
+/// Stamps the cleaning outcome once authority has been established.
+///
+/// Goes through the same boundary as the read above, because cleaning is
+/// authorized either by organization administration or by the key alone, and
+/// the update policy cannot recognize the second caller.
 async fn mark_cleaned(
     transaction: &mut Transaction<'_, Postgres>,
     environment_id: Uuid,
 ) -> Result<(), AppError> {
-    sqlx::query(
-        r"
-        UPDATE iam.testing_environments
-        SET cleaned_at = transaction_timestamp(),
-            last_activity_at = transaction_timestamp()
-        WHERE id = $1 AND status = 'active'
-        ",
-    )
-    .bind(environment_id)
-    .execute(&mut **transaction)
-    .await
-    .map(|_| ())
-    .map_err(support::database)
+    sqlx::query("SELECT iam_private.record_testing_environment_cleaning($1)")
+        .bind(environment_id)
+        .execute(&mut **transaction)
+        .await
+        .map(|_| ())
+        .map_err(support::database)
 }
 
 async fn fetch(

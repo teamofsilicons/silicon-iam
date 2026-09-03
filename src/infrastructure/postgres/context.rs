@@ -153,15 +153,31 @@ pub async fn begin(
 /// the setting.
 pub async fn begin_scoped(pool: &PgPool) -> Result<Transaction<'_, Postgres>, sqlx::Error> {
     let mut transaction = pool.begin().await?;
+    apply_testing_scope(&mut transaction).await?;
+    Ok(transaction)
+}
+
+/// Installs the testing-environment scope on an already-open transaction.
+///
+/// For the flows that must issue their own first statement -- raising the
+/// isolation level, which PostgreSQL only accepts before anything else -- and
+/// so cannot use [`begin_scoped`].
+///
+/// # Errors
+///
+/// Returns an error if PostgreSQL rejects the setting.
+pub async fn apply_testing_scope(
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<(), sqlx::Error> {
     sqlx::query("SELECT set_config('iam.testing_environment_id', $1, true)")
         .bind(
             testing_plane::current_id()
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
         )
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await?;
-    Ok(transaction)
+    Ok(())
 }
 
 /// Selects an organization after resolving its public handle in a transaction.

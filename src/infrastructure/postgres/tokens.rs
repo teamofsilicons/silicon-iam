@@ -165,7 +165,9 @@ pub async fn authenticate(
     token: &SecretString,
 ) -> Result<Option<AccessContext>, AccessTokenError> {
     let lookup = access_lookup(crypto, token)?;
-    let mut transaction = pool.begin().await?;
+    // A token minted inside a testing environment is only visible with that
+    // environment selected, so the scope is installed before the lookup.
+    let mut transaction = super::context::begin_scoped(pool).await?;
     let candidate = find_candidate(&mut transaction, &lookup).await?;
     let Some(candidate) = candidate else {
         transaction.rollback().await?;
@@ -271,7 +273,9 @@ pub(crate) async fn identify_for_logout_replay(
         return Ok(None);
     }
 
-    let mut transaction = pool.begin().await?;
+    // A token minted inside a testing environment is only visible with that
+    // environment selected, so the scope is installed before the lookup.
+    let mut transaction = super::context::begin_scoped(pool).await?;
     let candidate = find_candidate(&mut transaction, &lookup).await?;
     let Some(candidate) = candidate else {
         transaction.rollback().await?;

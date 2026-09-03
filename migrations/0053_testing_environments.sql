@@ -290,6 +290,78 @@ COMMENT ON FUNCTION iam_private.resolve_testing_environment(bytea[]) IS
 
 REVOKE ALL ON FUNCTION iam_private.resolve_testing_environment(bytea[]) FROM PUBLIC;
 
+-- Describes one live environment to a caller holding only its key.
+--
+-- The key holder has no IAM principal, so the member-select policy above hides
+-- every row from them. That policy is right -- membership is what makes an
+-- environment visible to a person -- and this is the narrow, secret-free
+-- exception for the credential that is the environment's own authority.
+CREATE FUNCTION iam_private.describe_testing_environment(
+    p_testing_environment_id uuid
+)
+RETURNS TABLE (
+    testing_environment_id uuid,
+    name text,
+    description text,
+    key_generation integer,
+    version bigint,
+    created_at timestamptz
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, iam
+AS $$
+    SELECT
+        environment.id,
+        environment.name,
+        environment.description,
+        environment.key_generation,
+        environment.version,
+        environment.created_at
+    FROM iam.testing_environments AS environment
+    WHERE environment.id = p_testing_environment_id
+      AND environment.status = 'active'
+$$;
+
+COMMENT ON FUNCTION iam_private.describe_testing_environment(uuid) IS
+    'Secret-free description of one live environment for a caller holding its key.';
+
+REVOKE ALL ON FUNCTION iam_private.describe_testing_environment(uuid) FROM PUBLIC;
+
+-- Records that an environment was emptied.
+--
+-- Cleaning is authorized either by organization administration or by the key
+-- alone, and the second caller has no principal for the update policy to
+-- recognize. Authority is settled before this is called; all it does is stamp
+-- the outcome.
+CREATE FUNCTION iam_private.record_testing_environment_cleaning(
+    p_testing_environment_id uuid
+)
+RETURNS boolean
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog, iam
+AS $$
+DECLARE
+    updated_count bigint;
+BEGIN
+    UPDATE iam.testing_environments
+    SET cleaned_at = transaction_timestamp(),
+        last_activity_at = transaction_timestamp()
+    WHERE id = p_testing_environment_id
+      AND status = 'active';
+    GET DIAGNOSTICS updated_count = ROW_COUNT;
+    RETURN updated_count = 1;
+END;
+$$;
+
+COMMENT ON FUNCTION iam_private.record_testing_environment_cleaning(uuid) IS
+    'Stamps the cleaning outcome once authority has been established by the caller.';
+
+REVOKE ALL ON FUNCTION iam_private.record_testing_environment_cleaning(uuid) FROM PUBLIC;
+
 -- Records that an environment was used.
 --
 -- Called on the request path once a key has been accepted, outside the

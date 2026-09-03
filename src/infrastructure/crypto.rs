@@ -20,6 +20,7 @@ use uuid::Uuid;
 use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::config::{KeyringSettings, SecuritySettings};
+use crate::infrastructure::testing_plane;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -27,6 +28,7 @@ type HmacSha256 = Hmac<Sha256>;
 pub const TESTING_ENVIRONMENT_KEY_LENGTH: usize = 32;
 
 const DIGEST_DOMAIN: &[u8] = b"silicon-iam:v1:digest";
+const TESTING_ENVIRONMENT_DOMAIN: &[u8] = b"silicon-iam:v1:testing-environment";
 const BLIND_INDEX_DOMAIN: &[u8] = b"silicon-iam:v1:blind-index";
 const ENCRYPTION_DOMAIN: &[u8] = b"silicon-iam:v1:encryption";
 const ENCRYPTION_SCHEMA_VERSION: u8 = 1;
@@ -699,6 +701,17 @@ fn decode_key(name: &'static str, value: &SecretString) -> Result<[u8; 32], Cryp
     result
 }
 
+/// Derives a keyed digest, separated by the testing environment in scope.
+///
+/// Two environments must be able to hold the same email address, the same
+/// handle, and the same idempotency key without colliding. Separating them here
+/// rather than by widening every unique index keeps the digest columns
+/// globally unique, which in turn keeps `ON CONFLICT` inference -- and the
+/// upserts built on it -- working unchanged in both databases.
+///
+/// The environment contributes nothing when none is selected, so a production
+/// digest is byte-for-byte what it was before this existed and every value
+/// already at rest still verifies.
 fn keyed_digest(
     key: &[u8],
     key_version: i16,
@@ -713,6 +726,11 @@ fn keyed_digest(
     mac.update(&[0]);
     mac.update(purpose);
     mac.update(&[0]);
+    if let Some(testing_environment_id) = testing_plane::current_id() {
+        mac.update(TESTING_ENVIRONMENT_DOMAIN);
+        mac.update(testing_environment_id.as_bytes());
+        mac.update(&[0]);
+    }
     mac.update(value);
     Ok(SecretDigest {
         key_version,

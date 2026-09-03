@@ -15,6 +15,13 @@ pub(super) async fn serializable<'pool>(
         .execute(&mut *transaction)
         .await
         .map_err(|_| AppError::Internal { category })?;
+    // After the isolation level, which has to be the transaction's first
+    // statement, and before anything reads or writes: a request executing
+    // inside a testing environment must carry that scope here too, or row
+    // security answers with nothing.
+    crate::infrastructure::postgres::context::apply_testing_scope(&mut transaction)
+        .await
+        .map_err(|_| AppError::Internal { category })?;
     Ok(transaction)
 }
 

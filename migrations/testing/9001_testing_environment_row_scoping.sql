@@ -32,11 +32,15 @@
 -- selecting an environment sees nothing rather than everything.
 --
 -- Only unique indexes that can actually collide across environments are
--- rewritten. Every surrogate key in this schema is a generated UUID, so an
--- index containing a NOT NULL uuid column is already unique across
--- environments and is left untouched. What remains is the set of genuine
--- natural keys -- handles, contact blind indexes, credential digests -- which
--- two environments really can mint identically.
+-- rewritten, and two kinds of column already rule that out. Every surrogate key
+-- here is a generated UUID, so an index carrying a NOT NULL uuid is unique
+-- across environments by construction. Every NOT NULL bytea here is a keyed
+-- digest or blind index, and those are separated by the selected environment
+-- inside the application's digest derivation -- which is deliberate, because
+-- widening those indexes instead would break the `ON CONFLICT` inference the
+-- idempotency and token upserts depend on. What remains is the set of genuine
+-- natural keys -- handles, provider identifiers -- which two environments
+-- really can mint identically.
 
 CREATE FUNCTION iam_private.current_testing_environment_id()
 RETURNS uuid
@@ -244,8 +248,11 @@ BEGIN
               JOIN pg_catalog.pg_attribute AS key_column
                 ON key_column.attrelid = index_entry.indrelid
                AND key_column.attnum = key_attnum
-              WHERE key_column.atttypid = 'pg_catalog.uuid'::pg_catalog.regtype
-                AND key_column.attnotnull
+              WHERE key_column.attnotnull
+                AND key_column.atttypid IN (
+                    'pg_catalog.uuid'::pg_catalog.regtype,
+                    'pg_catalog.bytea'::pg_catalog.regtype
+                )
           )
           AND NOT EXISTS (
               SELECT 1
@@ -304,7 +311,7 @@ RETURNS bigint
 LANGUAGE plpgsql
 VOLATILE
 SECURITY DEFINER
-SET search_path = pg_catalog, iam
+SET search_path = pg_catalog, iam, iam_private
 AS $$
 DECLARE
     pending regclass[];
@@ -313,11 +320,25 @@ DECLARE
     deleted_total bigint := 0;
     deleted_rows bigint;
     pass_count integer := 0;
+    guard_transaction_id xid8;
 BEGIN
     IF p_testing_environment_id IS NULL THEN
         RAISE EXCEPTION 'a testing environment must be identified'
             USING ERRCODE = '22023';
     END IF;
+
+    -- Audit events and the governance histories are append-only, guarded by
+    -- triggers that make exactly one exception: a transaction holding the
+    -- schema's erasure capability. Retention already uses it to discharge the
+    -- same invariant, and reusing it is far safer than replacing two
+    -- security-critical trigger functions with testing-only variants. The row
+    -- is keyed to this backend, this transaction and this login, so it grants
+    -- nothing beyond the statements below and disappears with them.
+    guard_transaction_id := pg_current_xact_id();
+    INSERT INTO iam_private.worker_retention_guards (
+        backend_pid, transaction_id, invoker
+    )
+    VALUES (pg_backend_pid(), guard_transaction_id, session_user);
 
     SELECT array_agg(entry.oid::regclass ORDER BY entry.relname)
     INTO pending
@@ -362,6 +383,11 @@ BEGIN
         END IF;
         pending := deferred;
     END LOOP;
+
+    DELETE FROM iam_private.worker_retention_guards AS guard
+    WHERE guard.backend_pid = pg_backend_pid()
+      AND guard.transaction_id = guard_transaction_id
+      AND guard.invoker = session_user;
 
     RETURN deleted_total;
 END;
