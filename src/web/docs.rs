@@ -151,10 +151,10 @@ const CLIENT_SECTIONS: &[Section] = &[
         body: include_str!("../../docs/client/connecting.html"),
     },
     Section {
-        slug: "oauth",
+        slug: "login",
         title: "Signing users in",
-        summary: "PKCE authorization, the sealed continuation, and callback handling.",
-        body: include_str!("../../docs/client/oauth.html"),
+        summary: "Sending someone to IAM, taking the short-lived token off the callback, and exchanging it.",
+        body: include_str!("../../docs/client/login.html"),
     },
     Section {
         slug: "tokens",

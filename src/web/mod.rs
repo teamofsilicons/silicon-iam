@@ -158,7 +158,7 @@ mod tests {
             ("api", "errors"),
             ("client", "overview"),
             ("client", "connecting"),
-            ("client", "oauth"),
+            ("client", "login"),
             ("client", "tokens"),
             ("client", "obo"),
             ("client", "webhooks"),
@@ -319,7 +319,7 @@ mod tests {
             "/docs/api/",
             "/docs/api/overview",
             "/docs/client/",
-            "/docs/client/oauth",
+            "/docs/client/login",
             "/docs/api/nope",
         ] {
             let body = body_of(get(path).await).await;
@@ -339,7 +339,7 @@ mod tests {
     #[tokio::test]
     async fn every_referenced_asset_exists() {
         let mut referenced = std::collections::BTreeSet::new();
-        for path in ["/admin", "/docs", "/docs/api/", "/docs/client/oauth"] {
+        for path in ["/admin", "/docs", "/docs/api/", "/docs/client/login"] {
             let body = body_of(get(path).await).await;
             let mut rest = body.as_str();
             while let Some(start) = rest.find("/_static/") {

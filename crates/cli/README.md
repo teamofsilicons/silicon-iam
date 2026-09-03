@@ -108,6 +108,19 @@ siam env delete <environment-id>    # prints the deadline
 siam env restore <environment-id>
 ```
 
+## Signing in to an application
+
+Naming an application prints a short-lived token it can exchange for a session:
+
+```sh
+siam login --email you@example.com --app-id billing
+siam silicon-login --sid builder:acme --app-id billing
+```
+
+`siam silicon-login` prompts for the Silicon token rather than taking it as a
+flag by default, so it stays out of shell history. Without `--app-id` both
+commands simply sign in.
+
 ## Profiles
 
 One profile per service, or per identity on the same service:
@@ -141,8 +154,8 @@ Obtain the assertion through the step-up flow, then pass it with `--step-up`.
 
 ## What is not here
 
-Platform administration, the inbound provider webhooks, and the browser consent
-screens. Those belong to the operator, to the provider, and to the browser —
+Platform administration, the inbound provider webhooks, and the browser login
+screen. Those belong to the operator, to the provider, and to the browser —
 not to a command-line caller.
 
 ## License

@@ -94,7 +94,13 @@ mod tests {
             .filter(|sub| {
                 !matches!(
                     sub.get_name(),
-                    "login" | "logout" | "whoami" | "signup" | "commands" | "help"
+                    "login"
+                        | "silicon-login"
+                        | "logout"
+                        | "whoami"
+                        | "signup"
+                        | "commands"
+                        | "help"
                 )
             })
             .collect();
