@@ -555,7 +555,7 @@ pub(crate) async fn redirect_to_index(Path(manual): Path<String>) -> Response {
     not_found().into_response()
 }
 
-const OPENAPI: &str = include_str!("../../openapi.yaml");
+const OPENAPI: &str = include_str!("../../docs/openapi.yaml");
 
 #[cfg(test)]
 mod tests {

@@ -54,7 +54,7 @@ def extract_routes(path)
   routes
 end
 
-document = YAML.safe_load(File.read("openapi.yaml"), aliases: true)
+document = YAML.safe_load(File.read("docs/openapi.yaml"), aliases: true)
 unless document.fetch("openapi").start_with?("3.")
   raise "OpenAPI 3 document is required"
 end

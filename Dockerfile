@@ -14,10 +14,9 @@ ENV SILICON_IAM_GIT_COMMIT=${BUILD_REVISION}
 COPY Cargo.toml Cargo.lock rust-toolchain.toml rustfmt.toml ./
 COPY migrations ./migrations
 COPY src ./src
-# The documentation surface embeds these at compile time via include_str!, so
-# the build fails loudly if either is missing rather than shipping an image
-# whose docs have drifted from its binary.
-COPY openapi.yaml ./openapi.yaml
+# The documentation surface embeds the manuals and `docs/openapi.yaml` at
+# compile time via include_str!, so the build fails loudly if any of them is
+# missing rather than shipping an image whose docs have drifted from its binary.
 COPY docs ./docs
 
 RUN --mount=type=cache,id=silicon-iam-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \

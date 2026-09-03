@@ -436,6 +436,47 @@ Trust returned should be in respect to the carbon/silicon who requested it and f
 
 For the endpoints that gives me all the details by default it should send all but it should be possible to set in the parameters if only a specific field(s) is required. 
 
+
+# Testing Enviorment
+
+We would have an IAm testing enviorments. A testing enviorment is sort of an exact replica of silicon-iam that is using a seperate database as it's provider instead of the main prod database. As soon as a testing enviorment is created it would have 0 orgs, 0 apps, 0 carbons, 0 silicons, basically it's like just starting up a fresh IAm session with a completely new db.
+
+There can be multiple testing enviorments per organisation, testing enviorments are owned by organisations but can be created by any silicon or any carbon in that organisation (the said creator would be attached as the testing enviorment creator) and can delete the testing enviorment, rotate the testing_env_key, basically have the admin level access to that testing enviorment, even org_admins and org_owners would have admin level access to the said testing enviorment and can be delete, clean, etc the testing enviorment. 
+
+For each testing enviorment they would be sharing a shared test database (that's not the prod database, this is just responsible for storing all the test data). For this testing enviorment each entry would be associated with the testing env id. 
+
+A test enviorment is basically the exact same IAm with all the functions and everything else, so this is the IAm just something that can be used to setup multiple test organisations, apps, carbons, silicons, etc. 
+
+### Creating Test Env
+
+For creating a test enviorment, it can be created by any carbon or silicon in the organisation and it would be owned by the organisation with the user marked as the creator of the test enviorment. For creating a test enviorment it would need the name and an optional description. 
+
+In return it would return the key for the test enviorment, this key is what's gonna be used to be able to access that test enviorment, anyone with this key would be able to access the test enviorment as the god of the test enviorment, this key would be stored along side with the test enviorment, and can anytime be retrieved by the said carbon/silicon/org_admin/org_owner. The key would be 32 digit alpha numeric. 
+
+### Rotate Key
+
+The creator of the test enviorment and org_admin/org_head should be able to rotate the key of the test enviroment, which would give them a new key to the test enviorment.  
+
+### Clean Test Enviorment
+
+There should be an option to clean the test enviorment, which would allow the test enviorment to be there, but would clear every signle data stored for the said test enviorment. Anyone with the key should be able to execute this action. 
+
+### Delete Test Env
+
+The org admins, owners or the creator should be able to delete the test enviorment, deleting a test enviorment would delete the key, and the instance that the test enviorment even existed. For all the logs it should also be limited to the test enviorment itself. Each deleted Test Env would have a ttl of 30 days before getting deleted permanently. From this point the test env should be recoverable.
+
+### Auto Delete Test Env
+
+If there's no new activity in the test enviorment for 30 days, auto delete the test enviorment. New activities include no new creation of carbon, silicon, org, no new login activity, etc. 
+
+### Using a Test Enviorment
+
+For using a test enviorment anyone with the key would have the god view for that test enviorment, they should be able to create a carbon, silicon, org, apps, basically everything possible in IAm, this would be a pure replication of using actual IAm. 
+
+For verification step that sends otp to the email and phone number, just entering 000000 for them would treat them like they verified the step.
+
+Any action that can be performed in actual IAm should be producable at the test enviroment layer as well. So the test enviorment doesen't actually reproduce the api's but the same api's just for a different database. 
+
 ---
 
 **For any changes in any of the things mentioned above, maintain a version for all of the changes.** 
@@ -445,63 +486,22 @@ Default retention: audit 7 years, login history 1 year, expired challenges 30 da
 For externally initiated mutations ensure to include Idempotency keys. The key is bound to the caller, endpoint, and exact request body. Normal responses remain replayable for 24 hours. Responses containing a newly generated secret remain replayable for only 10 minutes.
 
 ---
-
-# Frontend
-
-Our frontend is gonna support the login/signup layer and also the layer where all the apps can be managed and configured, also the backend should have a webpage where it's easy to see all the apps configured and be able to remove apps, allow/disallow some specific actions as defined, etc.
-
-## Login
-
-For the login flow keep the email/carbon id page first, and then a textual button option below that to Use Phone Number instead. For devices below 1000px width keep the default option to phone number and use Email/Carbon ID instead as the secondary option. 
-
-For the phone number also keep a country code picker, by default set it based on the user's ip location. 
-
-For the 6 digit verification code input, it should be an OTP input. 
-
-## Signup 
-
-For the signup flow, first ask the user for their email, then verify email, then their phone number, then verify phone, then carbon_id picker, then a basic profile config page.
-
-## App Defining
-
-When a user has signed up onto Silicon IAm they can create an application, using the details specified. Then as soon as an application request has been sent, display that the application is under review. 
-
-# Org
-
-Org Creation and joining will also be handled via the frontend itself where they will see all the steps to create an organisation and also when someone's joining so join the organisation. 
-
-I should also be able to invite people into my organisation using the same login. 
-
-## Backend User Interface
-
-For the backend UI would want to see all the app's not reviewed as of now, enable/disable all the settings. Delete an application, etc. And all such changes must also be displayed in the base IAm profile. 
-
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
 ---
 
-# Design Style to follow
+Only above this line is what the IAm backend would hold, below this would be the users of the backend, the client, the frontend, the cli, etc. 
 
-Keep the entire design minimal, the website is gonna be light mode, #ffffff with #1a1a1a text. 
-The main acent: #2B4CF2 . Gradient and other colors to use: 76D4F0, F9F987, FEAD75, F15347, 14245F. 
+# Client (our first hand user)
 
-For the overall design flow think what's the best possible style to show this information, how can i make this design look extraordianry. Attached a few images to use as our design taste. 
 
-https://ibb.co/d4H9L6z5
-https://ibb.co/mFMpGzt4
-https://ibb.co/Y4FYS5F1
-https://ibb.co/8ny7Vnks
-https://ibb.co/q3R69c2H
-https://ibb.co/21bmvdc3
-https://ibb.co/vvf7gyjQ
-https://ibb.co/ZpQqCWZz
-https://ibb.co/d0nG1BWK
-
-## Typography
-
-Body + headings: Crimson Pro. Body 17-18px, line-height 1.6, measure 60-70 characters. - Headings: same serif, 40-52px, weight 400-500, line-height 1.15, full sentences ending in a period. - Labels/eyebrows/captions: Inter. 10-11px, UPPERCASE, letter-spacing 0.08em only. - Section numbers: sans, 32-40px, accent colour, paired with a small uppercase label on the same baseline. - Never mix the two roles: serif is never uppercase-letterspaced, sans is never large.
-
-# Links
-
-backend.iam.teamofsilicons.com - the link where the backend would be hosted.
-backend.iam.teamofsilicons.com/admin - this is the admin page where the backend ui would be displayed
-iam.teamofsilicons.com - this is the main iam page where the apps would be created
-auth.iam.teamofsilicons.com - this is the page where the login/signup would actually take place
+Our client should be stateless. 

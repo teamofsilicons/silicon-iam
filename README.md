@@ -320,8 +320,27 @@ and public endpoints, complete provider credential groups, independent secret
 material, and local providers disabled. The eventual cloud target may replace
 the local secret and process orchestration without changing domain code.
 
+## Repository layout
+
+Only the product authority, the reader's entry point, and the files Cargo,
+Docker and the toolchain must find at the root stay at the root. Everything
+else is grouped by what it is.
+
+| Path | What lives there |
+| --- | --- |
+| `UNDERSTANDING.md` | The authoritative product scope, above every other document |
+| `README.md` | This orientation page |
+| `src/` | The library, the five binaries, and the HTML surfaces |
+| `migrations/` | Forward-only SQL migrations applied by `iam-migrate` |
+| `docs/` | The whole documentation surface: `openapi.yaml`, `API_DOCS.md`, and the `api/` and `client/` manuals embedded at compile time |
+| `deploy/` | Runtime database roles, reviewed grants, and cloud provisioning |
+| `scripts/` | The local bootstrap and the CI boundary checks |
+| `Cargo.toml`, `Dockerfile`, `compose.yaml` | Build and local composition |
+| `rust-toolchain.toml`, `rustfmt.toml`, `deny.toml` | Pinned toolchain and policy, which their tools only read from the root |
+
 ## Contracts
 
-- `openapi.yaml` is the normative HTTP contract.
-- `API_DOCS.md` explains endpoint behavior and security semantics.
-- `UNDERSTANDING.md` is the authoritative product-scope source.
+- `UNDERSTANDING.md` is the authoritative product-scope source, and the
+  document every other one below answers to.
+- `docs/openapi.yaml` is the normative HTTP contract.
+- `docs/API_DOCS.md` explains endpoint behavior and security semantics.

@@ -3,7 +3,8 @@
 This document explains the behavior of the public, organization, application,
 provider-callback, and platform-administration endpoints in
 [`openapi.yaml`](./openapi.yaml). The OpenAPI file is the normative HTTP
-contract. `UNDERSTANDING.md` is the authoritative product-scope source.
+contract. [`UNDERSTANDING.md`](../UNDERSTANDING.md), at the repository root, is
+the authoritative product-scope source.
 
 The production origin is:
 
