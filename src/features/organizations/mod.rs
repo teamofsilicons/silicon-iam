@@ -16,6 +16,7 @@ mod validation;
 pub(crate) use carbon_profile_events::{
     capture_carbon_profile_silicon_routes, enqueue_carbon_profile_silicon_events,
 };
+pub(crate) use support::begin_organization;
 
 use axum::{
     Router,

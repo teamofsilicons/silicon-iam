@@ -30,9 +30,9 @@ use crate::{
     },
 };
 
-pub(super) struct OrganizationTransaction<'a> {
-    pub(super) transaction: Transaction<'a, Postgres>,
-    pub(super) access: OrganizationAccess,
+pub(crate) struct OrganizationTransaction<'a> {
+    pub(crate) transaction: Transaction<'a, Postgres>,
+    pub(crate) access: OrganizationAccess,
 }
 
 pub(super) struct MutationEvent<'a> {
@@ -62,7 +62,12 @@ enum DirectIamBinding {
     },
 }
 
-pub(super) async fn begin_organization<'a>(
+/// Opens a transaction already scoped to one organization the caller belongs
+/// to, having resolved their authority within it.
+///
+/// Shared with the testing-environment slice, which is organization-owned and
+/// admits both Carbons and Silicons on exactly these terms.
+pub(crate) async fn begin_organization<'a>(
     state: &'a ApiState,
     authenticated: &Authenticated,
     organization_handle: &str,

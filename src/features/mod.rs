@@ -5,5 +5,6 @@ pub(crate) mod applications;
 pub(crate) mod authentication;
 pub(crate) mod organizations;
 pub(crate) mod sso;
+pub(crate) mod testing_environments;
 pub(crate) mod webhook_replay;
 pub(crate) mod webhook_url;

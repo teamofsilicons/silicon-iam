@@ -220,6 +220,9 @@ fn cors_layer(state: &ApiState) -> anyhow::Result<CorsLayer> {
             http::HeaderName::from_static("x-org-id"),
             http::HeaderName::from_static("x-request-id"),
             http::HeaderName::from_static("x-step-up-token"),
+            http::HeaderName::from_static(
+                crate::features::testing_environments::ENVIRONMENT_KEY_HEADER,
+            ),
             http::HeaderName::from_static(SUPPORTED_API_VERSIONS_HEADER),
         ])
         .expose_headers([
@@ -245,6 +248,9 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
     let sensitive_request_headers = [
         http::header::AUTHORIZATION,
         http::header::COOKIE,
+        http::HeaderName::from_static(
+            crate::features::testing_environments::ENVIRONMENT_KEY_HEADER,
+        ),
         http::HeaderName::from_static("idempotency-key"),
         http::HeaderName::from_static("x-csrf-token"),
         http::HeaderName::from_static("x-step-up-token"),
@@ -254,6 +260,30 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
 
     let cors = cors_layer(&state)?;
 
+    /*
+     * Everything a testing environment can execute.
+     *
+     * These routes are the product: an environment is this same surface
+     * against a different database, so they are written once and moved onto
+     * the testing plane by the layer below whenever a request carries a valid
+     * environment key.
+     *
+     * The control plane is merged outside this group on purpose. It reads and
+     * writes production, and it is what mints the keys in the first place, so
+     * it sits structurally beyond the reach of plane selection rather than
+     * relying on each of its handlers to opt out.
+     */
+    let planed = Router::new()
+        .route("/api/v1/me", get(me::get).patch(me::patch))
+        .merge(crate::features::authentication::router())
+        .merge(crate::features::organizations::router())
+        .merge(crate::features::applications::router())
+        .merge(crate::features::sso::router())
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::features::testing_environments::select_plane,
+        ));
+
     // The JSON contract. Everything under this router answers with the error
     // envelope and is never cached.
     let api = Router::new()
@@ -261,11 +291,8 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
         .route("/readyz", get(readiness))
         .route("/api/version", get(negotiate_api_version))
         .route("/api/v1/version", get(version))
-        .route("/api/v1/me", get(me::get).patch(me::patch))
-        .merge(crate::features::authentication::router())
-        .merge(crate::features::organizations::router())
-        .merge(crate::features::applications::router())
-        .merge(crate::features::sso::router())
+        .merge(planed)
+        .merge(crate::features::testing_environments::router())
         .layer(middleware::from_fn(normalize_errors))
         .layer(SetResponseHeaderLayer::if_not_present(
             http::header::CACHE_CONTROL,
