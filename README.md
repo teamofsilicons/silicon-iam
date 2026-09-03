@@ -383,6 +383,26 @@ and public endpoints, complete provider credential groups, independent secret
 material, and local providers disabled. The eventual cloud target may replace
 the local secret and process orchestration without changing domain code.
 
+Testing environments stay off until their database exists. A deployment that
+does not set `IAM_TESTING_DATABASE_URL` runs exactly as before and answers
+`503` on the testing routes; nothing else changes. Turning them on needs three
+things, and all three are infrastructure rather than code:
+
+1. a second database, on the same instance or another, that is **not** the
+   production one -- startup refuses a testing URL equal to `IAM_DATABASE_URL`,
+   because an environment pointed at production would hand every holder of a
+   32-character key authority over real identities;
+2. the same runtime roles and `deploy/postgres/runtime-grants.sql` applied to
+   it, exactly as for production; and
+3. `IAM_TESTING_MIGRATOR_DATABASE_URL` set for `iam-migrate`, which then brings
+   that database up on the production schema plus the per-environment scoping
+   overlay in `migrations/testing/`.
+
+Apply the grants after migrating, on both databases. That ordering is not
+optional here: each release's migrations may add `SECURITY DEFINER` functions,
+and the grant manifest refuses to run while any of them is unclassified --
+which is the check working, not a failure to route around.
+
 ## Repository layout
 
 Only the product authority, the reader's entry point, and the files Cargo,
