@@ -2,6 +2,7 @@
 
 use futures::{StreamExt as _, stream};
 use secrecy::SecretString;
+use url::Url;
 use uuid::Uuid;
 
 use crate::{
@@ -38,6 +39,7 @@ struct ContactMaterial {
 #[derive(sqlx::FromRow)]
 struct InvitationContext {
     organization_name: String,
+    organization_handle: String,
 }
 
 pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppError> {
@@ -198,6 +200,21 @@ async fn deliver(
     }
 }
 
+/// Builds the link an invitation email or SMS asks the recipient to open.
+///
+/// The join screens are addressed by the organization's public handle. This
+/// once produced `/invitations/{invitation_id}` — a path no surface serves —
+/// so every invitation led the recipient to a not-found page. Any query or
+/// fragment on the configured base is dropped: the recipient's mail client
+/// shows this string, and anything beyond the path is noise at best.
+fn invitation_join_url(auth_base_url: &Url, organization_handle: &str) -> Url {
+    let mut join_url = auth_base_url.clone();
+    join_url.set_path(&format!("/join/{organization_handle}"));
+    join_url.set_query(None);
+    join_url.set_fragment(None);
+    join_url
+}
+
 async fn deliver_invitation(
     context: &WorkerContext,
     job: &ClaimedNotification,
@@ -219,10 +236,10 @@ async fn deliver_invitation(
     .await
     .map_err(|_| DeliveryError::Unavailable)?
     .ok_or(DeliveryError::Rejected)?;
-    let mut join_url = context.settings.auth_base_url.clone();
-    join_url.set_path(&format!("/invitations/{}", job.context_id));
-    join_url.set_query(None);
-    join_url.set_fragment(None);
+    let join_url = invitation_join_url(
+        &context.settings.auth_base_url,
+        &invitation.organization_handle,
+    );
     ensure_current_lease(context, job.id).await?;
     match job.provider.as_str() {
         "postmark" => {
@@ -389,5 +406,93 @@ mod tests {
     fn security_templates_are_closed_and_secret_free() {
         assert!(security_notice("security.session_revoked").is_some());
         assert!(security_notice("caller.supplied.template").is_none());
+    }
+
+    /// The link a recipient actually opens.
+    ///
+    /// This pointed at `/invitations/{invitation_id}` while every surface
+    /// serves `/join/{org_id}`, so an invitation email led to a not-found page.
+    /// The path is asserted literally: it is a contract with the join screens,
+    /// not an implementation detail.
+    #[test]
+    fn an_invitation_links_to_the_join_screen_for_the_organization() {
+        let Ok(base) = Url::parse("https://auth.iam.teamofsilicons.com/") else {
+            panic!("the test base URL is valid");
+        };
+
+        let link = super::invitation_join_url(&base, "tos");
+
+        assert_eq!(
+            link.as_str(),
+            "https://auth.iam.teamofsilicons.com/join/tos"
+        );
+    }
+
+    #[test]
+    fn a_query_or_fragment_on_the_configured_base_is_dropped() {
+        let Ok(base) = Url::parse("https://auth.iam.teamofsilicons.com/?trace=1#top") else {
+            panic!("the test base URL is valid");
+        };
+
+        let link = super::invitation_join_url(&base, "tos");
+
+        assert_eq!(link.query(), None);
+        assert_eq!(link.fragment(), None);
+        assert_eq!(link.path(), "/join/tos");
+    }
+
+    #[test]
+    fn a_base_that_carries_a_path_prefix_is_replaced_not_appended() {
+        // The setting is a base origin; the join path is absolute.
+        let Ok(base) = Url::parse("https://auth.iam.teamofsilicons.com/login") else {
+            panic!("the test base URL is valid");
+        };
+
+        let link = super::invitation_join_url(&base, "acme");
+
+        assert_eq!(link.path(), "/join/acme");
+    }
+
+    /// Executes the worker context function against a migrated schema.
+    ///
+    /// The link is built from a column this migration adds, and a function's
+    /// return shape is only checked when PostgreSQL parses the statement. An
+    /// empty database is enough: selecting a column that does not exist fails
+    /// during analysis, before any row is read.
+    #[tokio::test]
+    #[ignore = "requires a local Docker daemon"]
+    async fn the_worker_invitation_context_exposes_the_organization_handle() -> anyhow::Result<()> {
+        use sqlx::postgres::PgPoolOptions;
+        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
+        use testcontainers_modules::postgres::Postgres as TestPostgres;
+
+        let container = TestPostgres::default()
+            .with_tag("16-alpine")
+            .start()
+            .await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(5432).await?;
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&format!(
+                "postgres://postgres:postgres@{host}:{port}/postgres"
+            ))
+            .await?;
+        crate::infrastructure::postgres::migrate(&pool).await?;
+
+        let rows = sqlx::query_as::<_, InvitationContext>(
+            r"
+            SELECT organization_name, organization_handle
+            FROM iam_private.get_worker_invitation_context($1, $2)
+            ",
+        )
+        .bind(Uuid::from_u128(0x50_01))
+        .bind(Uuid::from_u128(0x50_02))
+        .fetch_all(&pool)
+        .await?;
+
+        anyhow::ensure!(rows.is_empty(), "the fixture database has no invitations");
+
+        Ok(())
     }
 }
