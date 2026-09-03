@@ -6,7 +6,7 @@ use silicon_iam_client::{Credential, models};
 use time::OffsetDateTime;
 
 use crate::{
-    cli::{LoginArgs, SignupArgs},
+    cli::{LoginArgs, SignupArgs, SiliconLoginArgs},
     context::Context,
     error::{CliError, Result},
     output::{Format, Table, json},
@@ -71,12 +71,91 @@ pub async fn login(context: &Context, args: LoginArgs) -> Result<()> {
         .await?;
     context.remember(session_from(&tokens, &signed_in.carbon_id))?;
 
+    if let Some(app_id) = args.app_id.as_deref() {
+        return report_short_lived_token(context, &tokens.access_token, app_id).await;
+    }
+
     match context.format {
         Format::Json => json(&signed_in),
         Format::Text => {
             println!(
                 "Signed in as {} on profile {}.",
                 signed_in.carbon_id, context.profile_name
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Signs a Silicon in with its credential.
+///
+/// A Silicon has no inbox and no browser, so it authenticates with the pair it
+/// was issued -- the Silicon ID and its token -- rather than a code. Naming an
+/// application additionally mints a short-lived token that application can
+/// exchange, which is the only way a Silicon can sign in to one.
+///
+/// # Errors
+///
+/// Returns an error when the credential is refused, or when the application is
+/// unknown.
+pub async fn silicon_login(context: &Context, args: SiliconLoginArgs) -> Result<()> {
+    let sid = match args.sid {
+        Some(value) => value,
+        None => prompt("Silicon ID: ")?,
+    };
+    // Prompted rather than flagged by default so the token stays out of shell
+    // history and out of the process table.
+    let stk = match args.stk {
+        Some(value) => value,
+        None => prompt("Silicon token: ")?,
+    };
+
+    let client = context.anonymous();
+    let tokens = client
+        .auth()
+        .authenticate_silicon(
+            &models::SiliconAuthenticationRequest {
+                silicon_id: sid.clone(),
+                silicon_token: stk,
+            },
+            &context.mutation(),
+        )
+        .await?;
+
+    if let Some(app_id) = args.app_id.as_deref() {
+        return report_short_lived_token(context, &tokens.access_token, app_id).await;
+    }
+
+    match context.format {
+        Format::Json => json(&tokens),
+        Format::Text => {
+            println!("Signed in as {sid}.");
+            println!("Access token: {}", tokens.access_token);
+            println!("Refresh token: {}", tokens.refresh_token);
+            Ok(())
+        }
+    }
+}
+
+/// Asks for a short-lived token on an existing session and prints it.
+async fn report_short_lived_token(
+    context: &Context,
+    access_token: &str,
+    app_id: &str,
+) -> Result<()> {
+    let issued = context
+        .anonymous()
+        .with_credential(Credential::bearer(access_token.to_owned()))
+        .auth()
+        .short_lived_token(app_id, &context.mutation())
+        .await?;
+    match context.format {
+        Format::Json => json(&issued),
+        Format::Text => {
+            println!("Short-lived token for {app_id}: {}", issued.slt);
+            println!(
+                "It is good for {} seconds and one exchange.",
+                issued.expires_in
             );
             Ok(())
         }

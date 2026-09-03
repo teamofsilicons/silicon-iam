@@ -1,9 +1,9 @@
-//! The OAuth endpoints an application calls as itself.
+//! The endpoints an application calls as itself.
 //!
 //! All three authenticate with the application's own credential, so build the
 //! client with [`Credential::application`](crate::Credential::application).
-//! The browser-facing authorization screen is deliberately absent: it belongs
-//! to the browser, not to an API caller.
+//! The browser-facing login screen is deliberately absent: it belongs to the
+//! browser, not to an API caller.
 
 use crate::{Client, Mutation, Result, models};
 
@@ -11,17 +11,22 @@ use crate::{Client, Mutation, Result, models};
 pub struct OAuth<'a>(pub(super) &'a Client);
 
 impl OAuth<'_> {
-    /// Exchanges an authorization code or refresh token for tokens.
+    /// Trades a short-lived token, or a refresh token, for a session.
+    ///
+    /// Which one it is asking for is simply which credential the request
+    /// carries: present exactly one of `slt` and `refresh_token`.
     ///
     /// # Errors
     ///
-    /// Returns an error when the grant is invalid, expired, or already used.
+    /// Returns an error when the credential is invalid, expired, or spent.
     pub async fn token(
         &self,
-        request: &models::OAuthTokenRequest,
+        request: &models::ApplicationTokenRequest,
         mutation: &Mutation,
     ) -> Result<models::OAuthTokenResponse> {
-        self.0.post(&["oauth", "token"], request, mutation).await
+        self.0
+            .post(&["app-auth", "tokens"], request, mutation)
+            .await
     }
 
     /// Asks the service what a token currently authorizes.

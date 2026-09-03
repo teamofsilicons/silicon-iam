@@ -66,6 +66,8 @@ pub struct Global {
 pub enum Command {
     /// Sign in as a Carbon.
     Login(LoginArgs),
+    /// Sign in as a Silicon with its credential.
+    SiliconLogin(SiliconLoginArgs),
     /// Sign out, forgetting the stored session.
     Logout,
     /// Show who is signed in.
@@ -128,6 +130,23 @@ pub struct LoginArgs {
     /// Verification code, if you already have it. Prompted for otherwise.
     #[arg(long)]
     pub code: Option<String>,
+    /// Application to sign in to. Prints a short-lived token for it.
+    #[arg(long = "app-id", value_name = "APP_ID")]
+    pub app_id: Option<String>,
+}
+
+/// Arguments for signing a Silicon in.
+#[derive(Debug, Args)]
+pub struct SiliconLoginArgs {
+    /// Silicon ID, in `handle:org` form. Prompted for when omitted.
+    #[arg(long = "sid")]
+    pub sid: Option<String>,
+    /// Silicon token. Prompted for when omitted, so it stays out of shell history.
+    #[arg(long = "stk")]
+    pub stk: Option<String>,
+    /// Application to sign in to. Prints a short-lived token for it.
+    #[arg(long = "app-id", value_name = "APP_ID")]
+    pub app_id: Option<String>,
 }
 
 /// Arguments for creating an account.
@@ -681,12 +700,6 @@ pub enum AppCommand {
         /// HTTPS endpoint the service delivers webhooks to.
         #[arg(long)]
         webhook_url: String,
-        /// Redirect URIs to register.
-        #[arg(long = "redirect-uri", value_name = "URI")]
-        redirect_uri: Vec<String>,
-        /// Scopes to request.
-        #[arg(long = "scope", value_name = "SCOPE")]
-        scopes: Vec<String>,
     },
     /// Show one application.
     Show {
@@ -705,28 +718,6 @@ pub enum AppCommand {
     RotateSecret {
         /// Application identifier.
         app_id: String,
-    },
-    /// List redirect URIs.
-    Redirects {
-        /// Application identifier.
-        app_id: String,
-        /// Paging.
-        #[command(flatten)]
-        page: PageArgs,
-    },
-    /// Register a redirect URI.
-    AddRedirect {
-        /// Application identifier.
-        app_id: String,
-        /// The URI to register.
-        uri: String,
-    },
-    /// Retire a redirect URI.
-    RetireRedirect {
-        /// Application identifier.
-        app_id: String,
-        /// The registered URI's identifier.
-        redirect_uri_id: Uuid,
     },
     /// Show the webhook endpoint.
     Webhook {

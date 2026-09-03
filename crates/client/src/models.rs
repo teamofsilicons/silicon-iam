@@ -77,22 +77,6 @@ pub enum ActorRefType {
 /// Closed vocabulary from the contract.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ApplicationRedirectUriStatus {
-    /// `pending_review`
-    PendingReview,
-    /// `active`
-    Active,
-    /// `retired`
-    Retired,
-    /// A value this crate predates. Held verbatim rather than
-    /// failing the response it arrived in.
-    #[serde(untagged)]
-    Other(String),
-}
-
-/// Closed vocabulary from the contract.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum ApplicationStatus {
     /// `under_review`
     UnderReview,
@@ -332,20 +316,6 @@ pub enum MembershipStatus {
 pub enum OAuthRevocationRequestTokenTypeHint {
     /// `access_token`
     AccessToken,
-    /// `refresh_token`
-    RefreshToken,
-    /// A value this crate predates. Held verbatim rather than
-    /// failing the response it arrived in.
-    #[serde(untagged)]
-    Other(String),
-}
-
-/// Closed vocabulary from the contract.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OAuthTokenRequestGrantType {
-    /// `authorization_code`
-    AuthorizationCode,
     /// `refresh_token`
     RefreshToken,
     /// A value this crate predates. Held verbatim rather than
@@ -939,8 +909,6 @@ pub struct Application {
     /// The contract's `app_logo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_logo: Option<String>,
-    /// The contract's `redirect_uris`.
-    pub redirect_uris: Vec<String>,
     /// The contract's `requested_scopes`.
     pub requested_scopes: Vec<String>,
     /// The contract's `approved_scopes`.
@@ -977,12 +945,8 @@ pub struct ApplicationCreate {
     /// The contract's `app_logo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_logo: Option<String>,
-    /// The contract's `redirect_uris`.
-    pub redirect_uris: Vec<String>,
     /// The contract's `webhook_url`.
     pub webhook_url: String,
-    /// The contract's `requested_scopes`.
-    pub requested_scopes: Vec<String>,
     /// The contract's `obo_endpoints`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obo_endpoints: Option<Vec<ApplicationOboEndpoint>>,
@@ -1039,65 +1003,9 @@ pub struct ApplicationPatch {
     /// The contract's `app_logo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_logo: Option<String>,
-    /// The contract's `redirect_uris`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub redirect_uris: Option<Vec<String>>,
-    /// The contract's `requested_scopes`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_scopes: Option<Vec<String>>,
     /// Full replacement. An empty array retires every active endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obo_endpoints: Option<Vec<ApplicationOboEndpoint>>,
-}
-
-/// Contract type `ApplicationRedirectUri`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ApplicationRedirectUri {
-    /// The contract's `id`.
-    pub id: Uuid,
-    /// The contract's `redirect_uri`.
-    pub redirect_uri: String,
-    /// The contract's `status`.
-    pub status: ApplicationRedirectUriStatus,
-    /// The contract's `version`.
-    pub version: i64,
-    /// The contract's `created_at`.
-    #[serde(with = "time::serde::rfc3339")]
-    pub created_at: OffsetDateTime,
-    /// The contract's `approved_at`.
-    #[serde(with = "time::serde::rfc3339::option")]
-    pub approved_at: Option<OffsetDateTime>,
-    /// The contract's `retired_at`.
-    #[serde(with = "time::serde::rfc3339::option")]
-    pub retired_at: Option<OffsetDateTime>,
-    /// The contract's `updated_at`.
-    #[serde(with = "time::serde::rfc3339")]
-    pub updated_at: OffsetDateTime,
-}
-
-/// Contract type `ApplicationRedirectUriCreate`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ApplicationRedirectUriCreate {
-    /// The contract's `redirect_uri`.
-    pub redirect_uri: String,
-}
-
-/// Contract type `ApplicationRedirectUriMutation`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ApplicationRedirectUriMutation {
-    /// The contract's `redirect_uri`.
-    pub redirect_uri: ApplicationRedirectUri,
-    /// The contract's `application_version`.
-    pub application_version: i64,
-}
-
-/// Contract type `ApplicationRedirectUriPage`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ApplicationRedirectUriPage {
-    /// The contract's `items`.
-    pub items: Vec<ApplicationRedirectUri>,
-    /// The contract's `page`.
-    pub page: PageInfo,
 }
 
 /// Contract type `ApplicationSecretRotated`.
@@ -1114,6 +1022,19 @@ pub struct ApplicationSecretRotated {
     /// The contract's `secret_replay_expires_at`.
     #[serde(with = "time::serde::rfc3339")]
     pub secret_replay_expires_at: OffsetDateTime,
+}
+
+/// Contract type `ApplicationTokenRequest`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApplicationTokenRequest {
+    /// The contract's `app_id`.
+    pub app_id: AppId,
+    /// The contract's `slt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slt: Option<String>,
+    /// The contract's `refresh_token`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
 }
 
 /// Contract type `ApplicationWebhook`.
@@ -1737,29 +1658,6 @@ pub struct OAuthRevocationRequest {
     pub token_type_hint: Option<OAuthRevocationRequestTokenTypeHint>,
 }
 
-/// Contract type `OAuthTokenRequest`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OAuthTokenRequest {
-    /// The contract's `grant_type`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grant_type: Option<OAuthTokenRequestGrantType>,
-    /// The contract's `client_id`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_id: Option<AppId>,
-    /// The contract's `code`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<String>,
-    /// The contract's `redirect_uri`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub redirect_uri: Option<String>,
-    /// The contract's `code_verifier`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code_verifier: Option<String>,
-    /// The contract's `refresh_token`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<String>,
-}
-
 /// Contract type `OAuthTokenResponse`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OAuthTokenResponse {
@@ -2090,6 +1988,22 @@ pub struct SessionPage {
     pub items: Vec<Session>,
     /// The contract's `page`.
     pub page: PageInfo,
+}
+
+/// Contract type `ShortLivedToken`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ShortLivedToken {
+    /// The contract's `slt`.
+    pub slt: String,
+    /// The contract's `expires_in`.
+    pub expires_in: i64,
+}
+
+/// Contract type `ShortLivedTokenRequest`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ShortLivedTokenRequest {
+    /// The contract's `app_id`.
+    pub app_id: AppId,
 }
 
 /// Contract type `Silicon`.

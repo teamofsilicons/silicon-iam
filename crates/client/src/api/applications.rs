@@ -1,7 +1,5 @@
 //! Applications: their registration, secrets, redirect URIs, and webhook.
 
-use uuid::Uuid;
-
 use crate::{Client, Mutation, Paging, Result, models};
 
 /// Application management. Applications are organization-owned, and these
@@ -93,69 +91,6 @@ impl Applications<'_> {
                 mutation,
             )
             .await
-    }
-
-    /// The application's registered redirect URIs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the caller cannot administer the application.
-    pub async fn redirect_uris(
-        &self,
-        app_id: &str,
-        paging: &Paging,
-    ) -> Result<models::ApplicationRedirectUriPage> {
-        self.0
-            .get_with(&["applications", app_id, "redirect-uris"], &paging.query())
-            .await
-    }
-
-    /// Registers a redirect URI.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `version` is stale or the URI is rejected.
-    pub async fn add_redirect_uri(
-        &self,
-        app_id: &str,
-        version: i64,
-        input: &models::ApplicationRedirectUriCreate,
-        mutation: &Mutation,
-    ) -> Result<models::ApplicationRedirectUriMutation> {
-        self.0
-            .post_versioned(
-                &["applications", app_id, "redirect-uris"],
-                version,
-                input,
-                mutation,
-            )
-            .await
-    }
-
-    /// Retires a redirect URI.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `version` is stale or the URI is already retired.
-    pub async fn retire_redirect_uri(
-        &self,
-        app_id: &str,
-        redirect_uri_id: Uuid,
-        version: i64,
-        mutation: &Mutation,
-    ) -> Result<models::ApplicationRedirectUriMutation> {
-        let request = mutation
-            .apply(self.0.route(
-                reqwest::Method::DELETE,
-                &[
-                    "applications",
-                    app_id,
-                    "redirect-uris",
-                    &redirect_uri_id.to_string(),
-                ],
-            )?)
-            .header(reqwest::header::IF_MATCH, format!("\"{version}\""));
-        self.0.send_json(request).await
     }
 
     /// The application's webhook endpoint.

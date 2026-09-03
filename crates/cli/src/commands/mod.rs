@@ -24,6 +24,7 @@ use crate::{cli::Command, context::Context, error::Result};
 pub async fn dispatch(context: &Context, command: Command) -> Result<()> {
     match command {
         Command::Login(args) => auth::login(context, args).await,
+        Command::SiliconLogin(args) => auth::silicon_login(context, args).await,
         Command::Logout => auth::logout(context),
         Command::Whoami => auth::whoami(context).await,
         Command::Signup(args) => auth::signup(context, args).await,

@@ -137,4 +137,31 @@ impl Auth<'_> {
             )
             .await
     }
+
+    /// Gets a short-lived token for an application while already signed in.
+    ///
+    /// A Silicon has no browser to be redirected in, and a Carbon that already
+    /// holds a session should not have to start another one. The application
+    /// completes the login with this token exactly as it would one delivered
+    /// through a redirect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the application is unknown or the caller may not
+    /// sign in to it.
+    pub async fn short_lived_token(
+        &self,
+        app_id: &str,
+        mutation: &Mutation,
+    ) -> Result<models::ShortLivedToken> {
+        self.0
+            .post(
+                &["app-auth", "short-lived-tokens"],
+                &models::ShortLivedTokenRequest {
+                    app_id: app_id.to_owned(),
+                },
+                mutation,
+            )
+            .await
+    }
 }

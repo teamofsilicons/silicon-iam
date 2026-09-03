@@ -245,11 +245,7 @@ pub(super) async fn create(
         true,
     )
     .await?;
-    if let Claim::Replay {
-        status,
-        response,
-    } = claim
-    {
+    if let Claim::Replay { status, response } = claim {
         transaction
             .commit()
             .await
@@ -693,11 +689,7 @@ pub(super) async fn patch(
         false,
     )
     .await?;
-    if let Claim::Replay {
-        status,
-        response,
-    } = claim
-    {
+    if let Claim::Replay { status, response } = claim {
         transaction
             .commit()
             .await

@@ -1,6 +1,5 @@
 #![allow(clippy::too_many_arguments, clippy::too_many_lines)]
 
-
 use axum::{
     Form, Json,
     extract::{Query, State},
@@ -19,10 +18,7 @@ use crate::{
     api::ApiState,
     domain::actor::{ActorRef, ActorType},
     infrastructure::{
-        crypto::{
-            DigestPurpose, SecretDigest,
-            SecretKind,
-        },
+        crypto::{DigestPurpose, SecretDigest, SecretKind},
         postgres::{
             context::{self, DatabaseContext},
             events::{self as persistence_events, AggregateVersion, AuditRecord, OutboxRecord},
@@ -36,10 +32,10 @@ use super::{
     events,
     idempotency::{self, Claim},
     model::{
-        AppTokenForm, IntrospectionResponse, LoginQuery, LoginStatusQuery, PublicActor, TokenInput,
-        TokenResponse,
+        AppTokenForm, IntrospectionResponse, LoginQuery, LoginStatusQuery, PublicActor,
+        ShortLivedTokenRequest, ShortLivedTokenResponse, TokenInput, TokenResponse,
     },
-    security::{ApplicationClient, BrowserSession},
+    security::{ApplicationClient, Bearer, BrowserSession},
     validation,
 };
 
@@ -456,54 +452,21 @@ pub(super) async fn login(
     } else {
         None
     };
-    let request_id = Uuid::now_v7();
-    sqlx::query(
-        r"
-        INSERT INTO iam.oauth_authorization_requests (
-            id, application_id, redirect_uri, authentication_session_id,
-            subject_principal_id, subject_kind, organization_id, membership_id,
-            expires_at
-        ) VALUES (
-            $1, $2, $3, $4, $5, 'carbon', $6, $7,
-            transaction_timestamp() + ($8::bigint * interval '1 second')
-        )
-        ",
+    let (request_id, token) = mint_short_lived_token(
+        &mut transaction,
+        &state,
+        MintSubject {
+            application_id: app.id,
+            session_id: session.session_id,
+            principal_id: session.carbon_id,
+            subject_kind: "carbon",
+            organization_id: organization.as_ref().map(|value| value.organization_id),
+            membership_id: organization.as_ref().map(|value| value.membership_id),
+            redirect_uri: query.redirect_uri.as_deref(),
+        },
+        &scopes,
     )
-    .bind(request_id)
-    .bind(app.id)
-    .bind(query.redirect_uri.as_deref())
-    .bind(session.session_id)
-    .bind(session.carbon_id)
-    .bind(organization.as_ref().map(|value| value.organization_id))
-    .bind(organization.as_ref().map(|value| value.membership_id))
-    .bind(AUTHORIZATION_REQUEST_SECONDS)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("login_request_insert"))?;
-    for scope in &scopes {
-        sqlx::query(
-            r"
-            INSERT INTO iam.oauth_authorization_request_scopes (
-                authorization_request_id, application_id, scope, approved_at
-            )
-            SELECT $1, $2, approved.scope, approved.approved_at
-            FROM iam.application_approved_scopes AS approved
-            WHERE approved.application_id = $2
-              AND approved.scope = $3
-              AND approved.revoked_at IS NULL
-            ORDER BY approved.approved_at DESC
-            LIMIT 1
-            ",
-        )
-        .bind(request_id)
-        .bind(app.id)
-        .bind(scope)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|_| ApiError::internal("login_scope_insert"))?;
-    }
-    let request = load_authorization_request(&mut transaction, request_id, true).await?;
-    let token = approve_request(&mut transaction, &state, &request).await?;
+    .await?;
     events::authentication_event(
         &mut transaction,
         app.id,
@@ -538,6 +501,198 @@ pub(super) async fn login(
             Some(request_id),
         )),
     }
+}
+
+/// Who a short-lived token is being minted for.
+pub(super) struct MintSubject<'a> {
+    pub(super) application_id: Uuid,
+    pub(super) session_id: Uuid,
+    pub(super) principal_id: Uuid,
+    pub(super) subject_kind: &'a str,
+    pub(super) organization_id: Option<Uuid>,
+    pub(super) membership_id: Option<Uuid>,
+    pub(super) redirect_uri: Option<&'a str>,
+}
+
+/// Records the login and issues the token that completes it.
+///
+/// Shared by the browser login and by callers who are already signed in, so
+/// the two cannot drift on what a login writes.
+async fn mint_short_lived_token(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    subject: MintSubject<'_>,
+    scopes: &[String],
+) -> Result<(Uuid, SecretString), ApiError> {
+    let request_id = Uuid::now_v7();
+    sqlx::query(
+        r"
+        INSERT INTO iam.oauth_authorization_requests (
+            id, application_id, redirect_uri, authentication_session_id,
+            subject_principal_id, subject_kind, organization_id, membership_id,
+            expires_at
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6::iam.principal_kind, $7, $8,
+            transaction_timestamp() + ($9::bigint * interval '1 second')
+        )
+        ",
+    )
+    .bind(request_id)
+    .bind(subject.application_id)
+    .bind(subject.redirect_uri)
+    .bind(subject.session_id)
+    .bind(subject.principal_id)
+    .bind(subject.subject_kind)
+    .bind(subject.organization_id)
+    .bind(subject.membership_id)
+    .bind(AUTHORIZATION_REQUEST_SECONDS)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("login_request_insert"))?;
+    for scope in scopes {
+        sqlx::query(
+            r"
+            INSERT INTO iam.oauth_authorization_request_scopes (
+                authorization_request_id, application_id, scope, approved_at
+            )
+            SELECT $1, $2, approved.scope, approved.approved_at
+            FROM iam.application_approved_scopes AS approved
+            WHERE approved.application_id = $2
+              AND approved.scope = $3
+              AND approved.revoked_at IS NULL
+            ORDER BY approved.approved_at DESC
+            LIMIT 1
+            ",
+        )
+        .bind(request_id)
+        .bind(subject.application_id)
+        .bind(scope)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|_| ApiError::internal("login_scope_insert"))?;
+    }
+    let request = load_authorization_request(transaction, request_id, true).await?;
+    let token = approve_request(transaction, state, &request).await?;
+    Ok((request_id, token))
+}
+
+/// Hands a short-lived token to a caller who is already signed in.
+///
+/// UNDERSTANDING.md: "If the carbon/silicon is already logged in directly
+/// return the short lived token." This is that route, and it is the one the
+/// CLI and the client crate use -- a Silicon has no browser to be redirected
+/// in, and a Carbon that already holds a session should not have to start
+/// another one.
+pub(super) async fn issue_short_lived_token(
+    State(state): State<ApiState>,
+    Bearer(access): Bearer,
+    headers: HeaderMap,
+    Json(input): Json<ShortLivedTokenRequest>,
+) -> Result<Response, ApiError> {
+    validation::app_id(&input.app_id)?;
+    let subject_kind = match access.subject.actor_type {
+        ActorType::Carbon => "carbon",
+        ActorType::Silicon => "silicon",
+        _ => return Err(ApiError::forbidden("forbidden")),
+    };
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(access.subject.id))
+        .await
+        .map_err(|_| ApiError::internal("short_lived_token_context"))?;
+    let caller_scope = format!("{subject_kind}:{}", access.subject.id);
+    let canonical = serde_json::to_vec(&json!({ "app_id": input.app_id }))
+        .map_err(|_| ApiError::internal("short_lived_token_canonical"))?;
+    let claim = idempotency::claim::<ShortLivedTokenResponse>(
+        &mut transaction,
+        &state.crypto,
+        &headers,
+        &caller_scope,
+        "POST /api/v1/app-auth/short-lived-tokens",
+        &canonical,
+        true,
+    )
+    .await?;
+    if let Claim::Replay { status, response } = claim {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("short_lived_token_replay"))?;
+        let status = StatusCode::from_u16(status)
+            .map_err(|_| ApiError::internal("short_lived_token_replay_status"))?;
+        return Ok((status, Json(response)).into_response());
+    }
+    let Claim::Acquired(idempotency_id) = claim else {
+        return Err(ApiError::internal("short_lived_token_idempotency"));
+    };
+    let app = sqlx::query_as::<_, AuthorizeApplicationRow>(
+        r"
+        SELECT application.id, application.app_id, application.app_name
+        FROM iam.applications AS application
+        JOIN iam.principals AS principal
+          ON principal.id = application.id
+         AND principal.kind = 'application'
+         AND principal.status = 'active'
+        WHERE application.app_id = $1
+          AND application.review_status = 'verified'
+          AND application.deleted_at IS NULL
+        ",
+    )
+    .bind(&input.app_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("short_lived_token_application"))?
+    .ok_or_else(|| ApiError::bad_request("invalid_request", "The application is unknown."))?;
+    let scopes =
+        sqlx::query_scalar::<_, String>("SELECT scope FROM iam.oauth_scope_catalog ORDER BY scope")
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(|_| ApiError::internal("short_lived_token_scopes"))?;
+    let (_, token) = mint_short_lived_token(
+        &mut transaction,
+        &state,
+        MintSubject {
+            application_id: app.id,
+            session_id: access.authentication_session_id,
+            principal_id: access.subject.id,
+            subject_kind,
+            organization_id: access.organization_id,
+            membership_id: access.membership_id,
+            redirect_uri: None,
+        },
+        &scopes,
+    )
+    .await?;
+    let expires_in = i64::try_from(state.settings.security.authorization_code_ttl.as_secs())
+        .map_err(|_| ApiError::internal("short_lived_token_ttl"))?;
+    let response = ShortLivedTokenResponse {
+        slt: token.expose_secret().to_owned(),
+        expires_in,
+    };
+    events::authentication_event(
+        &mut transaction,
+        app.id,
+        Some(access.subject.id),
+        Some(subject_kind),
+        Some(access.authentication_session_id),
+        "login.short_lived_token",
+        "success",
+        None,
+        json!({ "delivered": false, "scope_count": scopes.len() }),
+    )
+    .await?;
+    idempotency::complete(
+        &mut transaction,
+        &state.crypto,
+        idempotency_id,
+        201,
+        &response,
+        true,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("short_lived_token_commit"))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
 }
 
 /// Reports what became of a token that was shown rather than delivered.
@@ -2205,9 +2360,8 @@ mod tests {
         REFRESH_CREDENTIAL_LOCK_QUERY, REFRESH_GRANT_AUTHORITY_LOCK_QUERY,
         REFRESH_ISSUANCE_SCOPES_QUERY, REFRESH_MEMBERSHIP_AUTHORITY_LOCK_QUERY,
         REFRESH_REUSE_ACCESS_REVOCATION_QUERY, REFRESH_SESSION_AUTHORITY_LOCK_QUERY,
-        REFRESH_TOKEN_CANDIDATE_QUERY, append_redirect_parameters,
-        empty_idempotent_response, escape_html, login_html_response,
-        scopes_retain_exact_authority,
+        REFRESH_TOKEN_CANDIDATE_QUERY, append_redirect_parameters, empty_idempotent_response,
+        escape_html, login_html_response, scopes_retain_exact_authority,
     };
 
     #[test]

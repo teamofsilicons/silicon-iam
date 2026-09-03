@@ -243,6 +243,20 @@ pub(super) struct LoginQuery {
     pub(super) org_id: Option<String>,
 }
 
+/// What a signed-in caller asks a short-lived token for.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ShortLivedTokenRequest {
+    pub(super) app_id: String,
+}
+
+/// A short-lived token handed to a caller who is already signed in.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct ShortLivedTokenResponse {
+    pub(super) slt: String,
+    pub(super) expires_in: i64,
+}
+
 /// Which login a token page is reporting on.
 #[derive(Clone, Debug, Deserialize)]
 pub(super) struct LoginStatusQuery {
@@ -383,7 +397,6 @@ mod tests {
         }
     }
 
-
     fn assert_required(value: Value, keys: &[&str]) {
         let Value::Object(object) = value else {
             panic!("contract projection must serialize as an object");
@@ -480,5 +493,4 @@ mod tests {
         );
         assert_nested_required(&value, "actor", &["principal_id", "type", "public_id"]);
     }
-
 }

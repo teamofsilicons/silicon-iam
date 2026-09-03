@@ -49,9 +49,7 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             app_id,
             name,
             org,
-            scopes,
             webhook_url,
-            redirect_uri,
         } => {
             let organization = context.organization_or(org.as_deref())?;
             let created = client
@@ -62,9 +60,7 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                         org_id: organization.to_owned(),
                         app_name: Some(name),
                         app_logo: None,
-                        redirect_uris: redirect_uri,
                         webhook_url,
-                        requested_scopes: scopes,
                         obo_endpoints: None,
                     },
                     &context.mutation(),
@@ -77,7 +73,6 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                     println!("Client secret: {}", created.app_secret);
                     println!("Webhook signing secret: {}", created.webhook_signing_secret);
                     println!("Both are shown once. Store them now; they can only be rotated.");
-                    println!("The application is under review until the platform verifies it.");
                     Ok(())
                 }
             }
@@ -96,8 +91,6 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                     &models::ApplicationPatch {
                         app_name: name,
                         app_logo: None,
-                        redirect_uris: None,
-                        requested_scopes: None,
                         obo_endpoints: None,
                     },
                     &context.mutation(),
@@ -119,56 +112,6 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                     Ok(())
                 }
             }
-        }
-        AppCommand::Redirects { app_id, page } => {
-            let listed = client
-                .applications()
-                .redirect_uris(&app_id, &page.paging())
-                .await?;
-            match context.format {
-                Format::Json => json(&listed),
-                Format::Text => {
-                    let mut table = Table::new(["id", "uri", "status"]);
-                    for entry in &listed.items {
-                        table.row([
-                            entry.id.to_string(),
-                            entry.redirect_uri.clone(),
-                            format!("{:?}", entry.status).to_lowercase(),
-                        ]);
-                    }
-                    table.print();
-                    Ok(())
-                }
-            }
-        }
-        AppCommand::AddRedirect { app_id, uri } => {
-            let current = client.applications().get(&app_id).await?;
-            let added = client
-                .applications()
-                .add_redirect_uri(
-                    &app_id,
-                    current.version,
-                    &models::ApplicationRedirectUriCreate { redirect_uri: uri },
-                    &context.mutation(),
-                )
-                .await?;
-            json(&added)
-        }
-        AppCommand::RetireRedirect {
-            app_id,
-            redirect_uri_id,
-        } => {
-            let current = client.applications().get(&app_id).await?;
-            let retired = client
-                .applications()
-                .retire_redirect_uri(
-                    &app_id,
-                    redirect_uri_id,
-                    current.version,
-                    &context.mutation(),
-                )
-                .await?;
-            json(&retired)
         }
         AppCommand::Webhook { app_id } => {
             let webhook = client.applications().webhook(&app_id).await?;

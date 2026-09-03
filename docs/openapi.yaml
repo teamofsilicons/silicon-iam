@@ -392,6 +392,37 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/app-auth/short-lived-tokens:
+    post:
+      tags: [Login]
+      operationId: issueShortLivedToken
+      summary: Get a short-lived token while already signed in.
+      description: |
+        For a caller that already holds a session -- a Silicon, which has no
+        browser to be redirected in, or a Carbon that should not have to start
+        another login. The token is valid for two minutes and for a single
+        exchange, and the application completes it at /api/v1/app-auth/tokens
+        exactly as it would one delivered through a redirect.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShortLivedTokenRequest' }
+      responses:
+        '201':
+          description: The short-lived token and its lifetime in seconds.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShortLivedToken' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/oauth/introspect:
     post:
       tags: [OAuth]
@@ -3720,6 +3751,18 @@ components:
         decision: { type: string, enum: [approve, deny] }
         csrf_token: { type: string, minLength: 32, maxLength: 512 }
         idempotency_key: { type: string, minLength: 16, maxLength: 255 }
+    ShortLivedTokenRequest:
+      type: object
+      required: [app_id]
+      additionalProperties: false
+      properties:
+        app_id: { $ref: '#/components/schemas/AppId' }
+    ShortLivedToken:
+      type: object
+      required: [slt, expires_in]
+      properties:
+        slt: { type: string }
+        expires_in: { type: integer }
     ApplicationTokenRequest:
       type: object
       required: [app_id]

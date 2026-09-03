@@ -36,10 +36,7 @@ pub(super) fn application_create(input: &model::ApplicationCreate) -> Result<(),
 }
 
 pub(super) fn application_patch(input: &model::ApplicationPatch) -> Result<(), ApiError> {
-    if input.app_name.is_none()
-        && input.app_logo_uri.is_none()
-        && input.obo_endpoints.is_none()
-    {
+    if input.app_name.is_none() && input.app_logo_uri.is_none() && input.obo_endpoints.is_none() {
         return Err(ApiError::validation(
             "body",
             "must change at least one field",
@@ -404,7 +401,7 @@ fn optional_https_uri(
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    
+
     use super::{
         app_id, obo_endpoint_id, obo_endpoints, obo_metadata, obo_request_metadata, redirect_uri,
         webhook_url,
@@ -432,7 +429,6 @@ mod tests {
         assert!(webhook_url("https://127.0.0.1/events").is_err());
         assert!(webhook_url("http://hooks.example/events").is_err());
     }
-
 
     #[test]
     fn obo_endpoints_accept_application_owned_identifiers_and_bounded_objects() {

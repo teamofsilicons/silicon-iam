@@ -32,6 +32,10 @@ pub fn router() -> Router<ApiState> {
         .route("/api/v1/login", get(oauth::login))
         .route("/api/v1/login/status", get(oauth::login_status))
         .route("/api/v1/app-auth/tokens", post(oauth::app_tokens))
+        .route(
+            "/api/v1/app-auth/short-lived-tokens",
+            post(oauth::issue_short_lived_token),
+        )
         .route("/api/v1/oauth/introspect", post(oauth::introspect))
         .route("/api/v1/oauth/revoke", post(oauth::revoke))
         .route("/api/v1/obo-access/exchanges", post(obo::exchange))
