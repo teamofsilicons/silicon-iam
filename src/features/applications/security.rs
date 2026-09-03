@@ -215,23 +215,28 @@ impl FromRequestParts<ApiState> for ApplicationClient {
             WITH supplied_digest (key_version, digest) AS (
                 SELECT * FROM unnest($1::smallint[], $2::bytea[])
             )
+            -- Deliberately no join to iam.applications. This runs before the
+            -- caller is known, so there is no principal context, and the SELECT
+            -- policy on that table admits nothing without one -- joining it
+            -- here returned zero candidates for every application credential
+            -- ever presented. Narrowing this to the secret itself costs no
+            -- authority: iam.application_secrets carries no row security
+            -- because a lookup by digest is how a caller becomes known at all,
+            -- and the query below re-reads the application with context set,
+            -- where app_id, review status, principal status and secret status
+            -- are all enforced.
             SELECT secret.application_id, secret.secret_digest, secret.pepper_key_version
             FROM supplied_digest
             JOIN iam.application_secrets AS secret
               ON secret.pepper_key_version = supplied_digest.key_version
              AND secret.secret_digest = supplied_digest.digest
-            JOIN iam.applications AS application ON application.id = secret.application_id
-            WHERE application.app_id = $3
-              AND (
-                  secret.status = 'active'
-                  OR (secret.status = 'retiring' AND secret.retires_at > transaction_timestamp())
-              )
+            WHERE secret.status = 'active'
+               OR (secret.status = 'retiring' AND secret.retires_at > transaction_timestamp())
             FOR UPDATE OF secret
             ",
         )
         .bind(versions)
         .bind(digests)
-        .bind(&app_id)
         .fetch_all(&mut *transaction)
         .await
         .map_err(|_| ApiError::internal("application_secret_lookup"))?;
@@ -261,29 +266,8 @@ impl FromRequestParts<ApiState> for ApplicationClient {
             .map_err(|_| ApiError::internal("application_client_rls_context"))?;
             let resolved = sqlx::query_as::<_, (Uuid, String, Uuid, i64)>(
                 r"
-                SELECT application.id, application.app_id,
-                       application.organization_id, principal.auth_epoch
-                FROM iam.applications AS application
-                JOIN iam.principals AS principal
-                  ON principal.id = application.id
-                 AND principal.kind = 'application'
-                 AND principal.status = 'active'
-                JOIN iam.application_secrets AS secret
-                  ON secret.application_id = application.id
-                 AND secret.pepper_key_version = $3
-                 AND secret.secret_digest = $4
-                WHERE application.id = $1
-                  AND application.app_id = $2
-                  AND application.review_status = 'verified'
-                  AND application.deleted_at IS NULL
-                  AND (
-                      secret.status = 'active'
-                      OR (
-                          secret.status = 'retiring'
-                          AND secret.retires_at > transaction_timestamp()
-                      )
-                  )
-                FOR UPDATE OF application, principal, secret
+                SELECT application_id, app_id, organization_id, auth_epoch
+                FROM iam_private.resolve_application_client($1, $2, $3, $4)
                 ",
             )
             .bind(candidate.application_id)

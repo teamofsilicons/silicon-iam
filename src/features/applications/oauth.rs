@@ -57,17 +57,7 @@ const OAUTH_REFRESH_INSERT_QUERY: &str = r"
 ";
 
 const CURRENT_APPLICATION_CLIENT_LOCK_QUERY: &str = r"
-    SELECT application.id
-    FROM iam.applications AS application
-    JOIN iam.principals AS principal
-      ON principal.id = application.id
-     AND principal.kind = 'application'
-     AND principal.status = 'active'
-     AND principal.auth_epoch = $2
-    WHERE application.id = $1
-      AND application.review_status = 'verified'
-      AND application.deleted_at IS NULL
-    FOR SHARE OF application, principal
+    SELECT iam_private.lock_current_application_client($1, $2)
 ";
 
 const AUTHORIZATION_CODE_LOOKUP_QUERY: &str = r"
@@ -79,7 +69,7 @@ const AUTHORIZATION_CODE_LOOKUP_QUERY: &str = r"
            request.authentication_session_id,
            request.subject_principal_id, request.subject_kind::text AS subject_kind,
            request.organization_id, request.membership_id,
-           grant.id AS consent_grant_id,
+           consent.id AS consent_grant_id,
            principal.auth_epoch AS subject_auth_epoch,
            membership.authz_epoch AS membership_authz_epoch
     FROM supplied_digest
@@ -106,19 +96,19 @@ const AUTHORIZATION_CODE_LOOKUP_QUERY: &str = r"
      AND session.status = 'active'
      AND session.idle_expires_at > transaction_timestamp()
      AND session.absolute_expires_at > transaction_timestamp()
-    JOIN iam.oauth_consent_grants AS grant
-      ON grant.application_id = request.application_id
-     AND grant.subject_principal_id = request.subject_principal_id
-     AND grant.subject_kind = request.subject_kind
-     AND grant.organization_id IS NOT DISTINCT FROM request.organization_id
-     AND grant.membership_id IS NOT DISTINCT FROM request.membership_id
-     AND grant.parent_authentication_session_id = request.authentication_session_id
-     AND grant.status = 'active'
+    JOIN iam.oauth_consent_grants AS consent
+      ON consent.application_id = request.application_id
+     AND consent.subject_principal_id = request.subject_principal_id
+     AND consent.subject_kind = request.subject_kind
+     AND consent.organization_id IS NOT DISTINCT FROM request.organization_id
+     AND consent.membership_id IS NOT DISTINCT FROM request.membership_id
+     AND consent.parent_authentication_session_id = request.authentication_session_id
+     AND consent.status = 'active'
     WHERE code.application_id = $3
       AND code.consumed_at IS NULL
       AND code.expires_at > transaction_timestamp()
       AND request.status = 'approved'
-    FOR UPDATE OF code, request, grant
+    FOR UPDATE OF code, request, consent
     FOR SHARE OF principal, session
 ";
 
@@ -128,14 +118,11 @@ const CODE_EXCHANGE_ACTIVE_SCOPES_QUERY: &str = r"
     JOIN iam.oauth_consent_grant_scopes AS consent_scope
       ON consent_scope.consent_grant_id = $2
      AND consent_scope.scope = request_scope.scope
-    JOIN iam.application_approved_scopes AS approved
-      ON approved.application_id = request_scope.application_id
-     AND approved.scope = request_scope.scope
-     AND approved.revoked_at IS NULL
+    JOIN iam_private.locked_application_approved_scopes($3) AS approved
+      ON approved.scope = request_scope.scope
     WHERE request_scope.authorization_request_id = $1
       AND request_scope.application_id = $3
     ORDER BY request_scope.scope
-    FOR SHARE OF approved
 ";
 
 const REFRESH_REUSE_ACCESS_REVOCATION_QUERY: &str = r"
@@ -154,8 +141,8 @@ const REFRESH_TOKEN_CANDIDATE_QUERY: &str = r"
            refresh.token_digest, refresh.digest_key_version,
            family.authentication_session_id, family.subject_principal_id,
            principal.kind::text AS subject_kind,
-           grant.organization_id, grant.membership_id,
-           grant.id AS consent_grant_id
+           consent.organization_id, consent.membership_id,
+           consent.id AS consent_grant_id
     FROM supplied_digest
     JOIN iam.refresh_tokens AS refresh
       ON refresh.digest_key_version = supplied_digest.key_version
@@ -164,8 +151,8 @@ const REFRESH_TOKEN_CANDIDATE_QUERY: &str = r"
       ON family.id = refresh.family_id
     JOIN iam.principals AS principal
       ON principal.id = family.subject_principal_id
-    JOIN iam.oauth_consent_grants AS grant
-      ON grant.id = family.oauth_consent_grant_id
+    JOIN iam.oauth_consent_grants AS consent
+      ON consent.id = family.oauth_consent_grant_id
     WHERE family.client_application_id = $3
     LIMIT 1
 ";
@@ -202,13 +189,13 @@ const REFRESH_MEMBERSHIP_AUTHORITY_LOCK_QUERY: &str = r"
 ";
 
 const REFRESH_GRANT_AUTHORITY_LOCK_QUERY: &str = r"
-    SELECT grant.application_id, grant.subject_principal_id,
-           grant.subject_kind::text AS subject_kind,
-           grant.organization_id, grant.membership_id,
-           grant.parent_authentication_session_id, grant.status
-    FROM iam.oauth_consent_grants AS grant
-    WHERE grant.id = $1
-    FOR SHARE OF grant
+    SELECT consent.application_id, consent.subject_principal_id,
+           consent.subject_kind::text AS subject_kind,
+           consent.organization_id, consent.membership_id,
+           consent.parent_authentication_session_id, consent.status
+    FROM iam.oauth_consent_grants AS consent
+    WHERE consent.id = $1
+    FOR SHARE OF consent
 ";
 
 const REFRESH_CREDENTIAL_LOCK_QUERY: &str = r"
@@ -237,14 +224,11 @@ const REFRESH_ISSUANCE_SCOPES_QUERY: &str = r"
     JOIN iam.oauth_consent_grant_scopes AS consent_scope
       ON consent_scope.consent_grant_id = snapshot.consent_grant_id
      AND consent_scope.scope = snapshot.scope
-    JOIN iam.application_approved_scopes AS approved
-      ON approved.application_id = $3
-     AND approved.scope = snapshot.scope
-     AND approved.revoked_at IS NULL
+    JOIN iam_private.locked_application_approved_scopes($3) AS approved
+      ON approved.scope = snapshot.scope
     WHERE snapshot.family_id = $1
       AND snapshot.consent_grant_id = $2
     ORDER BY snapshot.scope
-    FOR SHARE OF approved
 ";
 
 #[derive(FromRow)]
@@ -421,7 +405,7 @@ pub(super) async fn login(
     .await
     .map_err(|_| ApiError::internal("login_application"))?
     .ok_or_else(|| ApiError::bad_request("invalid_request", "The application is unknown."))?;
-    // "Scope of the login is always everything": the catalogue is the grant.
+    // "Scope of the login is always everything": the catalogue is the consent.
     let scopes =
         sqlx::query_scalar::<_, String>("SELECT scope FROM iam.oauth_scope_catalog ORDER BY scope")
             .fetch_all(&mut *transaction)
@@ -1020,7 +1004,7 @@ async fn introspect_refresh_token(
                family.id AS family_id,
                family.oauth_consent_grant_id AS consent_grant_id,
                family.subject_principal_id, principal.kind::text AS subject_kind,
-               organization.org_id, grant.membership_id,
+               organization.org_id, consent.membership_id,
                family.authentication_session_id, application.app_id,
                token.created_at,
                LEAST(token.expires_at, family.absolute_expires_at,
@@ -1043,13 +1027,13 @@ async fn introspect_refresh_token(
          AND session.status = 'active'
          AND session.idle_expires_at > transaction_timestamp()
          AND session.absolute_expires_at > transaction_timestamp()
-        JOIN iam.oauth_consent_grants AS grant
-          ON grant.id = family.oauth_consent_grant_id
-         AND grant.application_id = family.client_application_id
-         AND grant.subject_principal_id = family.subject_principal_id
-         AND grant.subject_kind = principal.kind
-         AND grant.parent_authentication_session_id = family.authentication_session_id
-         AND grant.status = 'active'
+        JOIN iam.oauth_consent_grants AS consent
+          ON consent.id = family.oauth_consent_grant_id
+         AND consent.application_id = family.client_application_id
+         AND consent.subject_principal_id = family.subject_principal_id
+         AND consent.subject_kind = principal.kind
+         AND consent.parent_authentication_session_id = family.authentication_session_id
+         AND consent.status = 'active'
         JOIN iam.applications AS application
           ON application.id = family.client_application_id
          AND application.review_status = 'verified'
@@ -1060,11 +1044,11 @@ async fn introspect_refresh_token(
          AND application_principal.status = 'active'
          AND application_principal.auth_epoch = $4
         LEFT JOIN iam.organizations AS organization
-          ON organization.id = grant.organization_id
+          ON organization.id = consent.organization_id
          AND organization.status = 'active'
         LEFT JOIN iam.organization_memberships AS membership
-          ON membership.id = grant.membership_id
-         AND membership.organization_id = grant.organization_id
+          ON membership.id = consent.membership_id
+         AND membership.organization_id = consent.organization_id
          AND membership.principal_id = family.subject_principal_id
          AND membership.principal_kind = principal.kind
          AND membership.status = 'active'
@@ -1074,7 +1058,7 @@ async fn introspect_refresh_token(
           AND token.consumed_at IS NULL
           AND token.revoked_at IS NULL
           AND token.expires_at > transaction_timestamp()
-          AND (grant.organization_id IS NULL OR membership.id IS NOT NULL)
+          AND (consent.organization_id IS NULL OR membership.id IS NOT NULL)
         LIMIT 1
         ",
     )
@@ -1320,13 +1304,15 @@ async fn lock_current_application_client(
     transaction: &mut Transaction<'_, Postgres>,
     client: &ApplicationClient,
 ) -> Result<bool, ApiError> {
-    let locked = sqlx::query_scalar::<_, Uuid>(CURRENT_APPLICATION_CLIENT_LOCK_QUERY)
+    // A scalar function always answers with a row, so the absence of a match
+    // arrives as NULL rather than as no row at all.
+    let locked = sqlx::query_scalar::<_, Option<Uuid>>(CURRENT_APPLICATION_CLIENT_LOCK_QUERY)
         .bind(client.application_id)
         .bind(client.auth_epoch)
         .fetch_optional(&mut **transaction)
         .await
         .map_err(|_| ApiError::internal("oauth_client_authority_lock"))?;
-    Ok(locked.is_some())
+    Ok(locked.flatten().is_some())
 }
 
 async fn exchange_refresh_token(
@@ -1576,14 +1562,14 @@ fn refresh_grant_authority_is_current(
     application_id: Uuid,
     candidate: &RefreshCandidateRow,
 ) -> bool {
-    authority.is_some_and(|grant| {
-        grant.application_id == application_id
-            && grant.subject_principal_id == candidate.subject_principal_id
-            && grant.subject_kind == candidate.subject_kind
-            && grant.organization_id == candidate.organization_id
-            && grant.membership_id == candidate.membership_id
-            && grant.parent_authentication_session_id == candidate.authentication_session_id
-            && grant.status == "active"
+    authority.is_some_and(|consent| {
+        consent.application_id == application_id
+            && consent.subject_principal_id == candidate.subject_principal_id
+            && consent.subject_kind == candidate.subject_kind
+            && consent.organization_id == candidate.organization_id
+            && consent.membership_id == candidate.membership_id
+            && consent.parent_authentication_session_id == candidate.authentication_session_id
+            && consent.status == "active"
     })
 }
 
@@ -1849,7 +1835,7 @@ async fn approve_request(
 ) -> Result<SecretString, ApiError> {
     let scopes = authorization_request_scopes(transaction, request.id).await?;
     let grant_id = Uuid::now_v7();
-    let grant = sqlx::query_as::<_, (Uuid, i64)>(
+    let consent = sqlx::query_as::<_, (Uuid, i64)>(
         r"
         INSERT INTO iam.oauth_consent_grants (
             id, application_id, subject_principal_id, subject_kind,
@@ -1874,7 +1860,7 @@ async fn approve_request(
     .await
     .map_err(|_| ApiError::internal("oauth_consent_grant_upsert"))?;
     sqlx::query("DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id = $1")
-        .bind(grant.0)
+        .bind(consent.0)
         .execute(&mut **transaction)
         .await
         .map_err(|_| ApiError::internal("oauth_consent_scope_clear"))?;
@@ -1882,7 +1868,7 @@ async fn approve_request(
         sqlx::query(
             "INSERT INTO iam.oauth_consent_grant_scopes (consent_grant_id, scope) VALUES ($1, $2)",
         )
-        .bind(grant.0)
+        .bind(consent.0)
         .bind(scope)
         .execute(&mut **transaction)
         .await
@@ -2006,7 +1992,7 @@ pub(super) async fn authorized_code_exchange_scopes(
 ) -> Result<Vec<String>, ApiError> {
     // The caller holds the authorization-request and consent-grant row locks.
     // Request scopes are immutable while that request exists, and every
-    // consent-scope replacement first locks its grant. Lock the remaining
+    // consent-scope replacement first locks its consent. Lock the remaining
     // independently mutable authority: the active platform approval rows.
     let requested = authorization_request_scopes(transaction, request_id).await?;
     let currently_authorized = sqlx::query_scalar::<_, String>(CODE_EXCHANGE_ACTIVE_SCOPES_QUERY)
@@ -2041,14 +2027,14 @@ async fn refresh_family_scopes(
         JOIN iam.refresh_token_families AS family
           ON family.id = snapshot.family_id
          AND family.oauth_consent_grant_id = snapshot.consent_grant_id
-        JOIN iam.oauth_consent_grants AS grant
-          ON grant.id = snapshot.consent_grant_id
-         AND grant.status = 'active'
+        JOIN iam.oauth_consent_grants AS consent
+          ON consent.id = snapshot.consent_grant_id
+         AND consent.status = 'active'
         JOIN iam.oauth_consent_grant_scopes AS consent_scope
-          ON consent_scope.consent_grant_id = grant.id
+          ON consent_scope.consent_grant_id = consent.id
          AND consent_scope.scope = snapshot.scope
         JOIN iam.application_approved_scopes AS approved
-          ON approved.application_id = grant.application_id
+          ON approved.application_id = consent.application_id
          AND approved.scope = snapshot.scope
          AND approved.revoked_at IS NULL
         WHERE snapshot.family_id = $1
@@ -2354,6 +2340,12 @@ fn escape_html(value: &str) -> String {
 mod tests {
     use axum::http::header;
 
+    /// Locks that moved into owner-rights functions are asserted against the
+    /// migration that defines them, since a share lock applies a table's
+    /// UPDATE policies and an application does not manage itself.
+    const CLIENT_LOCK_MIGRATION: &str =
+        include_str!("../../../migrations/0057_short_lived_token_login.sql");
+
     use super::{
         AUTHORIZATION_CODE_LOOKUP_QUERY, CODE_EXCHANGE_ACTIVE_SCOPES_QUERY,
         CURRENT_APPLICATION_CLIENT_LOCK_QUERY, OAUTH_REFRESH_INSERT_QUERY,
@@ -2427,25 +2419,34 @@ mod tests {
 
     #[test]
     fn authorization_code_lookup_binds_the_current_parent_session_authority() {
+        // The lock itself moved into an owner-rights function, because a
+        // share lock applies the table's UPDATE policies and an application
+        // does not manage itself. The conditions it holds are asserted where
+        // they now live.
         for required_fragment in [
             "principal.status = 'active'",
-            "principal.auth_epoch = $2",
+            "principal.auth_epoch = p_auth_epoch",
             "application.review_status = 'verified'",
             "application.deleted_at IS NULL",
             "FOR SHARE OF application, principal",
         ] {
             assert!(
-                CURRENT_APPLICATION_CLIENT_LOCK_QUERY.contains(required_fragment),
+                CLIENT_LOCK_MIGRATION.contains(required_fragment),
                 "application-client lock is missing `{required_fragment}`"
             );
         }
+        assert!(
+            CURRENT_APPLICATION_CLIENT_LOCK_QUERY
+                .contains("iam_private.lock_current_application_client"),
+            "the client lock should go through the owner-rights function"
+        );
         for required_fragment in [
             "session.subject_principal_id = request.subject_principal_id",
             "session.subject_kind = request.subject_kind",
             "session.subject_auth_epoch = principal.auth_epoch",
             "session.status = 'active'",
-            "grant.parent_authentication_session_id = request.authentication_session_id",
-            "FOR UPDATE OF code, request, grant",
+            "consent.parent_authentication_session_id = request.authentication_session_id",
+            "FOR UPDATE OF code, request, consent",
             "FOR SHARE OF principal, session",
         ] {
             assert!(
@@ -2470,11 +2471,12 @@ mod tests {
             &["organizations.read".to_owned()],
             &requested
         ));
+        // The approved-scope ceiling is read and locked through an
+        // owner-rights function: a share lock applies the table's UPDATE
+        // policies, and an application is not its own administrator.
         for required_fragment in [
             "iam.oauth_consent_grant_scopes",
-            "iam.application_approved_scopes",
-            "approved.revoked_at IS NULL",
-            "FOR SHARE OF approved",
+            "iam_private.locked_application_approved_scopes",
         ] {
             assert!(
                 CODE_EXCHANGE_ACTIVE_SCOPES_QUERY.contains(required_fragment),
@@ -2504,7 +2506,7 @@ mod tests {
         for required_fragment in [
             "family.authentication_session_id",
             "family.subject_principal_id",
-            "grant.id AS consent_grant_id",
+            "consent.id AS consent_grant_id",
         ] {
             assert!(
                 REFRESH_TOKEN_CANDIDATE_QUERY.contains(required_fragment),
@@ -2536,9 +2538,9 @@ mod tests {
             );
         }
         for required_fragment in [
-            "grant.subject_kind::text AS subject_kind",
-            "grant.parent_authentication_session_id",
-            "FOR SHARE OF grant",
+            "consent.subject_kind::text AS subject_kind",
+            "consent.parent_authentication_session_id",
+            "FOR SHARE OF consent",
         ] {
             assert!(
                 REFRESH_GRANT_AUTHORITY_LOCK_QUERY.contains(required_fragment),
@@ -2559,13 +2561,22 @@ mod tests {
         for required_fragment in [
             "iam.oauth_refresh_family_scopes",
             "iam.oauth_consent_grant_scopes",
+            "iam_private.locked_application_approved_scopes",
+        ] {
+            assert!(
+                REFRESH_ISSUANCE_SCOPES_QUERY.contains(required_fragment),
+                "refresh scope lock is missing `{required_fragment}`"
+            );
+        }
+        // ... and the conditions it holds are asserted where they now live.
+        for required_fragment in [
             "iam.application_approved_scopes",
             "approved.revoked_at IS NULL",
             "FOR SHARE OF approved",
         ] {
             assert!(
-                REFRESH_ISSUANCE_SCOPES_QUERY.contains(required_fragment),
-                "refresh scope lock is missing `{required_fragment}`"
+                CLIENT_LOCK_MIGRATION.contains(required_fragment),
+                "scope-ceiling lock is missing `{required_fragment}`"
             );
         }
     }

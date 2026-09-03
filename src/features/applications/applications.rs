@@ -328,44 +328,17 @@ pub(super) async fn create(
     // The login carries the whole catalogue -- "scope of the login is always
     // everything" -- and a login's request-scope rows are foreign-keyed to the
     // approved set, so "everything" has to exist as rows rather than as a
-    // special case at authorization time. An application therefore arrives with
-    // the catalogue requested and approved to itself; `scope` on the create
-    // input is the webhook's scope and is applied to the webhook, not here.
-    sqlx::query(
-        r"
-        INSERT INTO iam.application_requested_scopes (application_id, scope)
-        SELECT $1, catalog.scope
-        FROM iam.oauth_scope_catalog AS catalog
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM iam.application_requested_scopes AS requested
-            WHERE requested.application_id = $1 AND requested.scope = catalog.scope
-        )
-        ",
-    )
-    .bind(application_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("application_catalogue_request"))?;
-    sqlx::query(
-        r"
-        INSERT INTO iam.application_approved_scopes (application_id, scope, approved_by_carbon_id)
-        SELECT $1, catalog.scope, $2
-        FROM iam.oauth_scope_catalog AS catalog
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM iam.application_approved_scopes AS approved
-            WHERE approved.application_id = $1
-              AND approved.scope = catalog.scope
-              AND approved.revoked_at IS NULL
-        )
-        ",
-    )
-    .bind(application_id)
-    .bind(carbon_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("application_catalogue_approval"))?;
+    // special case at authorization time. Approving scopes is a platform
+    // authority the organization owner deliberately does not hold, so the grant
+    // goes through an owner-rights function that checks the caller can manage
+    // this application before it writes. `scope` on the create input is the
+    // webhook's scope and is applied to the webhook, not here.
+    sqlx::query("SELECT iam_private.grant_application_scope_catalogue($1, $2)")
+        .bind(application_id)
+        .bind(carbon_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiError::internal("application_scope_catalogue"))?;
     replace_obo_endpoints(&mut transaction, application_id, &input.obo_endpoints).await?;
     sqlx::query(
         r"
