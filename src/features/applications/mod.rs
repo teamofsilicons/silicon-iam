@@ -29,12 +29,9 @@ use crate::api::ApiState;
 /// remain unchanged.
 pub fn router() -> Router<ApiState> {
     Router::new()
-        .route("/api/v1/oauth/authorize", get(oauth::authorize))
-        .route(
-            "/api/v1/oauth/authorize/decisions",
-            post(oauth::decide_consent),
-        )
-        .route("/api/v1/oauth/token", post(oauth::token))
+        .route("/api/v1/login", get(oauth::login))
+        .route("/api/v1/login/status", get(oauth::login_status))
+        .route("/api/v1/app-auth/tokens", post(oauth::app_tokens))
         .route("/api/v1/oauth/introspect", post(oauth::introspect))
         .route("/api/v1/oauth/revoke", post(oauth::revoke))
         .route("/api/v1/obo-access/exchanges", post(obo::exchange))
@@ -56,14 +53,6 @@ pub fn router() -> Router<ApiState> {
             post(applications::rotate_client_secret),
         )
         .route(
-            "/api/v1/applications/{app_id}/redirect-uris",
-            get(applications::list_redirect_uris).post(applications::add_redirect_uri),
-        )
-        .route(
-            "/api/v1/applications/{app_id}/redirect-uris/{redirect_uri_id}",
-            axum::routing::delete(applications::retire_redirect_uri),
-        )
-        .route(
             "/api/v1/applications/{app_id}/webhook",
             get(webhooks::get).put(webhooks::replace),
         )
@@ -75,13 +64,13 @@ pub fn router() -> Router<ApiState> {
             "/api/v1/applications/{app_id}/webhook/dead-letters/replays",
             post(webhooks::replay_dead_letters),
         )
-        .route(
-            "/api/v1/applications/{app_id}/login-history",
-            get(webhooks::login_history),
-        )
         .route("/api/v1/admin/applications", get(applications::admin_list))
         .route(
             "/api/v1/admin/applications/{app_id}/decisions",
             post(applications::admin_decide),
+        )
+        .route(
+            "/api/v1/applications/{app_id}/login-history",
+            get(webhooks::login_history),
         )
 }

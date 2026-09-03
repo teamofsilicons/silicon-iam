@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#EDE8E0">
+    <meta name="robots" content="noindex, nofollow">
+    {refresh}
+    <title>{title} · Silicon IAM</title>
+    <link rel="icon" href="/_static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/_static/console.css">
+  </head>
+
+  <!--
+    No inline styles and no inline style block anywhere on this page. The CSP
+    is `style-src 'self'` with no `unsafe-inline`, so every rule below lives in
+    the shared stylesheet under `.login-*`. There is deliberately no
+    `script-src` at all: this page cannot execute anything, which is why the
+    expiry is handled by a meta refresh rather than a timer.
+  -->
+  <body class="login">
+    <header class="login-head">
+      <span class="logo">
+        <img src="/_static/mark.svg" alt="" width="24" height="24">
+        <span>Silicon <em>IAM</em></span>
+      </span>
+    </header>
+
+    <main id="main" tabindex="-1" class="login-slot">
+      <div class="panel login-card">
+        <div class="rail" aria-hidden="true"></div>
+
+        <div class="panel-body stack login-body">
+          <div class="stack login-intro">
+            <h1 class="login-title">{heading}</h1>
+            <p class="small muted">{lead}</p>
+          </div>
+
+          {token_section}
+
+          <p class="micro soft login-note">{note}</p>
+        </div>
+      </div>
+    </main>
+
+    <footer class="login-foot">
+      <span class="micro soft">Silicon IAM</span>
+    </footer>
+  </body>
+</html>

@@ -1,12 +1,9 @@
 use std::collections::BTreeSet;
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use sha2::{Digest as _, Sha256};
 use url::Url;
 
 use super::{error::ApiError, model};
 
-const MAX_REDIRECT_URIS: usize = 20;
 const MAX_SCOPES: usize = 100;
 const MAX_OBO_ENDPOINTS: usize = 50;
 const MAX_OBO_METADATA_BYTES: usize = 16_384;
@@ -33,13 +30,6 @@ pub(super) fn application_create(input: &model::ApplicationCreate) -> Result<(),
     org_id(&input.org_id)?;
     optional_text("app_name", input.app_name.as_deref(), 1, 200)?;
     optional_https_uri("app_logo_uri", input.app_logo_uri.as_deref(), 2_048)?;
-    if input.redirect_uris.len() != 1 {
-        return Err(ApiError::validation(
-            "redirect_uris",
-            "must contain exactly one initial URI",
-        ));
-    }
-    redirect_uris(&input.redirect_uris)?;
     webhook_url(&input.webhook_url)?;
     scopes(&input.requested_scopes)?;
     obo_endpoints(&input.obo_endpoints)?;
@@ -49,7 +39,6 @@ pub(super) fn application_create(input: &model::ApplicationCreate) -> Result<(),
 pub(super) fn application_patch(input: &model::ApplicationPatch) -> Result<(), ApiError> {
     if input.app_name.is_none()
         && input.app_logo_uri.is_none()
-        && input.redirect_uris.is_none()
         && input.requested_scopes.is_none()
         && input.obo_endpoints.is_none()
     {
@@ -68,40 +57,11 @@ pub(super) fn application_patch(input: &model::ApplicationPatch) -> Result<(), A
     {
         optional_https_uri("app_logo_uri", Some(value), 2_048)?;
     }
-    if let Some(values) = &input.redirect_uris {
-        if values.len() != 1 {
-            return Err(ApiError::validation(
-                "redirect_uris",
-                "must contain exactly one replacement URI",
-            ));
-        }
-        redirect_uris(values)?;
-    }
     if let Some(values) = &input.requested_scopes {
         scopes(values)?;
     }
     if let Some(values) = &input.obo_endpoints {
         obo_endpoints(values)?;
-    }
-    Ok(())
-}
-
-pub(super) fn redirect_uris(values: &[String]) -> Result<(), ApiError> {
-    if !(1..=MAX_REDIRECT_URIS).contains(&values.len()) {
-        return Err(ApiError::validation(
-            "redirect_uris",
-            "must contain 1 to 20 exact URIs",
-        ));
-    }
-    let mut unique = BTreeSet::<&str>::new();
-    for value in values {
-        redirect_uri_value("redirect_uris", value)?;
-        if !unique.insert(value.as_str()) {
-            return Err(ApiError::validation(
-                "redirect_uris",
-                "must not contain duplicates",
-            ));
-        }
     }
     Ok(())
 }
@@ -183,51 +143,21 @@ pub(super) fn scopes(values: &[String]) -> Result<(), ApiError> {
     Ok(())
 }
 
-pub(super) fn authorize(query: &model::AuthorizeQuery) -> Result<Vec<String>, ApiError> {
-    app_id(&query.client_id)?;
-    if query.response_type != "code" {
-        return Err(ApiError::bad_request(
-            "unsupported_response_type",
-            "Only response_type=code is supported.",
-        ));
+/// Checks a login query.
+///
+/// Both parameters are optional and mean different things by their absence:
+/// no `app_id` is an ordinary Silicon IAM login rather than an application's,
+/// and no `redirect_uri` means the short-lived token is shown rather than
+/// delivered. There is nothing else to validate -- the login grants the whole
+/// scope catalogue, so there are no scopes to parse or approve.
+pub(super) fn login(query: &model::LoginQuery) -> Result<(), ApiError> {
+    if let Some(value) = &query.app_id {
+        app_id(value)?;
     }
-    if query.code_challenge_method != "S256" || !pkce_challenge(&query.code_challenge) {
-        return Err(ApiError::bad_request(
-            "invalid_request",
-            "PKCE-S256 is required.",
-        ));
+    if let Some(value) = &query.redirect_uri {
+        redirect_uri(value)?;
     }
-    bounded_oauth_state(&query.state)?;
-    let requested_scopes = query
-        .scope
-        .split(' ')
-        .filter(|scope| !scope.is_empty())
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-    scopes(&requested_scopes)?;
-    Ok(requested_scopes)
-}
-
-fn pkce_challenge(value: &str) -> bool {
-    value.len() == 43
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-}
-
-pub(super) fn pkce_value(value: &str) -> bool {
-    (43..=128).contains(&value.len())
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~'))
-}
-
-pub(super) fn pkce_matches(verifier: &str, challenge: &str) -> bool {
-    if !pkce_value(verifier) {
-        return false;
-    }
-    let calculated = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    subtle::ConstantTimeEq::ct_eq(calculated.as_bytes(), challenge.as_bytes()).into()
+    Ok(())
 }
 
 pub(super) fn obo_endpoint_id(value: &str) -> Result<(), ApiError> {
@@ -476,24 +406,13 @@ fn optional_https_uri(
     Ok(())
 }
 
-fn bounded_oauth_state(value: &str) -> Result<(), ApiError> {
-    if !(16..=512).contains(&value.len()) || value.bytes().any(|byte| byte.is_ascii_control()) {
-        return Err(ApiError::bad_request(
-            "invalid_request",
-            "state must contain 16 to 512 characters.",
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use sha2::Digest as _;
-
+    
     use super::{
-        app_id, obo_endpoint_id, obo_endpoints, obo_metadata, obo_request_metadata, pkce_matches,
-        redirect_uris, webhook_url,
+        app_id, obo_endpoint_id, obo_endpoints, obo_metadata, obo_request_metadata, redirect_uri,
+        webhook_url,
     };
     use crate::features::applications::model::ApplicationOboEndpoint;
 
@@ -507,9 +426,8 @@ mod tests {
 
     #[test]
     fn redirect_matching_remains_exact() {
-        let values = vec!["https://client.example/callback".to_owned()];
-        assert!(redirect_uris(&values).is_ok());
-        assert!(redirect_uris(&["https://client.example/callback#fragment".to_owned()]).is_err());
+        assert!(redirect_uri("https://client.example/callback").is_ok());
+        assert!(redirect_uri("https://client.example/callback#fragment").is_err());
     }
 
     #[test]
@@ -520,16 +438,6 @@ mod tests {
         assert!(webhook_url("http://hooks.example/events").is_err());
     }
 
-    #[test]
-    fn pkce_is_s256_and_constant_time_compared() {
-        let verifier = "A".repeat(43);
-        let challenge = base64::Engine::encode(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-            sha2::Sha256::digest(verifier.as_bytes()),
-        );
-        assert!(pkce_matches(&verifier, &challenge));
-        assert!(!pkce_matches(&verifier, &"B".repeat(43)));
-    }
 
     #[test]
     fn obo_endpoints_accept_application_owned_identifiers_and_bounded_objects() {

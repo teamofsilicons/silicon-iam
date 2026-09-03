@@ -1522,7 +1522,6 @@ mod tests {
         let family_b = Uuid::from_u128(0x36_0a);
         let refresh_a = Uuid::from_u128(0x36_0b);
         let refresh_b = Uuid::from_u128(0x36_0c);
-        let redirect_b = Uuid::from_u128(0x36_0d);
         let request_b = Uuid::from_u128(0x36_0e);
         let code_b = Uuid::from_u128(0x36_0f);
         let endpoint_b = Uuid::from_u128(0x36_10);
@@ -1782,38 +1781,18 @@ mod tests {
         .await?;
         sqlx::query(
             r"
-            INSERT INTO iam.application_redirect_uris (
-                id, application_id, redirect_uri, uri_digest,
-                status, approved_at
-            ) VALUES (
-                $1, $2, 'https://logout-app-b.example/callback',
-                decode(repeat('c1', 32), 'hex'), 'active', transaction_timestamp()
-            )
-            ",
-        )
-        .bind(redirect_b)
-        .bind(app_b)
-        .execute(&pool)
-        .await?;
-        sqlx::query(
-            r"
             INSERT INTO iam.oauth_authorization_requests (
-                id, application_id, redirect_uri_id, authentication_session_id,
-                subject_principal_id, subject_kind, state_digest,
-                state_ciphertext, state_encryption_nonce, encryption_key_version,
-                pkce_code_challenge, status, expires_at, decided_at
+                id, application_id, redirect_uri, authentication_session_id,
+                subject_principal_id, subject_kind, status, expires_at, decided_at
             ) VALUES (
-                $1, $2, $3, $4, $5, 'carbon',
-                decode(repeat('c2', 32), 'hex'), decode(repeat('c3', 17), 'hex'),
-                decode(repeat('c4', 12), 'hex'), 1,
-                repeat('A', 43), 'approved',
+                $1, $2, 'https://logout-app-b.example/callback', $3, $4, 'carbon',
+                'approved',
                 transaction_timestamp() + interval '2 minutes', transaction_timestamp()
             )
             ",
         )
         .bind(request_b)
         .bind(app_b)
-        .bind(redirect_b)
         .bind(session_id)
         .bind(carbon_id)
         .execute(&pool)

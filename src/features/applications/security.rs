@@ -9,7 +9,6 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use secrecy::SecretString;
 use sqlx::{FromRow, Postgres, Transaction};
-use subtle::ConstantTimeEq as _;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -37,6 +36,9 @@ pub(super) struct Bearer(pub(super) AccessContext);
 pub(super) struct BrowserSession {
     pub(super) session_id: Uuid,
     pub(super) carbon_id: Uuid,
+    /// Retained so a future browser surface can bind a form to this session;
+    /// the short-lived-token login posts nothing, so nothing reads it today.
+    #[allow(dead_code)]
     pub(super) csrf_token: String,
 }
 
@@ -371,18 +373,6 @@ pub(super) fn require_carbon(access: &AccessContext) -> Result<Uuid, ApiError> {
         return Err(ApiError::forbidden("forbidden"));
     }
     Ok(access.subject.id)
-}
-
-pub(super) fn require_csrf(headers: &HeaderMap, session: &BrowserSession) -> Result<(), ApiError> {
-    let supplied = headers
-        .get("x-csrf-token")
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| ApiError::precondition_required("X-CSRF-Token"))?;
-    if bool::from(supplied.as_bytes().ct_eq(session.csrf_token.as_bytes())) {
-        Ok(())
-    } else {
-        Err(ApiError::forbidden("csrf_failed"))
-    }
 }
 
 pub(super) async fn require_step_up(
