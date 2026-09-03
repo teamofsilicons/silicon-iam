@@ -245,6 +245,29 @@ idle for `IAM_TESTING_IDLE_DAYS` are retired automatically, stay recoverable for
 
 `docs/API_DOCS.md` documents the lifecycle and authority model in full.
 
+## Client and CLI
+
+Two crates in this workspace consume the API rather than serve it, and are
+published separately.
+
+`crates/client` is `silicon-iam-client`: the primary interface, covering every
+caller action in the contract. Its wire types are generated from
+`docs/openapi.yaml` by `scripts/generate-client-models.rb`, and CI regenerates
+them and fails on a diff, so they cannot drift from the service. It is stateless
+by design -- no disk, no cache, no credential refresh behind the caller's back.
+
+`crates/cli` is `silicon-iam-cli`, installing the `siam` binary. It is a shell
+over the client and has no capability the client lacks; what it adds is the
+state the client refuses to hold: a profile, a service URL, and a session under
+`~/.silicon-iam/` that it renews when it is close to expiring.
+
+```sh
+cargo run -p silicon-iam-cli -- --url http://127.0.0.1:8080 login --email you@example.com
+cargo run -p silicon-iam-cli -- commands   # every command, at every depth
+```
+
+Each crate's README documents its own use.
+
 ## Quality gates
 
 Run the same core checks used by CI:
@@ -368,6 +391,8 @@ else is grouped by what it is.
 | `src/` | The library, the five binaries, and the HTML surfaces |
 | `migrations/` | Forward-only SQL migrations applied by `iam-migrate` |
 | `migrations/testing/` | The per-environment scoping overlay, applied only to a testing database |
+| `crates/client/` | `silicon-iam-client`, the Rust client for the API |
+| `crates/cli/` | `silicon-iam-cli`, the `siam` command-line client built on it |
 | `docs/` | The whole documentation surface: `openapi.yaml`, `API_DOCS.md`, and the `api/` and `client/` manuals embedded at compile time |
 | `deploy/` | Runtime database roles, reviewed grants, and cloud provisioning |
 | `scripts/` | The local bootstrap and the CI boundary checks |

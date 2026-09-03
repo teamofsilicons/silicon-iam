@@ -1192,7 +1192,11 @@ pub struct ApprovalRequest {
     /// The contract's `decisions`.
     pub decisions: Vec<ApprovalDecision>,
     /// The contract's `completed_at`.
-    #[serde(with = "time::serde::rfc3339::option", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub completed_at: Option<OffsetDateTime>,
     /// The contract's `version`.
     pub version: i64,
@@ -1551,7 +1555,11 @@ pub struct Invite {
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     /// The contract's `accepted_at`.
-    #[serde(with = "time::serde::rfc3339::option", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub accepted_at: Option<OffsetDateTime>,
 }
 
@@ -1659,7 +1667,11 @@ pub struct Membership {
     /// The contract's `authorization_epoch`.
     pub authorization_epoch: i64,
     /// The contract's `removed_at`.
-    #[serde(with = "time::serde::rfc3339::option", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub removed_at: Option<OffsetDateTime>,
     /// The contract's `version`.
     pub version: i64,
@@ -2063,7 +2075,11 @@ pub struct Session {
     #[serde(with = "time::serde::rfc3339")]
     pub absolute_expires_at: OffsetDateTime,
     /// The contract's `revoked_at`.
-    #[serde(with = "time::serde::rfc3339::option", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub revoked_at: Option<OffsetDateTime>,
 }
 

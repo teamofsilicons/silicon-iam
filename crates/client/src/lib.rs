@@ -213,7 +213,10 @@ mod tests {
 
     #[test]
     fn the_request_id_is_reachable_from_either_service_failure() {
-        assert_eq!(Error::Api(Box::new(api(409))).request_id(), Some("01a0-req"));
+        assert_eq!(
+            Error::Api(Box::new(api(409))).request_id(),
+            Some("01a0-req")
+        );
         let limited = Error::RateLimited {
             retry_after: std::time::Duration::from_secs(2),
             limit: Some(60),
