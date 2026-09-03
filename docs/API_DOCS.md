@@ -1381,6 +1381,79 @@ and verified-channel step-up state on every mutation. Admin endpoints never
 return provider credentials, encryption keys, secret digests, or raw one-time
 response envelopes.
 
+## Testing environments
+
+A testing environment is an organization-owned replica of Silicon IAM: the same
+routes, the same rules, the same schema, running against a separate testing
+database and starting with nothing in it -- no organizations, no applications,
+no Carbons, no Silicons. It is a change of database rather than a second
+implementation, so anything the product can do, an environment can do.
+
+Every route outside this section accepts the header:
+
+```
+X-Testing-Environment-Key: <32 alphanumeric characters>
+```
+
+Supplying it executes that request inside the named environment. Omitting it
+executes against production. The routes below manage environments themselves,
+always operate on production, and therefore never accept the header.
+
+Two properties follow from an environment being isolated rather than simulated.
+It delivers nothing -- no email, no SMS, no webhook -- because its contacts are
+invented and sending real messages to invented addresses is at best noise. Its
+verification steps therefore accept the fixed code `000000` wherever a
+delivered OTP would be expected: signup, login, step-up, and invitation
+acceptance.
+
+An environment shares its database with every other environment, and every row
+in it carries the environment that owns it. Isolation is enforced by row-level
+security rather than by application code, including for the internal functions
+that resolve handles, contacts and credentials, so two environments can hold
+the same Carbon handle or the same email address without seeing each other.
+
+| Method | Endpoint | Behavior |
+| --- | --- | --- |
+| GET | `/api/v1/organizations/{org_id}/testing-environments` | List; deleted are hidden unless `status=deleted` or `status=all` |
+| POST | `.../testing-environments` | Create, returning the key |
+| GET | `.../testing-environments/{environment_id}` | Read |
+| PATCH | `.../testing-environments/{environment_id}` | Rename or re-describe |
+| DELETE | `.../testing-environments/{environment_id}` | Retire, recoverable until `purge_after` |
+| GET | `.../testing-environments/{environment_id}/key` | Read the current key back |
+| POST | `.../testing-environments/{environment_id}/key-rotations` | Issue a new key, invalidating the old one |
+| POST | `.../testing-environments/{environment_id}/cleanings` | Erase all data, keep the environment |
+| POST | `.../testing-environments/{environment_id}/restorations` | Revive a retired environment |
+| GET | `/api/v1/testing-environment` | Describe the environment the presented key opens |
+| POST | `/api/v1/testing-environment/cleanings` | Erase all data, authorized by the key alone |
+
+Any active member may create an environment, Carbon or Silicon, and becomes its
+creator. The creator keeps administrative authority for as long as their
+membership is active, and every organization owner and admin holds the same
+authority over every environment regardless of who created it. Administrative
+authority covers reading and rotating the key, cleaning, retiring, restoring,
+and renaming.
+
+The key is the environment's root authority: anyone holding it can do anything
+inside that environment. It is returned on creation and on rotation, and stays
+retrievable afterwards from its own route, which is restricted to
+administrators and audited on every read. It is deliberately absent from the
+list and read projections so the calls an operator makes routinely carry no
+credential.
+
+Deletion is reversible. A retired environment keeps its record and its data
+until `purge_after`, and a restore before that deadline brings it back intact.
+Restoring can conflict: the name is released on deletion, so another
+environment may have taken it. After the deadline the worker erases the data
+and removes the record permanently.
+
+An environment with no activity for the configured window -- 30 days by default,
+measured from the last accepted request in it -- is retired automatically into
+exactly that same recoverable state.
+
+Testing environments are available only where the deployment configures a
+testing database. Without one, every route in this section answers `503`, and
+so does any request presenting the header.
+
 ## Reliability and revocation guarantees
 
 PostgreSQL is authoritative for identities, sessions, organizations,

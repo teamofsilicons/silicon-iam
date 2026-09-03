@@ -210,6 +210,41 @@ authentication sessions still referenced by durable history are reduced to
 non-secret FK skeletons rather than deleted; later sweeps remove eligible
 session skeletons once every reference has aged out.
 
+## Testing environments
+
+A testing environment is an organization-owned replica of this service: the
+same routes and the same schema, running against a separate testing database
+and starting empty. It is enabled by one setting, `IAM_TESTING_DATABASE_URL`.
+Leave it unset and the feature and its routes are simply absent; point it at
+`IAM_DATABASE_URL` and startup fails, because an environment aimed at
+production would hand every holder of a 32-character key authority over real
+identities.
+
+The testing database runs `migrations/` and then `migrations/testing/`, applied
+together by `iam-migrate` when `IAM_TESTING_MIGRATOR_DATABASE_URL` is set. The
+overlay is what makes one database safe to share: every tenant table gains a
+`testing_environment_id` defaulted from a transaction-local setting, and a
+restrictive row-security policy ANDs an environment predicate onto whatever
+policies that table already has. It forces row-level security, because this
+schema resolves handles, contacts and credentials through `SECURITY DEFINER`
+functions that would otherwise see every environment at once.
+
+Requests choose their plane with a header:
+
+```sh
+curl -H "X-Testing-Environment-Key: <32 alphanumeric characters>" \
+  https://backend.iam.teamofsilicons.com/api/v1/organizations
+```
+
+Environments deliver no email, SMS or webhook, and their verification steps
+accept the fixed code `000000`. The worker touches the testing database for one
+purpose only -- erasing an environment whose recovery window has closed -- which
+is what keeps an environment from ever reaching a real recipient. Environments
+idle for `IAM_TESTING_IDLE_DAYS` are retired automatically, stay recoverable for
+`IAM_TESTING_RECOVERY_DAYS`, and are then destroyed.
+
+`docs/API_DOCS.md` documents the lifecycle and authority model in full.
+
 ## Quality gates
 
 Run the same core checks used by CI:
@@ -332,6 +367,7 @@ else is grouped by what it is.
 | `README.md` | This orientation page |
 | `src/` | The library, the five binaries, and the HTML surfaces |
 | `migrations/` | Forward-only SQL migrations applied by `iam-migrate` |
+| `migrations/testing/` | The per-environment scoping overlay, applied only to a testing database |
 | `docs/` | The whole documentation surface: `openapi.yaml`, `API_DOCS.md`, and the `api/` and `client/` manuals embedded at compile time |
 | `deploy/` | Runtime database roles, reviewed grants, and cloud provisioning |
 | `scripts/` | The local bootstrap and the CI boundary checks |
