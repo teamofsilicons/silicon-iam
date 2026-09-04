@@ -11,9 +11,9 @@
     <tr><td>IAM bearer</td><td><code>Authorization: Bearer …</code></td>
       <td>Carbon or Silicon API access</td></tr>
     <tr><td>Browser session</td><td>secure <code>iam_session</code> cookie</td>
-      <td>Interactive OAuth consent and SSO navigation</td></tr>
+      <td>Interactive application login and SSO navigation</td></tr>
     <tr><td>Application</td><td>HTTP Basic, app ID and app secret</td>
-      <td>OAuth token operations, introspection, revocation, and OBO</td></tr>
+      <td>Token exchange, introspection, revocation, and OBO</td></tr>
     <tr><td>Platform admin</td><td>IAM bearer whose Carbon holds a current grant</td>
       <td><code>/api/v1/admin/*</code></td></tr>
     <tr><td>Step-up</td><td><code>X-Step-Up-Token</code>, <em>in addition to</em> a bearer</td>
@@ -32,9 +32,9 @@
   <tbody>
     <tr><td>Signup session</td><td>48 hours</td></tr>
     <tr><td>Email or phone OTP</td><td>10 minutes</td></tr>
-    <tr><td>IAM and OAuth access token</td><td>30 minutes</td></tr>
+    <tr><td>IAM and application access token</td><td>30 minutes</td></tr>
     <tr><td>Refresh-session family</td><td>900 days, absolute</td></tr>
-    <tr><td>OAuth authorization code</td><td>2 minutes, single use</td></tr>
+    <tr><td>Short-lived login token</td><td>2 minutes, single use</td></tr>
     <tr><td>Step-up token</td><td>5 minutes, bound to one action on one resource</td></tr>
     <tr><td>Carbon invitation</td><td>48 hours</td></tr>
     <tr><td>WorkOS setup link</td><td>5 minutes</td></tr>
@@ -164,11 +164,20 @@
 <p>
   A successful Carbon login also sets <code>iam_session</code>: host-only, <code>Secure</code>,
   <code>HttpOnly</code>, <code>SameSite=Lax</code>, and signed. It exists for the two flows that
-  are navigations rather than API calls — OAuth consent and SSO — and it is bound to the same
-  refresh family, so revoking the session revokes the cookie.
+  are navigations rather than API calls — application login and SSO — and it is bound to the
+  same refresh family, so revoking the session revokes the cookie.
 </p>
 
 <p>
-  Because it is <code>HttpOnly</code>, JavaScript cannot read the CSRF token bound into it. Any
-  page that posts a consent decision must have that token rendered into it server-side.
+  It is what lets <code>GET /api/v1/login</code> recognise somebody who is already signed in and
+  go straight to minting their short-lived token instead of asking them to log in again.
 </p>
+
+<div class="banner banner-info">
+  <div>
+    <strong>An application never sees a credential.</strong>
+    Signing in to an application never asks anyone for a password, a verification code, or any
+    other authentication secret on that application's behalf. The only thing an application
+    receives is a short-lived token.
+  </div>
+</div>

@@ -571,6 +571,18 @@ pub(super) async fn transfer_ownership(
     .execute(&mut *scope.transaction)
     .await
     .map_err(support::database)?;
+    // The outgoing owner keeps a seat as an administrator, and the revocation
+    // above just took everything they held -- including the rights the owner
+    // role granted implicitly. Without this they would be an administrator who
+    // can do nothing, which is not what the role means.
+    super::directory::grant_default_administrator_capabilities(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        scope.access.membership_id,
+        input.new_owner_membership_id,
+        "ownership transferred",
+    )
+    .await?;
 
     let membership_after = super::directory::fetch_members(
         &mut scope.transaction,

@@ -32,7 +32,7 @@ the JSON contract and are not described in `openapi.yaml`:
 belong in a feature router and in `openapi.yaml`, as they always have.
 
 Applications integrating in Rust should use the official SDK rather than this
-document. It implements the version handshake, PKCE, proof signing, signature
+document. It implements the version handshake, proof signing, signature
 verification and the retry policy, and fails closed where this contract expects
 a client to. See `/docs/client/`.
 
@@ -71,7 +71,7 @@ Cross-tenant resources return `404 not_found` rather than disclose existence.
 | --- | --- | --- |
 | Public | no credential | Signup, login initiation/verification, availability, and callbacks |
 | IAM bearer | `Authorization: Bearer …` | Carbon or Silicon API access |
-| Browser session | secure `iam_session` cookie | Interactive OAuth consent and SSO navigation |
+| Browser session | secure `iam_session` cookie | Interactive application login and SSO navigation |
 | Application | HTTP Basic, app ID and app secret | OAuth token operations, introspection, and same-organization OBO |
 | Platform admin | IAM bearer whose Carbon is a current platform admin | `/api/v1/admin/*` |
 | Step-up | `X-Step-Up-Token` in addition to bearer | Ownership, credentials, SSO, deletion, and privileged grants |
@@ -105,7 +105,7 @@ excluded from logs, traces, metrics, error details, audit diffs, and webhooks.
 | Email/phone OTP | 10 minutes; after 10 failed attempts, a reusable challenge cools down for 1 minute before a fresh 10-attempt window |
 | IAM/OAuth access token | 30 minutes |
 | Carbon/Silicon/OAuth refresh-session family | 900 days absolute |
-| OAuth authorization code | 2 minutes, single use |
+| Short-lived login token | 2 minutes, single use |
 | Step-up token | 5 minutes, action/resource bound |
 | Carbon invitation | 48 hours |
 | WorkOS setup link | 5 minutes (`expires_in: 300`) |
@@ -186,9 +186,10 @@ All JSON API errors use:
 }
 ```
 
-OAuth redirect errors are returned to the exact registered redirect URI using
-OAuth protocol query fields and the unchanged `state`; JSON errors before a
-redirect URI is trusted use the envelope above.
+A login that fails before a short-lived token is minted answers with the JSON
+envelope above rather than redirecting: there is nothing to deliver, and the
+redirect URI came from the caller rather than from a registration, so it is not
+a trusted place to report an error to.
 
 The HTML surfaces answer with HTML rather than this envelope. They are merged
 outside the JSON router's error normalisation, so an unknown documentation
@@ -423,80 +424,79 @@ safe `UTC` default until the Carbon chooses another identifier.
 
 ## OAuth 2.0
 
-Silicon IAM implements only confidential-client Authorization Code with
-PKCE-S256 and rotating refresh tokens. It does not implement implicit, password,
-device, or client-credentials grants for end-user login.
+Silicon IAM implements one login for applications: a short-lived token that the
+application exchanges, using its own credential, for a session. There is no
+authorization-code negotiation, no PKCE exchange, no `state` round-trip and no
+consent screen.
 
-### Authorization sequence
+**An application never receives anyone's credentials.** Nothing in this flow
+hands an application a password, a verification code, or any other
+authentication secret. The only thing it receives is the short-lived token.
+
+### Login sequence
 
 ```text
-Browser -> GET /api/v1/oauth/authorize
-  response_type=code
-  client_id, redirect_uri, scope, state
-  code_challenge, code_challenge_method=S256
+Browser -> GET <auth_base_url>/login
+  app_id            names the application; without it this is an ordinary
+                    Silicon IAM login and no token is minted
+  redirect_uri      optional; decides delivery only
   optional org_id
 
-IAM -> consent when required
-Browser -> POST /api/v1/oauth/authorize/decisions
-IAM -> exact registered redirect_uri?code=...&state=...
+IAM -> redirect_uri?slt=...        when a redirect URI was given
+IAM -> a page showing the token    when one was not
 
-Application backend -> POST /api/v1/oauth/token
+Application backend -> POST /api/v1/app-auth/tokens
   HTTP Basic app credentials
-  authorization_code + redirect_uri + code_verifier
+  app_id + slt
 IAM -> opaque access token + rotating refresh token
 ```
 
-Browser navigation uses the secure HttpOnly `iam_session` cookie. The
-authorization endpoint never expects a bearer header on a top-level navigation.
-The redirect URI must match a reviewed registration byte-for-byte, including
-path and query; fragments and wildcards are not accepted. `state` is returned
-unchanged. Authorization codes are keyed-digest stored, two-minute, single-use,
-and bound to client, redirect,
-actor, organization, scopes, and PKCE challenge.
+Browser navigation uses the secure HttpOnly `iam_session` cookie, which is how
+IAM recognises somebody already signed in and goes straight to minting. The
+login endpoint never expects a bearer header on a top-level navigation.
 
-Before consuming a code, the exchange locks and revalidates current authority:
+Redirect URIs are not registered. The caller names one in the query string and
+IAM appends `slt` to it. Short-lived tokens are keyed-digest stored, two-minute,
+single-use, and bound to client, actor, organization and parent session.
+
+Before consuming a token, the exchange locks and revalidates current authority:
 the client application must still be verified on its current authentication
 epoch; the subject principal must be active; the exact parent session must be
 active, unexpired, subject-bound, and on the principal's current authentication
 epoch; any organization membership must still be active and match the original
 tenant and subject; and the exact consent grant must remain active and bound to
-that session and context. The immutable requested scope set must still exactly
-equal its intersection with the consent grant and the application's currently
-approved scopes. A failed revalidation returns the uniform `invalid_grant`
-response without consuming the code.
+that session and context. A failed revalidation returns the uniform
+`invalid_grant` response without consuming the token.
 
-Every successful authorization-code exchange returns one rotating `ort_`
-refresh token. Refresh issuance is not conditional on requesting
-`offline_access`; each family is bound to the exact consent grant and its
-original scope ceiling. Rotation can only retain the intersection of that
-ceiling, the still-active consent scopes, and the application's still-approved
-scopes. Reuse of any consumed family member compromises the whole family,
-revokes every member, and immediately revokes access tokens for that parent
-session and client application without revoking the session or another
-application's tokens.
+The consent grant is no longer a prompt. It is written implicitly by the login
+and remains the record of which applications a principal is authorized in,
+which is what decides webhook recipients.
 
-Requested scopes must be a subset of the platform-approved scopes. Consent is
-recorded per actor, app, organization, and scope set. The backend-only
-`notify_users=false` setting may suppress repeat consent UI but does not expand
-approved scopes or bypass organization checks.
+Every successful exchange returns one rotating `ort_` refresh token. Reuse of
+any consumed family member compromises the whole family, revokes every member,
+and immediately revokes access tokens for that parent session and client
+application without revoking the session or another application's tokens.
+
+A login carries the whole scope catalogue. `scope` on an application is the
+webhook's scope — which changes it is told about — and does not bound what a
+session may read.
 
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
-| GET | `/api/v1/oauth/authorize` | Validate request and show consent or redirect with code |
-| POST | `/api/v1/oauth/authorize/decisions` | CSRF-protected consent decision |
+| GET | `/api/v1/login` | Mint a short-lived token; redirect with it or show it |
+| GET | `/api/v1/login/status` | Report whether a shown token was spent or expired |
+| POST | `/api/v1/app-auth/short-lived-tokens` | Mint one for a caller already signed in |
+| POST | `/api/v1/app-auth/tokens` | Exchange a short-lived token or rotate a refresh token |
 
-The decision endpoint accepts two equivalent encodings. JSON callers send
-`X-CSRF-Token` and `Idempotency-Key` as headers. The IAM-rendered consent
-screen submits `application/x-www-form-urlencoded` and carries the same two
-values as the `csrf_token` and `idempotency_key` fields, because a browser form
-cannot set request headers and only a top-level form navigation lets the user
-agent follow the `302` into a working application session. Both encodings are
-validated by the same code and produce the same idempotency digest.
+`POST /api/v1/app-auth/short-lived-tokens` is how a Silicon signs in to an
+application: it has no browser to be redirected in. A Carbon that already holds
+a session uses the same route rather than starting another login.
 
-The consent page's Content-Security-Policy is `default-src 'none'` widened only
-to `style-src 'self'`, `img-src 'self' data:`, `font-src` for the webfont, and
-`form-action 'self'`. It has no `script-src` at all.
-| POST | `/api/v1/oauth/token` | Exchange code or rotate OAuth refresh token |
+The token page's Content-Security-Policy is `default-src 'none'` widened only
+to `style-src 'self'`, `img-src 'self' data:` and `font-src` for the webfont. It
+has no `script-src` at all, which is why the page reports expiry with a meta
+refresh onto `/api/v1/login/status` rather than a timer.
+
 | POST | `/api/v1/oauth/introspect` | Authenticated current-state introspection |
 | POST | `/api/v1/oauth/revoke` | Idempotent token/family revocation |
 
@@ -947,32 +947,26 @@ authenticate after it commits.
 | GET/POST | `/api/v1/applications` | List apps in organizations the Carbon owns/administers, or submit registration |
 | GET/PATCH | `/api/v1/applications/{app_id}` | Read/update |
 | POST | `.../client-secret-rotations` | Rotate and reveal a new client secret once |
-| GET/POST | `.../redirect-uris` | List complete URI history or add a new current URI |
-| DELETE | `.../redirect-uris/{redirect_uri_id}` | Explicitly retire one URI |
 | GET/PUT | `.../webhook` | Inspect active endpoint or propose replacement |
 | GET | `.../webhook/dead-letters` | List dead-letter deliveries |
 | POST | `.../webhook/dead-letters/replays` | Replay one or an ordered batch of dead letters |
 | GET | `.../login-history` | App-specific authorization/login history |
 
-Registration requires an immutable app ID and `org_id`, exactly one redirect
-URI, one HTTPS webhook URL, requested scopes, and may include the Application's
-callable OBO endpoint registry. IAM rechecks current organization owner/admin
-authority before claiming or replaying the request. It returns an
-`under_review` Application plus one-time Application and webhook signing
-secrets. Application representations expose `org_id` and the Carbon
-`created_by`; they never model that Carbon as the owner. The Application cannot
-authorize users, introspect tokens, or issue OBO proofs until verified.
-`notify_users` defaults to `true`.
+Registration requires an immutable app ID and `org_id`, one HTTPS webhook URL,
+and may include the Application's callable OBO endpoint registry. IAM rechecks
+current organization owner/admin authority before claiming or replaying the
+request. It returns a `verified` Application plus one-time Application and
+webhook signing secrets. Application representations expose `org_id` and the
+Carbon `created_by`; they never model that Carbon as the owner. There is no
+review to wait behind: an Application can sign users in, introspect tokens and
+issue OBO proofs from the moment it exists.
 
-Requested scopes and approved scopes are separate. Scope changes remain
-pending and do not replace the active reviewed configuration until a platform
-administrator approves them. Adding a redirect URI immediately retires every
-previous current URI, retains those rows as versioned history, and creates the
-new URI as `pending_review`; no retired URI remains usable while review is
-pending. A current organization owner/admin can inspect the paginated history,
-including each URI's status and lifecycle timestamps, and explicitly retire a
-URI. Explicit retirement is idempotent, versioned, and audited. An Application
-webhook replacement also
+There are no redirect URIs to register. A login names the one it wants in the
+query string, and IAM appends the short-lived token to it.
+
+An Application holds the whole scope catalogue: a login carries all of it, so
+there is nothing to request and nothing to approve. An Application webhook
+replacement
 keeps the previous endpoint active until review; v1 exposes exactly one active
 destination. During initial registration there is truthfully no active
 destination: `active_url` is `null`, `pending_url` contains the submitted URL,
@@ -982,8 +976,6 @@ The webhook representation's `version` is the application aggregate version,
 not an endpoint-row version; it is identical to the response `ETag` and is the
 value required by `If-Match`. Replacement reuses the application's existing
 encrypted webhook signing secret and does not return secret material.
-`notify_users` is absent from every organization-management response and
-mutation and is configurable only by platform administrators.
 
 Initial application and webhook secrets are versioned credentials. Permanent
 deletion is available only through the backend-admin decision workflow. It
@@ -1003,12 +995,12 @@ the secret never appears in ordinary reads, audit diffs, or webhooks.
 `GET /api/v1/admin/applications` lists the inventory and pending review queue.
 `POST /api/v1/admin/applications/{app_id}/decisions` supports:
 
-- approve or reject initial registration
 - suspend or reactivate
-- approve or reject pending scopes, redirect URIs, or webhook replacement
-- set the approved scope list
-- set backend-only `notify_users`
+- approve or reject a pending webhook replacement
 - permanently soft-delete an application and revoke all application authority
+
+Applications arrive verified, so there is no initial registration to admit.
+What remains is control over one that is already in use.
 
 Review requires a current platform administrator, step-up, idempotency key, and
 ETag. Suspension immediately revokes active application authority. Every

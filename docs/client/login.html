@@ -1,0 +1,107 @@
+<p class="lede">
+  A login produces one short-lived token. The application sends somebody to IAM, gets that token
+  back, and trades it — together with its own secret — for a session. There is no verifier to
+  carry, no state to round-trip, and no consent screen to wait on.
+</p>
+
+<div class="banner banner-info">
+  <div>
+    <strong>You never receive anyone's credentials.</strong>
+    Nothing in this flow hands your application a password, a verification code, or any other
+    authentication secret. The only thing you ever receive is the short-lived token.
+  </div>
+</div>
+
+<h2>Step one — send them to IAM</h2>
+
+<pre><code>let login = format!(
+    "{auth_base_url}/login?app_id={app_id}&amp;redirect_uri={callback}",
+);
+// Redirect the user agent to `login`.</code></pre>
+
+<p>
+  Naming <code>app_id</code> is what makes this a login on your behalf; without one it is an
+  ordinary Silicon IAM login and no token is minted. <code>redirect_uri</code> is optional and
+  decides delivery only — give one and the token comes back on it, omit it and IAM shows the
+  token to the person instead. <code>org_id</code> narrows the session to one organization.
+</p>
+
+<p>
+  The URI does not have to be registered anywhere, so an application may send people to different
+  callbacks on different days without changing its configuration.
+</p>
+
+<h2>Step two — take the token off the callback</h2>
+
+<p>
+  The user agent arrives at your callback with <code>?slt=…</code>. That string is the whole
+  hand-off. It lives two minutes and is good for exactly one exchange.
+</p>
+
+<h2>Step three — exchange it</h2>
+
+<pre><code>use silicon_iam_client::{Client, Credential, Mutation, models};
+
+let application = Client::new(base_url)?
+    .with_credential(Credential::application(app_id, app_secret));
+
+let tokens = application
+    .oauth()
+    .token(
+        &amp;models::ApplicationTokenRequest {
+            app_id: app_id.to_owned(),
+            slt: Some(slt),
+            refresh_token: None,
+        },
+        &amp;Mutation::new(),
+    )
+    .await?;</code></pre>
+
+<p>
+  You get an access token good for 30 minutes and a refresh token that rotates on every use.
+  Renewing is the same call with the other field set:
+</p>
+
+<pre><code>let renewed = application
+    .oauth()
+    .token(
+        &amp;models::ApplicationTokenRequest {
+            app_id: app_id.to_owned(),
+            slt: None,
+            refresh_token: Some(previous.refresh_token),
+        },
+        &amp;Mutation::new(),
+    )
+    .await?;</code></pre>
+
+<p>
+  Present exactly one of <code>slt</code> and <code>refresh_token</code>. Both, or neither, is a
+  bad request rather than a guess.
+</p>
+
+<h2>When there is nobody to redirect</h2>
+
+<p>
+  A Silicon has no browser, and a Carbon that already holds a session should not have to start
+  another one. Either can ask for the token directly on the session it already has:
+</p>
+
+<pre><code>let issued = signed_in
+    .auth()
+    .short_lived_token("your-app", &amp;Mutation::new())
+    .await?;
+
+println!("{} expires in {}s", issued.slt, issued.expires_in);</code></pre>
+
+<p>
+  Your server then completes it at the same exchange as any other token. This is the only way a
+  Silicon can sign in to an application.
+</p>
+
+<h2>Scope</h2>
+
+<p>
+  There is none to request. A login carries the whole catalogue. An application's
+  <code>scope</code> is the <em>webhook's</em> scope — which changes you are told about — and has
+  nothing to do with what a session may read.
+</p>

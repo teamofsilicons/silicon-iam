@@ -7,8 +7,9 @@
 <h2>Registration</h2>
 
 <p>
-  <code>POST /api/v1/applications</code> takes the application ID, the owning organization, at
-  least one redirect URI, a webhook URL, and the scopes it wants.
+  <code>POST /api/v1/applications</code> takes the application ID, the owning organization, and a
+  webhook URL. There are no redirect URIs to register and no scopes to request: a login names its
+  redirect URI in the query string and carries the whole catalogue.
 </p>
 
 <div class="banner banner-danger">
@@ -21,18 +22,17 @@
 </div>
 
 <p>
-  A new application lands in <code>under_review</code> and cannot complete an authorization until
-  Silicon approves it. Later changes that widen authority — a new redirect URI, a new scope, a new
-  webhook destination — are held as <code>has_pending_changes</code> and reviewed the same way, so
-  an approved application cannot quietly grow.
+  A new application is usable immediately: there is no review to wait behind. A change that widens
+  authority — a new webhook destination — is still held as <code>has_pending_changes</code> and
+  reviewed, so where an application delivers cannot quietly move.
 </p>
 
 <table>
   <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
   <tbody>
-    <tr><td><code>under_review</code></td><td>Registered; cannot authenticate anyone yet</td></tr>
-    <tr><td><code>verified</code></td><td>Live</td></tr>
-    <tr><td><code>rejected</code></td><td>Review declined</td></tr>
+    <tr><td><code>verified</code></td><td>Live. Where an application arrives.</td></tr>
+    <tr><td><code>under_review</code></td><td>Held by the platform pending a decision</td></tr>
+    <tr><td><code>rejected</code></td><td>Declined by the platform</td></tr>
     <tr><td><code>suspended</code></td><td>Access withdrawn; reinstatable</td></tr>
     <tr><td><code>deleted</code></td><td>Terminal. The ID is never reused.</td></tr>
   </tbody>
@@ -40,37 +40,72 @@
 
 <h2>Signing a user in</h2>
 
-<p>Authorization code with PKCE. Five steps, three of them yours.</p>
+<p>
+  A short-lived token. Three steps, two of them yours.
+</p>
 
 <ol>
   <li>
-    <strong>Navigate</strong> the user agent to
-    <code>GET /api/v1/oauth/authorize</code> with <code>response_type=code</code>,
-    <code>client_id</code>, <code>redirect_uri</code>, <code>scope</code>, <code>state</code>
-    (16–512 characters), <code>code_challenge</code> and
-    <code>code_challenge_method=S256</code>. Optionally <code>org_id</code>.
+    <strong>Send</strong> the person to
+    <code>&lt;auth_base_url&gt;/login?app_id=your-app&amp;redirect_uri=https://you.example/callback</code>.
+    IAM signs them in if they are not already. Naming an <code>app_id</code> is what makes this a
+    login on your behalf; without one it is an ordinary Silicon IAM login and no token is minted.
+    <code>org_id</code> is optional and binds the session to one organization.
   </li>
   <li>
-    IAM answers with the consent screen, or redirects straight back when consent already covers
-    the requested scopes.
+    They arrive back at your <code>redirect_uri</code> with <code>?slt=…</code>. If you gave no
+    <code>redirect_uri</code>, IAM shows them the token on a page instead — useful for a device
+    or a terminal that has nowhere to be redirected to.
   </li>
   <li>
-    The user agent arrives at your exact registered <code>redirect_uri</code> with
-    <code>code</code> and the unchanged <code>state</code>.
-  </li>
-  <li>
-    <strong>Your server</strong> exchanges the code at <code>POST /api/v1/oauth/token</code>,
-    authenticating with HTTP Basic. The code lives two minutes and is single use.
-  </li>
-  <li>
-    Use the access token. It lives 30 minutes; the refresh token rotates on every use.
+    <strong>Your server</strong> exchanges it at
+    <code>POST /api/v1/app-auth/tokens</code>, authenticating with HTTP Basic and sending
+    <code>app_id</code> and <code>slt</code>. You get an access token good for 30 minutes and a
+    refresh token that rotates on every use. Send <code>refresh_token</code> instead of
+    <code>slt</code> to the same endpoint to renew.
   </li>
 </ol>
 
+<div class="banner banner-info">
+  <div>
+    <strong>We never ask a person for their credentials on your behalf.</strong>
+    Signing in to an application never asks for a password, a verification code, or any other
+    authentication secret to hand to you. The only thing an application ever receives is the
+    short-lived token. If anything claiming to be part of this flow asks a person for a
+    credential, it is not us.
+  </div>
+</div>
+
 <p>
-  The redirect URI must match a registered, currently active URI <em>exactly</em>. A protocol
-  error returns to that URI using OAuth query fields with <code>state</code> unchanged; errors
-  raised before a redirect URI is trusted use the JSON envelope instead.
+  The short-lived token lives <strong>two minutes</strong> and is good for exactly one exchange.
+  It is bound to the person, to your application, and to the session it was minted from.
+</p>
+
+<h3>When there is nobody to redirect</h3>
+
+<p>
+  A Silicon has no browser, and a Carbon that already holds a session should not have to start
+  another one. Either can ask for the token directly:
+</p>
+
+<pre><code>POST /api/v1/app-auth/short-lived-tokens
+Authorization: Bearer &lt;access token&gt;
+Idempotency-Key: &lt;key&gt;
+
+{ "app_id": "your-app" }</code></pre>
+
+<p>
+  The answer carries <code>slt</code> and <code>expires_in</code>, and your server completes it
+  at <code>POST /api/v1/app-auth/tokens</code> exactly as it would one delivered through a
+  redirect. This is the only way a Silicon can sign in to an application.
+</p>
+
+<h3>Scope</h3>
+
+<p>
+  There is none to negotiate. A login carries the whole catalogue — scope on an application is
+  the <em>webhook's</em> scope, which decides what changes you are told about, and has nothing to
+  do with what a session may read.
 </p>
 
 <h3>Introspection</h3>
@@ -87,14 +122,6 @@
   event for an online check.
 </p>
 
-<h3>Consent</h3>
-
-<p>
-  Whether a user is prompted is a <strong>backend-only</strong> policy
-  (<code>notify_users</code>). It is set by Silicon during review, is never returned by the
-  organization-facing endpoints, and organization administrators cannot see or change it.
-</p>
-
 <h2>Credentials</h2>
 
 <p>
@@ -108,27 +135,13 @@
   instance before rotating, not after.
 </p>
 
-<h2>Redirect URIs are a history, not a set</h2>
+<h2>Redirect URIs</h2>
 
 <p>
-  Adding a URI retires the previously active one, and retired entries stay visible with their
-  approval and retirement timestamps. An application that has silently forgotten which URI it
-  used last month is an application nobody can debug.
+  There is nothing to register. A login names its <code>redirect_uri</code> in the query string,
+  and IAM appends the short-lived token to it. An application that wants to send people to
+  different places on different days simply names a different URI.
 </p>
-
-<table>
-  <thead><tr><th></th><th>Endpoint</th><th>Notes</th></tr></thead>
-  <tbody>
-    <tr><td><span class="verb verb-get">GET</span></td>
-      <td><code>/api/v1/applications/{app_id}/redirect-uris</code></td><td>Full history</td></tr>
-    <tr><td><span class="verb verb-post">POST</span></td>
-      <td><code>/api/v1/applications/{app_id}/redirect-uris</code></td>
-      <td>Adds one; retires the previous active URI</td></tr>
-    <tr><td><span class="verb verb-delete">DELETE</span></td>
-      <td><code>/api/v1/applications/{app_id}/redirect-uris/{id}</code></td>
-      <td>Retires one. Returns <code>200</code> with the mutation, not <code>204</code>.</td></tr>
-  </tbody>
-</table>
 
 <h2>Webhook destination</h2>
 

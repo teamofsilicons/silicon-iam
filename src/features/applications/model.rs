@@ -30,12 +30,6 @@ pub(super) struct AppPath {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub(super) struct AppRedirectPath {
-    pub(super) app_id: String,
-    pub(super) redirect_uri_id: Uuid,
-}
-
-#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ApplicationCreate {
     pub(super) app_id: String,
@@ -43,9 +37,7 @@ pub(super) struct ApplicationCreate {
     pub(super) app_name: Option<String>,
     #[serde(rename = "app_logo")]
     pub(super) app_logo_uri: Option<String>,
-    pub(super) redirect_uris: Vec<String>,
     pub(super) webhook_url: String,
-    pub(super) requested_scopes: Vec<String>,
     #[serde(default)]
     pub(super) obo_endpoints: Vec<ApplicationOboEndpoint>,
 }
@@ -58,39 +50,7 @@ pub(super) struct ApplicationPatch {
     #[serde(rename = "app_logo")]
     #[allow(clippy::option_option)]
     pub(super) app_logo_uri: Option<Option<String>>,
-    pub(super) redirect_uris: Option<Vec<String>>,
-    pub(super) requested_scopes: Option<Vec<String>>,
     pub(super) obo_endpoints: Option<Vec<ApplicationOboEndpoint>>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct RedirectUriCreate {
-    pub(super) redirect_uri: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]
-pub(super) struct RedirectUriView {
-    pub(super) id: Uuid,
-    pub(super) redirect_uri: String,
-    pub(super) status: String,
-    pub(super) version: i64,
-    pub(super) created_at: OffsetDateTime,
-    pub(super) approved_at: Option<OffsetDateTime>,
-    pub(super) retired_at: Option<OffsetDateTime>,
-    pub(super) updated_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(super) struct RedirectUriPage {
-    pub(super) items: Vec<RedirectUriView>,
-    pub(super) page: PageInfo,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub(super) struct RedirectUriMutation {
-    pub(super) redirect_uri: RedirectUriView,
-    pub(super) application_version: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -116,13 +76,17 @@ pub(super) struct WebhookReplace {
     pub(super) url: String,
 }
 
+/// A platform decision about a live application.
+///
+/// Verification is no longer a gate an application waits behind -- one arrives
+/// verified -- so this is what remains: suspending, rejecting or restoring one
+/// that is already in use. There is no consent policy to set any more.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ApplicationAdminDecision {
     pub(super) decision: String,
     pub(super) reason: Option<String>,
     pub(super) approved_scopes: Option<Vec<String>>,
-    pub(super) notify_users: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]
@@ -148,13 +112,10 @@ pub(super) struct ApplicationDetail {
     pub(super) created_by: PublicActor,
     pub(super) app_name: Option<String>,
     pub(super) app_logo: Option<String>,
-    pub(super) redirect_uris: Vec<String>,
     pub(super) requested_scopes: Vec<String>,
     pub(super) approved_scopes: Vec<String>,
     pub(super) obo_endpoints: Vec<ApplicationOboEndpoint>,
     pub(super) status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) notify_users: Option<bool>,
     pub(super) webhook: WebhookView,
     pub(super) has_pending_changes: bool,
     pub(super) version: i64,
@@ -265,43 +226,54 @@ pub(super) struct LoginEventPage {
     pub(super) page: PageInfo,
 }
 
+/// The query a login arrives with.
+///
+/// `app_id` is what separates the two cases: named, this is a configured
+/// application asking IAM to authenticate someone on its behalf; absent, it is
+/// an ordinary Silicon IAM login and there is no token to hand anybody.
+/// `redirect_uri` decides only how the token is delivered -- appended to that
+/// URI, or shown on a page when there is nowhere to send it.
 #[derive(Clone, Debug, Deserialize)]
-pub(super) struct AuthorizeQuery {
-    pub(super) response_type: String,
-    pub(super) client_id: String,
-    pub(super) redirect_uri: String,
-    pub(super) scope: String,
-    pub(super) state: String,
-    pub(super) code_challenge: String,
-    pub(super) code_challenge_method: String,
+pub(super) struct LoginQuery {
+    #[serde(default)]
+    pub(super) app_id: Option<String>,
+    #[serde(default)]
+    pub(super) redirect_uri: Option<String>,
+    #[serde(default)]
     pub(super) org_id: Option<String>,
 }
 
+/// What a signed-in caller asks a short-lived token for.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ConsentDecision {
-    #[serde(rename = "authorization_transaction_id")]
-    pub(super) authorization_request_id: Uuid,
-    pub(super) decision: String,
-    /// Present only on the form-encoded path.
-    ///
-    /// A browser form cannot set `X-CSRF-Token` or `Idempotency-Key`, so the
-    /// consent page renders both into hidden fields and the handler lifts them
-    /// into a synthetic header map. The header path is unchanged, and both
-    /// paths are validated by exactly the same code.
-    #[serde(default)]
-    pub(super) csrf_token: Option<String>,
-    #[serde(default)]
-    pub(super) idempotency_key: Option<String>,
+pub(super) struct ShortLivedTokenRequest {
+    pub(super) app_id: String,
 }
 
+/// A short-lived token handed to a caller who is already signed in.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct ShortLivedTokenResponse {
+    pub(super) slt: String,
+    pub(super) expires_in: i64,
+}
+
+/// Which login a token page is reporting on.
 #[derive(Clone, Debug, Deserialize)]
-pub(super) struct TokenForm {
-    pub(super) grant_type: String,
-    pub(super) client_id: Option<String>,
-    pub(super) code: Option<String>,
-    pub(super) redirect_uri: Option<String>,
-    pub(super) code_verifier: Option<String>,
+pub(super) struct LoginStatusQuery {
+    pub(super) request: Uuid,
+}
+
+/// What an application presents to trade a credential for tokens.
+///
+/// Exactly one of `slt` and `refresh_token` is expected: the first completes a
+/// login, the second renews one. The application authenticates itself the same
+/// way in both cases, so there is no grant type left to name.
+#[derive(Clone, Debug, Deserialize)]
+pub(super) struct AppTokenForm {
+    pub(super) app_id: Option<String>,
+    #[serde(default)]
+    pub(super) slt: Option<String>,
+    #[serde(default)]
     pub(super) refresh_token: Option<String>,
 }
 
@@ -425,34 +397,6 @@ mod tests {
         }
     }
 
-    fn application_detail(notify_users: Option<bool>) -> ApplicationDetail {
-        ApplicationDetail {
-            id: Uuid::nil(),
-            app_id: "example-app".to_owned(),
-            org_id: "example-org".to_owned(),
-            created_by: actor(),
-            app_name: Some("Example".to_owned()),
-            app_logo: None,
-            redirect_uris: vec!["https://example.test/callback".to_owned()],
-            requested_scopes: vec!["organizations.read".to_owned()],
-            approved_scopes: Vec::new(),
-            obo_endpoints: Vec::new(),
-            status: "under_review".to_owned(),
-            notify_users,
-            webhook: WebhookView {
-                active_url: None,
-                pending_url: Some("https://example.test/hook".to_owned()),
-                status: "pending_review".to_owned(),
-                secret_version: 1,
-                version: 1,
-            },
-            has_pending_changes: true,
-            version: 1,
-            created_at: datetime!(2026-01-01 0:00 UTC),
-            updated_at: datetime!(2026-01-01 0:00 UTC),
-        }
-    }
-
     fn assert_required(value: Value, keys: &[&str]) {
         let Value::Object(object) = value else {
             panic!("contract projection must serialize as an object");
@@ -548,14 +492,5 @@ mod tests {
             ],
         );
         assert_nested_required(&value, "actor", &["principal_id", "type", "public_id"]);
-    }
-
-    #[test]
-    fn organization_application_projection_omits_backend_consent_policy() {
-        let owner = serde_json::to_value(application_detail(None)).unwrap_or(Value::Null);
-        assert!(owner.get("notify_users").is_none());
-
-        let admin = serde_json::to_value(application_detail(Some(false))).unwrap_or(Value::Null);
-        assert_eq!(admin.get("notify_users"), Some(&Value::Bool(false)));
     }
 }

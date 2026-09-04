@@ -1,8 +1,7 @@
 <p class="lede">
   <a href="https://crates.io/crates/silicon-iam" rel="external noreferrer"><code>silicon-iam</code></a>
   is the official Rust client for integrating an Application with Silicon IAM. It keeps wire paths,
-  authentication headers, PKCE material, signatures, response validation and retry policy inside
-  the crate, and exposes only the inputs an Application actually owns.
+  authentication headers, signatures, response validation and retry policy inside the crate, and exposes only the inputs an Application actually owns.
 </p>
 
 <h2>What it covers</h2>
@@ -16,9 +15,9 @@
         API major.</td>
     </tr>
     <tr>
-      <td><strong>OAuth</strong></td>
-      <td>Authorization Code with PKCE, an encrypted redirect continuation, token refresh,
-        introspection, revocation, and Application-triggered global logout.</td>
+      <td><strong>Login</strong></td>
+      <td>The short-lived-token exchange, token refresh, introspection, revocation, and
+        Application-triggered global logout.</td>
     </tr>
     <tr>
       <td><strong>Delegation</strong></td>
@@ -58,8 +57,7 @@
 </p>
 
 <p>
-  A PKCE verifier generated with the wrong entropy still completes a login. A signature computed
-  over re-serialised JSON still produces a hex string. A refresh retried after an ambiguous
+  A signature computed over re-serialised JSON still produces a hex string. A refresh retried after an ambiguous
   response still returns a token — right up until it revokes the user's entire 900-day family.
   These are the failures that pass a smoke test and surface weeks later, so the SDK does not offer
   the option of getting them wrong.
@@ -86,7 +84,7 @@
 <p>
   <a href="/docs/client/connecting">Connecting</a> covers installation and the handshake. After
   that the sections match the order an integration is actually built:
-  <a href="/docs/client/oauth">sign users in</a>,
+  <a href="/docs/client/login">sign users in</a>,
   <a href="/docs/client/tokens">manage their tokens</a>,
   <a href="/docs/client/obo">delegate between applications</a>, and
   <a href="/docs/client/webhooks">receive directory events</a>.

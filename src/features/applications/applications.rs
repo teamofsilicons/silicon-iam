@@ -33,10 +33,9 @@ use super::{
     events::{self, Mutation},
     idempotency::{self, Claim},
     model::{
-        AppPath, AppRedirectPath, ApplicationAdminDecision, ApplicationCreate, ApplicationCreated,
+        AppPath, ApplicationAdminDecision, ApplicationCreate, ApplicationCreated,
         ApplicationDetail, ApplicationOboEndpoint, ApplicationPage, ApplicationPatch,
         ApplicationSecretRotated, ApplicationView, PageInfo, PageQuery, PublicActor,
-        RedirectUriCreate, RedirectUriMutation, RedirectUriPage, RedirectUriView,
     },
     security::{
         Bearer, expected_version, require_carbon, require_platform_capability, require_step_up,
@@ -223,9 +222,7 @@ pub(super) async fn create(
         "org_id": input.org_id,
         "app_name": input.app_name,
         "app_logo_uri": input.app_logo_uri,
-        "redirect_uris": input.redirect_uris,
         "webhook_url": input.webhook_url,
-        "requested_scopes": input.requested_scopes,
         "obo_endpoints": input.obo_endpoints,
     }))
     .map_err(|_| ApiError::internal("application_create_canonical"))?;
@@ -248,12 +245,7 @@ pub(super) async fn create(
         true,
     )
     .await?;
-    if let Claim::Replay {
-        status,
-        mut response,
-    } = claim
-    {
-        response.application.notify_users = None;
+    if let Claim::Replay { status, response } = claim {
         transaction
             .commit()
             .await
@@ -333,43 +325,20 @@ pub(super) async fn create(
     .execute(&mut *transaction)
     .await
     .map_err(map_application_write)?;
-    for scope in &input.requested_scopes {
-        let result = sqlx::query(
-            r"
-            INSERT INTO iam.application_requested_scopes (application_id, scope)
-            SELECT $1, catalog.scope
-            FROM iam.oauth_scope_catalog AS catalog
-            WHERE catalog.scope = $2
-            ",
-        )
+    // The login carries the whole catalogue -- "scope of the login is always
+    // everything" -- and a login's request-scope rows are foreign-keyed to the
+    // approved set, so "everything" has to exist as rows rather than as a
+    // special case at authorization time. Approving scopes is a platform
+    // authority the organization owner deliberately does not hold, so the grant
+    // goes through an owner-rights function that checks the caller can manage
+    // this application before it writes. `scope` on the create input is the
+    // webhook's scope and is applied to the webhook, not here.
+    sqlx::query("SELECT iam_private.grant_application_scope_catalogue($1, $2)")
         .bind(application_id)
-        .bind(scope)
+        .bind(carbon_id)
         .execute(&mut *transaction)
         .await
-        .map_err(|_| ApiError::internal("application_scope_insert"))?;
-        if result.rows_affected() != 1 {
-            return Err(ApiError::validation(
-                "requested_scopes",
-                format!("unknown scope: {scope}"),
-            ));
-        }
-    }
-    for redirect_uri in &input.redirect_uris {
-        sqlx::query(
-            r"
-            INSERT INTO iam.application_redirect_uris (
-                id, application_id, redirect_uri, uri_digest
-            ) VALUES ($1, $2, $3, $4)
-            ",
-        )
-        .bind(Uuid::now_v7())
-        .bind(application_id)
-        .bind(redirect_uri)
-        .bind(Sha256::digest(redirect_uri.as_bytes()).as_slice())
-        .execute(&mut *transaction)
-        .await
-        .map_err(map_application_write)?;
-    }
+        .map_err(|_| ApiError::internal("application_scope_catalogue"))?;
     replace_obo_endpoints(&mut transaction, application_id, &input.obo_endpoints).await?;
     sqlx::query(
         r"
@@ -461,8 +430,6 @@ pub(super) async fn create(
                 "application_id": application_id,
                 "organization_id": organization_id,
                 "org_id": input.org_id,
-                "requested_scope_count": input.requested_scopes.len(),
-                "redirect_uri_count": input.redirect_uris.len(),
                 "obo_endpoint_count": input.obo_endpoints.len(),
             }),
             event_type: "application.created",
@@ -668,262 +635,6 @@ pub(super) async fn rotate_client_secret(
     )
 }
 
-pub(super) async fn list_redirect_uris(
-    State(state): State<ApiState>,
-    Bearer(access): Bearer,
-    Path(path): Path<AppPath>,
-    Query(query): Query<PageQuery>,
-) -> Result<Response, ApiError> {
-    let carbon_id = require_carbon(&access)?;
-    validation::app_id(&path.app_id)?;
-    let cursor = cursor::decode(query.cursor.as_deref())?;
-    let limit = cursor::limit(query.limit);
-    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
-        .await
-        .map_err(|_| ApiError::internal("application_redirect_list_context"))?;
-    let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
-    let (at, id) = cursor.map_or((None, None), |cursor| (Some(cursor.at), Some(cursor.id)));
-    let mut items = sqlx::query_as::<_, RedirectUriView>(
-        r"
-        SELECT id, redirect_uri, status, version, created_at, approved_at,
-               retired_at, updated_at
-        FROM iam.application_redirect_uris
-        WHERE application_id = $1
-          AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))
-        ORDER BY created_at DESC, id DESC
-        LIMIT $4
-        ",
-    )
-    .bind(app.id)
-    .bind(at)
-    .bind(id)
-    .bind(limit + 1)
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("application_redirect_list"))?;
-    let next_cursor = if i64::try_from(items.len()).unwrap_or(i64::MAX) > limit {
-        items.pop();
-        items
-            .last()
-            .map(|item| cursor::encode(item.created_at, item.id))
-            .transpose()?
-    } else {
-        None
-    };
-    let response = RedirectUriPage {
-        items,
-        page: PageInfo::from_next_cursor(next_cursor),
-    };
-    transaction
-        .commit()
-        .await
-        .map_err(|_| ApiError::internal("application_redirect_list_commit"))?;
-    json_with_etag(StatusCode::OK, &response, app.version)
-}
-
-pub(super) async fn add_redirect_uri(
-    State(state): State<ApiState>,
-    Bearer(access): Bearer,
-    Path(path): Path<AppPath>,
-    headers: HeaderMap,
-    Json(input): Json<RedirectUriCreate>,
-) -> Result<Response, ApiError> {
-    let carbon_id = require_carbon(&access)?;
-    validation::app_id(&path.app_id)?;
-    validation::redirect_uri(&input.redirect_uri)?;
-    let canonical = serde_json::to_vec(&input)
-        .map_err(|_| ApiError::internal("application_redirect_add_canonical"))?;
-    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
-        .await
-        .map_err(|_| ApiError::internal("application_redirect_add_context"))?;
-    let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
-    let caller_scope = format!("carbon:{carbon_id}:application:{}", app.id);
-    let claim = idempotency::claim::<RedirectUriMutation>(
-        &mut transaction,
-        &state.crypto,
-        &headers,
-        &caller_scope,
-        "POST /api/v1/applications/{app_id}/redirect-uris",
-        &canonical,
-        false,
-    )
-    .await?;
-    if let Claim::Replay { status, response } = claim {
-        transaction
-            .commit()
-            .await
-            .map_err(|_| ApiError::internal("application_redirect_add_replay_commit"))?;
-        let status = StatusCode::from_u16(status)
-            .map_err(|_| ApiError::internal("application_redirect_add_replay_status"))?;
-        return json_with_etag_replayed(status, &response, response.application_version);
-    }
-    let Claim::Acquired(idempotency_id) = claim else {
-        return Err(ApiError::internal("application_redirect_add_idempotency"));
-    };
-    let expected = expected_version(&headers)?;
-    let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, true).await?;
-    if app.version != expected {
-        return Err(ApiError::precondition_failed());
-    }
-    let redirect_uri_id = Uuid::now_v7();
-    retire_current_redirect_uris(&mut transaction, app.id).await?;
-    sqlx::query(
-        r"
-        INSERT INTO iam.application_redirect_uris (
-            id, application_id, redirect_uri, uri_digest
-        ) VALUES ($1, $2, $3, $4)
-        ",
-    )
-    .bind(redirect_uri_id)
-    .bind(app.id)
-    .bind(&input.redirect_uri)
-    .bind(Sha256::digest(input.redirect_uri.as_bytes()).as_slice())
-    .execute(&mut *transaction)
-    .await
-    .map_err(map_application_write)?;
-    let application_version = bump_application(&mut transaction, app.id).await?;
-    let redirect_uri = load_redirect_uri(&mut transaction, app.id, redirect_uri_id).await?;
-    let response = RedirectUriMutation {
-        redirect_uri,
-        application_version,
-    };
-    record_redirect_mutation(
-        &mut transaction,
-        access.authentication_session_id,
-        carbon_id,
-        app.organization_id,
-        app.id,
-        application_version,
-        redirect_uri_id,
-        "application.redirect_uri.add",
-        "application.redirect_uri_added",
-        "pending_review",
-    )
-    .await?;
-    idempotency::complete(
-        &mut transaction,
-        &state.crypto,
-        idempotency_id,
-        201,
-        &response,
-        false,
-    )
-    .await?;
-    transaction
-        .commit()
-        .await
-        .map_err(|_| ApiError::internal("application_redirect_add_commit"))?;
-    json_with_etag(StatusCode::CREATED, &response, response.application_version)
-}
-
-pub(super) async fn retire_redirect_uri(
-    State(state): State<ApiState>,
-    Bearer(access): Bearer,
-    Path(path): Path<AppRedirectPath>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    let carbon_id = require_carbon(&access)?;
-    validation::app_id(&path.app_id)?;
-    let canonical = b"{}";
-    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
-        .await
-        .map_err(|_| ApiError::internal("application_redirect_retire_context"))?;
-    let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
-    let caller_scope = format!(
-        "carbon:{carbon_id}:application:{}:redirect-uri:{}",
-        app.id, path.redirect_uri_id
-    );
-    let claim = idempotency::claim::<RedirectUriMutation>(
-        &mut transaction,
-        &state.crypto,
-        &headers,
-        &caller_scope,
-        "DELETE /api/v1/applications/{app_id}/redirect-uris/{redirect_uri_id}",
-        canonical,
-        false,
-    )
-    .await?;
-    if let Claim::Replay { status, response } = claim {
-        transaction
-            .commit()
-            .await
-            .map_err(|_| ApiError::internal("application_redirect_retire_replay_commit"))?;
-        let status = StatusCode::from_u16(status)
-            .map_err(|_| ApiError::internal("application_redirect_retire_replay_status"))?;
-        return json_with_etag_replayed(status, &response, response.application_version);
-    }
-    let Claim::Acquired(idempotency_id) = claim else {
-        return Err(ApiError::internal(
-            "application_redirect_retire_idempotency",
-        ));
-    };
-    let expected = expected_version(&headers)?;
-    let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, true).await?;
-    if app.version != expected {
-        return Err(ApiError::precondition_failed());
-    }
-    let result = sqlx::query(
-        r"
-        UPDATE iam.application_redirect_uris
-        SET status = 'retired', retired_at = transaction_timestamp()
-        WHERE application_id = $1 AND id = $2 AND status <> 'retired'
-        ",
-    )
-    .bind(app.id)
-    .bind(path.redirect_uri_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("application_redirect_retire"))?;
-    if result.rows_affected() != 1 {
-        let exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS (SELECT 1 FROM iam.application_redirect_uris WHERE application_id = $1 AND id = $2)",
-        )
-        .bind(app.id)
-        .bind(path.redirect_uri_id)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(|_| ApiError::internal("application_redirect_retire_exists"))?;
-        return Err(if exists {
-            ApiError::conflict("redirect_uri_already_retired")
-        } else {
-            ApiError::not_found()
-        });
-    }
-    let application_version = bump_application(&mut transaction, app.id).await?;
-    let redirect_uri = load_redirect_uri(&mut transaction, app.id, path.redirect_uri_id).await?;
-    let response = RedirectUriMutation {
-        redirect_uri,
-        application_version,
-    };
-    record_redirect_mutation(
-        &mut transaction,
-        access.authentication_session_id,
-        carbon_id,
-        app.organization_id,
-        app.id,
-        application_version,
-        path.redirect_uri_id,
-        "application.redirect_uri.retire",
-        "application.redirect_uri_retired",
-        "retired",
-    )
-    .await?;
-    idempotency::complete(
-        &mut transaction,
-        &state.crypto,
-        idempotency_id,
-        200,
-        &response,
-        false,
-    )
-    .await?;
-    transaction
-        .commit()
-        .await
-        .map_err(|_| ApiError::internal("application_redirect_retire_commit"))?;
-    json_with_etag(StatusCode::OK, &response, response.application_version)
-}
-
 pub(super) async fn patch(
     State(state): State<ApiState>,
     Bearer(access): Bearer,
@@ -951,12 +662,7 @@ pub(super) async fn patch(
         false,
     )
     .await?;
-    if let Claim::Replay {
-        status,
-        mut response,
-    } = claim
-    {
-        response.notify_users = None;
+    if let Claim::Replay { status, response } = claim {
         transaction
             .commit()
             .await
@@ -991,74 +697,6 @@ pub(super) async fn patch(
         .execute(&mut *transaction)
         .await
         .map_err(|_| ApiError::internal("application_patch_metadata"))?;
-    }
-    if let Some(scopes) = &input.requested_scopes {
-        for scope in scopes {
-            let result = sqlx::query(
-                r"
-                INSERT INTO iam.application_requested_scopes (application_id, scope)
-                SELECT $1, scope FROM iam.oauth_scope_catalog WHERE scope = $2
-                ON CONFLICT DO NOTHING
-                ",
-            )
-            .bind(before.id)
-            .bind(scope)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|_| ApiError::internal("application_scope_patch"))?;
-            if result.rows_affected() == 0 {
-                let exists = sqlx::query_scalar::<_, bool>(
-                    "SELECT EXISTS (SELECT 1 FROM iam.oauth_scope_catalog WHERE scope = $1)",
-                )
-                .bind(scope)
-                .fetch_one(&mut *transaction)
-                .await
-                .map_err(|_| ApiError::internal("application_scope_validate"))?;
-                if !exists {
-                    return Err(ApiError::validation(
-                        "requested_scopes",
-                        format!("unknown scope: {scope}"),
-                    ));
-                }
-            }
-        }
-        sqlx::query(
-            r"
-            DELETE FROM iam.application_requested_scopes AS requested
-            WHERE requested.application_id = $1
-              AND NOT (requested.scope = ANY($2::text[]))
-              AND NOT EXISTS (
-                  SELECT 1 FROM iam.application_approved_scopes AS approved
-                  WHERE approved.application_id = requested.application_id
-                    AND approved.scope = requested.scope
-                    AND approved.revoked_at IS NULL
-              )
-            ",
-        )
-        .bind(before.id)
-        .bind(scopes)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|_| ApiError::internal("application_scope_remove"))?;
-    }
-    if let Some(redirect_uris) = &input.redirect_uris {
-        retire_current_redirect_uris(&mut transaction, before.id).await?;
-        for redirect_uri in redirect_uris {
-            sqlx::query(
-                r"
-                INSERT INTO iam.application_redirect_uris (
-                    id, application_id, redirect_uri, uri_digest
-                ) VALUES ($1, $2, $3, $4)
-                ",
-            )
-            .bind(Uuid::now_v7())
-            .bind(before.id)
-            .bind(redirect_uri)
-            .bind(Sha256::digest(redirect_uri.as_bytes()).as_slice())
-            .execute(&mut *transaction)
-            .await
-            .map_err(|_| ApiError::internal("application_redirect_patch"))?;
-        }
     }
     if let Some(endpoints) = &input.obo_endpoints {
         replace_obo_endpoints(&mut transaction, before.id, endpoints).await?;
@@ -1187,7 +825,6 @@ pub(super) async fn admin_decide(
         "decision": input.decision,
         "reason": input.reason,
         "approved_scopes": input.approved_scopes,
-        "notify_users": input.notify_users,
     }))
     .map_err(|_| ApiError::internal("admin_decision_canonical"))?;
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
@@ -1207,9 +844,6 @@ pub(super) async fn admin_decide(
             _ => "applications.review",
         };
         require_platform_capability(&mut transaction, carbon_id, capability).await?;
-    }
-    if input.notify_users.is_some() {
-        require_platform_capability(&mut transaction, carbon_id, "applications.policy").await?;
     }
     let claim_app = resolve_admin_app_for_claim(&mut transaction, &path.app_id).await?;
     let caller_scope = format!("platform-admin:{carbon_id}:application:{}", claim_app.id);
@@ -1263,17 +897,15 @@ pub(super) async fn admin_decide(
         r"
         UPDATE iam.applications
         SET review_status = COALESCE($2, review_status),
-            notify_users = COALESCE($3, notify_users),
             deleted_at = CASE
                 WHEN $2 = 'deleted' THEN transaction_timestamp()
                 ELSE deleted_at
             END
-        WHERE id = $1 AND version = $4
+        WHERE id = $1 AND version = $3
         ",
     )
     .bind(app.id)
     .bind(next_status)
-    .bind(input.notify_users)
     .bind(expected)
     .execute(&mut *transaction)
     .await
@@ -1551,7 +1183,7 @@ pub(super) async fn load_detail(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     application_id: Uuid,
-    include_admin_policy: bool,
+    _include_admin_policy: bool,
 ) -> Result<ApplicationDetail, ApiError> {
     let application = sqlx::query_as::<_, ApplicationView>(
         r"
@@ -1571,19 +1203,6 @@ pub(super) async fn load_detail(
     .fetch_one(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("application_detail"))?;
-    let notify_users = if include_admin_policy {
-        Some(
-            sqlx::query_scalar::<_, bool>(
-                "SELECT notify_users FROM iam.applications WHERE id = $1",
-            )
-            .bind(application_id)
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(|_| ApiError::internal("application_notify_users"))?,
-        )
-    } else {
-        None
-    };
     let creator_public_id =
         sqlx::query_scalar::<_, String>("SELECT carbon_id FROM iam.carbons WHERE id = $1")
             .bind(application.created_by_carbon_id)
@@ -1610,18 +1229,6 @@ pub(super) async fn load_detail(
     .fetch_all(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("application_approved_scopes"))?;
-    let redirect_uris = sqlx::query_scalar::<_, String>(
-        r"
-        SELECT redirect_uri
-        FROM iam.application_redirect_uris
-        WHERE application_id = $1 AND status <> 'retired'
-        ORDER BY created_at, id
-        ",
-    )
-    .bind(application_id)
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(|_| ApiError::internal("application_redirect_uris"))?;
     let obo_endpoints = sqlx::query_as::<_, ApplicationOboEndpoint>(
         r"
         SELECT endpoint_id, path, metadata_definition AS metadata
@@ -1641,10 +1248,6 @@ pub(super) async fn load_detail(
             WHERE id = $1 AND deleted_at IS NULL
         ) AND (
             EXISTS (
-                SELECT 1 FROM iam.application_redirect_uris
-                WHERE application_id = $1 AND status = 'pending_review'
-            )
-            OR EXISTS (
                 SELECT 1 FROM iam.application_webhook_endpoints
                 WHERE application_id = $1 AND status = 'pending_review'
             )
@@ -1680,12 +1283,10 @@ pub(super) async fn load_detail(
         },
         app_name: application.app_name,
         app_logo: application.app_logo_uri,
-        redirect_uris,
         requested_scopes,
         approved_scopes,
         obo_endpoints,
         status: application.review_status,
-        notify_users,
         webhook,
         has_pending_changes,
         version: application.version,
@@ -1838,17 +1439,6 @@ pub(super) async fn retire_application_credentials(
     .map_err(|_| ApiError::internal("deleted_application_webhook_disable"))?;
     sqlx::query(
         r"
-        UPDATE iam.application_redirect_uris
-        SET status = 'retired', retired_at = transaction_timestamp()
-        WHERE application_id = $1 AND status <> 'retired'
-        ",
-    )
-    .bind(application_id)
-    .execute(&mut **transaction)
-    .await
-    .map_err(|_| ApiError::internal("deleted_application_redirect_retire"))?;
-    sqlx::query(
-        r"
         UPDATE iam.application_obo_endpoints
         SET status = 'retired', retired_at = transaction_timestamp()
         WHERE application_id = $1 AND status = 'active'
@@ -1991,22 +1581,6 @@ async fn apply_admin_decision(
             }
         }
     }
-    if matches!(
-        input.decision.as_str(),
-        "approve" | "approve_pending_changes"
-    ) {
-        sqlx::query(
-            r"
-            UPDATE iam.application_redirect_uris
-            SET status = 'active', approved_at = transaction_timestamp()
-            WHERE application_id = $1 AND status = 'pending_review'
-            ",
-        )
-        .bind(application_id)
-        .execute(&mut **transaction)
-        .await
-        .map_err(|_| ApiError::internal("redirect_approve_all"))?;
-    }
     let endpoint_id = if matches!(
         input.decision.as_str(),
         "approve" | "approve_pending_changes"
@@ -2070,17 +1644,6 @@ async fn apply_admin_decision(
         .map_err(|_| ApiError::internal("webhook_pending_retire"))?;
     }
     if input.decision == "reject_pending_changes" {
-        sqlx::query(
-            r"
-            UPDATE iam.application_redirect_uris
-            SET status = 'retired', retired_at = transaction_timestamp()
-            WHERE application_id = $1 AND status = 'pending_review'
-            ",
-        )
-        .bind(application_id)
-        .execute(&mut **transaction)
-        .await
-        .map_err(|_| ApiError::internal("redirect_reject_pending"))?;
         sqlx::query(
             r"
             UPDATE iam.application_webhook_endpoints
@@ -2151,12 +1714,6 @@ fn validate_admin_decision(input: &ApplicationAdminDecision) -> Result<(), ApiEr
             "review approvals are only valid with an approving decision",
         ));
     }
-    if input.decision == "delete" && input.notify_users.is_some() {
-        return Err(ApiError::validation(
-            "notify_users",
-            "cannot be changed while deleting an application",
-        ));
-    }
     Ok(())
 }
 
@@ -2190,86 +1747,10 @@ fn review_decision_name(decision: &str) -> &'static str {
     }
 }
 
-async fn retire_current_redirect_uris(
-    transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
-) -> Result<(), ApiError> {
-    sqlx::query(
-        r"
-        UPDATE iam.application_redirect_uris
-        SET status = 'retired', retired_at = transaction_timestamp()
-        WHERE application_id = $1 AND status IN ('active', 'pending_review')
-        ",
-    )
-    .bind(application_id)
-    .execute(&mut **transaction)
-    .await
-    .map_err(|_| ApiError::internal("application_redirect_replace_retire"))?;
-    Ok(())
-}
-
-async fn load_redirect_uri(
-    transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
-    redirect_uri_id: Uuid,
-) -> Result<RedirectUriView, ApiError> {
-    sqlx::query_as::<_, RedirectUriView>(
-        r"
-        SELECT id, redirect_uri, status, version, created_at, approved_at,
-               retired_at, updated_at
-        FROM iam.application_redirect_uris
-        WHERE application_id = $1 AND id = $2
-        ",
-    )
-    .bind(application_id)
-    .bind(redirect_uri_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(|_| ApiError::internal("application_redirect_load"))?
-    .ok_or_else(ApiError::not_found)
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn record_redirect_mutation(
-    transaction: &mut Transaction<'_, Postgres>,
-    authentication_session_id: Uuid,
-    carbon_id: Uuid,
-    organization_id: Uuid,
-    application_id: Uuid,
-    application_version: i64,
-    redirect_uri_id: Uuid,
-    action: &'static str,
-    event_type: &'static str,
-    status: &'static str,
-) -> Result<(), ApiError> {
-    events::record(
-        transaction,
-        Mutation {
-            actor_id: Some(carbon_id),
-            authentication_session_id: Some(authentication_session_id),
-            organization_id,
-            application_id,
-            action,
-            target_type: "application_redirect_uri",
-            target_id: Some(redirect_uri_id),
-            aggregate_type: "application",
-            aggregate_id: application_id,
-            aggregate_version: application_version,
-            before: None,
-            after: Some(json!({ "redirect_uri_id": redirect_uri_id, "status": status })),
-            metadata: json!({ "redirect_uri_id": redirect_uri_id, "status": status }),
-            event_type,
-        },
-    )
-    .await
-}
-
 fn input_as_json(input: &ApplicationPatch) -> serde_json::Value {
     json!({
         "app_name": input.app_name,
         "app_logo_uri": input.app_logo_uri,
-        "redirect_uris": input.redirect_uris,
-        "requested_scopes": input.requested_scopes,
         "obo_endpoints": input.obo_endpoints,
     })
 }
@@ -2432,7 +1913,6 @@ mod tests {
             decision: decision.to_owned(),
             reason: Some("operator request".to_owned()),
             approved_scopes: None,
-            notify_users: None,
         }
     }
 
@@ -2472,10 +1952,6 @@ mod tests {
 
     #[test]
     fn backend_delete_rejects_unrelated_policy_mutation() {
-        let mut input = admin_decision("delete");
-        input.notify_users = Some(false);
-        assert!(validate_admin_decision(&input).is_err());
-
         let mut input = admin_decision("delete");
         input.approved_scopes = Some(vec!["organizations.read".to_owned()]);
         assert!(validate_admin_decision(&input).is_err());

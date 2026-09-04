@@ -59,6 +59,14 @@ impl ApiError {
         }
     }
 
+    /// Whether this is the "nobody is signed in" rejection.
+    ///
+    /// The login route treats that as a state to act on rather than a failure
+    /// to report, and must not confuse it with any other error.
+    pub(super) const fn is_unauthenticated(&self) -> bool {
+        matches!(self.status, StatusCode::UNAUTHORIZED)
+    }
+
     pub(super) fn unauthenticated() -> Self {
         let mut error = Self::new(
             StatusCode::UNAUTHORIZED,

@@ -1008,7 +1008,7 @@ dl.kv dd {
  * so every rule it needs lives here rather than on the element.           *
  * --------------------------------------------------------------------- */
 
-.consent {
+.login {
   display: grid;
   grid-template-rows: auto 1fr auto;
   min-height: 100dvh;
@@ -1019,40 +1019,40 @@ dl.kv dd {
   background-position: -1px -1px;
 }
 
-.consent-head {
+.login-head {
   display: flex;
   align-items: center;
   padding: 20px;
 }
 
-.consent-slot {
+.login-slot {
   display: flex;
   align-items: flex-start;
   justify-content: center;
   padding: 16px;
 }
 
-.consent-card {
+.login-card {
   width: 100%;
   max-width: 460px;
   border-width: 2px;
   border-color: var(--ink);
 }
 
-.consent-body {
+.login-body {
   gap: 20px;
 }
 
-.consent-intro {
+.login-intro {
   gap: 8px;
 }
 
-.consent-title {
+.login-title {
   font-size: 1.625rem;
   letter-spacing: -0.01em;
 }
 
-.consent-scopes {
+.login-scopes {
   list-style: none;
   display: flex;
   flex-direction: column;
@@ -1062,7 +1062,7 @@ dl.kv dd {
 /* Each scope is a bordered row with the machine name and a plain-English
  * description side by side. A consent screen that lists only `directory.read`
  * is not consent — it is a dialog the reader dismisses. */
-.consent-scopes .scope {
+.login-scopes .scope {
   display: flex;
   align-items: baseline;
   gap: 12px;
@@ -1072,27 +1072,27 @@ dl.kv dd {
   background: var(--paper);
 }
 
-.consent-scopes .scope code {
+.login-scopes .scope code {
   flex: none;
   font-size: 0.75rem;
   background: var(--paper-3);
 }
 
-.consent-scopes .scope span {
+.login-scopes .scope span {
   font-size: 0.8125rem;
   color: var(--ink-muted);
 }
 
-.consent-action {
+.login-action {
   width: 100%;
 }
 
-.consent-note {
+.login-note {
   border-block-start: 1px solid var(--rule);
   padding-block-start: 12px;
 }
 
-.consent-foot {
+.login-foot {
   padding: 16px 20px 32px;
   text-align: center;
 }
@@ -1169,4 +1169,15 @@ dl.kv dd {
 .form-error {
   border-inline-start: 3px solid var(--ink);
   padding-inline-start: 8px;
+}
+
+.login-token {
+  display: block;
+  overflow-wrap: anywhere;
+  padding: 0.75rem;
+  border-radius: 6px;
+  background: var(--surface-sunken, #F5F1EA);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.95rem;
+  line-height: 1.5;
 }

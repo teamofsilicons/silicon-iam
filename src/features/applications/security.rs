@@ -9,7 +9,6 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use secrecy::SecretString;
 use sqlx::{FromRow, Postgres, Transaction};
-use subtle::ConstantTimeEq as _;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -37,6 +36,9 @@ pub(super) struct Bearer(pub(super) AccessContext);
 pub(super) struct BrowserSession {
     pub(super) session_id: Uuid,
     pub(super) carbon_id: Uuid,
+    /// Retained so a future browser surface can bind a form to this session;
+    /// the short-lived-token login posts nothing, so nothing reads it today.
+    #[allow(dead_code)]
     pub(super) csrf_token: String,
 }
 
@@ -169,6 +171,32 @@ impl FromRequestParts<ApiState> for BrowserSession {
     }
 }
 
+/// A browser session when there is one, and nothing when there is not.
+///
+/// The login route has somewhere useful to send an unauthenticated visitor --
+/// the authentication frontend -- so it needs the absence of a session as a
+/// value rather than as a rejection.
+#[derive(Clone, Debug)]
+pub(super) struct MaybeBrowserSession(pub(super) Option<BrowserSession>);
+
+impl FromRequestParts<ApiState> for MaybeBrowserSession {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &ApiState,
+    ) -> Result<Self, Self::Rejection> {
+        match BrowserSession::from_request_parts(parts, state).await {
+            Ok(session) => Ok(Self(Some(session))),
+            // Only the absence of a usable session becomes `None`. A failure
+            // that is not about authentication still fails the request, so a
+            // database outage cannot quietly look like a signed-out visitor.
+            Err(error) if error.is_unauthenticated() => Ok(Self(None)),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 impl FromRequestParts<ApiState> for ApplicationClient {
     type Rejection = ApiError;
 
@@ -213,23 +241,28 @@ impl FromRequestParts<ApiState> for ApplicationClient {
             WITH supplied_digest (key_version, digest) AS (
                 SELECT * FROM unnest($1::smallint[], $2::bytea[])
             )
+            -- Deliberately no join to iam.applications. This runs before the
+            -- caller is known, so there is no principal context, and the SELECT
+            -- policy on that table admits nothing without one -- joining it
+            -- here returned zero candidates for every application credential
+            -- ever presented. Narrowing this to the secret itself costs no
+            -- authority: iam.application_secrets carries no row security
+            -- because a lookup by digest is how a caller becomes known at all,
+            -- and the query below re-reads the application with context set,
+            -- where app_id, review status, principal status and secret status
+            -- are all enforced.
             SELECT secret.application_id, secret.secret_digest, secret.pepper_key_version
             FROM supplied_digest
             JOIN iam.application_secrets AS secret
               ON secret.pepper_key_version = supplied_digest.key_version
              AND secret.secret_digest = supplied_digest.digest
-            JOIN iam.applications AS application ON application.id = secret.application_id
-            WHERE application.app_id = $3
-              AND (
-                  secret.status = 'active'
-                  OR (secret.status = 'retiring' AND secret.retires_at > transaction_timestamp())
-              )
+            WHERE secret.status = 'active'
+               OR (secret.status = 'retiring' AND secret.retires_at > transaction_timestamp())
             FOR UPDATE OF secret
             ",
         )
         .bind(versions)
         .bind(digests)
-        .bind(&app_id)
         .fetch_all(&mut *transaction)
         .await
         .map_err(|_| ApiError::internal("application_secret_lookup"))?;
@@ -259,29 +292,8 @@ impl FromRequestParts<ApiState> for ApplicationClient {
             .map_err(|_| ApiError::internal("application_client_rls_context"))?;
             let resolved = sqlx::query_as::<_, (Uuid, String, Uuid, i64)>(
                 r"
-                SELECT application.id, application.app_id,
-                       application.organization_id, principal.auth_epoch
-                FROM iam.applications AS application
-                JOIN iam.principals AS principal
-                  ON principal.id = application.id
-                 AND principal.kind = 'application'
-                 AND principal.status = 'active'
-                JOIN iam.application_secrets AS secret
-                  ON secret.application_id = application.id
-                 AND secret.pepper_key_version = $3
-                 AND secret.secret_digest = $4
-                WHERE application.id = $1
-                  AND application.app_id = $2
-                  AND application.review_status = 'verified'
-                  AND application.deleted_at IS NULL
-                  AND (
-                      secret.status = 'active'
-                      OR (
-                          secret.status = 'retiring'
-                          AND secret.retires_at > transaction_timestamp()
-                      )
-                  )
-                FOR UPDATE OF application, principal, secret
+                SELECT application_id, app_id, organization_id, auth_epoch
+                FROM iam_private.resolve_application_client($1, $2, $3, $4)
                 ",
             )
             .bind(candidate.application_id)
@@ -371,18 +383,6 @@ pub(super) fn require_carbon(access: &AccessContext) -> Result<Uuid, ApiError> {
         return Err(ApiError::forbidden("forbidden"));
     }
     Ok(access.subject.id)
-}
-
-pub(super) fn require_csrf(headers: &HeaderMap, session: &BrowserSession) -> Result<(), ApiError> {
-    let supplied = headers
-        .get("x-csrf-token")
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| ApiError::precondition_required("X-CSRF-Token"))?;
-    if bool::from(supplied.as_bytes().ct_eq(session.csrf_token.as_bytes())) {
-        Ok(())
-    } else {
-        Err(ApiError::forbidden("csrf_failed"))
-    }
 }
 
 pub(super) async fn require_step_up(

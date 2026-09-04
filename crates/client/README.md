@@ -74,14 +74,14 @@ Every group hangs off the client and borrows it, so obtaining one is free:
 | `client.trust()` | Advisory trust: default, rules, evaluation |
 | `client.governance()` | Approvals, direct role and tag changes, history |
 | `client.silicons()` | Silicons, credentials, webhooks |
-| `client.applications()` | Applications, secrets, redirect URIs, webhooks |
-| `client.oauth()` | Token exchange, introspection, revocation |
+| `client.applications()` | Applications, secrets, webhooks |
+| `client.oauth()` | Short-lived-token exchange, introspection, revocation |
 | `client.obo()` | Delegated access between applications |
 | `client.sso()` | An organization's SSO configuration |
 | `client.environments()` | Testing environments |
 
-Platform administration, the inbound provider webhooks and the browser consent
-screens are deliberately absent: they belong to the operator, to the provider,
+Platform administration, the inbound provider webhooks and the browser login
+screen are deliberately absent: they belong to the operator, to the provider,
 and to the browser.
 
 ## Idempotency is explicit
@@ -114,6 +114,44 @@ Routes that change an existing resource take its `version` as an ordinary
 argument, so optimistic concurrency cannot be forgotten. Routes that change
 authority or reveal a credential also need a step-up assertion, attached with
 `Mutation::step_up`.
+
+## Signing users in to an application
+
+A login produces one short-lived token, and that token is the only thing your
+application ever receives — never a password, never a verification code.
+
+Send someone to `<auth_base_url>/login?app_id=…&redirect_uri=…`; they come back
+to your callback with `?slt=…`; you trade it for a session:
+
+```rust
+# use silicon_iam_client::{Client, Credential, Mutation, models};
+# async fn run(base: &str, app_id: &str, app_secret: &str, slt: String)
+#     -> silicon_iam_client::Result<()> {
+let application = Client::new(base)?
+    .with_credential(Credential::application(app_id, app_secret));
+
+let tokens = application
+    .oauth()
+    .token(
+        &models::ApplicationTokenRequest {
+            app_id: app_id.to_owned(),
+            slt: Some(slt),
+            refresh_token: None,
+        },
+        &Mutation::new(),
+    )
+    .await?;
+# let _ = tokens;
+# Ok(())
+# }
+```
+
+The token lives two minutes and is good for one exchange. Renewing later is the
+same call with `refresh_token` set instead of `slt`.
+
+A Silicon has no browser, and a Carbon that already holds a session should not
+have to start another one — either asks for the token directly with
+`client.auth().short_lived_token(app_id, &Mutation::new())`.
 
 ## Testing environments
 

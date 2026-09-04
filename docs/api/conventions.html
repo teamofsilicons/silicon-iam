@@ -138,10 +138,9 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
 </p>
 
 <p>
-  OAuth redirect errors are the one exception. They go to the exact registered redirect URI using
-  OAuth protocol query fields with the <code>state</code> unchanged, because that is what the
-  OAuth specification requires. JSON errors raised before a redirect URI is trusted use the
-  envelope above.
+  A login that fails answers with this envelope too. It does not redirect: there is no token to
+  deliver, and the redirect URI came from the caller rather than from a registration, so it is not
+  a trusted place to report an error to.
 </p>
 
 <p>

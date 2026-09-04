@@ -1,7 +1,5 @@
 #![allow(clippy::too_many_arguments, clippy::too_many_lines)]
 
-use std::collections::BTreeSet;
-
 use axum::{
     Form, Json,
     extract::{Query, State},
@@ -11,7 +9,6 @@ use axum::{
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest as _, Sha256};
 use sqlx::{FromRow, Postgres, Transaction};
 use time::OffsetDateTime;
 use url::Url;
@@ -21,10 +18,7 @@ use crate::{
     api::ApiState,
     domain::actor::{ActorRef, ActorType},
     infrastructure::{
-        crypto::{
-            DigestPurpose, EncryptedValue, EncryptionContext, ProtectedField, SecretDigest,
-            SecretKind,
-        },
+        crypto::{DigestPurpose, SecretDigest, SecretKind},
         postgres::{
             context::{self, DatabaseContext},
             events::{self as persistence_events, AggregateVersion, AuditRecord, OutboxRecord},
@@ -38,14 +32,19 @@ use super::{
     events,
     idempotency::{self, Claim},
     model::{
-        AuthorizeQuery, ConsentDecision, IntrospectionResponse, PublicActor, TokenForm, TokenInput,
-        TokenResponse,
+        AppTokenForm, IntrospectionResponse, LoginQuery, LoginStatusQuery, PublicActor,
+        ShortLivedTokenRequest, ShortLivedTokenResponse, TokenInput, TokenResponse,
     },
-    security::{ApplicationClient, BrowserSession, require_csrf},
+    security::{ApplicationClient, Bearer, BrowserSession, MaybeBrowserSession},
     validation,
 };
 
 const AUTHORIZATION_REQUEST_SECONDS: i64 = 600;
+/// How long the page that shows a token waits before reporting its fate.
+///
+/// UNDERSTANDING.md gives the token two minutes; the page reloads a moment
+/// after that so the status it reports is settled rather than racing expiry.
+const AUTHORIZATION_CODE_DISPLAY_SECONDS: i64 = 125;
 
 const OAUTH_REFRESH_INSERT_QUERY: &str = r"
     INSERT INTO iam.refresh_tokens (
@@ -58,17 +57,7 @@ const OAUTH_REFRESH_INSERT_QUERY: &str = r"
 ";
 
 const CURRENT_APPLICATION_CLIENT_LOCK_QUERY: &str = r"
-    SELECT application.id
-    FROM iam.applications AS application
-    JOIN iam.principals AS principal
-      ON principal.id = application.id
-     AND principal.kind = 'application'
-     AND principal.status = 'active'
-     AND principal.auth_epoch = $2
-    WHERE application.id = $1
-      AND application.review_status = 'verified'
-      AND application.deleted_at IS NULL
-    FOR SHARE OF application, principal
+    SELECT iam_private.lock_current_application_client($1, $2)
 ";
 
 const AUTHORIZATION_CODE_LOOKUP_QUERY: &str = r"
@@ -77,11 +66,10 @@ const AUTHORIZATION_CODE_LOOKUP_QUERY: &str = r"
     )
     SELECT code.id AS code_id, code.authorization_request_id,
            code.code_digest, code.digest_key_version,
-           redirect.redirect_uri, request.authentication_session_id,
+           request.authentication_session_id,
            request.subject_principal_id, request.subject_kind::text AS subject_kind,
            request.organization_id, request.membership_id,
-           grant.id AS consent_grant_id,
-           request.pkce_code_challenge,
+           consent.id AS consent_grant_id,
            principal.auth_epoch AS subject_auth_epoch,
            membership.authz_epoch AS membership_authz_epoch
     FROM supplied_digest
@@ -90,8 +78,6 @@ const AUTHORIZATION_CODE_LOOKUP_QUERY: &str = r"
      AND code.code_digest = supplied_digest.digest
     JOIN iam.oauth_authorization_requests AS request
       ON request.id = code.authorization_request_id
-    JOIN iam.application_redirect_uris AS redirect
-      ON redirect.id = request.redirect_uri_id
     JOIN iam.principals AS principal
       ON principal.id = request.subject_principal_id
      AND principal.kind = request.subject_kind
@@ -110,19 +96,19 @@ const AUTHORIZATION_CODE_LOOKUP_QUERY: &str = r"
      AND session.status = 'active'
      AND session.idle_expires_at > transaction_timestamp()
      AND session.absolute_expires_at > transaction_timestamp()
-    JOIN iam.oauth_consent_grants AS grant
-      ON grant.application_id = request.application_id
-     AND grant.subject_principal_id = request.subject_principal_id
-     AND grant.subject_kind = request.subject_kind
-     AND grant.organization_id IS NOT DISTINCT FROM request.organization_id
-     AND grant.membership_id IS NOT DISTINCT FROM request.membership_id
-     AND grant.parent_authentication_session_id = request.authentication_session_id
-     AND grant.status = 'active'
+    JOIN iam.oauth_consent_grants AS consent
+      ON consent.application_id = request.application_id
+     AND consent.subject_principal_id = request.subject_principal_id
+     AND consent.subject_kind = request.subject_kind
+     AND consent.organization_id IS NOT DISTINCT FROM request.organization_id
+     AND consent.membership_id IS NOT DISTINCT FROM request.membership_id
+     AND consent.parent_authentication_session_id = request.authentication_session_id
+     AND consent.status = 'active'
     WHERE code.application_id = $3
       AND code.consumed_at IS NULL
       AND code.expires_at > transaction_timestamp()
       AND request.status = 'approved'
-    FOR UPDATE OF code, request, grant
+    FOR UPDATE OF code, request, consent
     FOR SHARE OF principal, session
 ";
 
@@ -132,14 +118,11 @@ const CODE_EXCHANGE_ACTIVE_SCOPES_QUERY: &str = r"
     JOIN iam.oauth_consent_grant_scopes AS consent_scope
       ON consent_scope.consent_grant_id = $2
      AND consent_scope.scope = request_scope.scope
-    JOIN iam.application_approved_scopes AS approved
-      ON approved.application_id = request_scope.application_id
-     AND approved.scope = request_scope.scope
-     AND approved.revoked_at IS NULL
+    JOIN iam_private.locked_application_approved_scopes($3) AS approved
+      ON approved.scope = request_scope.scope
     WHERE request_scope.authorization_request_id = $1
       AND request_scope.application_id = $3
     ORDER BY request_scope.scope
-    FOR SHARE OF approved
 ";
 
 const REFRESH_REUSE_ACCESS_REVOCATION_QUERY: &str = r"
@@ -158,8 +141,8 @@ const REFRESH_TOKEN_CANDIDATE_QUERY: &str = r"
            refresh.token_digest, refresh.digest_key_version,
            family.authentication_session_id, family.subject_principal_id,
            principal.kind::text AS subject_kind,
-           grant.organization_id, grant.membership_id,
-           grant.id AS consent_grant_id
+           consent.organization_id, consent.membership_id,
+           consent.id AS consent_grant_id
     FROM supplied_digest
     JOIN iam.refresh_tokens AS refresh
       ON refresh.digest_key_version = supplied_digest.key_version
@@ -168,8 +151,8 @@ const REFRESH_TOKEN_CANDIDATE_QUERY: &str = r"
       ON family.id = refresh.family_id
     JOIN iam.principals AS principal
       ON principal.id = family.subject_principal_id
-    JOIN iam.oauth_consent_grants AS grant
-      ON grant.id = family.oauth_consent_grant_id
+    JOIN iam.oauth_consent_grants AS consent
+      ON consent.id = family.oauth_consent_grant_id
     WHERE family.client_application_id = $3
     LIMIT 1
 ";
@@ -206,13 +189,13 @@ const REFRESH_MEMBERSHIP_AUTHORITY_LOCK_QUERY: &str = r"
 ";
 
 const REFRESH_GRANT_AUTHORITY_LOCK_QUERY: &str = r"
-    SELECT grant.application_id, grant.subject_principal_id,
-           grant.subject_kind::text AS subject_kind,
-           grant.organization_id, grant.membership_id,
-           grant.parent_authentication_session_id, grant.status
-    FROM iam.oauth_consent_grants AS grant
-    WHERE grant.id = $1
-    FOR SHARE OF grant
+    SELECT consent.application_id, consent.subject_principal_id,
+           consent.subject_kind::text AS subject_kind,
+           consent.organization_id, consent.membership_id,
+           consent.parent_authentication_session_id, consent.status
+    FROM iam.oauth_consent_grants AS consent
+    WHERE consent.id = $1
+    FOR SHARE OF consent
 ";
 
 const REFRESH_CREDENTIAL_LOCK_QUERY: &str = r"
@@ -241,14 +224,11 @@ const REFRESH_ISSUANCE_SCOPES_QUERY: &str = r"
     JOIN iam.oauth_consent_grant_scopes AS consent_scope
       ON consent_scope.consent_grant_id = snapshot.consent_grant_id
      AND consent_scope.scope = snapshot.scope
-    JOIN iam.application_approved_scopes AS approved
-      ON approved.application_id = $3
-     AND approved.scope = snapshot.scope
-     AND approved.revoked_at IS NULL
+    JOIN iam_private.locked_application_approved_scopes($3) AS approved
+      ON approved.scope = snapshot.scope
     WHERE snapshot.family_id = $1
       AND snapshot.consent_grant_id = $2
     ORDER BY snapshot.scope
-    FOR SHARE OF approved
 ";
 
 #[derive(FromRow)]
@@ -256,8 +236,6 @@ struct AuthorizeApplicationRow {
     id: Uuid,
     app_id: String,
     app_name: Option<String>,
-    notify_users: bool,
-    redirect_uri_id: Uuid,
 }
 
 #[derive(FromRow)]
@@ -270,17 +248,11 @@ struct SubjectOrganizationRow {
 struct AuthorizationRequestRow {
     id: Uuid,
     application_id: Uuid,
-    redirect_uri: String,
     authentication_session_id: Uuid,
     subject_principal_id: Uuid,
     subject_kind: String,
     organization_id: Option<Uuid>,
     membership_id: Option<Uuid>,
-    state_ciphertext: Vec<u8>,
-    state_encryption_nonce: Vec<u8>,
-    encryption_key_version: i16,
-    status: String,
-    expires_at: OffsetDateTime,
 }
 
 #[derive(FromRow)]
@@ -289,14 +261,12 @@ struct AuthorizationCodeRow {
     authorization_request_id: Uuid,
     code_digest: Vec<u8>,
     digest_key_version: i16,
-    redirect_uri: String,
     authentication_session_id: Uuid,
     subject_principal_id: Uuid,
     subject_kind: String,
     organization_id: Option<Uuid>,
     membership_id: Option<Uuid>,
     consent_grant_id: Uuid,
-    pkce_code_challenge: String,
     subject_auth_epoch: i64,
     membership_authz_epoch: Option<i64>,
 }
@@ -371,11 +341,6 @@ struct RefreshIntrospectionRow {
 }
 
 #[derive(Serialize, Deserialize)]
-struct RedirectReplay {
-    location: String,
-}
-
-#[derive(Serialize, Deserialize)]
 #[serde(tag = "outcome", content = "response", rename_all = "snake_case")]
 enum TokenIdempotencyResult {
     Issued(Box<TokenResponse>),
@@ -387,61 +352,73 @@ enum RefreshExchange {
     ReuseDetected,
 }
 
-pub(super) async fn authorize(
+/// Signs the caller in for a configured application and hands back a
+/// short-lived token.
+///
+/// `app_id` is what makes this an application login at all. Without one there
+/// is no application waiting for anything, so this is an ordinary Silicon IAM
+/// login and the page says so rather than minting a credential nobody asked
+/// for.
+///
+/// `redirect_uri` decides delivery only. Named, the token is appended to it
+/// and the browser is sent there. Absent, the token is shown on a page,
+/// because there is nowhere to send it and a token the caller cannot read is
+/// no use to them.
+///
+/// There is no consent step and no scope negotiation: the login carries the
+/// whole catalogue, and the consent grant is written implicitly so that
+/// webhook recipients still resolve.
+pub(super) async fn login(
     State(state): State<ApiState>,
-    session: BrowserSession,
-    Query(query): Query<AuthorizeQuery>,
+    MaybeBrowserSession(session): MaybeBrowserSession,
+    Query(query): Query<LoginQuery>,
 ) -> Result<Response, ApiError> {
-    let scopes = validation::authorize(&query)?;
-    let redirect_digest = Sha256::digest(query.redirect_uri.as_bytes());
+    validation::login(&query)?;
+    // "In iam if the user is already logged in, move on to the next step.
+    // Otherwise prompt the login." The prompt is a browser surface and lives
+    // in the authentication frontend, so an unauthenticated visitor is sent
+    // there with their request intact rather than being told, in JSON, that
+    // they are not signed in.
+    let Some(session) = session else {
+        return redirect_response(StatusCode::FOUND, &sign_in_location(&state, &query)?, false);
+    };
+    let Some(app_id) = query.app_id.as_deref() else {
+        return Ok(login_page(
+            "Signed in",
+            "You are signed in.",
+            "No application asked for this login, so there is no token to hand over.",
+            "",
+            "Name an app_id in the query to sign in on an application's behalf.",
+            None,
+        ));
+    };
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(session.carbon_id))
         .await
-        .map_err(|_| ApiError::internal("oauth_authorize_context"))?;
+        .map_err(|_| ApiError::internal("login_context"))?;
     let app = sqlx::query_as::<_, AuthorizeApplicationRow>(
         r"
-        SELECT application.id, application.app_id, application.app_name,
-               application.notify_users, redirect.id AS redirect_uri_id
+        SELECT application.id, application.app_id, application.app_name
         FROM iam.applications AS application
         JOIN iam.principals AS principal
           ON principal.id = application.id
          AND principal.kind = 'application'
          AND principal.status = 'active'
-        JOIN iam.application_redirect_uris AS redirect
-          ON redirect.application_id = application.id
-         AND redirect.status = 'active'
-         AND redirect.uri_digest = $3
         WHERE application.app_id = $1
           AND application.review_status = 'verified'
           AND application.deleted_at IS NULL
-          AND redirect.redirect_uri = $2
         ",
     )
-    .bind(&query.client_id)
-    .bind(&query.redirect_uri)
-    .bind(redirect_digest.as_slice())
+    .bind(app_id)
     .fetch_optional(&mut *transaction)
     .await
-    .map_err(|_| ApiError::internal("oauth_authorize_application"))?
-    .ok_or_else(|| {
-        ApiError::bad_request("invalid_request", "The client or redirect URI is invalid.")
-    })?;
-    let approved = sqlx::query_as::<_, (String, OffsetDateTime)>(
-        r"
-        SELECT scope, approved_at
-        FROM iam.application_approved_scopes
-        WHERE application_id = $1 AND revoked_at IS NULL
-          AND scope = ANY($2::text[])
-        ORDER BY scope
-        ",
-    )
-    .bind(app.id)
-    .bind(&scopes)
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("oauth_authorize_scopes"))?;
-    if approved.len() != scopes.len() {
-        return Err(ApiError::forbidden("invalid_scope"));
-    }
+    .map_err(|_| ApiError::internal("login_application"))?
+    .ok_or_else(|| ApiError::bad_request("invalid_request", "The application is unknown."))?;
+    // "Scope of the login is always everything": the catalogue is the consent.
+    let scopes =
+        sqlx::query_scalar::<_, String>("SELECT scope FROM iam.oauth_scope_catalog ORDER BY scope")
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(|_| ApiError::internal("login_scopes"))?;
     let organization = if let Some(org_id) = &query.org_id {
         Some(
             sqlx::query_as::<_, SubjectOrganizationRow>(
@@ -461,183 +438,383 @@ pub(super) async fn authorize(
             .bind(session.carbon_id)
             .fetch_optional(&mut *transaction)
             .await
-            .map_err(|_| ApiError::internal("oauth_authorize_org"))?
+            .map_err(|_| ApiError::internal("login_org"))?
             .ok_or_else(|| ApiError::forbidden("organization_context_forbidden"))?,
         )
     } else {
         None
     };
+    let (request_id, token) = mint_short_lived_token(
+        &mut transaction,
+        &state,
+        MintSubject {
+            application_id: app.id,
+            session_id: session.session_id,
+            principal_id: session.carbon_id,
+            subject_kind: "carbon",
+            organization_id: organization.as_ref().map(|value| value.organization_id),
+            membership_id: organization.as_ref().map(|value| value.membership_id),
+            redirect_uri: query.redirect_uri.as_deref(),
+        },
+        &scopes,
+    )
+    .await?;
+    events::authentication_event(
+        &mut transaction,
+        app.id,
+        Some(session.carbon_id),
+        Some("carbon"),
+        Some(session.session_id),
+        "login.short_lived_token",
+        "success",
+        None,
+        json!({ "delivered": query.redirect_uri.is_some(), "scope_count": scopes.len() }),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("login_commit"))?;
+    let display = app.app_name.as_deref().unwrap_or(&app.app_id);
+    match query.redirect_uri.as_deref() {
+        Some(uri) => {
+            let location = append_redirect_parameters(uri, &[("slt", token.expose_secret())])?;
+            redirect_response(StatusCode::FOUND, &location, false)
+        }
+        None => Ok(login_page(
+            "Your short-lived token",
+            "If requested, this is your short live token.",
+            &format!("{display} can exchange it for a session. It is good for a single use."),
+            &format!(
+                "<div class=\"stack login-intro\"><span class=\"label\">Short-lived token</span><code class=\"login-token\">{}</code></div>",
+                escape_html(token.expose_secret())
+            ),
+            "Nobody will ever ask you for your password or a verification code to complete this. Only this token.",
+            Some(request_id),
+        )),
+    }
+}
+
+/// Who a short-lived token is being minted for.
+pub(super) struct MintSubject<'a> {
+    pub(super) application_id: Uuid,
+    pub(super) session_id: Uuid,
+    pub(super) principal_id: Uuid,
+    pub(super) subject_kind: &'a str,
+    pub(super) organization_id: Option<Uuid>,
+    pub(super) membership_id: Option<Uuid>,
+    pub(super) redirect_uri: Option<&'a str>,
+}
+
+/// Records the login and issues the token that completes it.
+///
+/// Shared by the browser login and by callers who are already signed in, so
+/// the two cannot drift on what a login writes.
+async fn mint_short_lived_token(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    subject: MintSubject<'_>,
+    scopes: &[String],
+) -> Result<(Uuid, SecretString), ApiError> {
     let request_id = Uuid::now_v7();
-    let encrypted_state = state
-        .crypto
-        .encrypt(
-            EncryptionContext::global(ProtectedField::ProviderCredential, request_id),
-            query.state.as_bytes(),
-        )
-        .map_err(|_| ApiError::internal("oauth_state_encrypt"))?;
     sqlx::query(
         r"
         INSERT INTO iam.oauth_authorization_requests (
-            id, application_id, redirect_uri_id, authentication_session_id,
+            id, application_id, redirect_uri, authentication_session_id,
             subject_principal_id, subject_kind, organization_id, membership_id,
-            state_digest, state_ciphertext, state_encryption_nonce,
-            encryption_key_version, pkce_code_challenge, expires_at
+            expires_at
         ) VALUES (
-            $1, $2, $3, $4, $5, 'carbon', $6, $7, $8, $9, $10,
-            $11, $12,
-            transaction_timestamp() + ($13::bigint * interval '1 second')
+            $1, $2, $3, $4, $5, $6::iam.principal_kind, $7, $8,
+            transaction_timestamp() + ($9::bigint * interval '1 second')
         )
         ",
     )
     .bind(request_id)
-    .bind(app.id)
-    .bind(app.redirect_uri_id)
-    .bind(session.session_id)
-    .bind(session.carbon_id)
-    .bind(organization.as_ref().map(|value| value.organization_id))
-    .bind(organization.as_ref().map(|value| value.membership_id))
-    .bind(Sha256::digest(query.state.as_bytes()).as_slice())
-    .bind(encrypted_state.ciphertext)
-    .bind(encrypted_state.nonce.as_slice())
-    .bind(encrypted_state.key_version)
-    .bind(&query.code_challenge)
+    .bind(subject.application_id)
+    .bind(subject.redirect_uri)
+    .bind(subject.session_id)
+    .bind(subject.principal_id)
+    .bind(subject.subject_kind)
+    .bind(subject.organization_id)
+    .bind(subject.membership_id)
     .bind(AUTHORIZATION_REQUEST_SECONDS)
-    .execute(&mut *transaction)
+    .execute(&mut **transaction)
     .await
-    .map_err(|_| ApiError::internal("oauth_authorization_request_insert"))?;
-    for (scope, approved_at) in approved {
+    .map_err(|_| ApiError::internal("login_request_insert"))?;
+    for scope in scopes {
         sqlx::query(
             r"
             INSERT INTO iam.oauth_authorization_request_scopes (
                 authorization_request_id, application_id, scope, approved_at
-            ) VALUES ($1, $2, $3, $4)
+            )
+            SELECT $1, $2, approved.scope, approved.approved_at
+            FROM iam.application_approved_scopes AS approved
+            WHERE approved.application_id = $2
+              AND approved.scope = $3
+              AND approved.revoked_at IS NULL
+            ORDER BY approved.approved_at DESC
+            LIMIT 1
             ",
         )
         .bind(request_id)
-        .bind(app.id)
+        .bind(subject.application_id)
         .bind(scope)
-        .bind(approved_at)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await
-        .map_err(|_| ApiError::internal("oauth_authorization_scope_insert"))?;
+        .map_err(|_| ApiError::internal("login_scope_insert"))?;
     }
-    let existing_consent = consent_covers(
+    let request = load_authorization_request(transaction, request_id, true).await?;
+    let token = approve_request(transaction, state, &request).await?;
+    Ok((request_id, token))
+}
+
+/// Hands a short-lived token to a caller who is already signed in.
+///
+/// UNDERSTANDING.md: "If the carbon/silicon is already logged in directly
+/// return the short lived token." This is that route, and it is the one the
+/// CLI and the client crate use -- a Silicon has no browser to be redirected
+/// in, and a Carbon that already holds a session should not have to start
+/// another one.
+pub(super) async fn issue_short_lived_token(
+    State(state): State<ApiState>,
+    Bearer(access): Bearer,
+    headers: HeaderMap,
+    Json(input): Json<ShortLivedTokenRequest>,
+) -> Result<Response, ApiError> {
+    validation::app_id(&input.app_id)?;
+    let subject_kind = match access.subject.actor_type {
+        ActorType::Carbon => "carbon",
+        ActorType::Silicon => "silicon",
+        _ => return Err(ApiError::forbidden("forbidden")),
+    };
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(access.subject.id))
+        .await
+        .map_err(|_| ApiError::internal("short_lived_token_context"))?;
+    let caller_scope = format!("{subject_kind}:{}", access.subject.id);
+    let canonical = serde_json::to_vec(&json!({ "app_id": input.app_id }))
+        .map_err(|_| ApiError::internal("short_lived_token_canonical"))?;
+    let claim = idempotency::claim::<ShortLivedTokenResponse>(
         &mut transaction,
-        app.id,
-        session.carbon_id,
-        organization.as_ref().map(|value| value.organization_id),
-        &scopes,
+        &state.crypto,
+        &headers,
+        &caller_scope,
+        "POST /api/v1/app-auth/short-lived-tokens",
+        &canonical,
+        true,
     )
     .await?;
-    if !app.notify_users || existing_consent {
-        let request = load_authorization_request(&mut transaction, request_id, true).await?;
-        let location = approve_request(&mut transaction, &state, &request).await?;
-        events::authentication_event(
-            &mut transaction,
-            app.id,
-            Some(session.carbon_id),
-            Some("carbon"),
-            Some(session.session_id),
-            "oauth.authorization",
-            "success",
-            None,
-            json!({ "consent_prompted": false, "scope_count": scopes.len() }),
-        )
-        .await?;
+    if let Claim::Replay { status, response } = claim {
         transaction
             .commit()
             .await
-            .map_err(|_| ApiError::internal("oauth_authorize_commit"))?;
-        return redirect_response(StatusCode::FOUND, &location, false);
+            .map_err(|_| ApiError::internal("short_lived_token_replay"))?;
+        let status = StatusCode::from_u16(status)
+            .map_err(|_| ApiError::internal("short_lived_token_replay_status"))?;
+        return Ok((status, Json(response)).into_response());
     }
+    let Claim::Acquired(idempotency_id) = claim else {
+        return Err(ApiError::internal("short_lived_token_idempotency"));
+    };
+    let app = sqlx::query_as::<_, AuthorizeApplicationRow>(
+        r"
+        SELECT application.id, application.app_id, application.app_name
+        FROM iam.applications AS application
+        JOIN iam.principals AS principal
+          ON principal.id = application.id
+         AND principal.kind = 'application'
+         AND principal.status = 'active'
+        WHERE application.app_id = $1
+          AND application.review_status = 'verified'
+          AND application.deleted_at IS NULL
+        ",
+    )
+    .bind(&input.app_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("short_lived_token_application"))?
+    .ok_or_else(|| ApiError::bad_request("invalid_request", "The application is unknown."))?;
+    let scopes =
+        sqlx::query_scalar::<_, String>("SELECT scope FROM iam.oauth_scope_catalog ORDER BY scope")
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(|_| ApiError::internal("short_lived_token_scopes"))?;
+    let (_, token) = mint_short_lived_token(
+        &mut transaction,
+        &state,
+        MintSubject {
+            application_id: app.id,
+            session_id: access.authentication_session_id,
+            principal_id: access.subject.id,
+            subject_kind,
+            organization_id: access.organization_id,
+            membership_id: access.membership_id,
+            redirect_uri: None,
+        },
+        &scopes,
+    )
+    .await?;
+    let expires_in = i64::try_from(state.settings.security.authorization_code_ttl.as_secs())
+        .map_err(|_| ApiError::internal("short_lived_token_ttl"))?;
+    let response = ShortLivedTokenResponse {
+        slt: token.expose_secret().to_owned(),
+        expires_in,
+    };
+    events::authentication_event(
+        &mut transaction,
+        app.id,
+        Some(access.subject.id),
+        Some(subject_kind),
+        Some(access.authentication_session_id),
+        "login.short_lived_token",
+        "success",
+        None,
+        json!({ "delivered": false, "scope_count": scopes.len() }),
+    )
+    .await?;
+    idempotency::complete(
+        &mut transaction,
+        &state.crypto,
+        idempotency_id,
+        201,
+        &response,
+        true,
+    )
+    .await?;
     transaction
         .commit()
         .await
-        .map_err(|_| ApiError::internal("oauth_consent_commit"))?;
-    let html = consent_page(
-        app.app_name.as_deref().unwrap_or(&app.app_id),
-        &app.app_id,
-        &scopes,
-        request_id,
-        &session.csrf_token,
-    );
-    Ok(consent_html_response(html))
+        .map_err(|_| ApiError::internal("short_lived_token_commit"))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
 }
 
-/// Human-readable descriptions for the scopes a user is asked to grant.
+/// Where to send somebody who has to sign in first.
 ///
-/// A consent screen that shows `directory.read` and nothing else is not
-/// consent — it is a dialog the reader dismisses. An unknown scope falls back
-/// to its own name rather than being hidden, because silently omitting
-/// something the application asked for would be worse.
-fn describe_scope(scope: &str) -> &'static str {
-    match scope {
-        "openid" => "Confirm who you are",
-        "profile" => "See your display name and profile image",
-        "email" => "See your verified email address",
-        "phone" => "See your verified phone number",
-        "organizations" => "See which organizations you belong to",
-        "directory.read" => "See your teammates, their roles, tags and trust",
-        "directory.write" => "Change directory entries in your organizations",
-        "silicons.read" => "See the Silicons you have access to",
-        "offline_access" => "Stay signed in when you are not using the application",
-        _ => "",
-    }
-}
-
-/// Renders the consent screen.
-///
-/// A plain `<form method="post">`, deliberately. The decision endpoint answers
-/// `302` to the application's registered redirect URI, and only a top-level
-/// form navigation lets the browser follow that correctly — `fetch` with
-/// `redirect: "manual"` returns an opaque response even same-origin, and
-/// `redirect: "follow"` would consume the authorization code in a subresource
-/// request that the application could not turn into a session.
-///
-/// Because a form cannot set request headers, the CSRF token and a
-/// server-minted idempotency key travel as hidden fields. The handler lifts
-/// both into a header map and validates them with exactly the same code as
-/// the JSON path.
-fn consent_page(
-    display_name: &str,
-    app_id: &str,
-    scopes: &[String],
-    request_id: Uuid,
-    csrf_token: &str,
-) -> String {
-    let name = escape_html(display_name);
-
-    let mut scope_items = String::new();
-    for scope in scopes {
-        let description = describe_scope(scope);
-        scope_items.push_str("<li class=\"scope\"><code>");
-        scope_items.push_str(&escape_html(scope));
-        scope_items.push_str("</code>");
-        if !description.is_empty() {
-            scope_items.push_str("<span>");
-            scope_items.push_str(&escape_html(description));
-            scope_items.push_str("</span>");
+/// The authentication frontend owns the prompt, and `<auth_base_url>/login` is
+/// the address UNDERSTANDING.md gives for it. The original request is carried
+/// across unchanged so the frontend can finish the login it was asked for.
+fn sign_in_location(state: &ApiState, query: &LoginQuery) -> Result<String, ApiError> {
+    let mut location = state
+        .settings
+        .server
+        .auth_base_url
+        .join("login")
+        .map_err(|_| ApiError::internal("login_sign_in_url"))?;
+    {
+        let mut pairs = location.query_pairs_mut();
+        if let Some(app_id) = &query.app_id {
+            pairs.append_pair("app_id", app_id);
         }
-        scope_items.push_str("</li>");
+        if let Some(redirect_uri) = &query.redirect_uri {
+            pairs.append_pair("redirect_uri", redirect_uri);
+        }
+        if let Some(org_id) = &query.org_id {
+            pairs.append_pair("org_id", org_id);
+        }
     }
-
-    // A form cannot set `Idempotency-Key`, so one is minted here and bound to
-    // this rendering. Re-submitting the same page replays rather than
-    // re-deciding, which is what a browser back button will do.
-    let idempotency_key = format!("consent-{request_id}");
-
-    format!(
-        include_str!("consent.html"),
-        name = name,
-        app_id = escape_html(app_id),
-        scope_items = scope_items,
-        request_id = request_id,
-        csrf_token = escape_html(csrf_token),
-        idempotency_key = escape_html(&idempotency_key),
-    )
+    Ok(location.to_string())
 }
 
-fn consent_html_response(html: String) -> Response {
+/// Reports what became of a token that was shown rather than delivered.
+///
+/// The page that shows a token cannot run a script -- there is no `script-src`
+/// at all -- so it carries a meta refresh onto this route timed to the token's
+/// expiry. By then the token has either been spent, in which case the login
+/// worked, or it has not, in which case it is gone.
+pub(super) async fn login_status(
+    State(state): State<ApiState>,
+    session: BrowserSession,
+    Query(query): Query<LoginStatusQuery>,
+) -> Result<Response, ApiError> {
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(session.carbon_id))
+        .await
+        .map_err(|_| ApiError::internal("login_status_context"))?;
+    // Three outcomes, not two: spent, still live, or actually expired. The
+    // page's own refresh fires just after the token's lifetime, so the normal
+    // arrival here is settled -- but somebody who opens this URL early should
+    // not be told a working token is dead.
+    let outcome = sqlx::query_as::<_, (bool, bool)>(
+        r"
+        SELECT code.consumed_at IS NOT NULL AS spent,
+               code.expires_at > transaction_timestamp() AS live
+        FROM iam.oauth_authorization_requests AS request
+        JOIN iam.oauth_authorization_codes AS code
+          ON code.authorization_request_id = request.id
+        WHERE request.id = $1
+          AND request.subject_principal_id = $2
+        ",
+    )
+    .bind(query.request)
+    .bind(session.carbon_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("login_status_lookup"))?
+    .ok_or_else(ApiError::not_found)?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("login_status_commit"))?;
+    let (spent, live) = outcome;
+    Ok(match (spent, live) {
+        (true, _) => login_page(
+            "Authenticated",
+            "Authenticated successfully.",
+            "The application exchanged your token and signed you in.",
+            "",
+            "You can close this page.",
+            None,
+        ),
+        (false, true) => login_page(
+            "Waiting",
+            "Still waiting.",
+            "This token has not been used yet, and has not run out.",
+            "",
+            "Leave this page open; it will say whether the login completed.",
+            Some(query.request),
+        ),
+        (false, false) => login_page(
+            "Token expired",
+            "Token expired.",
+            "This token was not used before it ran out, so it is no longer valid.",
+            "",
+            "Start the login again to get a new one.",
+            None,
+        ),
+    })
+}
+
+/// Renders one of the login pages.
+///
+/// `token_section` is pre-escaped markup rather than a value because only the
+/// token page has one; every other caller passes an empty string. When
+/// `refresh_to` is set the page reloads onto the status route as the token
+/// expires.
+fn login_page(
+    title: &str,
+    heading: &str,
+    lead: &str,
+    token_section: &str,
+    note: &str,
+    refresh_to: Option<Uuid>,
+) -> Response {
+    let refresh = match refresh_to {
+        Some(request_id) => format!(
+            "<meta http-equiv=\"refresh\" content=\"{AUTHORIZATION_CODE_DISPLAY_SECONDS};url=/api/v1/login/status?request={request_id}\">"
+        ),
+        None => String::new(),
+    };
+    let html = format!(
+        include_str!("login_token.html"),
+        refresh = refresh,
+        title = escape_html(title),
+        heading = escape_html(heading),
+        lead = escape_html(lead),
+        token_section = token_section,
+        note = escape_html(note),
+    );
+    login_html_response(html)
+}
+
+fn login_html_response(html: String) -> Response {
     let mut response = (StatusCode::OK, Html(html)).into_response();
     response
         .headers_mut()
@@ -648,15 +825,13 @@ fn consent_html_response(html: String) -> Response {
     response.headers_mut().insert(
         http::HeaderName::from_static("content-security-policy"),
         HeaderValue::from_static(concat!(
-            // `form-action 'self'` is the whole reason the consent decision can
-            // be a plain form post. `style-src 'self'` lets the page use the
-            // product's stylesheet; there is deliberately still no `script-src`,
-            // so this page cannot execute anything at all.
+            // `style-src 'self'` lets the page use the product's stylesheet.
+            // There is deliberately no `script-src` at all, so this page cannot
+            // execute anything -- which is why expiry is a meta refresh.
             "default-src 'none'; ",
             "style-src 'self'; ",
             "img-src 'self' data:; ",
             "font-src 'self'; ",
-            "form-action 'self'; ",
             "frame-ancestors 'none'; ",
             "base-uri 'none'",
         )),
@@ -668,238 +843,29 @@ fn consent_html_response(html: String) -> Response {
     response
 }
 
-/// A consent decision, submitted either as JSON or as a browser form.
+/// Trades a short-lived token, or a refresh token, for a session.
 ///
-/// The JSON path is the original contract and is untouched: headers carry
-/// `X-CSRF-Token` and `Idempotency-Key`, and the body carries the decision.
-///
-/// The form path exists because the consent screen must be a real
-/// `<form method="post">`. The endpoint answers `302` to the application's
-/// registered redirect URI, and only a top-level form navigation lets the
-/// browser follow that into a working session — `fetch` with
-/// `redirect: "manual"` yields an opaque response even same-origin, and
-/// `redirect: "follow"` would burn the authorization code on a subresource
-/// request the application cannot turn into a session.
-///
-/// A form cannot set request headers, so on that path the CSRF token and the
-/// idempotency key arrive as fields and are lifted into a synthetic header map
-/// here. Nothing downstream knows the difference: `require_csrf` and
-/// `idempotency::claim` see exactly the same headers either way, so there is
-/// one implementation of each check rather than two.
-pub(super) struct ConsentSubmission {
-    pub(super) headers: HeaderMap,
-    pub(super) input: ConsentDecision,
-}
-
-impl<S: Send + Sync> axum::extract::FromRequest<S> for ConsentSubmission {
-    type Rejection = ApiError;
-
-    async fn from_request(
-        request: axum::extract::Request,
-        state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        let headers = request.headers().clone();
-        let is_form = headers
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| {
-                value
-                    .split(';')
-                    .next()
-                    .is_some_and(|mime| mime.trim().eq_ignore_ascii_case(FORM_CONTENT_TYPE))
-            });
-
-        if !is_form {
-            let Json(input) = Json::<ConsentDecision>::from_request(request, state)
-                .await
-                .map_err(|_| ApiError::validation("body", "must be a valid consent decision"))?;
-            return Ok(Self { headers, input });
-        }
-
-        let Form(input) = Form::<ConsentDecision>::from_request(request, state)
-            .await
-            .map_err(|_| ApiError::validation("body", "must be a valid consent decision"))?;
-
-        let mut headers = headers;
-        promote_field(
-            &mut headers,
-            "x-csrf-token",
-            input.csrf_token.as_deref(),
-            "csrf_token",
-        )?;
-        promote_field(
-            &mut headers,
-            "idempotency-key",
-            input.idempotency_key.as_deref(),
-            "idempotency_key",
-        )?;
-        Ok(Self { headers, input })
-    }
-}
-
-const FORM_CONTENT_TYPE: &str = "application/x-www-form-urlencoded";
-
-/// Copies a form field into the header map the shared checks read from.
-///
-/// A field that is absent, empty, or not header-safe is rejected here rather
-/// than being silently dropped into a "missing header" error further down,
-/// where the cause would be much harder to see.
-fn promote_field(
-    headers: &mut HeaderMap,
-    header_name: &'static str,
-    value: Option<&str>,
-    field: &'static str,
-) -> Result<(), ApiError> {
-    let raw = value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ApiError::validation(field, "is required on a form submission"))?;
-    let encoded = HeaderValue::from_str(raw)
-        .map_err(|_| ApiError::validation(field, "must contain only printable ASCII"))?;
-    headers.insert(http::HeaderName::from_static(header_name), encoded);
-    Ok(())
-}
-
-pub(super) async fn decide_consent(
-    State(state): State<ApiState>,
-    session: BrowserSession,
-    submission: ConsentSubmission,
-) -> Result<Response, ApiError> {
-    let ConsentSubmission { headers, input } = submission;
-    let headers = &headers;
-    require_csrf(headers, &session)?;
-    if !matches!(input.decision.as_str(), "approve" | "deny") {
-        return Err(ApiError::validation("decision", "must be approve or deny"));
-    }
-    let canonical = serde_json::to_vec(&json!({
-        "authorization_transaction_id": input.authorization_request_id,
-        "decision": input.decision,
-    }))
-    .map_err(|_| ApiError::internal("oauth_decision_canonical"))?;
-    let mut transaction = context::begin(state.db(), DatabaseContext::principal(session.carbon_id))
-        .await
-        .map_err(|_| ApiError::internal("oauth_decision_context"))?;
-    let caller_scope = format!("browser-session:{}", session.session_id);
-    let claim = idempotency::claim::<RedirectReplay>(
-        &mut transaction,
-        &state.crypto,
-        headers,
-        &caller_scope,
-        "POST /api/v1/oauth/authorize/decisions",
-        &canonical,
-        true,
-    )
-    .await?;
-    if let Claim::Replay { status, response } = claim {
-        transaction
-            .commit()
-            .await
-            .map_err(|_| ApiError::internal("oauth_decision_replay"))?;
-        let status = StatusCode::from_u16(status)
-            .map_err(|_| ApiError::internal("oauth_decision_replay_status"))?;
-        return redirect_response(status, &response.location, true);
-    }
-    let Claim::Acquired(idempotency_id) = claim else {
-        return Err(ApiError::internal("oauth_decision_idempotency"));
-    };
-    let request =
-        load_authorization_request(&mut transaction, input.authorization_request_id, true).await?;
-    if request.authentication_session_id != session.session_id
-        || request.subject_principal_id != session.carbon_id
-    {
-        return Err(ApiError::not_found());
-    }
-    if request.expires_at <= OffsetDateTime::now_utc() {
-        return Err(ApiError::gone("authorization_request_expired"));
-    }
-    if request.status != "pending" {
-        return Err(ApiError::conflict("authorization_request_already_decided"));
-    }
-    let location = if input.decision == "approve" {
-        approve_request(&mut transaction, &state, &request).await?
-    } else {
-        sqlx::query(
-            r"
-            UPDATE iam.oauth_authorization_requests
-            SET status = 'denied', decided_at = transaction_timestamp()
-            WHERE id = $1 AND status = 'pending'
-            ",
-        )
-        .bind(request.id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|_| ApiError::internal("oauth_consent_deny"))?;
-        let state_value = decrypt_protocol_value(
-            &state,
-            request.id,
-            request.encryption_key_version,
-            &request.state_encryption_nonce,
-            &request.state_ciphertext,
-        )?;
-        append_redirect_parameters(
-            &request.redirect_uri,
-            &[("error", "access_denied"), ("state", &state_value)],
-        )?
-    };
-    events::authentication_event(
-        &mut transaction,
-        request.application_id,
-        Some(session.carbon_id),
-        Some("carbon"),
-        Some(session.session_id),
-        "oauth.authorization",
-        if input.decision == "approve" {
-            "success"
-        } else {
-            "denied"
-        },
-        (input.decision == "deny").then_some("access_denied"),
-        json!({ "consent_prompted": true }),
-    )
-    .await?;
-    let replay = RedirectReplay {
-        location: location.clone(),
-    };
-    idempotency::complete(
-        &mut transaction,
-        &state.crypto,
-        idempotency_id,
-        302,
-        &replay,
-        true,
-    )
-    .await?;
-    transaction
-        .commit()
-        .await
-        .map_err(|_| ApiError::internal("oauth_decision_commit"))?;
-    redirect_response(StatusCode::FOUND, &location, false)
-}
-
-pub(super) async fn token(
+/// The application authenticates itself the same way in both cases, so which
+/// one it is asking for is simply which credential it presented. Presenting
+/// both, or neither, is a bad request rather than a guess.
+pub(super) async fn app_tokens(
     State(state): State<ApiState>,
     client: ApplicationClient,
     headers: HeaderMap,
-    Form(form): Form<TokenForm>,
+    Form(form): Form<AppTokenForm>,
 ) -> Result<Response, ApiError> {
-    if form.client_id.as_deref() != Some(client.app_id.as_str()) {
+    if form.app_id.as_deref() != Some(client.app_id.as_str()) {
         return Err(ApiError::invalid_client());
     }
-    if !matches!(
-        form.grant_type.as_str(),
-        "authorization_code" | "refresh_token"
-    ) {
+    if form.slt.is_some() == form.refresh_token.is_some() {
         return Err(ApiError::bad_request(
-            "unsupported_grant_type",
-            "The grant type is not supported.",
+            "invalid_request",
+            "Present exactly one of slt and refresh_token.",
         ));
     }
     let canonical = serde_json::to_vec(&json!({
-        "grant_type": form.grant_type,
-        "client_id": form.client_id,
-        "code": form.code,
-        "redirect_uri": form.redirect_uri,
-        "code_verifier": form.code_verifier,
+        "app_id": form.app_id,
+        "slt": form.slt,
         "refresh_token": form.refresh_token,
     }))
     .map_err(|_| ApiError::internal("oauth_token_canonical"))?;
@@ -915,7 +881,7 @@ pub(super) async fn token(
         &state.crypto,
         &headers,
         &caller_scope,
-        "POST /api/v1/oauth/token",
+        "POST /api/v1/app-auth/tokens",
         &canonical,
         true,
     )
@@ -934,7 +900,7 @@ pub(super) async fn token(
     let Claim::Acquired(idempotency_id) = claim else {
         return Err(ApiError::internal("oauth_token_idempotency"));
     };
-    let outcome = if form.grant_type == "authorization_code" {
+    let outcome = if form.slt.is_some() {
         RefreshExchange::Issued(Box::new(
             exchange_authorization_code(&mut transaction, &state, &client, &form).await?,
         ))
@@ -1088,7 +1054,7 @@ async fn introspect_refresh_token(
                family.id AS family_id,
                family.oauth_consent_grant_id AS consent_grant_id,
                family.subject_principal_id, principal.kind::text AS subject_kind,
-               organization.org_id, grant.membership_id,
+               organization.org_id, consent.membership_id,
                family.authentication_session_id, application.app_id,
                token.created_at,
                LEAST(token.expires_at, family.absolute_expires_at,
@@ -1111,13 +1077,13 @@ async fn introspect_refresh_token(
          AND session.status = 'active'
          AND session.idle_expires_at > transaction_timestamp()
          AND session.absolute_expires_at > transaction_timestamp()
-        JOIN iam.oauth_consent_grants AS grant
-          ON grant.id = family.oauth_consent_grant_id
-         AND grant.application_id = family.client_application_id
-         AND grant.subject_principal_id = family.subject_principal_id
-         AND grant.subject_kind = principal.kind
-         AND grant.parent_authentication_session_id = family.authentication_session_id
-         AND grant.status = 'active'
+        JOIN iam.oauth_consent_grants AS consent
+          ON consent.id = family.oauth_consent_grant_id
+         AND consent.application_id = family.client_application_id
+         AND consent.subject_principal_id = family.subject_principal_id
+         AND consent.subject_kind = principal.kind
+         AND consent.parent_authentication_session_id = family.authentication_session_id
+         AND consent.status = 'active'
         JOIN iam.applications AS application
           ON application.id = family.client_application_id
          AND application.review_status = 'verified'
@@ -1128,11 +1094,11 @@ async fn introspect_refresh_token(
          AND application_principal.status = 'active'
          AND application_principal.auth_epoch = $4
         LEFT JOIN iam.organizations AS organization
-          ON organization.id = grant.organization_id
+          ON organization.id = consent.organization_id
          AND organization.status = 'active'
         LEFT JOIN iam.organization_memberships AS membership
-          ON membership.id = grant.membership_id
-         AND membership.organization_id = grant.organization_id
+          ON membership.id = consent.membership_id
+         AND membership.organization_id = consent.organization_id
          AND membership.principal_id = family.subject_principal_id
          AND membership.principal_kind = principal.kind
          AND membership.status = 'active'
@@ -1142,7 +1108,7 @@ async fn introspect_refresh_token(
           AND token.consumed_at IS NULL
           AND token.revoked_at IS NULL
           AND token.expires_at > transaction_timestamp()
-          AND (grant.organization_id IS NULL OR membership.id IS NOT NULL)
+          AND (consent.organization_id IS NULL OR membership.id IS NOT NULL)
         LIMIT 1
         ",
     )
@@ -1282,23 +1248,15 @@ async fn exchange_authorization_code(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     client: &ApplicationClient,
-    form: &TokenForm,
+    form: &AppTokenForm,
 ) -> Result<TokenResponse, ApiError> {
     let code = form
-        .code
+        .slt
         .as_ref()
         .filter(|value| value.starts_with("oac_") && value.len() == 47)
         .ok_or_else(|| {
-            ApiError::bad_request("invalid_grant", "The authorization code is invalid.")
+            ApiError::bad_request("invalid_grant", "The short-lived token is invalid.")
         })?;
-    let redirect_uri = form
-        .redirect_uri
-        .as_deref()
-        .ok_or_else(|| ApiError::bad_request("invalid_request", "redirect_uri is required."))?;
-    let verifier = form
-        .code_verifier
-        .as_deref()
-        .ok_or_else(|| ApiError::bad_request("invalid_request", "code_verifier is required."))?;
     let supplied = SecretString::from(code.to_owned());
     let digests = state
         .crypto
@@ -1315,7 +1273,7 @@ async fn exchange_authorization_code(
     if !lock_current_application_client(transaction, client).await? {
         return Err(ApiError::bad_request(
             "invalid_grant",
-            "The authorization code is invalid.",
+            "The short-lived token is invalid.",
         ));
     }
     let row = sqlx::query_as::<_, AuthorizationCodeRow>(AUTHORIZATION_CODE_LOOKUP_QUERY)
@@ -1326,7 +1284,7 @@ async fn exchange_authorization_code(
         .await
         .map_err(|_| ApiError::internal("authorization_code_lookup"))?
         .ok_or_else(|| {
-            ApiError::bad_request("invalid_grant", "The authorization code is invalid.")
+            ApiError::bad_request("invalid_grant", "The short-lived token is invalid.")
         })?;
     let expected = SecretDigest::from_parts(row.digest_key_version, &row.code_digest)
         .ok_or_else(|| ApiError::internal("authorization_code_shape"))?;
@@ -1334,8 +1292,6 @@ async fn exchange_authorization_code(
         .crypto
         .verify_secret(DigestPurpose::AuthorizationCode, &supplied, expected)
         .map_err(|_| ApiError::internal("authorization_code_verify"))?
-        || row.redirect_uri != redirect_uri
-        || !validation::pkce_matches(verifier, &row.pkce_code_challenge)
         || (row.organization_id.is_some() && row.membership_authz_epoch.is_none())
     {
         return Err(ApiError::bad_request(
@@ -1388,7 +1344,7 @@ async fn exchange_authorization_code(
         "oauth.token_exchange",
         "success",
         None,
-        json!({ "grant_type": "authorization_code", "scope_count": scopes.len() }),
+        json!({ "credential": "short_lived_token", "scope_count": scopes.len() }),
     )
     .await?;
     Ok(response)
@@ -1398,20 +1354,22 @@ async fn lock_current_application_client(
     transaction: &mut Transaction<'_, Postgres>,
     client: &ApplicationClient,
 ) -> Result<bool, ApiError> {
-    let locked = sqlx::query_scalar::<_, Uuid>(CURRENT_APPLICATION_CLIENT_LOCK_QUERY)
+    // A scalar function always answers with a row, so the absence of a match
+    // arrives as NULL rather than as no row at all.
+    let locked = sqlx::query_scalar::<_, Option<Uuid>>(CURRENT_APPLICATION_CLIENT_LOCK_QUERY)
         .bind(client.application_id)
         .bind(client.auth_epoch)
         .fetch_optional(&mut **transaction)
         .await
         .map_err(|_| ApiError::internal("oauth_client_authority_lock"))?;
-    Ok(locked.is_some())
+    Ok(locked.flatten().is_some())
 }
 
 async fn exchange_refresh_token(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     client: &ApplicationClient,
-    form: &TokenForm,
+    form: &AppTokenForm,
 ) -> Result<RefreshExchange, ApiError> {
     let raw = form
         .refresh_token
@@ -1654,14 +1612,14 @@ fn refresh_grant_authority_is_current(
     application_id: Uuid,
     candidate: &RefreshCandidateRow,
 ) -> bool {
-    authority.is_some_and(|grant| {
-        grant.application_id == application_id
-            && grant.subject_principal_id == candidate.subject_principal_id
-            && grant.subject_kind == candidate.subject_kind
-            && grant.organization_id == candidate.organization_id
-            && grant.membership_id == candidate.membership_id
-            && grant.parent_authentication_session_id == candidate.authentication_session_id
-            && grant.status == "active"
+    authority.is_some_and(|consent| {
+        consent.application_id == application_id
+            && consent.subject_principal_id == candidate.subject_principal_id
+            && consent.subject_kind == candidate.subject_kind
+            && consent.organization_id == candidate.organization_id
+            && consent.membership_id == candidate.membership_id
+            && consent.parent_authentication_session_id == candidate.authentication_session_id
+            && consent.status == "active"
     })
 }
 
@@ -1924,10 +1882,10 @@ async fn approve_request(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     request: &AuthorizationRequestRow,
-) -> Result<String, ApiError> {
+) -> Result<SecretString, ApiError> {
     let scopes = authorization_request_scopes(transaction, request.id).await?;
     let grant_id = Uuid::now_v7();
-    let grant = sqlx::query_as::<_, (Uuid, i64)>(
+    let consent = sqlx::query_as::<_, (Uuid, i64)>(
         r"
         INSERT INTO iam.oauth_consent_grants (
             id, application_id, subject_principal_id, subject_kind,
@@ -1952,7 +1910,7 @@ async fn approve_request(
     .await
     .map_err(|_| ApiError::internal("oauth_consent_grant_upsert"))?;
     sqlx::query("DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id = $1")
-        .bind(grant.0)
+        .bind(consent.0)
         .execute(&mut **transaction)
         .await
         .map_err(|_| ApiError::internal("oauth_consent_scope_clear"))?;
@@ -1960,7 +1918,7 @@ async fn approve_request(
         sqlx::query(
             "INSERT INTO iam.oauth_consent_grant_scopes (consent_grant_id, scope) VALUES ($1, $2)",
         )
-        .bind(grant.0)
+        .bind(consent.0)
         .bind(scope)
         .execute(&mut **transaction)
         .await
@@ -2017,17 +1975,7 @@ async fn approve_request(
     .execute(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("authorization_code_insert"))?;
-    let state_value = decrypt_protocol_value(
-        state,
-        request.id,
-        request.encryption_key_version,
-        &request.state_encryption_nonce,
-        &request.state_ciphertext,
-    )?;
-    append_redirect_parameters(
-        &request.redirect_uri,
-        &[("code", raw_code.expose_secret()), ("state", &state_value)],
-    )
+    Ok(raw_code)
 }
 
 async fn load_authorization_request(
@@ -2038,16 +1986,11 @@ async fn load_authorization_request(
     let request = if for_update {
         sqlx::query_as::<_, AuthorizationRequestRow>(
             r"
-            SELECT request.id, request.application_id, redirect.redirect_uri,
+            SELECT request.id, request.application_id,
                    request.authentication_session_id, request.subject_principal_id,
                    request.subject_kind::text AS subject_kind,
-                   request.organization_id, request.membership_id,
-                   request.state_ciphertext, request.state_encryption_nonce,
-                   request.encryption_key_version,
-                   request.status, request.expires_at
+                   request.organization_id, request.membership_id
             FROM iam.oauth_authorization_requests AS request
-            JOIN iam.application_redirect_uris AS redirect
-              ON redirect.id = request.redirect_uri_id
             WHERE request.id = $1
             FOR UPDATE OF request
             ",
@@ -2058,16 +2001,11 @@ async fn load_authorization_request(
     } else {
         sqlx::query_as::<_, AuthorizationRequestRow>(
             r"
-            SELECT request.id, request.application_id, redirect.redirect_uri,
+            SELECT request.id, request.application_id,
                    request.authentication_session_id, request.subject_principal_id,
                    request.subject_kind::text AS subject_kind,
-                   request.organization_id, request.membership_id,
-                   request.state_ciphertext, request.state_encryption_nonce,
-                   request.encryption_key_version,
-                   request.status, request.expires_at
+                   request.organization_id, request.membership_id
             FROM iam.oauth_authorization_requests AS request
-            JOIN iam.application_redirect_uris AS redirect
-              ON redirect.id = request.redirect_uri_id
             WHERE request.id = $1
             ",
         )
@@ -2104,7 +2042,7 @@ pub(super) async fn authorized_code_exchange_scopes(
 ) -> Result<Vec<String>, ApiError> {
     // The caller holds the authorization-request and consent-grant row locks.
     // Request scopes are immutable while that request exists, and every
-    // consent-scope replacement first locks its grant. Lock the remaining
+    // consent-scope replacement first locks its consent. Lock the remaining
     // independently mutable authority: the active platform approval rows.
     let requested = authorization_request_scopes(transaction, request_id).await?;
     let currently_authorized = sqlx::query_scalar::<_, String>(CODE_EXCHANGE_ACTIVE_SCOPES_QUERY)
@@ -2127,33 +2065,6 @@ fn scopes_retain_exact_authority(requested: &[String], currently_authorized: &[S
     requested == currently_authorized
 }
 
-async fn active_consent_scopes(
-    transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
-    subject_id: Uuid,
-    organization_id: Option<Uuid>,
-) -> Result<Vec<String>, ApiError> {
-    sqlx::query_scalar::<_, String>(
-        r"
-        SELECT scope.scope
-        FROM iam.oauth_consent_grants AS grant
-        JOIN iam.oauth_consent_grant_scopes AS scope ON scope.consent_grant_id = grant.id
-        JOIN iam.application_approved_scopes AS approved
-          ON approved.application_id = grant.application_id
-         AND approved.scope = scope.scope AND approved.revoked_at IS NULL
-        WHERE grant.application_id = $1 AND grant.subject_principal_id = $2
-          AND grant.organization_id IS NOT DISTINCT FROM $3 AND grant.status = 'active'
-        ORDER BY scope.scope
-        ",
-    )
-    .bind(application_id)
-    .bind(subject_id)
-    .bind(organization_id)
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(|_| ApiError::internal("active_consent_scopes"))
-}
-
 async fn refresh_family_scopes(
     transaction: &mut Transaction<'_, Postgres>,
     family_id: Uuid,
@@ -2166,14 +2077,14 @@ async fn refresh_family_scopes(
         JOIN iam.refresh_token_families AS family
           ON family.id = snapshot.family_id
          AND family.oauth_consent_grant_id = snapshot.consent_grant_id
-        JOIN iam.oauth_consent_grants AS grant
-          ON grant.id = snapshot.consent_grant_id
-         AND grant.status = 'active'
+        JOIN iam.oauth_consent_grants AS consent
+          ON consent.id = snapshot.consent_grant_id
+         AND consent.status = 'active'
         JOIN iam.oauth_consent_grant_scopes AS consent_scope
-          ON consent_scope.consent_grant_id = grant.id
+          ON consent_scope.consent_grant_id = consent.id
          AND consent_scope.scope = snapshot.scope
         JOIN iam.application_approved_scopes AS approved
-          ON approved.application_id = grant.application_id
+          ON approved.application_id = consent.application_id
          AND approved.scope = snapshot.scope
          AND approved.revoked_at IS NULL
         WHERE snapshot.family_id = $1
@@ -2187,20 +2098,6 @@ async fn refresh_family_scopes(
     .fetch_all(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("oauth_refresh_family_scopes"))
-}
-
-async fn consent_covers(
-    transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
-    subject_id: Uuid,
-    organization_id: Option<Uuid>,
-    requested: &[String],
-) -> Result<bool, ApiError> {
-    let granted = active_consent_scopes(transaction, application_id, subject_id, organization_id)
-        .await?
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    Ok(requested.iter().all(|scope| granted.contains(scope)))
 }
 
 async fn revoke_access_token(
@@ -2390,29 +2287,6 @@ async fn protocol_event(
     Ok(())
 }
 
-fn decrypt_protocol_value(
-    state: &ApiState,
-    request_id: Uuid,
-    key_version: i16,
-    nonce: &[u8],
-    ciphertext: &[u8],
-) -> Result<String, ApiError> {
-    let nonce =
-        <[u8; 12]>::try_from(nonce).map_err(|_| ApiError::internal("oauth_protocol_nonce"))?;
-    let plaintext = state
-        .crypto
-        .decrypt(
-            EncryptionContext::global(ProtectedField::ProviderCredential, request_id),
-            &EncryptedValue {
-                key_version,
-                nonce,
-                ciphertext: ciphertext.to_vec(),
-            },
-        )
-        .map_err(|_| ApiError::internal("oauth_protocol_decrypt"))?;
-    String::from_utf8(plaintext.to_vec()).map_err(|_| ApiError::internal("oauth_protocol_utf8"))
-}
-
 fn append_redirect_parameters(base: &str, values: &[(&str, &str)]) -> Result<String, ApiError> {
     let mut url = Url::parse(base).map_err(|_| ApiError::internal("redirect_uri_stored"))?;
     {
@@ -2516,14 +2390,20 @@ fn escape_html(value: &str) -> String {
 mod tests {
     use axum::http::header;
 
+    /// Locks that moved into owner-rights functions are asserted against the
+    /// migration that defines them, since a share lock applies a table's
+    /// UPDATE policies and an application does not manage itself.
+    const CLIENT_LOCK_MIGRATION: &str =
+        include_str!("../../../migrations/0057_short_lived_token_login.sql");
+
     use super::{
         AUTHORIZATION_CODE_LOOKUP_QUERY, CODE_EXCHANGE_ACTIVE_SCOPES_QUERY,
         CURRENT_APPLICATION_CLIENT_LOCK_QUERY, OAUTH_REFRESH_INSERT_QUERY,
         REFRESH_CREDENTIAL_LOCK_QUERY, REFRESH_GRANT_AUTHORITY_LOCK_QUERY,
         REFRESH_ISSUANCE_SCOPES_QUERY, REFRESH_MEMBERSHIP_AUTHORITY_LOCK_QUERY,
         REFRESH_REUSE_ACCESS_REVOCATION_QUERY, REFRESH_SESSION_AUTHORITY_LOCK_QUERY,
-        REFRESH_TOKEN_CANDIDATE_QUERY, append_redirect_parameters, consent_html_response,
-        empty_idempotent_response, escape_html, scopes_retain_exact_authority,
+        REFRESH_TOKEN_CANDIDATE_QUERY, append_redirect_parameters, empty_idempotent_response,
+        escape_html, login_html_response, scopes_retain_exact_authority,
     };
 
     #[test]
@@ -2547,8 +2427,8 @@ mod tests {
     }
 
     #[test]
-    fn consent_html_is_non_cacheable_and_scriptless() {
-        let response = consent_html_response("<!doctype html>".to_owned());
+    fn login_html_is_non_cacheable_and_scriptless() {
+        let response = login_html_response("<!doctype html>".to_owned());
         assert_eq!(
             response.headers().get(header::CACHE_CONTROL),
             Some(&http::HeaderValue::from_static("no-store"))
@@ -2589,25 +2469,34 @@ mod tests {
 
     #[test]
     fn authorization_code_lookup_binds_the_current_parent_session_authority() {
+        // The lock itself moved into an owner-rights function, because a
+        // share lock applies the table's UPDATE policies and an application
+        // does not manage itself. The conditions it holds are asserted where
+        // they now live.
         for required_fragment in [
             "principal.status = 'active'",
-            "principal.auth_epoch = $2",
+            "principal.auth_epoch = p_auth_epoch",
             "application.review_status = 'verified'",
             "application.deleted_at IS NULL",
             "FOR SHARE OF application, principal",
         ] {
             assert!(
-                CURRENT_APPLICATION_CLIENT_LOCK_QUERY.contains(required_fragment),
+                CLIENT_LOCK_MIGRATION.contains(required_fragment),
                 "application-client lock is missing `{required_fragment}`"
             );
         }
+        assert!(
+            CURRENT_APPLICATION_CLIENT_LOCK_QUERY
+                .contains("iam_private.lock_current_application_client"),
+            "the client lock should go through the owner-rights function"
+        );
         for required_fragment in [
             "session.subject_principal_id = request.subject_principal_id",
             "session.subject_kind = request.subject_kind",
             "session.subject_auth_epoch = principal.auth_epoch",
             "session.status = 'active'",
-            "grant.parent_authentication_session_id = request.authentication_session_id",
-            "FOR UPDATE OF code, request, grant",
+            "consent.parent_authentication_session_id = request.authentication_session_id",
+            "FOR UPDATE OF code, request, consent",
             "FOR SHARE OF principal, session",
         ] {
             assert!(
@@ -2632,11 +2521,12 @@ mod tests {
             &["organizations.read".to_owned()],
             &requested
         ));
+        // The approved-scope ceiling is read and locked through an
+        // owner-rights function: a share lock applies the table's UPDATE
+        // policies, and an application is not its own administrator.
         for required_fragment in [
             "iam.oauth_consent_grant_scopes",
-            "iam.application_approved_scopes",
-            "approved.revoked_at IS NULL",
-            "FOR SHARE OF approved",
+            "iam_private.locked_application_approved_scopes",
         ] {
             assert!(
                 CODE_EXCHANGE_ACTIVE_SCOPES_QUERY.contains(required_fragment),
@@ -2666,7 +2556,7 @@ mod tests {
         for required_fragment in [
             "family.authentication_session_id",
             "family.subject_principal_id",
-            "grant.id AS consent_grant_id",
+            "consent.id AS consent_grant_id",
         ] {
             assert!(
                 REFRESH_TOKEN_CANDIDATE_QUERY.contains(required_fragment),
@@ -2698,9 +2588,9 @@ mod tests {
             );
         }
         for required_fragment in [
-            "grant.subject_kind::text AS subject_kind",
-            "grant.parent_authentication_session_id",
-            "FOR SHARE OF grant",
+            "consent.subject_kind::text AS subject_kind",
+            "consent.parent_authentication_session_id",
+            "FOR SHARE OF consent",
         ] {
             assert!(
                 REFRESH_GRANT_AUTHORITY_LOCK_QUERY.contains(required_fragment),
@@ -2721,13 +2611,22 @@ mod tests {
         for required_fragment in [
             "iam.oauth_refresh_family_scopes",
             "iam.oauth_consent_grant_scopes",
+            "iam_private.locked_application_approved_scopes",
+        ] {
+            assert!(
+                REFRESH_ISSUANCE_SCOPES_QUERY.contains(required_fragment),
+                "refresh scope lock is missing `{required_fragment}`"
+            );
+        }
+        // ... and the conditions it holds are asserted where they now live.
+        for required_fragment in [
             "iam.application_approved_scopes",
             "approved.revoked_at IS NULL",
             "FOR SHARE OF approved",
         ] {
             assert!(
-                REFRESH_ISSUANCE_SCOPES_QUERY.contains(required_fragment),
-                "refresh scope lock is missing `{required_fragment}`"
+                CLIENT_LOCK_MIGRATION.contains(required_fragment),
+                "scope-ceiling lock is missing `{required_fragment}`"
             );
         }
     }

@@ -335,7 +335,6 @@ async fn application_tenancy_and_creator_are_immutable(pool: &PgPool) -> anyhow:
 
 async fn application_lifecycle_and_manual_replay_are_atomic(pool: &PgPool) -> anyhow::Result<()> {
     let replacement_secret_id = Uuid::from_u128(0x132);
-    let replacement_redirect_id = Uuid::from_u128(0x52);
     let event_id = Uuid::from_u128(0x151);
     let recipient_id = Uuid::from_u128(0x152);
     let delivery_id = Uuid::from_u128(0x153);
@@ -382,47 +381,6 @@ async fn application_lifecycle_and_manual_replay_are_atomic(pool: &PgPool) -> an
     ensure!(
         secret_states == [(1, "retired".to_owned()), (2, "active".to_owned())],
         "client-secret rotation did not atomically retire the previous secret"
-    );
-
-    sqlx::query(
-        r"
-        UPDATE iam.application_redirect_uris
-        SET status = 'retired', retired_at = transaction_timestamp()
-        WHERE application_id = $1 AND status IN ('active', 'pending_review')
-        ",
-    )
-    .bind(APP_A_ID)
-    .execute(&mut *transaction)
-    .await?;
-    sqlx::query(
-        r"
-        INSERT INTO iam.application_redirect_uris (
-            id, application_id, redirect_uri, uri_digest
-        ) VALUES ($1, $2, 'https://client.test/new-callback', decode(repeat('52', 32), 'hex'))
-        ",
-    )
-    .bind(replacement_redirect_id)
-    .bind(APP_A_ID)
-    .execute(&mut *transaction)
-    .await?;
-    let redirect_states = sqlx::query_as::<_, (Uuid, String, i64)>(
-        r"
-        SELECT id, status, version
-        FROM iam.application_redirect_uris
-        WHERE application_id = $1
-        ORDER BY created_at, id
-        ",
-    )
-    .bind(APP_A_ID)
-    .fetch_all(&mut *transaction)
-    .await?;
-    ensure!(
-        redirect_states
-            == [
-                (Uuid::from_u128(0x51), "retired".to_owned(), 2),
-                (replacement_redirect_id, "pending_review".to_owned(), 1),
-            ],
-        "redirect replacement did not retain versioned retired history"
     );
 
     sqlx::query(
@@ -716,8 +674,6 @@ async fn application_deletion_revokes_all_client_authority(pool: &PgPool) -> any
                  FROM iam.principals WHERE id = $1)
             AND (SELECT status = 'compromised' AND retired_at IS NOT NULL
                  FROM iam.application_secrets WHERE id = $2)
-            AND (SELECT status = 'retired'
-                 FROM iam.application_redirect_uris WHERE application_id = $1)
             AND (SELECT revoked_at IS NOT NULL
                  FROM iam.application_approved_scopes
                  WHERE application_id = $1 AND scope = 'organizations.read')
@@ -839,6 +795,10 @@ async fn application_scope_revocation_contains_existing_access(
 async fn authorization_code_scope_revocation_fails_closed(pool: &PgPool) -> anyhow::Result<()> {
     let request_id = Uuid::from_u128(0x61);
     let mut transaction = pool.begin().await?;
+    // The ceiling is read through an owner-rights function that answers only
+    // for the application the caller is authenticated as, exactly as the real
+    // exchange runs it.
+    set_application_projection_context(&mut transaction, APP_A_ID, Some(APP_A_ID)).await?;
     let scopes = super::oauth::authorized_code_exchange_scopes(
         &mut transaction,
         request_id,
@@ -876,6 +836,10 @@ async fn authorization_code_scope_revocation_fails_closed(pool: &PgPool) -> anyh
     transaction.rollback().await?;
 
     let mut transaction = pool.begin().await?;
+    // The ceiling is read through an owner-rights function that answers only
+    // for the application the caller is authenticated as, exactly as the real
+    // exchange runs it.
+    set_application_projection_context(&mut transaction, APP_A_ID, Some(APP_A_ID)).await?;
     sqlx::query(
         "DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id = $1 AND scope = 'organizations.read'",
     )
@@ -1406,31 +1370,21 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             transaction_timestamp() + interval '1 day',
             transaction_timestamp() + interval '2 days'
         );
-        INSERT INTO iam.application_redirect_uris (
-            id, application_id, redirect_uri, uri_digest, status, approved_at
-        ) VALUES (
-            '00000000-0000-0000-0000-000000000051',
-            '00000000-0000-0000-0000-000000000011', 'https://client.test/callback',
-            decode(repeat('51', 32), 'hex'), 'active', transaction_timestamp()
-        );
         INSERT INTO iam.application_requested_scopes (application_id, scope)
         VALUES ('00000000-0000-0000-0000-000000000011', 'organizations.read');
         INSERT INTO iam.application_approved_scopes (application_id, scope, approved_by_carbon_id)
         VALUES ('00000000-0000-0000-0000-000000000011', 'organizations.read',
                 '00000000-0000-0000-0000-000000000001');
         INSERT INTO iam.oauth_authorization_requests (
-            id, application_id, redirect_uri_id, authentication_session_id,
-            subject_principal_id, subject_kind, state_digest, state_ciphertext,
-            state_encryption_nonce, encryption_key_version, pkce_code_challenge,
+            id, application_id, redirect_uri, authentication_session_id,
+            subject_principal_id, subject_kind,
             status, expires_at, decided_at
         ) VALUES (
             '00000000-0000-0000-0000-000000000061',
             '00000000-0000-0000-0000-000000000011',
-            '00000000-0000-0000-0000-000000000051',
+            'https://client.test/callback',
             '00000000-0000-0000-0000-000000000041',
-            '00000000-0000-0000-0000-000000000001', 'carbon',
-            decode(repeat('61', 32), 'hex'), decode(repeat('62', 17), 'hex'),
-            decode(repeat('63', 12), 'hex'), 1, repeat('A', 43), 'approved',
+            '00000000-0000-0000-0000-000000000001', 'carbon', 'approved',
             transaction_timestamp() + interval '2 minutes', transaction_timestamp()
         );
         INSERT INTO iam.oauth_authorization_request_scopes (
