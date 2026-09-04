@@ -83,14 +83,16 @@ iam silicon set-webhook builder:acme --url https://example.com/hooks
 # Applications
 iam app create billing --name Billing \
     --base-url https://billing.example.com \
-    --webhook-url https://billing.example.com/hooks
+    --webhook-url https://billing.example.com/hooks \
+    --webhook-secret "$WEBHOOK_SECRET"
 iam app rotate-secret 'acme>billing' --step-up "$TOKEN"
-iam app rotate-webhook-secret 'acme>billing' --step-up "$TOKEN"
+iam app rotate-webhook-secret 'acme>billing' \
+    --webhook-secret "$NEW_WEBHOOK_SECRET" --step-up "$TOKEN"
 ```
 
-`app create` and `app rotate-webhook-secret` prompt for the caller-chosen
-webhook secret when `--webhook-secret` is omitted. IAM encrypts that value and
-never generates an Application webhook secret.
+`app create` and `app rotate-webhook-secret` require the caller-chosen
+`--webhook-secret`; it appears in each command's generated usage and help.
+IAM encrypts that value and never generates an Application webhook secret.
 
 ## Output
 
@@ -152,7 +154,8 @@ must not collide with a production application in the same organization:
 ```sh
 iam --test "$TEST_ID" app create checkout --org acme --name Checkout \
     --base-url http://127.0.0.1:4100 \
-    --webhook-url https://hooks.example.test/iam
+    --webhook-url https://hooks.example.test/iam \
+    --webhook-secret "$TEST_WEBHOOK_SECRET"
 ```
 
 Or import an existing production application by canonical ID. Import creates
@@ -288,11 +291,12 @@ event ID, and event schema locally:
 ```sh
 iam app verify-webhook delivery.json \
     --event-id "$EVENT_ID" --timestamp "$TIMESTAMP" \
-    --key-version "$KEY_VERSION" --signature "$SIGNATURE"
+    --key-version "$KEY_VERSION" --signature "$SIGNATURE" \
+    --webhook-secret "$WEBHOOK_SECRET"
 ```
 
-The signing secret is prompted for when `--webhook-secret` is omitted. For a
-test delivery, add `--test "$TEST_ID"`; the CLI then also compares the wrapped
+The signing secret is required explicitly. For a test delivery, add
+`--test "$TEST_ID"`; the CLI then also compares the wrapped
 `testing_key` in constant time with that environment's locally stored key. A
 wrapped test event without `--test`, a production event with `--test`, or a key
 for a different environment is rejected. Successful output is the normalized
