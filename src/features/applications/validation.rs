@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use secrecy::ExposeSecret as _;
 use url::Url;
 
 use super::{error::ApiError, model};
@@ -9,6 +10,8 @@ const MAX_OBO_ENDPOINTS: usize = 50;
 const MAX_OBO_METADATA_BYTES: usize = 16_384;
 const MAX_OBO_METADATA_DEPTH: usize = 8;
 const MAX_OBO_METADATA_NODES: usize = 512;
+const MIN_WEBHOOK_SECRET_BYTES: usize = 32;
+const MAX_WEBHOOK_SECRET_BYTES: usize = 512;
 
 pub(super) fn local_app_id(value: &str) -> Result<(), ApiError> {
     if !(3..=80).contains(&value.len())
@@ -60,6 +63,7 @@ pub(super) fn application_create(input: &model::ApplicationCreate) -> Result<(),
     optional_text("app_name", input.app_name.as_deref(), 1, 200)?;
     optional_https_uri("app_logo_uri", input.app_logo_uri.as_deref(), 2_048)?;
     webhook_url(&input.webhook_url)?;
+    webhook_secret(input.webhook_secret.expose_secret())?;
     obo_endpoints(&input.obo_endpoints)?;
     Ok(())
 }
@@ -141,13 +145,33 @@ pub(super) fn webhook_url(value: &str) -> Result<Url, ApiError> {
         .map_err(|message| ApiError::validation("webhook_url", message))
 }
 
+pub(super) fn webhook_secret(value: &str) -> Result<(), ApiError> {
+    if !(MIN_WEBHOOK_SECRET_BYTES..=MAX_WEBHOOK_SECRET_BYTES).contains(&value.len())
+        || !value.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(ApiError::validation(
+            "webhook_secret",
+            "must contain 32 to 512 non-whitespace ASCII characters",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn optional_webhook_secret(value: Option<&str>) -> Result<(), ApiError> {
+    value.map_or(Ok(()), webhook_secret)
+}
+
 pub(super) fn base_url(value: &str) -> Result<Url, ApiError> {
     let parsed = Url::parse(value)
         .map_err(|_| ApiError::validation("base_url", "must be a valid absolute URL"))?;
+    let has_path_separator = value
+        .split_once("://")
+        .is_none_or(|(_, authority_and_path)| authority_and_path.contains('/'));
     if value.len() > 2_048
         || value
             .bytes()
             .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        || has_path_separator
         || parsed.query().is_some()
         || parsed.fragment().is_some()
         || !parsed.username().is_empty()
@@ -160,7 +184,7 @@ pub(super) fn base_url(value: &str) -> Result<Url, ApiError> {
     {
         return Err(ApiError::validation(
             "base_url",
-            "must be an HTTPS base URL without credentials, query, or fragment (HTTP is limited to loopback development)",
+            "must be an HTTPS origin without a trailing slash, path, credentials, query, or fragment (HTTP is limited to loopback development)",
         ));
     }
     Ok(parsed)
@@ -466,7 +490,7 @@ mod tests {
 
     use super::{
         app_id, base_url, local_app_id, obo_endpoint_id, obo_endpoints, obo_metadata,
-        obo_request_metadata, qualify_app_id, redirect_uri, webhook_url,
+        obo_request_metadata, qualify_app_id, redirect_uri, webhook_secret, webhook_url,
     };
     use crate::features::applications::model::ApplicationOboEndpoint;
 
@@ -486,13 +510,16 @@ mod tests {
     }
 
     #[test]
-    fn application_base_urls_are_backend_locations_not_request_urls() {
-        assert!(base_url("https://briefcase.example/api").is_ok());
-        assert!(base_url("http://localhost:3000/api").is_ok());
-        assert!(base_url("http://briefcase.example/api").is_err());
-        assert!(base_url("HTTPS://briefcase.example/api").is_err());
-        assert!(base_url("https://briefcase.example/api?tenant=tos").is_err());
-        assert!(base_url("https://user:secret@briefcase.example/api").is_err());
+    fn application_base_urls_are_pathless_origins_without_a_trailing_slash() {
+        assert!(base_url("https://briefcase.example").is_ok());
+        assert!(base_url("http://localhost:3000").is_ok());
+        assert!(base_url("https://briefcase.example/").is_err());
+        assert!(base_url("https://briefcase.example/api").is_err());
+        assert!(base_url("http://localhost:3000/api").is_err());
+        assert!(base_url("http://briefcase.example").is_err());
+        assert!(base_url("HTTPS://briefcase.example").is_err());
+        assert!(base_url("https://briefcase.example?tenant=tos").is_err());
+        assert!(base_url("https://user:secret@briefcase.example").is_err());
     }
 
     #[test]
@@ -507,6 +534,17 @@ mod tests {
         assert!(webhook_url("https://hooks.example./events").is_err());
         assert!(webhook_url("https://127.0.0.1/events").is_err());
         assert!(webhook_url("http://hooks.example/events").is_err());
+    }
+
+    #[test]
+    fn webhook_secrets_are_caller_chosen_printable_values() {
+        assert!(webhook_secret("caller-owned-webhook-secret-00001").is_ok());
+        assert!(webhook_secret(&"x".repeat(512)).is_ok());
+        assert!(webhook_secret(&"x".repeat(31)).is_err());
+        assert!(webhook_secret(&"x".repeat(513)).is_err());
+        assert!(webhook_secret("caller owned webhook secret 00001").is_err());
+        assert!(webhook_secret("caller-owned-webhook-secret-0000\n").is_err());
+        assert!(webhook_secret("caller-owned-webhook-secret-🔥").is_err());
     }
 
     #[test]

@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use secrecy::SecretString;
+use serde::{Deserialize, Deserializer, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -29,7 +30,7 @@ pub(super) struct AppPath {
     pub(super) app_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ApplicationCreate {
     pub(super) app_id: String,
@@ -39,6 +40,8 @@ pub(super) struct ApplicationCreate {
     #[serde(rename = "app_logo")]
     pub(super) app_logo_uri: Option<String>,
     pub(super) webhook_url: String,
+    #[serde(deserialize_with = "deserialize_secret_string")]
+    pub(super) webhook_secret: SecretString,
     #[serde(default)]
     pub(super) obo_endpoints: Vec<ApplicationOboEndpoint>,
 }
@@ -87,10 +90,35 @@ pub(super) struct ApplicationOboEndpoint {
     pub(super) metadata: serde_json::Value,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WebhookSecretRotate {
+    #[serde(deserialize_with = "deserialize_secret_string")]
+    pub(super) webhook_secret: SecretString,
+}
+
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WebhookReplace {
     pub(super) url: String,
+    #[serde(default, deserialize_with = "deserialize_optional_secret_string")]
+    pub(super) webhook_secret: Option<SecretString>,
+}
+
+fn deserialize_secret_string<'de, D>(deserializer: D) -> Result<SecretString, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(SecretString::from)
+}
+
+fn deserialize_optional_secret_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<SecretString>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(|secret| secret.map(SecretString::from))
 }
 
 /// A platform decision about a live application.

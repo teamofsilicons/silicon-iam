@@ -25,12 +25,12 @@ impl Applications<'_> {
         self.0.get_with(&["applications"], &query).await
     }
 
-    /// Registers an immediately usable application, returning both one-time secrets.
+    /// Registers an immediately usable application.
     ///
     /// In production, only the submitted webhook destination remains pending
     /// platform review. A testing environment activates it immediately because
-    /// that isolated plane has no platform reviewer. Store the returned client
-    /// and webhook signing secrets before their ten-minute replay window closes.
+    /// that isolated plane has no platform reviewer. The caller chooses the
+    /// webhook signing secret; IAM generates only the returned client secret.
     ///
     /// # Errors
     ///
@@ -113,12 +113,12 @@ impl Applications<'_> {
             .await
     }
 
-    /// Rotates the webhook signing secret, returning its successor once.
+    /// Installs a caller-supplied successor webhook signing secret.
     ///
     /// Requires a verified-channel step-up assertion for
-    /// `application.webhook_secret.rotate`. New deliveries use the returned
-    /// version; keep older versions until their in-flight delivery window has
-    /// closed.
+    /// `application.webhook_secret.rotate`. New deliveries use the supplied
+    /// secret and returned version; keep older versions until their in-flight
+    /// delivery window has closed.
     ///
     /// # Errors
     ///
@@ -127,13 +127,14 @@ impl Applications<'_> {
         &self,
         app_id: &str,
         version: i64,
+        input: &models::ApplicationWebhookSecretRotate,
         mutation: &Mutation,
     ) -> Result<models::ApplicationWebhookSecretRotated> {
         self.0
             .post_versioned(
                 &["applications", app_id, "webhook-secret-rotations"],
                 version,
-                &serde_json::json!({}),
+                input,
                 mutation,
             )
             .await
@@ -184,10 +185,9 @@ impl Applications<'_> {
     /// Production proposes it for platform review; a testing environment
     /// activates it immediately because that isolated plane has no reviewer.
     ///
-    /// The response normally contains no secret. When this is the first URL
-    /// replacement for an imported test application still using an inherited
-    /// production key, `webhook_signing_secret` and
-    /// `secret_replay_expires_at` contain its new test-only key once.
+    /// The request may also install a caller-supplied secret. It is required
+    /// for the first URL replacement of an imported test application still
+    /// using an inherited production key.
     ///
     /// # Errors
     ///

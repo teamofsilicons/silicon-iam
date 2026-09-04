@@ -25,6 +25,11 @@ pub type AppId = String;
 /// `{org_id}>{handle}`.
 pub type ApplicationHandle = String;
 
+/// Caller-chosen Application webhook signing secret containing only
+/// non-whitespace ASCII characters. IAM encrypts it at rest and never
+/// generates it.
+pub type ApplicationWebhookSecret = String;
+
 /// New immutable Carbon ID; zero is not admitted.
 pub type CarbonId = String;
 
@@ -916,7 +921,7 @@ pub struct Application {
     /// The contract's `app_logo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_logo: Option<String>,
-    /// The contract's `base_url`.
+    /// Pathless backend origin without a trailing slash.
     pub base_url: String,
     /// The contract's `requested_scopes`.
     pub requested_scopes: Vec<String>,
@@ -945,7 +950,7 @@ pub struct Application {
 pub struct ApplicationBaseUrl {
     /// The contract's `app_id`.
     pub app_id: AppId,
-    /// The contract's `base_url`.
+    /// Pathless backend origin without a trailing slash.
     pub base_url: String,
 }
 
@@ -965,9 +970,11 @@ pub struct ApplicationCreate {
     pub app_logo: Option<String>,
     /// The contract's `webhook_url`.
     pub webhook_url: String,
-    /// Absolute Application backend URL with no credentials, query or
-    /// fragment. HTTPS is required except for literal loopback HTTP in local
-    /// development.
+    /// The contract's `webhook_secret`.
+    pub webhook_secret: ApplicationWebhookSecret,
+    /// Pathless Application backend origin with no trailing slash,
+    /// credentials, query or fragment. HTTPS is required except for literal
+    /// loopback HTTP in local development.
     pub base_url: String,
     /// The contract's `obo_endpoints`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -984,7 +991,7 @@ pub struct ApplicationCreated {
     /// The contract's `app_secret_version`.
     pub app_secret_version: i64,
     /// The contract's `webhook_signing_secret`.
-    pub webhook_signing_secret: String,
+    pub webhook_signing_secret: ApplicationWebhookSecret,
     /// The contract's `webhook_secret_version`.
     pub webhook_secret_version: i64,
     /// The contract's `secret_replay_expires_at`.
@@ -1025,8 +1032,8 @@ pub struct ApplicationPatch {
     /// The contract's `app_logo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_logo: Option<String>,
-    /// Absolute backend base URL; HTTPS except for literal loopback
-    /// development.
+    /// Pathless backend origin without a trailing slash; HTTPS except for
+    /// literal loopback development.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     /// Full replacement. An empty array retires every active endpoint.
@@ -1076,10 +1083,9 @@ pub struct ApplicationWebhook {
     pub status: ApplicationWebhookStatus,
     /// The contract's `secret_version`.
     pub secret_version: i64,
-    /// Present only when a webhook URL replacement moves an imported test
-    /// Application off its inherited production key.
+    /// Echoes a caller-supplied replacement secret for v1 compatibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub webhook_signing_secret: Option<String>,
+    pub webhook_signing_secret: Option<ApplicationWebhookSecret>,
     /// Present exactly when webhook_signing_secret is present.
     #[serde(
         with = "time::serde::rfc3339::option",
@@ -1094,12 +1100,22 @@ pub struct ApplicationWebhook {
 
 /// Replaces only the reviewed destination candidate. It normally reuses the
 /// existing encrypted signing secret. An imported test Application still on
-/// its inherited production key instead receives a newly generated test-only
-/// secret in the response.
+/// its inherited production key must provide a new test-only secret.
+/// Supplying a secret for any replacement installs it for the new endpoint.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApplicationWebhookReplace {
     /// The contract's `url`.
     pub url: String,
+    /// The contract's `webhook_secret`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_secret: Option<ApplicationWebhookSecret>,
+}
+
+/// Contract type `ApplicationWebhookSecretRotate`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApplicationWebhookSecretRotate {
+    /// The contract's `webhook_secret`.
+    pub webhook_secret: ApplicationWebhookSecret,
 }
 
 /// Contract type `ApplicationWebhookSecretRotated`.
@@ -1108,7 +1124,7 @@ pub struct ApplicationWebhookSecretRotated {
     /// The contract's `app_id`.
     pub app_id: AppId,
     /// The contract's `webhook_signing_secret`.
-    pub webhook_signing_secret: String,
+    pub webhook_signing_secret: ApplicationWebhookSecret,
     /// The contract's `webhook_secret_version`.
     pub webhook_secret_version: i64,
     /// The contract's `application_version`.

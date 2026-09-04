@@ -695,7 +695,7 @@ pub enum AppCommand {
         #[command(flatten)]
         page: PageArgs,
     },
-    /// Register an application, returning its secrets once.
+    /// Register an application, returning its generated client secret once.
     Create {
         /// Local Application handle to claim; IAM prefixes the organization.
         app_id: String,
@@ -708,7 +708,10 @@ pub enum AppCommand {
         /// HTTPS endpoint the service delivers webhooks to.
         #[arg(long)]
         webhook_url: String,
-        /// Public base URL other applications discover for this application.
+        /// Caller-chosen webhook signing secret. Prompted for when omitted.
+        #[arg(long)]
+        webhook_secret: Option<String>,
+        /// Pathless public origin, without a trailing slash, that other applications discover.
         #[arg(long)]
         base_url: String,
         /// JSON array of OBO endpoint definitions.
@@ -727,7 +730,7 @@ pub enum AppCommand {
         /// New display name.
         #[arg(long)]
         name: Option<String>,
-        /// New public base URL.
+        /// New pathless public origin, without a trailing slash.
         #[arg(long)]
         base_url: Option<String>,
         /// Complete replacement OBO endpoint array as JSON.
@@ -743,6 +746,9 @@ pub enum AppCommand {
     RotateWebhookSecret {
         /// Canonical Application identifier (`org>handle`).
         app_id: String,
+        /// Caller-chosen successor webhook signing secret. Prompted for when omitted.
+        #[arg(long)]
+        webhook_secret: Option<String>,
     },
     /// Discover an application's base URL as another application.
     Discover {
@@ -802,6 +808,9 @@ pub enum AppCommand {
         /// HTTPS endpoint to deliver to.
         #[arg(long)]
         url: String,
+        /// New signing secret; required when replacing an imported test webhook.
+        #[arg(long)]
+        webhook_secret: Option<String>,
     },
     /// List deliveries that exhausted their retries.
     DeadLetters {

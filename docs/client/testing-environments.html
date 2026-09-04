@@ -67,6 +67,7 @@ let created_app = carbon.applications().create(
         app_name: Some("Checkout".to_owned()),
         app_logo: None,
         webhook_url: "https://hooks.example.test/iam".to_owned(),
+        webhook_secret: "test-webhook-secret-with-32-characters".to_owned(),
         base_url: "http://127.0.0.1:4100".to_owned(),
         obo_endpoints: None,
     },
@@ -74,7 +75,7 @@ let created_app = carbon.applications().create(
 ).await?;
 
 assert_eq!(created_app.application.app_id, "acme&gt;checkout");
-// Store created_app.app_secret and created_app.webhook_signing_secret now.</code></pre>
+// Store created_app.app_secret now; the webhook secret was caller-supplied.</code></pre>
 
 <p>
   The create input uses a local handle; every returned and later Application ID is canonical
@@ -102,10 +103,10 @@ store_test_secret(imported.app_secret);
 
 <p>
   The production webhook secret is inherited but not revealed. To point the import at a dedicated
-  test receiver, call <code>replace_webhook</code>. On the first such replacement, the returned
-  <code>ApplicationWebhook</code> carries <code>webhook_signing_secret</code> and
-  <code>secret_replay_expires_at</code>; store them immediately. They are absent on ordinary
-  replacements. Use <code>rotate_webhook_secret</code> for an explicit later rotation.
+  test receiver, call <code>replace_webhook</code> with a caller-chosen
+  <code>webhook_secret</code>. It is required for that first replacement. The v1 response echoes it
+  as <code>webhook_signing_secret</code>; ordinary replacements may omit the secret and reuse the
+  current key. Use <code>rotate_webhook_secret</code> with another caller-chosen secret for a later rotation.
 </p>
 
 <h2>Discover a base URL</h2>

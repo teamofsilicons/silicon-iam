@@ -38,17 +38,18 @@ let event = verified.event();</code></pre>
 <h2>Secret versions</h2>
 
 <p>
-  The initial <code>whs_</code> secret is returned when the Application is registered. Explicit
-  <code>rotate_webhook_secret</code> returns one successor under a new version and immediately uses
-  it for new deliveries. It requires the current Application version and a verified-channel
+  The Application supplies its initial secret during registration. Explicit
+  <code>rotate_webhook_secret</code> accepts a caller-chosen successor and immediately uses it for
+  new deliveries. IAM never generates Application webhook secrets. Rotation requires the current Application version and a verified-channel
   step-up assertion for <code>application.webhook_secret.rotate</code>.
 </p>
 
 <p>
   Replacing the webhook URL normally does <strong>not</strong> rotate the key: IAM rebinds the same
   secret under an incremented version. The exception is an imported test Application still using
-  an inherited production key. Its first test URL replacement returns a fresh test-only
-  <code>webhook_signing_secret</code> and <code>secret_replay_expires_at</code>; those optional fields
+  an inherited production key. Its first test URL replacement must supply a test-only
+  <code>webhook_secret</code>; the v1 response echoes it as <code>webhook_signing_secret</code> with
+  <code>secret_replay_expires_at</code>. Those optional fields
   are absent from ordinary replacement responses.
 </p>
 
@@ -62,7 +63,7 @@ let event = verified.event();</code></pre>
 keyring.rebind_version(7, 8)?;</code></pre>
 
 <p>
-  An explicit secret rotation returns different key material. Install that with
+  An explicit secret rotation uses the different key material you supplied. Install that with
   <code>keyring.insert(new_version, WebhookSecret::new(new_secret)?)</code> and retain the prior
   entry until its complete retry window has elapsed.
 </p>

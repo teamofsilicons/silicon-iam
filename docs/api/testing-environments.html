@@ -100,10 +100,10 @@ Content-Type: application/json
 </p>
 
 <p>
-  Replacing the webhook URL of an imported Application that still uses that inherited key creates
-  a new test-only signing key. Only that exceptional <code>PUT …/webhook</code> response includes
-  <code>webhook_signing_secret</code> and <code>secret_replay_expires_at</code>. Save it immediately.
-  Later URL changes reuse it. Explicit rotation remains available through
+  Replacing the webhook URL of an imported Application that still uses that inherited key requires
+  a caller-supplied <code>webhook_secret</code>. That exceptional <code>PUT …/webhook</code> response
+  echoes it as <code>webhook_signing_secret</code> for v1 compatibility and includes
+  <code>secret_replay_expires_at</code>. Later URL changes reuse it. Explicit rotation remains available through
   <code>POST …/webhook-secret-rotations</code>.
 </p>
 

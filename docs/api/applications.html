@@ -8,26 +8,43 @@
 
 <p>
   <code>POST /api/v1/applications</code> takes a local application handle, the owning organization,
-  a webhook URL, and the backend <code>base_url</code>. IAM qualifies the handle with the
+  a webhook URL, a caller-chosen <code>webhook_secret</code>, and the backend
+  <code>base_url</code>. IAM qualifies the handle with the
   organization: creating <code>drive</code> in <code>google</code> returns the canonical ID
   <code>google&gt;drive</code>. Use that canonical ID for credentials, login, discovery, path
   parameters, and OBO. There are no redirect URIs to register and no login scopes to request: a
   login names its redirect URI in the query string and carries the whole catalogue.
 </p>
 
+<pre><code>POST /api/v1/applications
+Authorization: Bearer &lt;Carbon access token&gt;
+Idempotency-Key: &lt;one logical creation&gt;
+Content-Type: application/json
+
+{
+  "app_id": "billing",
+  "org_id": "acme",
+  "app_name": "Billing",
+  "webhook_url": "https://billing.example/hooks/iam",
+  "webhook_secret": "replace-with-at-least-32-random-characters",
+  "base_url": "https://billing.example"
+}</code></pre>
+
 <p>
-  <code>base_url</code> identifies the application's backend for discovery. It must be absolute,
-  contain no user information, query, or fragment, and use HTTPS except for literal loopback HTTP
-  during local development. IAM returns it to callers; it does not navigate to it, append login
-  tokens to it, or treat it as a redirect allowlist.
+  <code>base_url</code> identifies the application's backend origin for discovery. It must contain
+  no trailing slash, path, user information, query, or fragment, and use HTTPS except for literal
+  loopback HTTP during local development. For example, <code>https://billing.example</code> is valid
+  and <code>https://billing.example/</code> is not. IAM returns it to callers; it does not navigate
+  to it, append login tokens to it, or treat it as a redirect allowlist.
 </p>
 
 <div class="banner banner-danger">
   <div>
-    <strong>The response carries two credentials you will never see again.</strong>
-    The client secret (256 bits) and the <code>whs_…</code> webhook signing secret. Both are kept
-    only as keyed digests. The response is replayable for ten minutes with the same idempotency
-    key, and then unrecoverable.
+    <strong>IAM generates only the client secret.</strong>
+    Your application supplies the webhook signing secret (32–512 non-whitespace ASCII
+    characters), which IAM encrypts at rest. The v1 response echoes it for compatibility. The
+    generated client secret is replayable for ten minutes with the same idempotency key and then
+    unrecoverable.
   </div>
 </div>
 
@@ -148,11 +165,11 @@ Idempotency-Key: &lt;key&gt;
 </p>
 
 <p>
-  <code>POST /api/v1/applications/{app_id}/webhook-secret-rotations</code> independently rotates
-  the <code>whs_…</code> signing secret. It requires the current Application ETag, an idempotency
+  <code>POST /api/v1/applications/{app_id}/webhook-secret-rotations</code> installs the successor
+  signing secret supplied as <code>webhook_secret</code>. It requires the current Application ETag, an idempotency
   key, and a verified-channel step-up token for
-  <code>application.webhook_secret.rotate</code>. The no-store response exposes the successor and
-  its version once, with an exact ten-minute idempotent replay window. New deliveries switch to
+  <code>application.webhook_secret.rotate</code>. IAM never generates this secret; the v1 no-store
+  response echoes it with its version and a ten-minute idempotent replay window. New deliveries switch to
   it immediately; retain older key versions until already in-flight deliveries have drained.
 </p>
 

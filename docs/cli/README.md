@@ -72,6 +72,10 @@ iam app rotate-secret 'acme>billing' --step-up "$TOKEN"
 iam app rotate-webhook-secret 'acme>billing' --step-up "$TOKEN"
 ```
 
+`app create` and `app rotate-webhook-secret` prompt for the caller-chosen
+webhook secret when `--webhook-secret` is omitted. IAM encrypts that value and
+never generates an Application webhook secret.
+
 ## Output
 
 Text by default, aligned for reading. `-o json` gives the service's own JSON,
@@ -146,9 +150,10 @@ iam --test "$TEST_ID" -o json app import 'google>drive'
 
 To use a different test webhook URL, run `app set-webhook` inside the test
 environment. Test endpoints activate immediately because an isolated plane has
-no platform reviewer. That environment then owns a newly generated signing
-secret, ready for the new URL; rotate it explicitly with
-`app rotate-webhook-secret` when needed.
+no platform reviewer. For the first replacement of an imported app, pass
+`--webhook-secret` with the caller-chosen test secret.
+Rotate it explicitly with `app rotate-webhook-secret`; IAM never generates an
+Application webhook secret.
 
 Any test application can discover another application's base URL with its own
 test-only credential:
@@ -199,12 +204,14 @@ iam --test "$TEST_ID" org create acme --name Acme
 
 CALLER=$(iam --test "$TEST_ID" -o json app create caller --org acme \
     --name Caller --base-url http://127.0.0.1:4101 \
-    --webhook-url https://hooks.example.test/caller)
+    --webhook-url https://hooks.example.test/caller \
+    --webhook-secret caller-demo-webhook-secret-000001)
 CALLER_SECRET=$(printf '%s' "$CALLER" | jq -r .app_secret)
 
 AUDIENCE=$(iam --test "$TEST_ID" -o json app create audience --org acme \
     --name Audience --base-url http://127.0.0.1:4102 \
     --webhook-url https://hooks.example.test/audience \
+    --webhook-secret audience-demo-webhook-secret-0001 \
     --obo-endpoints \
     '[{"endpoint_id":"orders.create","path":"/v1/orders","metadata":{"reason":{"type":"string"}}}]')
 AUDIENCE_SECRET=$(printf '%s' "$AUDIENCE" | jq -r .app_secret)

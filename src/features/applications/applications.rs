@@ -227,6 +227,7 @@ pub(super) async fn create(
         "app_name": input.app_name,
         "app_logo_uri": input.app_logo_uri,
         "webhook_url": input.webhook_url,
+        "webhook_secret": input.webhook_secret.expose_secret(),
         "obo_endpoints": input.obo_endpoints,
     }))
     .map_err(|_| ApiError::internal("application_create_canonical"))?;
@@ -272,10 +273,6 @@ pub(super) async fn create(
         .crypto
         .generate_secret(SecretKind::ApplicationSecret)
         .map_err(|_| ApiError::internal("application_secret_generate"))?;
-    let webhook_secret = state
-        .crypto
-        .generate_secret(SecretKind::WebhookSigningSecret)
-        .map_err(|_| ApiError::internal("webhook_secret_generate"))?;
     let client_digest = state
         .crypto
         .digest_secret(DigestPurpose::ApplicationSecret, &client_secret)
@@ -299,7 +296,7 @@ pub(super) async fn create(
                 application_id,
                 webhook_key_id,
             ),
-            webhook_secret.expose_secret().as_bytes(),
+            input.webhook_secret.expose_secret().as_bytes(),
         )
         .map_err(|_| ApiError::internal("webhook_secret_encrypt"))?;
     let webhook_digest = Sha256::digest(input.webhook_url.as_bytes());
@@ -403,7 +400,9 @@ pub(super) async fn create(
     .bind(webhook_key_id)
     .bind(application_id)
     .bind(webhook_endpoint_id)
-    .bind(secret_prefix(webhook_secret.expose_secret()))
+    .bind(webhook_secret_fingerprint(
+        input.webhook_secret.expose_secret(),
+    ))
     .bind(encrypted_webhook_secret.ciphertext)
     .bind(encrypted_webhook_secret.nonce.as_slice())
     .bind(encrypted_webhook_secret.key_version)
@@ -422,7 +421,7 @@ pub(super) async fn create(
         application: detail,
         app_secret: client_secret.expose_secret().to_owned(),
         app_secret_version: 1,
-        webhook_signing_secret: webhook_secret.expose_secret().to_owned(),
+        webhook_signing_secret: input.webhook_secret.expose_secret().to_owned(),
         webhook_secret_version: 1,
         secret_replay_expires_at,
     };
@@ -1910,6 +1909,11 @@ pub(super) fn secret_prefix(secret: &str) -> String {
     secret.chars().take(12).collect()
 }
 
+pub(crate) fn webhook_secret_fingerprint(secret: &str) -> String {
+    let digest = Sha256::digest(secret.as_bytes());
+    format!("whs_{}", hex::encode(&digest[..4]))
+}
+
 fn created_secret_response(
     status: StatusCode,
     response: ApplicationCreated,
@@ -1992,7 +1996,7 @@ fn map_application_write(error: sqlx::Error) -> ApiError {
 mod tests {
     use super::{
         REVOKE_ACCESS_TOKENS_FOR_REMOVED_SCOPES_QUERY, json_with_etag_replayed,
-        validate_admin_decision, validate_admin_transition,
+        validate_admin_decision, validate_admin_transition, webhook_secret_fingerprint,
     };
     use crate::features::applications::model::ApplicationAdminDecision;
     use axum::http::{HeaderValue, StatusCode, header};
@@ -2044,6 +2048,16 @@ mod tests {
         let mut input = admin_decision("delete");
         input.approved_scopes = Some(vec!["organizations.read".to_owned()]);
         assert!(validate_admin_decision(&input).is_err());
+    }
+
+    #[test]
+    fn webhook_secret_fingerprint_keeps_the_database_identifier_non_secret() {
+        let first = webhook_secret_fingerprint("caller-owned-webhook-secret-00001");
+        let second = webhook_secret_fingerprint("caller-owned-webhook-secret-00002");
+        assert_eq!(first.len(), 12);
+        assert!(first.starts_with("whs_"));
+        assert_ne!(first, second);
+        assert!(!first.contains("caller"));
     }
 
     #[test]

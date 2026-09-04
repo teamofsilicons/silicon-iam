@@ -99,8 +99,6 @@ pub enum SecretKind {
     StepUpAssertion,
     /// Application client secret.
     ApplicationSecret,
-    /// Application webhook signing secret.
-    WebhookSigningSecret,
     /// Organization Silicon webhook signing secret.
     SiliconWebhookSigningSecret,
 }
@@ -776,7 +774,6 @@ const fn secret_prefix(kind: SecretKind) -> &'static str {
         SecretKind::OboProof => "obo_",
         SecretKind::StepUpAssertion => "sup_",
         SecretKind::ApplicationSecret => "ask_",
-        SecretKind::WebhookSigningSecret => "whs_",
         SecretKind::SiliconWebhookSigningSecret => "swhs_",
     }
 }

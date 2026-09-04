@@ -18,7 +18,7 @@ use crate::{
     api::{ApiState, authentication::Authenticated},
     domain::actor::{ActorRef, ActorType},
     error::AppError,
-    features::applications::{ApplicationDetail, load_detail},
+    features::applications::{ApplicationDetail, load_detail, webhook_secret_fingerprint},
     infrastructure::{
         crypto::{DigestPurpose, EncryptedValue, EncryptionContext, ProtectedField, SecretKind},
         postgres::{
@@ -361,7 +361,7 @@ pub(super) async fn import_application(
     .bind(application_id)
     .bind(webhook_endpoint_id)
     .bind(source.webhook_secret_version)
-    .bind(secret_prefix(webhook_secret_text))
+    .bind(webhook_secret_fingerprint(webhook_secret_text))
     .bind(rebound_webhook_secret.ciphertext)
     .bind(rebound_webhook_secret.nonce.as_slice())
     .bind(rebound_webhook_secret.key_version)

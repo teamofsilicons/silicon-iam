@@ -2885,9 +2885,11 @@ paths:
         '201':
           description: >-
             Verified organization-owned Application with canonical
-            `{org_id}>{handle}` id, discoverable base URL, and app/webhook
-            secrets each shown once. Current owner/admin authority is rechecked
-            before creation or secret replay.
+            `{org_id}>{handle}` id and discoverable base URL. IAM generates the
+            app secret and stores the caller-supplied webhook secret. The
+            response echoes the supplied webhook secret for v1 compatibility.
+            Current owner/admin authority is rechecked before creation or
+            secret replay.
           headers:
             Cache-Control: { schema: { const: no-store } }
             Pragma: { schema: { const: no-cache } }
@@ -3014,8 +3016,8 @@ paths:
       tags: [Applications, Webhooks]
       operationId: rotateApplicationWebhookSecret
       description: >-
-        Atomically retires the current webhook signing secret and reveals one
-        active successor. New deliveries use the returned secret version;
+        Atomically retires the current webhook signing secret and installs the
+        caller-supplied successor. New deliveries use the returned secret version;
         already persisted in-flight deliveries retain their original signed
         bytes and version. Exact idempotent replay may recover the no-store
         response for ten minutes. Step-up action
@@ -3027,9 +3029,14 @@ paths:
         - { $ref: '#/components/parameters/AppIdPath' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/IfMatch' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApplicationWebhookSecretRotate' }
       responses:
         '200':
-          description: Webhook signing secret rotated and shown once.
+          description: Caller-supplied webhook signing secret installed; the response echoes it for v1 compatibility.
           headers:
             ETag: { $ref: '#/components/headers/ETag' }
             Cache-Control: { schema: { const: no-store } }
@@ -3043,6 +3050,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/applications/{app_id}/webhook:
@@ -3087,17 +3095,18 @@ paths:
           description: >-
             Testing-environment replacement activated immediately. When an
             imported test Application still inherits its production signing
-            key, this response also returns the new test-only signing secret.
+            key, the request must provide a new test-only signing secret and
+            this response echoes it for v1 compatibility.
             The body version and ETag are the same Application aggregate
             version.
           headers:
             ETag: { $ref: '#/components/headers/ETag' }
             Cache-Control:
               schema: { const: no-store }
-              description: Present when the response reveals a new test-only signing secret.
+              description: Present when the response echoes a caller-supplied signing secret.
             Pragma:
               schema: { const: no-cache }
-              description: Present when the response reveals a new test-only signing secret.
+              description: Present when the response echoes a caller-supplied signing secret.
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
@@ -3106,18 +3115,18 @@ paths:
           description: >-
             HTTPS destination passed SSRF validation and awaits platform
             review. Normally the active destination and signing secret are
-            unchanged. When an imported test Application still inherits its
-            production signing key, this transition creates and returns a
-            test-only signing secret instead. The body version and ETag are the
-            same Application aggregate version.
+            unchanged. If the request supplies a replacement secret, IAM
+            installs it for the pending endpoint and echoes it for v1
+            compatibility. The body version and ETag are the same Application
+            aggregate version.
           headers:
             ETag: { $ref: '#/components/headers/ETag' }
             Cache-Control:
               schema: { const: no-store }
-              description: Present when the response reveals a new test-only signing secret.
+              description: Present when the response echoes a caller-supplied signing secret.
             Pragma:
               schema: { const: no-cache }
-              description: Present when the response reveals a new test-only signing secret.
+              description: Present when the response echoes a caller-supplied signing secret.
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
@@ -4916,7 +4925,7 @@ components:
       enum: [under_review, verified, rejected, suspended, deleted]
     ApplicationCreate:
       type: object
-      required: [app_id, org_id, webhook_url, base_url]
+      required: [app_id, org_id, webhook_url, webhook_secret, base_url]
       additionalProperties: false
       description: Requires the authenticated Carbon to be a current active owner/admin of org_id.
       properties:
@@ -4925,14 +4934,15 @@ components:
         app_name: { type: [string, 'null'], maxLength: 200 }
         app_logo: { type: [string, 'null'], format: uri, maxLength: 2048 }
         webhook_url: { type: string, format: uri, pattern: '^https://', maxLength: 2048 }
+        webhook_secret: { $ref: '#/components/schemas/ApplicationWebhookSecret' }
         base_url:
           type: string
           format: uri
           maxLength: 2048
           description: >-
-            Absolute Application backend URL with no credentials, query or
-            fragment. HTTPS is required except for literal loopback HTTP in
-            local development.
+            Pathless Application backend origin with no trailing slash,
+            credentials, query or fragment. HTTPS is required except for
+            literal loopback HTTP in local development.
         obo_endpoints:
           type: array
           maxItems: 50
@@ -4949,7 +4959,9 @@ components:
           type: string
           format: uri
           maxLength: 2048
-          description: Absolute backend base URL; HTTPS except for literal loopback development.
+          description: >-
+            Pathless backend origin without a trailing slash; HTTPS except for
+            literal loopback development.
         obo_endpoints:
           type: array
           maxItems: 50
@@ -4966,7 +4978,11 @@ components:
         created_by: { $ref: '#/components/schemas/ActorRef' }
         app_name: { type: [string, 'null'] }
         app_logo: { type: [string, 'null'], format: uri }
-        base_url: { type: string, format: uri, maxLength: 2048 }
+        base_url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: Pathless backend origin without a trailing slash.
         requested_scopes: { type: array, uniqueItems: true, items: { type: string } }
         approved_scopes: { type: array, uniqueItems: true, items: { type: string } }
         obo_endpoints:
@@ -4986,7 +5002,7 @@ components:
         application: { $ref: '#/components/schemas/Application' }
         app_secret: { type: string, pattern: '^ask_[A-Za-z0-9_-]{43}$' }
         app_secret_version: { type: integer, minimum: 1 }
-        webhook_signing_secret: { type: string, pattern: '^whs_[A-Za-z0-9_-]{43}$' }
+        webhook_signing_secret: { $ref: '#/components/schemas/ApplicationWebhookSecret' }
         webhook_secret_version: { type: integer, minimum: 1 }
         secret_replay_expires_at: { type: string, format: date-time }
     ApplicationSecretRotated:
@@ -5005,7 +5021,7 @@ components:
       additionalProperties: false
       properties:
         app_id: { $ref: '#/components/schemas/AppId' }
-        webhook_signing_secret: { type: string, pattern: '^whs_[A-Za-z0-9_-]{43}$' }
+        webhook_signing_secret: { $ref: '#/components/schemas/ApplicationWebhookSecret' }
         webhook_secret_version: { type: integer, minimum: 1 }
         application_version: { type: integer, minimum: 1 }
         secret_replay_expires_at: { type: string, format: date-time }
@@ -5015,7 +5031,11 @@ components:
       additionalProperties: false
       properties:
         app_id: { $ref: '#/components/schemas/AppId' }
-        base_url: { type: string, format: uri, maxLength: 2048 }
+        base_url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: Pathless backend origin without a trailing slash.
     ApplicationPage:
       type: object
       required: [items, page]
@@ -5043,11 +5063,9 @@ components:
         status: { type: string, enum: [pending_review, active, replacement_under_review, disabled] }
         secret_version: { type: integer, minimum: 1 }
         webhook_signing_secret:
-          type: string
-          pattern: '^whs_[A-Za-z0-9_-]{43}$'
+          $ref: '#/components/schemas/ApplicationWebhookSecret'
           description: >-
-            Present only when a webhook URL replacement moves an imported test
-            Application off its inherited production key.
+            Echoes a caller-supplied replacement secret for v1 compatibility.
         secret_replay_expires_at:
           type: string
           format: date-time
@@ -5063,10 +5081,27 @@ components:
       description: >-
         Replaces only the reviewed destination candidate. It normally reuses
         the existing encrypted signing secret. An imported test Application
-        still on its inherited production key instead receives a newly
-        generated test-only secret in the response.
+        still on its inherited production key must provide a new test-only
+        secret. Supplying a secret for any replacement installs it for the new
+        endpoint.
       properties:
         url: { type: string, format: uri, pattern: '^https://', maxLength: 2048 }
+        webhook_secret: { $ref: '#/components/schemas/ApplicationWebhookSecret' }
+    ApplicationWebhookSecret:
+      type: string
+      minLength: 32
+      maxLength: 512
+      pattern: '^[!-~]+$'
+      description: >-
+        Caller-chosen Application webhook signing secret containing only
+        non-whitespace ASCII characters. IAM encrypts it at rest and never
+        generates it.
+    ApplicationWebhookSecretRotate:
+      type: object
+      required: [webhook_secret]
+      additionalProperties: false
+      properties:
+        webhook_secret: { $ref: '#/components/schemas/ApplicationWebhookSecret' }
     WebhookDeadLetter:
       type: object
       required: [delivery_id, event_id, event_type, occurred_at, aggregate_type, aggregate_id, aggregate_version, status, attempt_count, cycle_attempt_count, manual_replay_count, last_http_status, last_error_code, dead_lettered_at, version]
