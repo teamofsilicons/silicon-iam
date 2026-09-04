@@ -342,14 +342,7 @@ async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
             let slt = prompted(slt, "Short-lived token: ")?;
             let tokens = application_client(context, &app_id, &secret)
                 .oauth()
-                .token(
-                    &models::ApplicationTokenRequest {
-                        app_id,
-                        slt: Some(slt),
-                        refresh_token: None,
-                    },
-                    &mutation_with_optional_key(idempotency_key)?,
-                )
+                .login(&app_id, &slt, &mutation_with_optional_key(idempotency_key)?)
                 .await?;
             report_oauth_tokens(context, &tokens)
         }
@@ -363,12 +356,9 @@ async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
             let refresh_token = prompted(refresh_token, "Application refresh token: ")?;
             let tokens = application_client(context, &app_id, &secret)
                 .oauth()
-                .token(
-                    &models::ApplicationTokenRequest {
-                        app_id,
-                        slt: None,
-                        refresh_token: Some(refresh_token),
-                    },
+                .refresh(
+                    &app_id,
+                    &refresh_token,
                     &mutation_with_optional_key(idempotency_key)?,
                 )
                 .await?;

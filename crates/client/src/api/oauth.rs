@@ -11,22 +11,48 @@ use crate::{Client, Mutation, Result, models};
 pub struct OAuth<'a>(pub(super) &'a Client);
 
 impl OAuth<'_> {
-    /// Trades a short-lived token, or a refresh token, for a session.
+    /// Logs a principal in to this Application with a short-lived token.
     ///
-    /// Which one it is asking for is simply which credential the request
-    /// carries: present exactly one of `slt` and `refresh_token`.
+    /// This is the only Application-login entry point. The Application never
+    /// receives or submits the principal's OTP or any other authentication
+    /// credential; IAM completes that ceremony and hands the Application the
+    /// single-use `slt`.
     ///
     /// # Errors
     ///
-    /// Returns an error when the credential is invalid, expired, or spent.
-    pub async fn token(
+    /// Returns an error when the short-lived token is invalid, expired, spent,
+    /// or was issued for a different Application.
+    pub async fn login(
         &self,
-        request: &models::ApplicationTokenRequest,
+        app_id: &str,
+        slt: &str,
         mutation: &Mutation,
     ) -> Result<models::OAuthTokenResponse> {
-        self.0
-            .post(&["app-auth", "tokens"], request, mutation)
+        self.exchange(&application_login_request(app_id, slt), mutation)
             .await
+    }
+
+    /// Rotates an Application refresh token after a successful login.
+    ///
+    /// Refresh is deliberately separate from [`Self::login`]: a refresh token
+    /// can continue an existing session, but it cannot begin an Application
+    /// login and is never accepted in the login method.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the refresh token is invalid, expired, spent, or
+    /// belongs to a different Application.
+    pub async fn refresh(
+        &self,
+        app_id: &str,
+        refresh_token: &str,
+        mutation: &Mutation,
+    ) -> Result<models::OAuthTokenResponse> {
+        self.exchange(
+            &application_refresh_request(app_id, refresh_token),
+            mutation,
+        )
+        .await
     }
 
     /// Asks the service what a token currently authorizes.
@@ -66,5 +92,55 @@ impl OAuth<'_> {
         self.0
             .post_empty(&["oauth", "revoke"], request, mutation)
             .await
+    }
+
+    async fn exchange(
+        &self,
+        request: &models::ApplicationTokenRequest,
+        mutation: &Mutation,
+    ) -> Result<models::OAuthTokenResponse> {
+        self.0
+            .post(&["app-auth", "tokens"], request, mutation)
+            .await
+    }
+}
+
+fn application_login_request(app_id: &str, slt: &str) -> models::ApplicationTokenRequest {
+    models::ApplicationTokenRequest {
+        app_id: app_id.to_owned(),
+        slt: Some(slt.to_owned()),
+        refresh_token: None,
+    }
+}
+
+fn application_refresh_request(
+    app_id: &str,
+    refresh_token: &str,
+) -> models::ApplicationTokenRequest {
+    models::ApplicationTokenRequest {
+        app_id: app_id.to_owned(),
+        slt: None,
+        refresh_token: Some(refresh_token.to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{application_login_request, application_refresh_request};
+
+    #[test]
+    fn application_login_can_only_submit_an_slt() {
+        let request = application_login_request("acme>checkout", "slt_example");
+        assert_eq!(request.app_id, "acme>checkout");
+        assert_eq!(request.slt.as_deref(), Some("slt_example"));
+        assert_eq!(request.refresh_token, None);
+    }
+
+    #[test]
+    fn application_refresh_cannot_begin_a_login() {
+        let request = application_refresh_request("acme>checkout", "ort_example");
+        assert_eq!(request.app_id, "acme>checkout");
+        assert_eq!(request.slt, None);
+        assert_eq!(request.refresh_token.as_deref(), Some("ort_example"));
     }
 }

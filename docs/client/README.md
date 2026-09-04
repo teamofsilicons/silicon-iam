@@ -24,38 +24,31 @@ If you want the stateful version — a token store, automatic refresh, a
 configured default service — that is the `silicon-iam-cli` crate, which is
 built on nothing but this one.
 
-## A first call
+## Your first Application login
 
 ```rust
-use silicon_iam_client::{Client, Credential, Mutation, models};
+use silicon_iam_client::{Client, Credential, Mutation};
 
 #[tokio::main]
 async fn main() -> silicon_iam_client::Result<()> {
-    let anonymous = Client::new("https://backend.iam.teamofsilicons.com")?;
+    let app_id = "acme>checkout";
+    let application = Client::new("https://backend.iam.teamofsilicons.com")?
+        .with_credential(Credential::application(app_id, "ask_your_application_secret"));
 
-    let challenge = anonymous
-        .auth()
-        .start_login(
-            &models::LoginChallengeCreate {
-                email: Some("founder@example.com".to_owned()),
-                phone_number: None,
-                carbon_id: None,
-            },
-            &Mutation::new(),
-        )
+    // Receive this only from the IAM-hosted login redirect or token screen.
+    let slt = "slt_from_iam";
+    let tokens = application
+        .oauth()
+        .login(app_id, slt, &Mutation::new())
         .await?;
-
-    // The code arrives by email or SMS.
-    let tokens = anonymous
-        .auth()
-        .verify_login(challenge.session_id, "123456", &Mutation::new())
-        .await?;
-
-    let client = anonymous.with_credential(Credential::bearer(tokens.access_token));
-    println!("signed in as {}", client.carbons().me().await?.carbon_id);
+    println!("Application session expires in {} seconds", tokens.expires_in);
     Ok(())
 }
 ```
+
+An Application never starts or verifies an OTP challenge. IAM performs that
+identity ceremony on its own hosted login surface; the Rust client accepts
+only the resulting single-use SLT for a new Application login.
 
 ## What the API groups look like
 
@@ -65,7 +58,7 @@ Every group hangs off the client and borrows it, so obtaining one is free:
 | --- | --- |
 | `client.system()` | Version negotiation, liveness, readiness |
 | `client.signup()` | Creating a Carbon |
-| `client.auth()` | Login, refresh, logout, step-up, Silicon tokens |
+| `client.auth()` | Direct IAM/CLI sessions, logout, step-up, Silicon tokens |
 | `client.carbons()` | The signed-in Carbon; sessions; Carbon lookup |
 | `client.organizations()` | Organization tenancy and ownership |
 | `client.members()` | Members and the directory view of them |
@@ -124,7 +117,7 @@ Send someone to `<auth_base_url>/login?app_id=…&redirect_uri=…`; they come b
 to your callback with `?slt=…`; you trade it for a session:
 
 ```rust
-# use silicon_iam_client::{Client, Credential, Mutation, models};
+# use silicon_iam_client::{Client, Credential, Mutation};
 # async fn run(base: &str, app_id: &str, app_secret: &str, slt: String)
 #     -> silicon_iam_client::Result<()> {
 let application = Client::new(base)?
@@ -132,22 +125,17 @@ let application = Client::new(base)?
 
 let tokens = application
     .oauth()
-    .token(
-        &models::ApplicationTokenRequest {
-            app_id: app_id.to_owned(),
-            slt: Some(slt),
-            refresh_token: None,
-        },
-        &Mutation::new(),
-    )
+    .login(app_id, &slt, &Mutation::new())
     .await?;
 # let _ = tokens;
 # Ok(())
 # }
 ```
 
-The token lives two minutes and is good for one exchange. Renewing later is the
-same call with `refresh_token` set instead of `slt`.
+The token lives two minutes and is good for one exchange. `OAuth::login` has no
+OTP or refresh-token input: the SLT is the only credential that can begin an
+Application session. Renew an existing session separately with
+`OAuth::refresh(app_id, refresh_token, mutation)`.
 
 A Silicon has no browser, and a Carbon that already holds a session should not
 have to start another one — either asks for the token directly with

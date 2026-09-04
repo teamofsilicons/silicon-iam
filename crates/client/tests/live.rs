@@ -11,6 +11,10 @@
 //! `IAM_EXPOSE_LOCAL_OTPS=true`, which is what lets a test read the
 //! verification codes it is supposed to receive out of band.
 
+// Direct OTP login exists only for the stateful CLI. Application integrations
+// build the client without this feature and can begin a session only with an
+// SLT through `OAuth::login`.
+#![cfg(feature = "cli-session")]
 // A failing step here should stop the test at the step that failed, naming it.
 // The crate's own ban on panicking exists to keep library code from taking a
 // caller's process down, which is not what a test binary does.
