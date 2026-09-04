@@ -69,8 +69,8 @@
 
 <p>
   Organization administrators rotate an Application signing key independently with
-  <code>POST /api/v1/applications/{app_id}/webhook-secret-rotations</code>. The no-store response
-  reveals the successor once. New deliveries switch immediately; already persisted in-flight
+  <code>POST /api/v1/applications/{app_id}/webhook-secret-rotations</code>, supplying the successor
+  as <code>webhook_secret</code>. IAM never generates it. New deliveries switch immediately; already persisted in-flight
   deliveries retain their original bytes and key version, so consumers keep old versions until
   that retry window closes.
 </p>

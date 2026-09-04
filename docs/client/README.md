@@ -162,6 +162,27 @@ required `base_url` is the pathless application-backend origin without a
 trailing slash, such as `https://billing.example`. It is not a login redirect
 and IAM does not call it automatically.
 
+```rust
+# use silicon_iam_client::{Client, Mutation, models};
+# async fn create(client: &Client) -> silicon_iam_client::Result<()> {
+let created = client.applications().create(
+    &models::ApplicationCreate {
+        app_id: "billing".to_owned(),
+        org_id: "acme".to_owned(),
+        app_name: Some("Billing".to_owned()),
+        app_logo: None,
+        webhook_url: "https://billing.example/hooks/iam".to_owned(),
+        webhook_secret: "replace-with-at-least-32-random-characters".to_owned(),
+        base_url: "https://billing.example".to_owned(),
+        obo_endpoints: None,
+    },
+    &Mutation::new(),
+).await?;
+// Persist created.app_secret; IAM generated no webhook secret.
+# Ok(())
+# }
+```
+
 An Application authenticating with `Credential::application` can discover any
 verified Application's base URL, even across organizations:
 
@@ -183,19 +204,26 @@ println!("{}", billing.base_url);
 
 Client and webhook signing credentials rotate independently. Both operations
 take the current Application `version`, an idempotency key, and a
-verified-channel step-up assertion. Both return their raw successor only in a
-ten-minute replayable, `no-store` response:
+verified-channel step-up assertion. The Application supplies its own webhook
+successor; IAM generates only client secrets:
 
 ```rust
-# use silicon_iam_client::{Client, Mutation};
+# use silicon_iam_client::{Client, Mutation, models};
 # async fn rotate(client: &Client, step_up: &str) -> silicon_iam_client::Result<()> {
 let app = client.applications().get("acme>checkout").await?;
 let mutation = Mutation::new().step_up(step_up);
 let rotated = client
     .applications()
-    .rotate_webhook_secret(&app.app_id, app.version, &mutation)
+    .rotate_webhook_secret(
+        &app.app_id,
+        app.version,
+        &models::ApplicationWebhookSecretRotate {
+            webhook_secret: "replace-with-32-or-more-random-characters".to_owned(),
+        },
+        &mutation,
+    )
     .await?;
-// Persist rotated.webhook_signing_secret before leaving this response path.
+assert_eq!(rotated.webhook_secret_version, app.webhook.secret_version + 1);
 # Ok(())
 # }
 ```
@@ -203,7 +231,8 @@ let rotated = client
 The webhook rotation assertion uses action
 `application.webhook_secret.rotate`; client-secret rotation uses
 `application.client_secret.rotate`. A webhook URL change is a separate
-operation and does not rotate a test-owned or production signing secret.
+operation and reuses a test-owned or production signing secret unless its
+request explicitly supplies a new one.
 
 ## Testing environments
 
@@ -269,6 +298,7 @@ let created = sandbox.applications().create(
         app_name: Some("Checkout".to_owned()),
         app_logo: None,
         webhook_url: "https://hooks.example.test/iam".to_owned(),
+        webhook_secret: "test-webhook-secret-with-32-characters".to_owned(),
         base_url: "http://127.0.0.1:4100".to_owned(),
         obo_endpoints: None,
     },

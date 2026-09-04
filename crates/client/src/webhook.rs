@@ -33,27 +33,23 @@ pub const DEFAULT_WEBHOOK_TOLERANCE: Duration = Duration::from_mins(5);
 /// A validated Application webhook signing secret.
 ///
 /// The secret is redacted from [`Debug`](fmt::Debug) output and has no public
-/// accessor. Construct this value directly from the one-time `whs_` value
-/// returned by Application creation or webhook-secret rotation.
+/// accessor. Construct this value from the same caller-chosen secret supplied
+/// to Application creation or webhook-secret rotation.
 #[derive(Clone)]
 pub struct WebhookSecret(SecretString);
 
 impl WebhookSecret {
-    /// Validates the fixed `whs_` wire form before retaining the secret.
+    /// Validates the Application webhook-secret contract before retaining it.
     ///
     /// # Errors
     ///
-    /// Returns [`WebhookError::InvalidSecret`] unless the value is `whs_`
-    /// followed by the URL-safe, unpadded encoding of 32 random bytes.
+    /// Returns [`WebhookError::InvalidSecret`] unless the value contains 32 to
+    /// 512 non-whitespace ASCII characters.
     pub fn new(secret: impl Into<String>) -> Result<Self, WebhookError> {
         let secret = secret.into();
-        let encoded = secret.strip_prefix("whs_");
-        if !encoded.is_some_and(|value| {
-            value.len() == 43
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-        }) {
+        if !(32..=512).contains(&secret.len())
+            || !secret.bytes().all(|byte| byte.is_ascii_graphic())
+        {
             return Err(WebhookError::InvalidSecret);
         }
         Ok(Self(SecretString::from(secret)))
@@ -355,8 +351,8 @@ impl fmt::Debug for WebhookVerifier {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum WebhookError {
-    /// A value was not an Application `whs_` signing secret.
-    #[error("the webhook signing secret does not match the whs_ wire form")]
+    /// A value was not a valid caller-chosen Application signing secret.
+    #[error("the webhook signing secret must contain 32 to 512 non-whitespace ASCII characters")]
     InvalidSecret,
     /// A secret version was zero or negative.
     #[error("webhook signing-key versions must be positive")]
@@ -625,6 +621,20 @@ mod tests {
             panic!("the fixture has a positive key version");
         };
         WebhookVerifier::new(keyring)
+    }
+
+    #[test]
+    fn caller_chosen_webhook_secret_contract_is_validated() {
+        assert!(WebhookSecret::new("caller-owned-webhook-secret-00001").is_ok());
+        assert!(WebhookSecret::new("x".repeat(512)).is_ok());
+        assert!(matches!(
+            WebhookSecret::new("x".repeat(31)),
+            Err(WebhookError::InvalidSecret)
+        ));
+        assert!(matches!(
+            WebhookSecret::new("caller owned webhook secret 00001"),
+            Err(WebhookError::InvalidSecret)
+        ));
     }
 
     fn signed_headers(event_id: Uuid, timestamp: i64, version: i64, body: &[u8]) -> HeaderMap {

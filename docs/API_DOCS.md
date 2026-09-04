@@ -81,9 +81,10 @@ Application secrets contain 256 random bits. Silicon secrets contain 128 random
 bits and use `stk-` plus 32 lowercase hexadecimal characters. Raw application
 secrets are returned only on creation; raw Silicon tokens are returned on
 creation or an approved token rotation. Both are retained only as keyed
-digests. Versioned webhook HMAC secrets are encrypted at rest. An application's
-`whs_…` signing secret is returned only when the application is created;
-replacing its webhook URL reuses that encrypted secret and never returns it.
+digests. Versioned webhook HMAC secrets are encrypted at rest. An Application
+supplies its own 32–512 character webhook secret during creation or rotation;
+IAM never generates one. Replacing its webhook URL reuses that encrypted secret
+unless the caller explicitly supplies a replacement.
 Only Silicon endpoint configuration or replacement returns a new `swhs_…`
 signing secret. That Silicon response can be replayed idempotently for ten
 minutes.
@@ -948,15 +949,16 @@ authenticate after it commits.
 | GET | `/api/v1/application-directory/{app_id}` | Application-authenticated, cross-organization base-URL discovery |
 | GET/PATCH | `/api/v1/applications/{app_id}` | Read/update |
 | POST | `.../client-secret-rotations` | Rotate and reveal a new client secret once |
-| POST | `.../webhook-secret-rotations` | Rotate and reveal a new webhook signing secret once |
+| POST | `.../webhook-secret-rotations` | Install a caller-supplied successor webhook signing secret |
 | GET/PUT | `.../webhook` | Inspect active endpoint or propose replacement |
 | GET | `.../webhook/dead-letters` | List dead-letter deliveries |
 | POST | `.../webhook/dead-letters/replays` | Replay one or an ordered batch of dead letters |
 | GET | `.../login-history` | App-specific authorization/login history |
 
 Registration requires a local Application handle, `org_id`, one HTTPS webhook
-URL, and the Application backend's `base_url`; it may also include the callable
-OBO endpoint registry. IAM turns the local handle into the only public
+URL, a caller-chosen `webhook_secret`, and the Application backend's
+`base_url`; it may also include the callable OBO endpoint registry. IAM turns
+the local handle into the only public
 identifier, `{org_id}>{handle}`. For example, creating `drive` in `google`
 returns `google>drive`; that canonical value is used for authentication, login,
 path parameters, discovery, and OBO. The base URL is an origin: it must contain
@@ -964,9 +966,26 @@ no trailing slash, path, userinfo, query, or fragment, and must use HTTPS except
 for literal loopback HTTP in local development. For example,
 `https://billing.example` is valid and `https://billing.example/` is not.
 
+```http
+POST /api/v1/applications
+Authorization: Bearer <Carbon access token>
+Idempotency-Key: <one logical creation>
+Content-Type: application/json
+
+{
+  "app_id": "billing",
+  "org_id": "acme",
+  "app_name": "Billing",
+  "webhook_url": "https://billing.example/hooks/iam",
+  "webhook_secret": "replace-with-at-least-32-random-characters",
+  "base_url": "https://billing.example"
+}
+```
+
 IAM rechecks current organization owner/admin authority before claiming or
-replaying the request. It returns a `verified` Application plus one-time
-Application and webhook signing secrets. Application representations expose
+replaying the request. It returns a `verified` Application plus the one-time
+generated Application secret and echoes the caller-supplied webhook signing
+secret for v1 compatibility. Application representations expose
 `org_id`, `base_url`, and the Carbon `created_by`; they never model that Carbon
 as the owner. There is no review to wait behind: an Application can sign users
 in, introspect tokens and issue OBO proofs from the moment it exists.
@@ -993,14 +1012,13 @@ there is truthfully no active destination: `active_url` is `null`,
 Testing environments have no platform-reviewer control plane, so creation and
 replacement activate their endpoint immediately and return an `active`
 projection. This makes a fresh test Application able to receive its first
-webhook and makes a newly returned test-only signing secret usable at once.
-The webhook representation's `version` is the application aggregate version,
+webhook immediately. The webhook representation's `version` is the application aggregate version,
 not an endpoint-row version; it is identical to the response `ETag` and is the
 value required by `If-Match`. Replacement reuses the application's existing
 encrypted webhook signing secret and normally does not return secret material.
 The one exception is an imported test Application still using an inherited
-production secret: its first test URL replacement generates and returns a new
-test-only signing secret and its short replay deadline.
+production secret: its first test URL replacement requires a caller-supplied
+test-only signing secret and echoes it with its short replay deadline.
 
 Initial application and webhook secrets are versioned credentials. Permanent
 deletion is available only through the backend-admin decision workflow. It
@@ -1016,13 +1034,16 @@ increments the Application version, and returns the raw secret only in a
 the secret never appears in ordinary reads, audit diffs, or webhooks.
 
 Webhook-secret rotation is a separate operation with the same concurrency,
-idempotency, authorization, no-store, and ten-minute secret-replay guarantees.
+idempotency, authorization, no-store, and ten-minute replay guarantees. Its
+JSON body supplies the successor as `webhook_secret`; IAM never generates it.
 Its step-up action is `application.webhook_secret.rotate`, bound to the internal
-Application UUID. The response carries the new `webhook_signing_secret`, its
-`webhook_secret_version`, and the incremented `application_version`. New
+Application UUID. For v1 compatibility the response echoes
+`webhook_signing_secret`, its `webhook_secret_version`, and the incremented
+`application_version`. New
 deliveries use the successor immediately. Consumers retain prior key versions
 long enough to verify already in-flight signed bodies. Changing a webhook URL
-does not itself rotate a production or already test-owned signing secret.
+reuses a production or already test-owned signing secret unless the replacement
+request explicitly supplies a new one.
 
 ### Platform application review
 
@@ -1438,6 +1459,10 @@ database and starting with nothing in it -- no organizations, no applications,
 no Carbons, no Silicons. It is a change of database rather than a second
 implementation, so anything the product can do, an environment can do.
 
+The shipped AWS production stack provisions this plane on a private,
+single-AZ `db.t4g.micro` PostgreSQL instance with minimal storage, migrates it,
+applies runtime grants, and supplies both the API and worker connection URLs.
+
 Every planed route accepts the header:
 
 ```
@@ -1526,8 +1551,9 @@ secret-bearing import response is no-store and replayable under the exact same
 idempotency key for ten minutes.
 
 An imported Application that reconfigures its webhook URL is moved off the
-inherited production signing key onto a newly generated test signing key. The
-webhook replacement response includes that new `webhook_signing_secret` and
+inherited production signing key onto a caller-supplied test signing key. The
+replacement request includes `webhook_secret`; the response echoes it as
+`webhook_signing_secret` and includes
 `secret_replay_expires_at` only in this transition. Ordinary production and
 already test-owned replacements continue to reuse their existing signing key.
 
@@ -1598,8 +1624,10 @@ measured from the last accepted request in it -- is retired automatically into
 exactly that same recoverable state.
 
 Testing environments are available only where the deployment configures a
-testing database. Without one, every route in this section answers `503`, and
-so does any request presenting the header.
+testing database. The AWS production template provisions and wires a minimal
+private `db.t4g.micro` database automatically. Custom deployments without a
+testing database answer `503` on every route in this section and on any request
+presenting the header.
 
 ## Reliability and revocation guarantees
 

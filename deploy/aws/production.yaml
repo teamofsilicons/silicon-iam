@@ -29,6 +29,10 @@ Parameters:
     Type: String
     Default: db.t4g.small
     AllowedValues: [db.t4g.micro, db.t4g.small, db.t4g.medium]
+  TestingDatabaseInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues: [db.t4g.micro, db.t4g.small]
 
 Resources:
   InstanceSecurityGroup:
@@ -66,7 +70,7 @@ Resources:
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Silicon IAM production PostgreSQL; IAM instances only
+      GroupDescription: Silicon IAM production and testing PostgreSQL; IAM instances only
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -135,6 +139,41 @@ Resources:
         - Key: Environment
           Value: production
 
+  TestingDatabase:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: silicon-iam-testing-production
+      Engine: postgres
+      EngineVersion: "17.9"
+      DBInstanceClass: !Ref TestingDatabaseInstanceClass
+      DBName: silicon_iam_testing
+      MasterUsername: silicon_iam_testing_migrator
+      ManageMasterUserPassword: true
+      Port: 5432
+      AllocatedStorage: "20"
+      MaxAllocatedStorage: 25
+      StorageType: gp3
+      StorageEncrypted: true
+      PubliclyAccessible: false
+      MultiAZ: false
+      AutoMinorVersionUpgrade: true
+      BackupRetentionPeriod: 1
+      CopyTagsToSnapshot: true
+      DeletionProtection: true
+      EnablePerformanceInsights: false
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups:
+        - !GetAtt DatabaseSecurityGroup.GroupId
+      Tags:
+        - Key: Name
+          Value: silicon-iam-testing-production
+        - Key: Service
+          Value: silicon-iam
+        - Key: Environment
+          Value: testing
+
   ApiLogGroup:
     Type: AWS::Logs::LogGroup
     DeletionPolicy: Retain
@@ -186,6 +225,7 @@ Resources:
                 Resource:
                   - !Ref AppSecretArn
                   - !GetAtt Database.MasterUserSecret.SecretArn
+                  - !GetAtt TestingDatabase.MasterUserSecret.SecretArn
               - Effect: Allow
                 Action:
                   - logs:CreateLogStream
@@ -304,6 +344,8 @@ Resources:
             APP_SECRET_ARN='${AppSecretArn}'
             DB_SECRET_ARN='${Database.MasterUserSecret.SecretArn}'
             DB_HOST='${Database.Endpoint.Address}'
+            TEST_DB_SECRET_ARN='${TestingDatabase.MasterUserSecret.SecretArn}'
+            TEST_DB_HOST='${TestingDatabase.Endpoint.Address}'
             BACKEND_IMAGE='${BackendImageUri}'
 
             dnf install --assumeyes docker jq postgresql15
@@ -324,6 +366,8 @@ Resources:
               --secret-id "$APP_SECRET_ARN" --query SecretString --output text)
             DB_SECRET_JSON=$(aws secretsmanager get-secret-value --region "$REGION" \
               --secret-id "$DB_SECRET_ARN" --query SecretString --output text)
+            TEST_DB_SECRET_JSON=$(aws secretsmanager get-secret-value --region "$REGION" \
+              --secret-id "$TEST_DB_SECRET_ARN" --query SecretString --output text)
 
             if ! printf '%s' "$APP_SECRET_JSON" | jq -e '
               [ .IAM_POSTMARK_SERVER_TOKEN, .IAM_TWILIO_ACCOUNT_SID,
@@ -339,29 +383,38 @@ Resources:
 
             DB_MASTER_USER=$(printf '%s' "$DB_SECRET_JSON" | jq -r .username)
             DB_MASTER_PASSWORD=$(printf '%s' "$DB_SECRET_JSON" | jq -r .password)
+            TEST_DB_MASTER_USER=$(printf '%s' "$TEST_DB_SECRET_JSON" | jq -r .username)
+            TEST_DB_MASTER_PASSWORD=$(printf '%s' "$TEST_DB_SECRET_JSON" | jq -r .password)
             API_DB_PASSWORD=$(printf '%s' "$APP_SECRET_JSON" | jq -r .IAM_LOCAL_API_DATABASE_PASSWORD)
             WORKER_DB_PASSWORD=$(printf '%s' "$APP_SECRET_JSON" | jq -r .IAM_LOCAL_WORKER_DATABASE_PASSWORD)
             KEY_OPERATOR_DB_PASSWORD=$(printf '%s' "$APP_SECRET_JSON" | jq -r .IAM_LOCAL_KEY_OPERATOR_DATABASE_PASSWORD)
 
-            export PGHOST="$DB_HOST" PGPORT=5432 PGDATABASE=silicon_iam
-            export PGUSER="$DB_MASTER_USER" PGPASSWORD="$DB_MASTER_PASSWORD"
             export PGSSLMODE=verify-full PGSSLROOTCERT=/opt/silicon-iam/aws-rds-global-bundle.pem
 
-            for attempt in $(seq 1 90); do
-              if pg_isready --timeout=5 >/dev/null 2>&1; then
-                break
-              fi
-              if [ "$attempt" -eq 90 ]; then
-                echo 'RDS did not become ready in time.' >&2
-                exit 1
-              fi
-              sleep 5
-            done
+            configure_database() {
+              local database_host="$1"
+              local database_name="$2"
+              local database_user="$3"
+              local database_password="$4"
+              local database_label="$5"
 
-            psql --set=ON_ERROR_STOP=1 \
-              --set=api_password="$API_DB_PASSWORD" \
-              --set=worker_password="$WORKER_DB_PASSWORD" \
-              --set=key_operator_password="$KEY_OPERATOR_DB_PASSWORD" <<'SQL'
+              export PGHOST="$database_host" PGPORT=5432 PGDATABASE="$database_name"
+              export PGUSER="$database_user" PGPASSWORD="$database_password"
+              for attempt in $(seq 1 90); do
+                if pg_isready --timeout=5 >/dev/null 2>&1; then
+                  break
+                fi
+                if [ "$attempt" -eq 90 ]; then
+                  echo "$database_label RDS did not become ready in time." >&2
+                  exit 1
+                fi
+                sleep 5
+              done
+
+              psql --set=ON_ERROR_STOP=1 \
+                --set=api_password="$API_DB_PASSWORD" \
+                --set=worker_password="$WORKER_DB_PASSWORD" \
+                --set=key_operator_password="$KEY_OPERATOR_DB_PASSWORD" <<'SQL'
             DO $roles$
             BEGIN
               IF pg_catalog.to_regrole('silicon_iam_api') IS NULL THEN
@@ -391,15 +444,22 @@ Resources:
             GRANT silicon_iam_worker TO silicon_iam_worker_runtime;
             GRANT silicon_iam_key_operator TO silicon_iam_key_operator_runtime;
             SQL
+            }
+
+            configure_database "$DB_HOST" silicon_iam "$DB_MASTER_USER" "$DB_MASTER_PASSWORD" Production
+            configure_database "$TEST_DB_HOST" silicon_iam_testing "$TEST_DB_MASTER_USER" "$TEST_DB_MASTER_PASSWORD" Testing
 
             DB_MASTER_PASSWORD_URI=$(printf '%s' "$DB_MASTER_PASSWORD" | jq -sRr @uri)
+            TEST_DB_MASTER_PASSWORD_URI=$(printf '%s' "$TEST_DB_MASTER_PASSWORD" | jq -sRr @uri)
             MIGRATOR_DATABASE_URL="postgresql://$DB_MASTER_USER:$DB_MASTER_PASSWORD_URI@$DB_HOST:5432/silicon_iam?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
+            TESTING_MIGRATOR_DATABASE_URL="postgresql://$TEST_DB_MASTER_USER:$TEST_DB_MASTER_PASSWORD_URI@$TEST_DB_HOST:5432/silicon_iam_testing?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
             docker run --rm --network host --read-only --cap-drop ALL \
               --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 \
               --volume /opt/silicon-iam/aws-rds-global-bundle.pem:/opt/silicon-iam/aws-rds-global-bundle.pem:ro \
               --env IAM_ENVIRONMENT=production \
               --env IAM_LOG_FILTER=silicon_iam=info \
               --env IAM_MIGRATOR_DATABASE_URL="$MIGRATOR_DATABASE_URL" \
+              --env IAM_TESTING_MIGRATOR_DATABASE_URL="$TESTING_MIGRATOR_DATABASE_URL" \
               --env IAM_MIGRATOR_DATABASE_MAX_CONNECTIONS=2 \
               --env IAM_MIGRATOR_DATABASE_ACQUIRE_TIMEOUT_SECONDS=10 \
               --env IAM_MIGRATOR_DATABASE_STATEMENT_TIMEOUT_SECONDS=120 \
@@ -409,10 +469,15 @@ Resources:
             docker cp "$GRANT_CONTAINER:/opt/silicon-iam/postgres/runtime-grants.sql" /opt/silicon-iam/runtime-grants.sql
             docker rm "$GRANT_CONTAINER" >/dev/null
             chmod 0400 /opt/silicon-iam/runtime-grants.sql
-            psql --set=ON_ERROR_STOP=1 --file=/opt/silicon-iam/runtime-grants.sql
+            PGHOST="$DB_HOST" PGDATABASE=silicon_iam PGUSER="$DB_MASTER_USER" PGPASSWORD="$DB_MASTER_PASSWORD" \
+              psql --set=ON_ERROR_STOP=1 --file=/opt/silicon-iam/runtime-grants.sql
+            PGHOST="$TEST_DB_HOST" PGDATABASE=silicon_iam_testing PGUSER="$TEST_DB_MASTER_USER" PGPASSWORD="$TEST_DB_MASTER_PASSWORD" \
+              psql --set=ON_ERROR_STOP=1 --file=/opt/silicon-iam/runtime-grants.sql
 
             API_DB_URL="postgresql://silicon_iam_api_runtime:$API_DB_PASSWORD@$DB_HOST:5432/silicon_iam?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
             WORKER_DB_URL="postgresql://silicon_iam_worker_runtime:$WORKER_DB_PASSWORD@$DB_HOST:5432/silicon_iam?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
+            TESTING_API_DB_URL="postgresql://silicon_iam_api_runtime:$API_DB_PASSWORD@$TEST_DB_HOST:5432/silicon_iam_testing?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
+            TESTING_WORKER_DB_URL="postgresql://silicon_iam_worker_runtime:$WORKER_DB_PASSWORD@$TEST_DB_HOST:5432/silicon_iam_testing?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
 
             cat > /etc/silicon-iam/api.env <<EOF
             IAM_ENVIRONMENT=production
@@ -421,6 +486,9 @@ Resources:
             IAM_AUTH_BASE_URL=https://auth.iam.teamofsilicons.com
             IAM_CORS_ALLOWED_ORIGINS=https://auth.iam.teamofsilicons.com,https://iam.teamofsilicons.com
             IAM_DATABASE_URL=$API_DB_URL
+            IAM_TESTING_DATABASE_URL=$TESTING_API_DB_URL
+            IAM_TESTING_DATABASE_MAX_CONNECTIONS=4
+            IAM_TESTING_DATABASE_MIN_CONNECTIONS=0
             IAM_DATABASE_MAX_CONNECTIONS=12
             IAM_DATABASE_MIN_CONNECTIONS=1
             IAM_DATABASE_ACQUIRE_TIMEOUT_SECONDS=3
@@ -453,6 +521,9 @@ Resources:
             IAM_ENVIRONMENT=production
             IAM_AUTH_BASE_URL=https://auth.iam.teamofsilicons.com
             IAM_DATABASE_URL=$WORKER_DB_URL
+            IAM_TESTING_DATABASE_URL=$TESTING_WORKER_DB_URL
+            IAM_TESTING_DATABASE_MAX_CONNECTIONS=2
+            IAM_TESTING_DATABASE_MIN_CONNECTIONS=0
             IAM_DATABASE_MAX_CONNECTIONS=8
             IAM_DATABASE_MIN_CONNECTIONS=1
             IAM_DATABASE_ACQUIRE_TIMEOUT_SECONDS=3
@@ -544,6 +615,10 @@ Outputs:
     Value: !GetAtt Database.Endpoint.Address
   DatabaseSecretArn:
     Value: !GetAtt Database.MasterUserSecret.SecretArn
+  TestingDatabaseEndpoint:
+    Value: !GetAtt TestingDatabase.Endpoint.Address
+  TestingDatabaseSecretArn:
+    Value: !GetAtt TestingDatabase.MasterUserSecret.SecretArn
   AutoScalingGroupName:
     Value: !Ref AutoScalingGroup
   ApiTargetGroupArn:

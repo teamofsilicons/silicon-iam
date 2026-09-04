@@ -13,7 +13,7 @@ pub(crate) mod security;
 mod validation;
 mod webhooks;
 
-pub(crate) use applications::load_detail;
+pub(crate) use applications::{load_detail, webhook_secret_fingerprint};
 pub(crate) use model::ApplicationDetail;
 
 #[cfg(test)]

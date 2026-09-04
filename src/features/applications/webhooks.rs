@@ -20,7 +20,7 @@ use crate::{
     domain::actor::{ActorRef, ActorType},
     features::webhook_replay::{self, DeadLetterRecord},
     infrastructure::{
-        crypto::{EncryptedValue, EncryptionContext, ProtectedField, SecretKind},
+        crypto::{EncryptedValue, EncryptionContext, ProtectedField},
         postgres::{
             context::{self, DatabaseContext},
             events::{
@@ -35,7 +35,7 @@ use crate::{
 use super::{
     applications::{
         bump_application, json_with_etag, json_with_etag_replayed, resolve_readable_app,
-        resolve_technical_app, secret_json_with_etag, secret_prefix,
+        resolve_technical_app, secret_json_with_etag, webhook_secret_fingerprint,
     },
     cursor,
     error::ApiError,
@@ -44,7 +44,8 @@ use super::{
     model::{
         AppPath, DeadLetterPageQuery, LoginEventPage, LoginEventView, PageInfo, PageQuery,
         WebhookDeadLetterPage, WebhookDeadLetterView, WebhookEndpointView, WebhookReplace,
-        WebhookReplayRequest, WebhookReplayResponse, WebhookSecretRotated, WebhookView,
+        WebhookReplayRequest, WebhookReplayResponse, WebhookSecretRotate, WebhookSecretRotated,
+        WebhookView,
     },
     security::{Bearer, expected_version, require_carbon, require_step_up},
     validation,
@@ -113,7 +114,16 @@ pub(super) async fn replace(
     let carbon_id = require_carbon(&access)?;
     validation::app_id(&path.app_id)?;
     let url = validation::webhook_url(&input.url)?;
-    let canonical = input.url.as_bytes();
+    let requested_secret = input
+        .webhook_secret
+        .as_ref()
+        .map(secrecy::ExposeSecret::expose_secret);
+    validation::optional_webhook_secret(requested_secret)?;
+    let canonical = serde_json::to_vec(&json!({
+        "url": input.url,
+        "webhook_secret": requested_secret,
+    }))
+    .map_err(|_| ApiError::internal("webhook_replace_canonical"))?;
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("webhook_replace_context"))?;
@@ -125,7 +135,7 @@ pub(super) async fn replace(
         &headers,
         &caller_scope,
         "PUT /api/v1/applications/{app_id}/webhook",
-        canonical,
+        &canonical,
     )
     .await?
     {
@@ -150,18 +160,16 @@ pub(super) async fn replace(
         .map_err(|_| ApiError::internal("webhook_replace_context"))?;
     let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
     let caller_scope = format!("carbon:{carbon_id}:application:{}", app.id);
-    // An imported production signing key is deliberately hidden from a test
-    // environment. Its first replacement therefore mints a test-owned key and
-    // returns that new secret. Mark the idempotency record secret-bearing up
-    // front so a retry is encrypted and receives the same no-store response.
-    let contains_secret = current_signing_secret_is_inherited(&mut transaction, app.id).await?;
+    // A caller-supplied replacement secret is echoed in the compatibility
+    // response, so its idempotency replay remains encrypted and short-lived.
+    let contains_secret = input.webhook_secret.is_some();
     let claim = idempotency::claim::<WebhookView>(
         &mut transaction,
         &state.crypto,
         &headers,
         &caller_scope,
         "PUT /api/v1/applications/{app_id}/webhook",
-        canonical,
+        &canonical,
         contains_secret,
     )
     .await?;
@@ -186,24 +194,20 @@ pub(super) async fn replace(
     let inherited_secret = signing_secret_is_inherited(&mut transaction, old_key.id).await?;
     // There is deliberately no production platform reviewer inside an
     // isolated testing plane. A replacement there must become the sole active
-    // endpoint immediately or the newly returned test-only signing secret can
-    // never be exercised. Production keeps its pending-review behavior.
+    // endpoint immediately so a caller-supplied test-only signing secret can
+    // be exercised. Production keeps its pending-review behavior.
     let activate_immediately = crate::infrastructure::testing_plane::is_active();
-    let generated_secret = if inherited_secret {
-        Some(
-            state
-                .crypto
-                .generate_secret(SecretKind::WebhookSigningSecret)
-                .map_err(|_| ApiError::internal("webhook_secret_generate"))?,
-        )
-    } else {
-        None
-    };
-    let secret = if let Some(secret) = generated_secret.as_ref() {
-        zeroize::Zeroizing::new(secret.expose_secret().as_bytes().to_vec())
-    } else {
-        decrypt_signing_secret(&state, app.id, &old_key)?
-    };
+    if inherited_secret && input.webhook_secret.is_none() {
+        return Err(ApiError::validation(
+            "webhook_secret",
+            "is required when replacing an imported Application webhook",
+        ));
+    }
+    let supplied_secret = requested_secret;
+    let secret = supplied_secret.map_or_else(
+        || decrypt_signing_secret(&state, app.id, &old_key),
+        |secret| Ok(zeroize::Zeroizing::new(secret.as_bytes().to_vec())),
+    )?;
     sqlx::query(
         r"
         UPDATE iam.application_webhook_endpoints
@@ -272,10 +276,7 @@ pub(super) async fn replace(
     .bind(app.id)
     .bind(endpoint_id)
     .bind(signing_secret_version)
-    .bind(generated_secret.as_ref().map_or_else(
-        || "whs_migrated".to_owned(),
-        |secret| secret_prefix(secret.expose_secret()),
-    ))
+    .bind(supplied_secret.map_or_else(|| "whs_migrated".to_owned(), webhook_secret_fingerprint))
     .bind(encrypted_secret.ciphertext)
     .bind(encrypted_secret.nonce.as_slice())
     .bind(encrypted_secret.key_version)
@@ -284,8 +285,8 @@ pub(super) async fn replace(
     .map_err(|_| ApiError::internal("webhook_signing_key_rebind"))?;
     let version = bump_application(&mut transaction, app.id).await?;
     let mut response = load_webhook(&mut transaction, &state, app.id, version).await?;
-    if let Some(secret) = generated_secret {
-        response.webhook_signing_secret = Some(secret.expose_secret().to_owned());
+    if let Some(secret) = supplied_secret {
+        response.webhook_signing_secret = Some(secret.to_owned());
         response.secret_replay_expires_at = Some(
             sqlx::query_scalar::<_, OffsetDateTime>(
                 "SELECT transaction_timestamp() + interval '10 minutes'",
@@ -319,7 +320,7 @@ pub(super) async fn replace(
             })),
             metadata: json!({
                 "dns_validated_at_submission": true,
-                "signing_secret_rotated": inherited_secret,
+                "signing_secret_replaced": supplied_secret.is_some(),
                 "testing_plane_immediate_activation": activate_immediately,
             }),
             event_type: if activate_immediately {
@@ -336,7 +337,7 @@ pub(super) async fn replace(
         idempotency_id,
         if activate_immediately { 200 } else { 202 },
         &response,
-        inherited_secret,
+        supplied_secret.is_some(),
     )
     .await?;
     transaction
@@ -359,10 +360,15 @@ pub(super) async fn rotate_secret(
     Bearer(access): Bearer,
     Path(path): Path<AppPath>,
     headers: HeaderMap,
+    Json(input): Json<WebhookSecretRotate>,
 ) -> Result<Response, ApiError> {
     let carbon_id = require_carbon(&access)?;
     validation::app_id(&path.app_id)?;
-    let canonical = b"{}";
+    validation::webhook_secret(input.webhook_secret.expose_secret())?;
+    let canonical = serde_json::to_vec(&json!({
+        "webhook_secret": input.webhook_secret.expose_secret(),
+    }))
+    .map_err(|_| ApiError::internal("webhook_secret_rotation_canonical"))?;
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("webhook_secret_rotation_context"))?;
@@ -374,7 +380,7 @@ pub(super) async fn rotate_secret(
         &headers,
         &caller_scope,
         "POST /api/v1/applications/{app_id}/webhook-secret-rotations",
-        canonical,
+        &canonical,
         true,
     )
     .await?;
@@ -425,10 +431,6 @@ pub(super) async fn rotate_secret(
     }
 
     let first_secret_version = next_signing_secret_version(&mut transaction, app.id).await?;
-    let secret = state
-        .crypto
-        .generate_secret(SecretKind::WebhookSigningSecret)
-        .map_err(|_| ApiError::internal("webhook_secret_rotation_generate"))?;
     sqlx::query(
         r"
         UPDATE iam.application_webhook_signing_keys
@@ -456,7 +458,7 @@ pub(super) async fn rotate_secret(
                     app.id,
                     signing_key_id,
                 ),
-                secret.expose_secret().as_bytes(),
+                input.webhook_secret.expose_secret().as_bytes(),
             )
             .map_err(|_| ApiError::internal("webhook_secret_rotation_encrypt"))?;
         sqlx::query(
@@ -471,7 +473,9 @@ pub(super) async fn rotate_secret(
         .bind(app.id)
         .bind(endpoint_id)
         .bind(first_secret_version)
-        .bind(secret_prefix(secret.expose_secret()))
+        .bind(webhook_secret_fingerprint(
+            input.webhook_secret.expose_secret(),
+        ))
         .bind(encrypted_secret.ciphertext)
         .bind(encrypted_secret.nonce.as_slice())
         .bind(encrypted_secret.key_version)
@@ -490,7 +494,7 @@ pub(super) async fn rotate_secret(
     .map_err(|_| ApiError::internal("webhook_secret_rotation_replay_expiry"))?;
     let response = WebhookSecretRotated {
         app_id: app.app_id,
-        webhook_signing_secret: secret.expose_secret().to_owned(),
+        webhook_signing_secret: input.webhook_secret.expose_secret().to_owned(),
         webhook_secret_version,
         application_version,
         secret_replay_expires_at,
@@ -1312,37 +1316,6 @@ fn webhook_response(
         return json_with_etag_replayed(status, response, response.version);
     }
     json_with_etag(status, response, response.version)
-}
-
-async fn current_signing_secret_is_inherited(
-    transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
-) -> Result<bool, ApiError> {
-    if !crate::infrastructure::testing_plane::is_active() {
-        return Ok(false);
-    }
-    sqlx::query_scalar(
-        r"
-        SELECT COALESCE((
-            SELECT signing.test_inherited_from_production
-            FROM iam.application_webhook_signing_keys AS signing
-            JOIN iam.application_webhook_endpoints AS endpoint
-              ON endpoint.id = signing.endpoint_id
-            WHERE signing.application_id = $1
-              AND signing.status IN ('active', 'retiring')
-              AND endpoint.status IN ('active', 'pending_review')
-            ORDER BY
-                signing.test_inherited_from_production ASC,
-                (endpoint.status = 'active') DESC,
-                signing.created_at DESC
-            LIMIT 1
-        ), false)
-        ",
-    )
-    .bind(application_id)
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|_| ApiError::internal("webhook_inherited_secret_read"))
 }
 
 async fn replacement_signing_key(

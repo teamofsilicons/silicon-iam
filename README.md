@@ -214,11 +214,12 @@ session skeletons once every reference has aged out.
 
 A testing environment is an organization-owned replica of this service: the
 same routes and the same schema, running against a separate testing database
-and starting empty. It is enabled by one setting, `IAM_TESTING_DATABASE_URL`.
-Leave it unset and the feature and its routes are simply absent; point it at
-`IAM_DATABASE_URL` and startup fails, because an environment aimed at
-production would hand every holder of a 32-character key authority over real
-identities.
+and starting empty. The AWS production template provisions a private,
+single-AZ `db.t4g.micro` testing database and sets `IAM_TESTING_DATABASE_URL`
+for both runtime processes. Custom deployments enable it with the same
+setting. Point it at `IAM_DATABASE_URL` and startup fails, because an
+environment aimed at production would hand every holder of a 32-character key
+authority over real identities.
 
 The testing database runs `migrations/` and then `migrations/testing/`, applied
 together by `iam-migrate` when `IAM_TESTING_MIGRATOR_DATABASE_URL` is set. The
@@ -395,10 +396,10 @@ and public endpoints, complete provider credential groups, independent secret
 material, and local providers disabled. The eventual cloud target may replace
 the local secret and process orchestration without changing domain code.
 
-Testing environments stay off until their database exists. A deployment that
-does not set `IAM_TESTING_DATABASE_URL` runs exactly as before and answers
-`503` on the testing routes; nothing else changes. Turning them on needs three
-things, and all three are infrastructure rather than code:
+The AWS production stack creates the testing database, migrates it, applies
+runtime grants, and wires the API and worker automatically. A custom deployment
+that omits `IAM_TESTING_DATABASE_URL` still answers `503` on testing routes.
+Turning testing environments on outside that stack needs three things:
 
 1. a second database, on the same instance or another, that is **not** the
    production one -- startup refuses a testing URL equal to `IAM_DATABASE_URL`,

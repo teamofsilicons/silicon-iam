@@ -96,10 +96,12 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             name,
             org,
             webhook_url,
+            webhook_secret,
             base_url,
             obo_endpoints,
         } => {
             let organization = context.organization_or(org.as_deref())?;
+            let webhook_secret = prompted(webhook_secret, "Webhook signing secret: ")?;
             let created = client
                 .applications()
                 .create(
@@ -109,6 +111,7 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                         app_name: Some(name),
                         app_logo: None,
                         webhook_url,
+                        webhook_secret,
                         base_url,
                         obo_endpoints: obo_endpoints
                             .as_deref()
@@ -123,8 +126,8 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                 Format::Text => {
                     println!("Created {}.", created.application.app_id);
                     println!("Client secret: {}", created.app_secret);
-                    println!("Webhook signing secret: {}", created.webhook_signing_secret);
-                    println!("Both are shown once. Store them now; they can only be rotated.");
+                    println!("IAM stored the webhook signing secret you supplied.");
+                    println!("The client secret is shown once. Store it now.");
                     Ok(())
                 }
             }
@@ -174,16 +177,28 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                 }
             }
         }
-        AppCommand::RotateWebhookSecret { app_id } => {
+        AppCommand::RotateWebhookSecret {
+            app_id,
+            webhook_secret,
+        } => {
+            let webhook_secret = prompted(webhook_secret, "New webhook signing secret: ")?;
             let current = client.applications().get(&app_id).await?;
             let rotated = client
                 .applications()
-                .rotate_webhook_secret(&app_id, current.version, &context.mutation())
+                .rotate_webhook_secret(
+                    &app_id,
+                    current.version,
+                    &models::ApplicationWebhookSecretRotate { webhook_secret },
+                    &context.mutation(),
+                )
                 .await?;
             match context.format {
                 Format::Json => json(&rotated),
                 Format::Text => {
-                    println!("Webhook signing secret: {}", rotated.webhook_signing_secret);
+                    println!(
+                        "Installed webhook signing secret version {}.",
+                        rotated.webhook_secret_version
+                    );
                     println!("The previous secret stopped signing new deliveries.");
                     Ok(())
                 }
@@ -212,14 +227,21 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             let webhook = client.applications().webhook(&app_id).await?;
             json(&webhook)
         }
-        AppCommand::SetWebhook { app_id, url } => {
+        AppCommand::SetWebhook {
+            app_id,
+            url,
+            webhook_secret,
+        } => {
             let current = client.applications().get(&app_id).await?;
             let proposed = client
                 .applications()
                 .replace_webhook(
                     &app_id,
                     current.version,
-                    &models::ApplicationWebhookReplace { url },
+                    &models::ApplicationWebhookReplace {
+                        url,
+                        webhook_secret,
+                    },
                     &context.mutation(),
                 )
                 .await?;
@@ -233,12 +255,12 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                             "Proposed. The service verifies the endpoint before activating it."
                         );
                     }
-                    if let Some(secret) = &proposed.webhook_signing_secret {
-                        println!("Test webhook signing secret: {secret}");
+                    if proposed.webhook_signing_secret.is_some() {
+                        println!("IAM stored the replacement webhook signing secret you supplied.");
                         if let Some(expires_at) = proposed.secret_replay_expires_at {
                             println!("Secret replay expires: {}", timestamp(expires_at));
                         }
-                        println!("Store it now; the inherited production key was replaced.");
+                        println!("The inherited production key was replaced.");
                     }
                     Ok(())
                 }
