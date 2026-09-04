@@ -1063,14 +1063,14 @@ pub enum ConfigCommand {
     Profiles,
     /// Set a value on the current profile.
     Set {
-        /// One of `url`, `org`.
+        /// One of `url`, `org`, `auto-update`.
         key: String,
         /// The value to store.
         value: String,
     },
     /// Clear a value on the current profile.
     Unset {
-        /// `org`.
+        /// `org`, or `auto-update` to restore its default-on policy.
         key: String,
     },
     /// Switch the default profile.
@@ -1085,6 +1085,8 @@ pub enum ConfigCommand {
 pub enum SystemCommand {
     /// Show the service's version, and agree an API version.
     Version,
+    /// Check crates.io now and install the latest CLI release.
+    Update,
     /// Check that the service is alive and ready.
     Health,
 }
@@ -1144,6 +1146,14 @@ mod tests {
     fn the_grammar_is_internally_consistent() {
         Cli::command().debug_assert();
         assert_eq!(Cli::command().get_name(), "iam");
+    }
+
+    #[test]
+    fn updater_controls_are_reachable() {
+        use clap::Parser as _;
+
+        assert!(Cli::try_parse_from(["iam", "system", "update"]).is_ok());
+        assert!(Cli::try_parse_from(["iam", "config", "set", "auto-update", "off"]).is_ok());
     }
 
     #[test]

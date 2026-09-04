@@ -261,13 +261,18 @@ published separately.
 `crates/client` is `silicon-iam-client`: the primary interface, covering every
 caller action in the contract. Its wire types are generated from
 `docs/openapi.yaml` by `scripts/generate-client-models.rb`, and CI regenerates
-them and fails on a diff, so they cannot drift from the service. It is stateless
-by design -- no disk, no cache, no credential refresh behind the caller's back.
+them and fails on a diff, so they cannot drift from the service. IAM runtime
+state stays with the caller -- no session store, response cache, or credential
+refresh behind its back. Its default-on updater may advance the consuming
+project's `Cargo.lock`; the next build loads that release, and applications can
+disable the behavior through the builder or environment.
 
 `crates/cli` is `silicon-iam-cli`, installing the `iam` binary. It is a shell
 over the client and has no capability the client lacks; what it adds is the
 state the client refuses to hold: a profile, a service URL, and a session under
-`~/.silicon-iam/` that it renews when it is close to expiring. Use
+`~/.silicon-iam/` that it renews when it is close to expiring. It also checks
+crates.io daily and updates its Cargo-installed binary by default; use
+`iam config set auto-update off` to opt out. Use
 `iam --test <environment-uuid> <command>` to run the same command in a test
 plane; the CLI resolves the UUID through an owner-only stored root key and
 keeps every environment's session separate from production.

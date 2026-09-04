@@ -6,6 +6,22 @@ Silicon IAM from the command line. Installs a single binary, `iam`.
 cargo install silicon-iam-cli
 ```
 
+The installed binary checks crates.io at most once every 24 hours and updates
+itself with `cargo install` when a newer stable release exists. Automatic
+updates are on by default. An offline registry or unavailable Cargo executable
+only prints a warning and never prevents the requested IAM command from
+running.
+
+```sh
+iam config set auto-update off   # opt out persistently
+iam config unset auto-update     # restore the default-on policy
+iam system update                # force a check now, even while opted out
+```
+
+`SILICON_IAM_AUTO_UPDATE=false` is the process-level opt-out; set it to `true`
+to override a stored opt-out. After an update, the command already in progress
+finishes with the old binary and the next `iam` invocation uses the new one.
+
 Everything the CLI can do, the [`silicon-iam-client`](https://crates.io/crates/silicon-iam-client) crate can do —
 the CLI is a shell over it and has no capability of its own. What it adds is
 memory: which service, which profile, whose session, and a terminal to read a
@@ -294,8 +310,9 @@ iam config use staging
 ```
 
 Every setting can also come from the environment: `SILICON_IAM_URL`,
-`SILICON_IAM_PROFILE`, `SILICON_IAM_ORG`, `SILICON_IAM_TEST`. Flags win
-over environment variables, which win over stored settings.
+`SILICON_IAM_PROFILE`, `SILICON_IAM_ORG`, `SILICON_IAM_TEST`, and
+`SILICON_IAM_AUTO_UPDATE`. Flags win over environment variables, which win
+over stored settings.
 
 `SILICON_IAM_HOME` moves the store somewhere else, which is what to use in CI so
 a build never touches a developer's real credentials.

@@ -1,0 +1,57 @@
+<p class="lede">
+  <code>silicon-iam-client</code> compares its compiled version with the newest stable release on
+  crates.io and maintains the consuming Cargo project's lockfile. The policy is automatic by
+  default and explicitly opt-out.
+</p>
+
+<h2>What automatic means for a Rust library</h2>
+
+<p>
+  Code already compiled into a running process cannot be replaced safely. Immediately before the
+  first IAM request, the client checks crates.io. If a newer stable release exists, it finds the
+  nearest <code>Cargo.toml</code> at or above the process working directory and runs the equivalent
+  of:
+</p>
+
+<pre><code>cargo update --manifest-path /path/to/Cargo.toml \
+  -p silicon-iam-client --precise &lt;latest-version&gt;</code></pre>
+
+<p>
+  The current process completes with its compiled version. The next Cargo build uses the updated
+  lockfile. This avoids making the false promise that a Rust library can hot-swap itself.
+</p>
+
+<h2>Opt out</h2>
+
+<pre><code>let client = Client::builder("https://backend.iam.teamofsilicons.com")?
+    .auto_update(false)
+    .build()?;</code></pre>
+
+<p>Or disable it for one deployment without rebuilding:</p>
+
+<pre><code>SILICON_IAM_CLIENT_AUTO_UPDATE=false ./your-application</code></pre>
+
+<p>
+  Values <code>0</code>, <code>false</code>, <code>no</code>, and <code>off</code> disable the updater.
+  The default is automatic. When an application starts outside its source directory, select the
+  manifest explicitly with <code>.update_manifest("/path/to/Cargo.toml")</code>.
+</p>
+
+<h2>Observe the result</h2>
+
+<p>
+  After the first IAM call, <code>client.update_status()</code> reports <code>Current</code>,
+  <code>Updated</code>, <code>Disabled</code>, <code>NoCargoProject</code>, or <code>Failed</code>.
+  A registry timeout, absent manifest, incompatible version constraint, or failed Cargo command
+  never changes the IAM request's result. Update checks have a three-second timeout and happen
+  only once per client process.
+</p>
+
+<div class="banner banner-info">
+  <div>
+    <strong>The CLI has its own updater.</strong>
+    The <code>iam</code> binary checks at most daily and can replace itself directly with
+    <code>cargo install</code>. Use <code>iam config set auto-update off</code> to opt out or
+    <code>iam system update</code> to force a check.
+  </div>
+</div>

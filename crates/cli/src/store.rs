@@ -21,16 +21,41 @@ use crate::error::{CliError, Result};
 const APP_DIRECTORY: &str = ".silicon-iam";
 const CONFIG_FILE: &str = "config.json";
 const CREDENTIALS_FILE: &str = "credentials.json";
+const UPDATE_FILE: &str = "update.json";
 
 /// Settings that are not secret.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
+    /// Whether the installed CLI maintains itself from crates.io.
+    #[serde(default = "enabled")]
+    pub auto_update: bool,
     /// Profile used when `--profile` is not given.
     #[serde(default)]
     pub current_profile: Option<String>,
     /// Per-profile settings.
     #[serde(default)]
     pub profiles: BTreeMap<String, Profile>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            auto_update: true,
+            current_profile: None,
+            profiles: BTreeMap::new(),
+        }
+    }
+}
+
+/// Non-secret throttle state for the crates.io updater.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct UpdateState {
+    /// Compiled version for which the last successful check was made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_version: Option<String>,
+    /// Time of the last successful check.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub checked_at: Option<OffsetDateTime>,
 }
 
 /// One named service and the defaults that go with it.
@@ -176,6 +201,24 @@ pub fn save_config(config: &Config) -> Result<()> {
     write_json(&home()?.join(CONFIG_FILE), config, false)
 }
 
+/// Reads automatic-update throttle state, or an empty value.
+///
+/// # Errors
+///
+/// Returns an error when the state exists but cannot be read or parsed.
+pub fn load_update_state() -> Result<UpdateState> {
+    read_json(&home()?.join(UPDATE_FILE))
+}
+
+/// Stores automatic-update throttle state without any credentials.
+///
+/// # Errors
+///
+/// Returns an error when the state cannot be written.
+pub fn save_update_state(state: &UpdateState) -> Result<()> {
+    write_json(&home()?.join(UPDATE_FILE), state, false)
+}
+
 /// Reads stored sessions, or an empty set.
 ///
 /// # Errors
@@ -228,6 +271,10 @@ fn write_json<T: Serialize>(path: &Path, value: &T, private: bool) -> Result<()>
     Ok(())
 }
 
+const fn enabled() -> bool {
+    true
+}
+
 /// Makes a file readable and writable by its owner only.
 ///
 /// Applied on every write, not only at creation: a file whose permissions were
@@ -256,7 +303,14 @@ mod tests {
     use time::{Duration, OffsetDateTime};
     use uuid::Uuid;
 
-    use super::{Credentials, Session};
+    use super::{Config, Credentials, Session};
+
+    #[test]
+    fn automatic_updates_default_on_for_new_and_old_configs() {
+        assert!(Config::default().auto_update);
+        let decoded = serde_json::from_str::<Config>("{}");
+        assert!(decoded.is_ok_and(|config| config.auto_update));
+    }
 
     fn session(expires_in: Duration) -> Session {
         Session {

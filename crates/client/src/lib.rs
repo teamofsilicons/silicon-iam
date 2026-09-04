@@ -5,19 +5,27 @@
 //! everything a caller can do over HTTP has a method here, with the contract's
 //! own types.
 //!
-//! # Stateless by construction
+//! # Runtime state stays with the caller
 //!
-//! [`Client`] holds configuration and nothing else. It does not write to disk,
-//! does not cache responses, and does not refresh credentials behind your
-//! back. An expired token produces an error, and deciding what to do about
-//! that -- refresh, re-authenticate, give up -- stays with the caller, because
-//! only the caller knows where its credentials live and who is allowed to
-//! prompt for new ones.
+//! [`Client`] does not store sessions, cache API responses, or refresh
+//! credentials behind your back. An expired token produces an error, and
+//! deciding what to do about that -- refresh, re-authenticate, give up --
+//! stays with the caller, because only the caller knows where its credentials
+//! live and who is allowed to prompt for new ones.
 //!
 //! Anything that must be remembered between calls belongs to the program
 //! holding the client. The `silicon-iam-cli` crate is one such program: it
 //! stores tokens under `~/.silicon-iam/` and refreshes them, using nothing but
 //! this crate to talk to the service.
+//!
+//! Dependency maintenance is the deliberate exception. On its first API
+//! request, the client checks crates.io for a newer stable release and, when
+//! running from a Cargo project, advances that project's lockfile. Already
+//! compiled code cannot be hot-swapped; the next build loads the update. Use
+//! [`ClientBuilder::auto_update`] or
+//! `SILICON_IAM_CLIENT_AUTO_UPDATE=false` to opt out, and inspect
+//! [`Client::update_status`] after the first call. A missing manifest, offline
+//! registry, or failed Cargo command never blocks the IAM request.
 //!
 //! # Getting started
 //!
@@ -139,6 +147,7 @@ pub mod error;
 pub mod models;
 mod models_manual;
 pub mod request;
+pub mod update;
 pub mod webhook;
 
 pub use client::{API_VERSION, Client, ClientBuilder};

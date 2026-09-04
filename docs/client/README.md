@@ -9,20 +9,59 @@ so they cannot drift from the service.
 
 ```toml
 [dependencies]
-silicon-iam-client = "1.0.1"
+silicon-iam-client = "1.1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-## Stateless by construction
+## Runtime state stays with your application
 
-`Client` holds configuration and nothing else. It does not write to disk, does
-not cache responses, and does not refresh credentials behind your back. An
-expired token produces an error; deciding what to do about it stays with you,
-because only your program knows where its credentials live.
+`Client` does not store sessions, cache API responses, or refresh credentials
+behind your back. An expired token produces an error; deciding what to do
+about it stays with you, because only your program knows where its credentials
+live.
 
 If you want the stateful version — a token store, automatic refresh, a
 configured default service — that is the `silicon-iam-cli` crate, which is
 built on nothing but this one.
+
+## Automatic crate updates
+
+Automatic dependency maintenance is on by default. Immediately before its
+first IAM request, the client compares its compiled version with the newest
+stable `silicon-iam-client` release on crates.io. When it finds a newer release
+and can locate a `Cargo.toml` from the process working directory, it runs the
+equivalent of:
+
+```sh
+cargo update --manifest-path /path/to/Cargo.toml \
+  -p silicon-iam-client --precise <latest-version>
+```
+
+That advances the consuming project's `Cargo.lock`. Rust cannot replace a
+library already compiled into a running process, so the current process
+finishes on its existing version and the next Cargo build uses the update.
+Registry or Cargo failures are best-effort and never fail the IAM request;
+inspect `client.update_status()` after the first request to see whether the
+client was current, updated, skipped, or could not update.
+
+Disable every check and Cargo invocation in code:
+
+```rust
+let client = Client::builder("https://backend.iam.teamofsilicons.com")?
+    .auto_update(false)
+    .build()?;
+```
+
+Or opt out for a deployed process without recompiling it:
+
+```sh
+SILICON_IAM_CLIENT_AUTO_UPDATE=false ./your-application
+```
+
+If the application starts outside its project directory, point the updater at
+the correct manifest with `.update_manifest("/path/to/Cargo.toml")`. If there
+is no manifest, the client reports `UpdateStatus::NoCargoProject` and leaves
+the installed application alone.
 
 ## Your first Application login
 

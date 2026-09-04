@@ -26,6 +26,7 @@ into public contracts, runnable examples, and client guidance.
 | Webhook delivery and verification | [`api/webhooks.html`](./api/webhooks.html) | [`client/webhooks.html`](./client/webhooks.html) |
 | Testing environments | [`api/testing-environments.html`](./api/testing-environments.html) | [`client/testing-environments.html`](./client/testing-environments.html) |
 | Errors and recovery | [`api/errors.html`](./api/errors.html) | [`client/errors.html`](./client/errors.html) |
+| Automatic crate updates | — | [`client/updates.html`](./client/updates.html) |
 
 ## Published documentation
 

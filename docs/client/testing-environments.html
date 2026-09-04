@@ -24,8 +24,8 @@ let sandbox = Client::new("https://backend.iam.teamofsilicons.com")?
 
 <p>
   <code>EnvironmentKey</code> accepts only the exact 32-character alphanumeric wire form and
-  redacts itself from <code>Debug</code>. The SDK is stateless, so retaining the public UUID-to-key
-  mapping is your program's responsibility. Do not use the UUID as a credential and do not expose
+  redacts itself from <code>Debug</code>. The SDK stores no IAM credentials, so retaining the public
+  UUID-to-key mapping is your program's responsibility. Do not use the UUID as a credential and do not expose
   the key as a selector.
 </p>
 

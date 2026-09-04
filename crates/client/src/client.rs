@@ -1,6 +1,13 @@
 //! The client itself: configuration, and the one place a request is sent.
 
-use std::time::Duration;
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use reqwest::{Method, StatusCode};
 use serde::{Serialize, de::DeserializeOwned};
@@ -10,6 +17,10 @@ use crate::{
     credentials::{Credential, EnvironmentKey},
     error::{ApiError, Envelope, Error, Result},
     request::Mutation,
+    update::{
+        CLIENT_CRATE, CLIENT_VERSION, Release, UpdatePolicy, UpdateStatus, check, find_manifest,
+        update_dependency,
+    },
 };
 
 /// The API version this client speaks.
@@ -20,17 +31,19 @@ const ENVIRONMENT_KEY_HEADER: &str = "x-testing-environment-key";
 
 /// A configured Silicon IAM client.
 ///
-/// The client holds no mutable state. It never writes to disk, never caches a
-/// response, and never refreshes a credential on your behalf -- a token that
-/// expires produces an error, and renewing it is the caller's decision. Two
-/// calls made with the same client are independent, so one client can be
-/// shared across tasks and threads.
+/// The client stores no IAM session state, never caches an API response, and
+/// never refreshes a credential on your behalf -- a token that expires
+/// produces an error, and renewing it is the caller's decision. Its automatic
+/// dependency updater may advance the consuming Cargo project's lockfile; it
+/// is independently opt-out and never changes the running code. One client
+/// can be shared across tasks and threads.
 #[derive(Clone, Debug)]
 pub struct Client {
     http: reqwest::Client,
     base_url: Url,
     credential: Credential,
     environment: Option<EnvironmentKey>,
+    updater: Arc<AutomaticUpdater>,
 }
 
 /// Assembles a [`Client`].
@@ -41,6 +54,8 @@ pub struct ClientBuilder {
     environment: Option<EnvironmentKey>,
     timeout: Duration,
     user_agent: Option<String>,
+    update_policy: UpdatePolicy,
+    update_manifest: Option<PathBuf>,
 }
 
 impl Client {
@@ -80,6 +95,16 @@ impl Client {
     #[must_use]
     pub fn environment(&self) -> Option<&EnvironmentKey> {
         self.environment.as_ref()
+    }
+
+    /// The result of this process's one-time automatic client update.
+    ///
+    /// The check begins immediately before the first IAM request. Updating a
+    /// lockfile cannot replace code in the running process, so [`UpdateStatus::Updated`]
+    /// means the next Cargo build will load the new release.
+    #[must_use]
+    pub fn update_status(&self) -> UpdateStatus {
+        self.updater.status()
     }
 
     /// The same client, presenting a different credential.
@@ -340,6 +365,7 @@ impl Client {
 
     /// Sends one request and turns anything other than success into an error.
     async fn send(&self, request: reqwest::RequestBuilder) -> Result<Vec<u8>> {
+        self.updater.run().await;
         let response = request.send().await.map_err(Error::Transport)?;
         let status = response.status();
         let retry_after = header_seconds(&response, "retry-after");
@@ -397,6 +423,8 @@ impl ClientBuilder {
             environment: None,
             timeout: Duration::from_secs(30),
             user_agent: None,
+            update_policy: UpdatePolicy::Automatic,
+            update_manifest: None,
         })
     }
 
@@ -431,6 +459,34 @@ impl ClientBuilder {
         self
     }
 
+    /// Enables or disables automatic client dependency updates.
+    ///
+    /// Enabled by default. Before the first IAM request, the client checks
+    /// crates.io and advances the nearest Cargo project's lockfile when a
+    /// newer stable `silicon-iam-client` exists. Set this to `false`, or set
+    /// `SILICON_IAM_CLIENT_AUTO_UPDATE=false`, to make no update request and
+    /// invoke no Cargo process.
+    #[must_use]
+    pub const fn auto_update(mut self, enabled: bool) -> Self {
+        self.update_policy = if enabled {
+            UpdatePolicy::Automatic
+        } else {
+            UpdatePolicy::Disabled
+        };
+        self
+    }
+
+    /// Selects the Cargo manifest whose lockfile automatic updates maintain.
+    ///
+    /// Without this, the client searches from the process working directory
+    /// toward the filesystem root. A directory is interpreted as containing
+    /// `Cargo.toml`; a file path is used verbatim.
+    #[must_use]
+    pub fn update_manifest(mut self, path: impl Into<PathBuf>) -> Self {
+        self.update_manifest = Some(path.into());
+        self
+    }
+
     /// Builds the client.
     ///
     /// # Errors
@@ -448,13 +504,117 @@ impl ClientBuilder {
             .user_agent(user_agent)
             .build()
             .map_err(Error::Transport)?;
+        let environment_policy = UpdatePolicy::from_environment();
+        let update_policy = if self.update_policy == UpdatePolicy::Disabled
+            || environment_policy == UpdatePolicy::Disabled
+        {
+            UpdatePolicy::Disabled
+        } else {
+            UpdatePolicy::Automatic
+        };
         Ok(Client {
             http,
             base_url: self.base_url,
             credential: self.credential,
             environment: self.environment,
+            updater: Arc::new(AutomaticUpdater::new(update_policy, self.update_manifest)),
         })
     }
+}
+
+#[derive(Debug)]
+struct AutomaticUpdater {
+    policy: UpdatePolicy,
+    manifest: Option<PathBuf>,
+    started: AtomicBool,
+    status: Mutex<UpdateStatus>,
+}
+
+impl AutomaticUpdater {
+    fn new(policy: UpdatePolicy, manifest: Option<PathBuf>) -> Self {
+        Self {
+            policy,
+            manifest,
+            started: AtomicBool::new(false),
+            status: Mutex::new(UpdateStatus::NotChecked),
+        }
+    }
+
+    fn status(&self) -> UpdateStatus {
+        self.status.lock().map_or_else(
+            |_| UpdateStatus::Failed {
+                reason: "automatic update status lock was poisoned".to_owned(),
+            },
+            |status| status.clone(),
+        )
+    }
+
+    fn set_status(&self, next: UpdateStatus) {
+        if let Ok(mut status) = self.status.lock() {
+            *status = next;
+        }
+    }
+
+    async fn run(&self) {
+        if self.started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if self.policy == UpdatePolicy::Disabled {
+            self.set_status(UpdateStatus::Disabled);
+            return;
+        }
+        // Unit tests exercise request construction without reaching outside
+        // the test process or mutating this workspace's lockfile.
+        if cfg!(test) {
+            return;
+        }
+
+        let manifest = self
+            .manifest
+            .clone()
+            .and_then(normalize_manifest)
+            .or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|directory| find_manifest(&directory))
+            });
+        let Some(manifest) = manifest else {
+            self.set_status(UpdateStatus::NoCargoProject);
+            return;
+        };
+
+        let status = match check(CLIENT_CRATE, CLIENT_VERSION).await {
+            Ok(release) if release.update_available() => apply_client_release(&manifest, release),
+            Ok(release) => UpdateStatus::Current {
+                version: release.current,
+            },
+            Err(error) => UpdateStatus::Failed {
+                reason: error.to_string(),
+            },
+        };
+        self.set_status(status);
+    }
+}
+
+fn apply_client_release(manifest: &std::path::Path, release: Release) -> UpdateStatus {
+    match update_dependency(manifest, CLIENT_CRATE, &release.latest) {
+        Ok(()) => UpdateStatus::Updated {
+            from: release.current,
+            to: release.latest,
+        },
+        Err(error) => UpdateStatus::Failed {
+            reason: error.to_string(),
+        },
+    }
+}
+
+fn normalize_manifest(path: PathBuf) -> Option<PathBuf> {
+    let manifest = if path.is_dir() {
+        path.join("Cargo.toml")
+    } else {
+        path
+    };
+    manifest.is_file().then_some(manifest)
 }
 
 /// Recovers the service's envelope, falling back to the bare status.
@@ -523,7 +683,15 @@ mod tests {
 
     use crate::{Credential, EnvironmentKey};
 
-    use super::{Client, decode_envelope, offered_versions};
+    use super::{AutomaticUpdater, Client, decode_envelope, offered_versions};
+    use crate::update::{UpdatePolicy, UpdateStatus};
+
+    #[tokio::test]
+    async fn disabling_updates_is_observable_and_does_no_work() {
+        let updater = AutomaticUpdater::new(UpdatePolicy::Disabled, None);
+        updater.run().await;
+        assert_eq!(updater.status(), UpdateStatus::Disabled);
+    }
 
     #[test]
     fn a_base_url_without_a_trailing_slash_still_joins_correctly() {
