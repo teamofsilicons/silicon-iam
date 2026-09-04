@@ -32,20 +32,21 @@ let sandbox = Client::new("https://backend.iam.teamofsilicons.com")?
 <div class="banner banner-info">
   <div>
     <strong>Plane selection and actor authentication are independent.</strong>
-    <code>sandbox</code> above is anonymous. Use it for signup and login, then attach the test
-    bearer with <code>with_credential</code>. For Application operations, attach that
-    environment's Application Basic credential instead.
+    <code>sandbox</code> above is anonymous. Bootstrap test identities with the CLI or raw IAM
+    control-plane API, then attach the resulting test bearer with <code>with_credential</code>.
+    An Application client never runs that OTP ceremony. Give it only the environment's
+    Application Basic credential and the SLT returned by IAM.
   </div>
 </div>
 
 <h2>Bootstrap the empty environment</h2>
 
 <p>
-  Run the normal signup sequence through <code>sandbox.signup()</code>. Email and SMS are not sent;
-  pass <code>000000</code> to both verification calls. Complete the Carbon and run the normal
-  login sequence through <code>sandbox.auth()</code>, again using <code>000000</code>. Keep the
-  returned access and refresh tokens under the environment UUID, never in your production token
-  slot.
+  Use the CLI or raw control-plane API to run the normal signup and IAM-session login sequence.
+  Email and SMS are not sent; pass <code>000000</code> to each verification call. Keep the returned
+  control-plane tokens under the environment UUID, never in your production token slot. When
+  testing the Application itself, complete the IAM-hosted Application login and pass only its SLT
+  to <code>OAuth::login</code>.
 </p>
 
 <p>
@@ -164,9 +165,9 @@ let event = verified.event();</code></pre>
 
 <ol>
   <li>Assert the environment begins empty.</li>
-  <li>Complete both-contact signup and login with <code>000000</code>.</li>
+  <li>Use control-plane tooling to complete both-contact signup and IAM login with <code>000000</code>.</li>
   <li>Create or import the Application and persist every one-time test secret.</li>
-  <li>Complete the short-lived-token login and introspect it in the same plane.</li>
+  <li>Give the Application client only the SLT, complete <code>OAuth::login</code>, and introspect it in the same plane.</li>
   <li>Prove production credentials fail inside the environment and test credentials fail without it.</li>
   <li>Verify and deduplicate a wrapped webhook; run OBO exchange/verification when applicable.</li>
   <li>Call <code>clean_current</code> with the key when the run finishes, or retire it from production.</li>

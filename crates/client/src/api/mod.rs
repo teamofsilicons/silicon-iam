@@ -41,7 +41,10 @@ impl Client {
         signup::Signup(self)
     }
 
-    /// Logging in, refreshing, logging out, and stepping up.
+    /// Direct IAM session maintenance, logout, and step-up.
+    ///
+    /// Application login is available only as [`oauth::OAuth::login`] and
+    /// accepts only a short-lived token.
     #[must_use]
     pub const fn auth(&self) -> auth::Auth<'_> {
         auth::Auth(self)

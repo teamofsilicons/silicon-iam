@@ -16,7 +16,7 @@ name = "iam"
 path = "src/main.rs"
 
 [dependencies]
-silicon-iam-client = { version = "1.0.1", path = "../client" }
+silicon-iam-client = { version = "1.0.1", path = "../client", features = ["cli-session"] }
 clap.workspace = true
 hex.workspace = true
 hmac.workspace = true

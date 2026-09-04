@@ -21,37 +21,23 @@
 //!
 //! # Getting started
 //!
-//! Every route needs a credential except signup, login, refresh, and the
-//! version and health checks. Start anonymous, then move to an authenticated
-//! client:
+//! An Application never collects a Carbon's email/SMS code or any other IAM
+//! authentication credential. Send the user agent to the IAM-hosted login
+//! page, receive its single-use short-lived token, and give only that `slt` to
+//! [`api::oauth::OAuth::login`]:
 //!
 //! ```no_run
-//! use silicon_iam_client::{Client, Credential, Mutation, models};
+//! use silicon_iam_client::{Client, Credential, Mutation};
 //!
 //! # async fn run() -> silicon_iam_client::Result<()> {
-//! let anonymous = Client::new("https://backend.iam.teamofsilicons.com")?;
-//!
-//! let challenge = anonymous
-//!     .auth()
-//!     .start_login(
-//!         &models::LoginChallengeCreate {
-//!             email: Some("founder@example.com".to_owned()),
-//!             phone_number: None,
-//!             carbon_id: None,
-//!         },
-//!         &Mutation::new(),
-//!     )
+//! let app_id = "acme>checkout";
+//! let application = Client::new("https://backend.iam.teamofsilicons.com")?
+//!     .with_credential(Credential::application(app_id, "ask_example"));
+//! let tokens = application
+//!     .oauth()
+//!     .login(app_id, "slt_from_the_iam_callback", &Mutation::new())
 //!     .await?;
-//!
-//! // The code arrives by email or SMS; collect it however suits your program.
-//! let tokens = anonymous
-//!     .auth()
-//!     .verify_login(challenge.session_id, "123456", &Mutation::new())
-//!     .await?;
-//!
-//! let client = anonymous.with_credential(Credential::bearer(tokens.access_token));
-//! let me = client.carbons().me().await?;
-//! println!("signed in as {}", me.carbon_id);
+//! # let _ = tokens;
 //! # Ok(())
 //! # }
 //! ```

@@ -46,43 +46,30 @@
 
 <h2>Step three — exchange it</h2>
 
-<pre><code>use silicon_iam_client::{Client, Credential, Mutation, models};
+<pre><code>use silicon_iam_client::{Client, Credential, Mutation};
 
 let application = Client::new(base_url)?
     .with_credential(Credential::application(app_id, app_secret));
 
 let tokens = application
     .oauth()
-    .token(
-        &amp;models::ApplicationTokenRequest {
-            app_id: app_id.to_owned(),
-            slt: Some(slt),
-            refresh_token: None,
-        },
-        &amp;Mutation::new(),
-    )
+    .login(app_id, slt, &amp;Mutation::new())
     .await?;</code></pre>
 
 <p>
   You get an access token good for 30 minutes and a refresh token that rotates on every use.
-  Renewing is the same call with the other field set:
+  Renewing an existing session is a separate operation:
 </p>
 
 <pre><code>let renewed = application
     .oauth()
-    .token(
-        &amp;models::ApplicationTokenRequest {
-            app_id: app_id.to_owned(),
-            slt: None,
-            refresh_token: Some(previous.refresh_token),
-        },
-        &amp;Mutation::new(),
-    )
+    .refresh(app_id, &amp;previous.refresh_token, &amp;Mutation::new())
     .await?;</code></pre>
 
 <p>
-  Present exactly one of <code>slt</code> and <code>refresh_token</code>. Both, or neither, is a
-  bad request rather than a guess.
+  <code>OAuth::login</code> accepts only an SLT. It has no OTP, email, phone, Carbon ID, or refresh-token
+  argument, so an Application cannot accidentally collect IAM authentication credentials or treat
+  a continuing session as a new login.
 </p>
 
 <h2>When there is nobody to redirect</h2>

@@ -11,6 +11,13 @@ license = "Apache-2.0"
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+# The stateful `iam` binary needs to establish its own direct IAM session.
+# Application integrations must not enable this: their only login input is an
+# SLT through `OAuth::login`.
+cli-session = []
+
 [lib]
 name = "silicon_iam_client"
 path = "src/lib.rs"

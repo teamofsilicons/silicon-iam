@@ -4,11 +4,17 @@ use uuid::Uuid;
 
 use crate::{Client, Mutation, Result, models};
 
-/// Authentication. The login and refresh routes need no credential; step-up
-/// and logout act on an existing session.
+/// Direct IAM session maintenance and step-up.
+///
+/// Application login is deliberately not part of this group. Applications
+/// use [`crate::api::oauth::OAuth::login`], whose only login credential is an
+/// SLT. The IAM CLI's own first-party session ceremony is compiled separately
+/// behind the `cli-session` feature.
 pub struct Auth<'a>(pub(super) &'a Client);
 
 impl Auth<'_> {
+    #[cfg(feature = "cli-session")]
+    #[doc(hidden)]
     /// Starts a Carbon login by email, phone number, or Carbon ID.
     ///
     /// Answers with a challenge session, not a token. The response is
@@ -28,6 +34,8 @@ impl Auth<'_> {
             .await
     }
 
+    #[cfg(feature = "cli-session")]
+    #[doc(hidden)]
     /// Completes a login, exchanging the code for tokens.
     ///
     /// # Errors
