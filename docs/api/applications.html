@@ -16,10 +16,11 @@
 </p>
 
 <p>
-  <code>base_url</code> identifies the application's backend for discovery. It must be absolute,
-  contain no user information, query, or fragment, and use HTTPS except for literal loopback HTTP
-  during local development. IAM returns it to callers; it does not navigate to it, append login
-  tokens to it, or treat it as a redirect allowlist.
+  <code>base_url</code> identifies the application's backend origin for discovery. It must contain
+  no trailing slash, path, user information, query, or fragment, and use HTTPS except for literal
+  loopback HTTP during local development. For example, <code>https://billing.example</code> is valid
+  and <code>https://billing.example/</code> is not. IAM returns it to callers; it does not navigate
+  to it, append login tokens to it, or treat it as a redirect allowlist.
 </p>
 
 <div class="banner banner-danger">

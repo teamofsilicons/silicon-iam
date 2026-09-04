@@ -158,8 +158,9 @@ have to start another one — either asks for the token directly with
 Application creation takes a local handle and an owning organization. IAM
 returns the canonical public identifier `{org_id}>{handle}`; use that canonical
 value for every later login, credential, path, discovery, and OBO call. The
-required `base_url` is an absolute application-backend URL. It is not a login
-redirect and IAM does not call it automatically.
+required `base_url` is the pathless application-backend origin without a
+trailing slash, such as `https://billing.example`. It is not a login redirect
+and IAM does not call it automatically.
 
 An Application authenticating with `Credential::application` can discover any
 verified Application's base URL, even across organizations:

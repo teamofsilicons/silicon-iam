@@ -959,9 +959,10 @@ URL, and the Application backend's `base_url`; it may also include the callable
 OBO endpoint registry. IAM turns the local handle into the only public
 identifier, `{org_id}>{handle}`. For example, creating `drive` in `google`
 returns `google>drive`; that canonical value is used for authentication, login,
-path parameters, discovery, and OBO. The base URL must be absolute, contain no
-userinfo, query, or fragment, and use HTTPS except for literal loopback HTTP in
-local development.
+path parameters, discovery, and OBO. The base URL is an origin: it must contain
+no trailing slash, path, userinfo, query, or fragment, and must use HTTPS except
+for literal loopback HTTP in local development. For example,
+`https://billing.example` is valid and `https://billing.example/` is not.
 
 IAM rechecks current organization owner/admin authority before claiming or
 replaying the request. It returns a `verified` Application plus one-time

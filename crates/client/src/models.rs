@@ -916,7 +916,7 @@ pub struct Application {
     /// The contract's `app_logo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_logo: Option<String>,
-    /// The contract's `base_url`.
+    /// Pathless backend origin without a trailing slash.
     pub base_url: String,
     /// The contract's `requested_scopes`.
     pub requested_scopes: Vec<String>,
@@ -945,7 +945,7 @@ pub struct Application {
 pub struct ApplicationBaseUrl {
     /// The contract's `app_id`.
     pub app_id: AppId,
-    /// The contract's `base_url`.
+    /// Pathless backend origin without a trailing slash.
     pub base_url: String,
 }
 
@@ -965,9 +965,9 @@ pub struct ApplicationCreate {
     pub app_logo: Option<String>,
     /// The contract's `webhook_url`.
     pub webhook_url: String,
-    /// Absolute Application backend URL with no credentials, query or
-    /// fragment. HTTPS is required except for literal loopback HTTP in local
-    /// development.
+    /// Pathless Application backend origin with no trailing slash,
+    /// credentials, query or fragment. HTTPS is required except for literal
+    /// loopback HTTP in local development.
     pub base_url: String,
     /// The contract's `obo_endpoints`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1025,8 +1025,8 @@ pub struct ApplicationPatch {
     /// The contract's `app_logo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_logo: Option<String>,
-    /// Absolute backend base URL; HTTPS except for literal loopback
-    /// development.
+    /// Pathless backend origin without a trailing slash; HTTPS except for
+    /// literal loopback development.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     /// Full replacement. An empty array retires every active endpoint.

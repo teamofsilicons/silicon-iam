@@ -4930,9 +4930,9 @@ components:
           format: uri
           maxLength: 2048
           description: >-
-            Absolute Application backend URL with no credentials, query or
-            fragment. HTTPS is required except for literal loopback HTTP in
-            local development.
+            Pathless Application backend origin with no trailing slash,
+            credentials, query or fragment. HTTPS is required except for
+            literal loopback HTTP in local development.
         obo_endpoints:
           type: array
           maxItems: 50
@@ -4949,7 +4949,9 @@ components:
           type: string
           format: uri
           maxLength: 2048
-          description: Absolute backend base URL; HTTPS except for literal loopback development.
+          description: >-
+            Pathless backend origin without a trailing slash; HTTPS except for
+            literal loopback development.
         obo_endpoints:
           type: array
           maxItems: 50
@@ -4966,7 +4968,11 @@ components:
         created_by: { $ref: '#/components/schemas/ActorRef' }
         app_name: { type: [string, 'null'] }
         app_logo: { type: [string, 'null'], format: uri }
-        base_url: { type: string, format: uri, maxLength: 2048 }
+        base_url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: Pathless backend origin without a trailing slash.
         requested_scopes: { type: array, uniqueItems: true, items: { type: string } }
         approved_scopes: { type: array, uniqueItems: true, items: { type: string } }
         obo_endpoints:
@@ -5015,7 +5021,11 @@ components:
       additionalProperties: false
       properties:
         app_id: { $ref: '#/components/schemas/AppId' }
-        base_url: { type: string, format: uri, maxLength: 2048 }
+        base_url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: Pathless backend origin without a trailing slash.
     ApplicationPage:
       type: object
       required: [items, page]

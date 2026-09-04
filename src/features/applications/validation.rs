@@ -144,10 +144,14 @@ pub(super) fn webhook_url(value: &str) -> Result<Url, ApiError> {
 pub(super) fn base_url(value: &str) -> Result<Url, ApiError> {
     let parsed = Url::parse(value)
         .map_err(|_| ApiError::validation("base_url", "must be a valid absolute URL"))?;
+    let has_path_separator = value
+        .split_once("://")
+        .is_none_or(|(_, authority_and_path)| authority_and_path.contains('/'));
     if value.len() > 2_048
         || value
             .bytes()
             .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        || has_path_separator
         || parsed.query().is_some()
         || parsed.fragment().is_some()
         || !parsed.username().is_empty()
@@ -160,7 +164,7 @@ pub(super) fn base_url(value: &str) -> Result<Url, ApiError> {
     {
         return Err(ApiError::validation(
             "base_url",
-            "must be an HTTPS base URL without credentials, query, or fragment (HTTP is limited to loopback development)",
+            "must be an HTTPS origin without a trailing slash, path, credentials, query, or fragment (HTTP is limited to loopback development)",
         ));
     }
     Ok(parsed)
@@ -486,13 +490,16 @@ mod tests {
     }
 
     #[test]
-    fn application_base_urls_are_backend_locations_not_request_urls() {
-        assert!(base_url("https://briefcase.example/api").is_ok());
-        assert!(base_url("http://localhost:3000/api").is_ok());
-        assert!(base_url("http://briefcase.example/api").is_err());
-        assert!(base_url("HTTPS://briefcase.example/api").is_err());
-        assert!(base_url("https://briefcase.example/api?tenant=tos").is_err());
-        assert!(base_url("https://user:secret@briefcase.example/api").is_err());
+    fn application_base_urls_are_pathless_origins_without_a_trailing_slash() {
+        assert!(base_url("https://briefcase.example").is_ok());
+        assert!(base_url("http://localhost:3000").is_ok());
+        assert!(base_url("https://briefcase.example/").is_err());
+        assert!(base_url("https://briefcase.example/api").is_err());
+        assert!(base_url("http://localhost:3000/api").is_err());
+        assert!(base_url("http://briefcase.example").is_err());
+        assert!(base_url("HTTPS://briefcase.example").is_err());
+        assert!(base_url("https://briefcase.example?tenant=tos").is_err());
+        assert!(base_url("https://user:secret@briefcase.example").is_err());
     }
 
     #[test]
