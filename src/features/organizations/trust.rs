@@ -116,6 +116,11 @@ pub(super) async fn replace_default_trust(
     .await
     .map_err(support::database)?
     .ok_or_else(precondition_failed)?;
+    if before.0 == input.boundary.as_str() && before.1 == input.level.as_str() {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("trust_default_unchanged"),
+        });
+    }
     let result = sqlx::query(
         r"
         UPDATE iam.organizations
@@ -362,6 +367,12 @@ pub(super) async fn update_trust_rule(
     }
     let subject = input.subject.as_ref().unwrap_or(&before.subject);
     let target = input.target.as_ref().unwrap_or(&before.target);
+    let trust = input.trust.unwrap_or(before.trust);
+    if subject == &before.subject && target == &before.target && trust == before.trust {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("trust_rule_unchanged"),
+        });
+    }
     validate_selectors(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -382,7 +393,6 @@ pub(super) async fn update_trust_rule(
     .await?;
     let subject = selector_parts(subject, true);
     let target = selector_parts(target, false);
-    let trust = input.trust.unwrap_or(before.trust);
     let result = sqlx::query(
         r"
         UPDATE iam.trust_rules

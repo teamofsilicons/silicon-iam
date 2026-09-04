@@ -58,12 +58,15 @@ impl OAuth<'_> {
     /// Asks the service what a token currently authorizes.
     ///
     /// Authoritative and live: it reflects revocation immediately, which is
-    /// why a consumer should introspect rather than trust a cached claim.
+    /// why a consumer should introspect rather than trust a cached claim. When
+    /// supplied, `org_context` must be one valid organization handle and an
+    /// exact match for the token; a mismatch answers with `active: false`.
     ///
     /// # Errors
     ///
-    /// Returns an error when the request fails. An unknown or revoked token is
-    /// not an error -- it answers with `active: false`.
+    /// Returns an error when the request fails or `org_context` is malformed.
+    /// An unknown, revoked, or organization-mismatched token is not an error --
+    /// it answers with `active: false`.
     pub async fn introspect(
         &self,
         request: &models::TokenIntrospectionRequest,
@@ -75,10 +78,10 @@ impl OAuth<'_> {
         if let Some(org_id) = org_context {
             built = built.header("x-org-id", org_id);
         }
-        self.0.send_json(built.json(request)).await
+        self.0.send_json(built.form(request)).await
     }
 
-    /// Revokes a token, and the family it belongs to.
+    /// Revokes one access token, or the complete family of a refresh token.
     ///
     /// # Errors
     ///
@@ -89,9 +92,10 @@ impl OAuth<'_> {
         request: &models::OAuthRevocationRequest,
         mutation: &Mutation,
     ) -> Result<()> {
-        self.0
-            .post_empty(&["oauth", "revoke"], request, mutation)
-            .await
+        let request = mutation
+            .apply(self.0.route(reqwest::Method::POST, &["oauth", "revoke"])?)
+            .form(request);
+        self.0.send_empty(request).await
     }
 
     async fn exchange(
@@ -99,9 +103,13 @@ impl OAuth<'_> {
         request: &models::ApplicationTokenRequest,
         mutation: &Mutation,
     ) -> Result<models::OAuthTokenResponse> {
-        self.0
-            .post(&["app-auth", "tokens"], request, mutation)
-            .await
+        let request = mutation
+            .apply(
+                self.0
+                    .route(reqwest::Method::POST, &["app-auth", "tokens"])?,
+            )
+            .form(request);
+        self.0.send_json(request).await
     }
 }
 

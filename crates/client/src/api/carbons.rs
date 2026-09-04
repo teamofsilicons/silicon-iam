@@ -1,6 +1,6 @@
 //! The signed-in Carbon, and looking other Carbons up.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{Client, Mutation, Paging, Result, models};
@@ -9,7 +9,7 @@ use crate::{Client, Mutation, Paging, Result, models};
 pub struct Carbons<'a>(pub(super) &'a Client);
 
 /// Carbon IDs matching a search, at most ten of them.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CarbonSuggestions {
     /// The matches, closest first.
     pub items: Vec<models::CarbonSuggestion>,

@@ -6,7 +6,7 @@ use crate::{
     cli::TrustCommand,
     context::Context,
     error::{CliError, Result},
-    output::{Format, Table, json, plain},
+    output::{Format, Table, json, json_empty, label, next_cursor, plain},
 };
 
 /// Parses a boundary and level into the contract's trust value.
@@ -60,12 +60,16 @@ pub async fn run(context: &Context, command: TrustCommand) -> Result<()> {
                             rule.id.to_string(),
                             selector(&rule.subject),
                             selector(&rule.target),
-                            format!("{:?}/{:?}", rule.trust.boundary, rule.trust.level)
-                                .to_lowercase(),
+                            format!(
+                                "{}/{}",
+                                label(&rule.trust.boundary),
+                                label(&rule.trust.level)
+                            ),
                             rule.version.to_string(),
                         ]);
                     }
                     table.print();
+                    next_cursor(listed.page.has_more, listed.page.next_cursor.as_deref());
                     Ok(())
                 }
             }
@@ -124,7 +128,10 @@ pub async fn run(context: &Context, command: TrustCommand) -> Result<()> {
                 .trust()
                 .delete_rule(org, rule_id, current.version, &context.mutation())
                 .await?;
-            println!("Archived {rule_id}.");
+            match context.format {
+                Format::Json => json_empty(),
+                Format::Text => println!("Archived {rule_id}."),
+            }
             Ok(())
         }
         TrustCommand::Evaluate { subject, target } => {
@@ -145,13 +152,13 @@ pub async fn run(context: &Context, command: TrustCommand) -> Result<()> {
                     table.row([
                         "trust",
                         &format!(
-                            "{:?}/{:?}",
-                            evaluation.trust.boundary, evaluation.trust.level
-                        )
-                        .to_lowercase(),
+                            "{}/{}",
+                            label(&evaluation.trust.boundary),
+                            label(&evaluation.trust.level)
+                        ),
                     ]);
                     table.row(["advisory", &plain(&evaluation.advisory)]);
-                    table.row(["source", &format!("{:?}", evaluation.source).to_lowercase()]);
+                    table.row(["source", &label(&evaluation.source)]);
                     table.row([
                         "matched_rules",
                         &evaluation
@@ -219,10 +226,7 @@ fn report_value(context: &Context, value: &models::TrustValue) -> Result<()> {
     match context.format {
         Format::Json => json(value),
         Format::Text => {
-            println!(
-                "{}",
-                format!("{:?}/{:?}", value.boundary, value.level).to_lowercase()
-            );
+            println!("{}/{}", label(&value.boundary), label(&value.level));
             Ok(())
         }
     }
@@ -238,7 +242,11 @@ fn report_rule(context: &Context, rule: &models::TrustRule) -> Result<()> {
             table.row(["target", &selector(&rule.target)]);
             table.row([
                 "trust",
-                &format!("{:?}/{:?}", rule.trust.boundary, rule.trust.level).to_lowercase(),
+                &format!(
+                    "{}/{}",
+                    label(&rule.trust.boundary),
+                    label(&rule.trust.level)
+                ),
             ]);
             table.row(["version", &rule.version.to_string()]);
             table.print();

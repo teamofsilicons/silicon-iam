@@ -82,9 +82,10 @@
 
 <p>
   If you are integrating an Application in Rust, the
-  <a href="/docs/client/">official client</a> already implements all of it — the handshake, the
-  short-lived-token exchange, proof signing, signature verification and the retry policy. These pages then serve as the
-  explanation rather than the specification.
+  <a href="/docs/client/">official client</a> provides typed API calls and models, explicit version
+  negotiation, credential transports, and webhook verification. Your application still owns
+  credential persistence, refresh coordination, OBO request signing, and retry decisions. These
+  pages explain the contract behind those calls.
 </p>
 
 <h2>Environments</h2>

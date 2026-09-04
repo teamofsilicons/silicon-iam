@@ -21,4 +21,5 @@ pub mod request_context;
 pub mod shutdown;
 pub mod telemetry;
 pub(crate) mod web;
+pub(crate) mod wire_time;
 pub mod worker;

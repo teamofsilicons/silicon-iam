@@ -447,7 +447,7 @@ For the endpoints that gives me all the details by default it should send all bu
 
 We would have an IAm testing enviorments. A testing enviorment is sort of an exact replica of silicon-iam that is using a seperate database as it's provider instead of the main prod database. As soon as a testing enviorment is created it would have 0 orgs, 0 apps, 0 carbons, 0 silicons, basically it's like just starting up a fresh IAm session with a completely new db.
 
-There can be multiple testing enviorments per organisation, testing enviorments are owned by organisations but can be created by any silicon or any carbon in that organisation (the said creator would be attached as the testing enviorment creator) and can delete the testing enviorment, rotate the testing_env_key, basically have the admin level access to that testing enviorment, even org_admins and org_owners would have admin level access to the said testing enviorment and can be delete, clean, etc the testing enviorment. 
+There can be multiple testing enviorments per organisation, testing enviorments are owned by organisations but can be created by any silicon or any carbon in that organisation (the said creator would be attached as the testing enviorment creator) and can delete the testing enviorment, rotate the testing_env_key, basically have the admin level access to that testing enviorment, even org_admins and org_owners would have admin level; access to the said testing enviorment and can be delete, clean, etc the testing enviorment.
 
 For each testing enviorment they would be sharing a shared test database (that's not the prod database, this is just responsible for storing all the test data). For this testing enviorment each entry would be associated with the testing env id. 
 
@@ -557,4 +557,4 @@ For the docs keep it as detailed and mention all the details, this is the only t
 
 Write detailed guides on how to initiate login, how to get the webhook, how to use the short lived token, etc. 
 
-Write very good detailed instructions on how test enviorment works and how every app is by default registered to be used as an testing client by other applications by this i don't mean they are in an enviorment they are configured by default, but anyone can configure if need be, and how the test key would actually operate, so entire e2e how to test for all 3 client, api, or cli. And also what to expect so how to build the applciation test proof. 
+Write very good detailed instructions on how test enviorment works and how every app is by default registered to be used as an testing client by other applications by this i don't mean they are in an enviorment they are configured by default, but anyone can configure if need be, and how the test key would actually operate, so entire e2e how to test for all 3 client, api, or cli. And also what to expect so how to build the applciation test proof.

@@ -177,6 +177,13 @@ class Generator
       return rust_type_name(schema["$ref"].split("/").last)
     end
 
+    # OpenAPI commonly wraps one referenced scalar in `allOf` so the field can
+    # add its own description. Preserve that scalar's generated Rust type
+    # instead of degrading the field to untyped JSON.
+    if schema["allOf"]&.length == 1
+      return field_type(schema["allOf"].first, owner, field)
+    end
+
     types = Array(schema["type"])
     if types.include?("array")
       inner = field_type(schema["items"], owner, field)
@@ -246,23 +253,38 @@ end
 
 generator.structs.sort.each do |name, schema|
   required = Array(schema["required"])
+  merge_patch_nullable = (schema["properties"] || {}).any? do |property, property_schema|
+    !required.include?(property) && name.end_with?("Patch") &&
+      Array((property_schema || {})["type"]).include?("null")
+  end
   out << "\n"
   out << doc_lines(schema["description"], "", "Contract type `#{name}`.").join("\n")
   out << "\n#[derive(Clone, Debug, Serialize, Deserialize)]\n"
+  if merge_patch_nullable
+    out << "#[allow(clippy::option_option, reason = \"JSON Merge Patch distinguishes omitted fields from explicit null\")]\n"
+  end
   out << "pub struct #{name} {\n"
   (schema["properties"] || {}).each do |property, property_schema|
     property_schema = property_schema || {}
     rust = generator.resolved(name, property)
     optional = !required.include?(property)
     nullable = rust.start_with?("Option<")
-    rust = "Option<#{rust}>" if optional && !nullable
+    merge_patch_field = optional && nullable && name.end_with?("Patch")
+    rust = "Option<#{rust}>" if optional && (!nullable || merge_patch_field)
     ident = field_name(property)
 
     out << doc_lines(property_schema["description"], "    ", "The contract's `#{property}`.").join("\n")
     out << "\n"
+    if merge_patch_field
+      out << "    /// `None` omits this field; `Some(None)` sends JSON null to clear it.\n"
+    end
     attributes = []
     attributes << "rename = \"#{property}\"" if ident != property
-    if rust.include?("OffsetDateTime")
+    if merge_patch_field
+      raise "nullable date-time merge-patch fields need an RFC3339 double-option adapter" if rust.include?("OffsetDateTime")
+
+      attributes << "with = \"serde_with::rust::double_option\""
+    elsif rust.include?("OffsetDateTime")
       serde_with = rust.start_with?("Option<") ? "time::serde::rfc3339::option" : "time::serde::rfc3339"
       attributes << "with = \"#{serde_with}\""
     end

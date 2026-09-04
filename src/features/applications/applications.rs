@@ -1,7 +1,5 @@
 #![allow(clippy::too_many_lines)]
 
-use std::collections::BTreeSet;
-
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -190,15 +188,19 @@ pub(super) async fn list(
     } else {
         None
     };
-    let organization_ids = rows
-        .iter()
-        .map(|application| application.organization_id)
-        .collect::<BTreeSet<_>>();
-    for organization_id in organization_ids {
-        lock_current_application_manager(&mut transaction, organization_id, carbon_id).await?;
-    }
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
+        // The authorized projection above can identify every Application the
+        // Carbon manages without a tenant selected. The tables read by the
+        // detail projection are tenant-scoped, though, and the authority lock
+        // itself is intentionally subject to RLS. Select the row's tenant
+        // before either operation. Without this, the first real Application
+        // made an otherwise valid list fail as a misleading 404.
+        context::select_organization(&mut transaction, row.organization_id)
+            .await
+            .map_err(|_| ApiError::internal("application_list_organization_context"))?;
+        lock_current_application_manager(&mut transaction, row.organization_id, carbon_id).await?;
+        select_application_context(&mut transaction, row.id, row.organization_id).await?;
         items.push(load_detail(&mut transaction, &state, row.id, false).await?);
     }
     transaction
@@ -760,6 +762,33 @@ pub(super) async fn patch(
     if before.version != version {
         return Err(ApiError::precondition_failed());
     }
+    let current_endpoints = if input.obo_endpoints.is_some() {
+        load_detail(&mut transaction, &state, before.id, false)
+            .await?
+            .obo_endpoints
+    } else {
+        Vec::new()
+    };
+    let changes_application = input
+        .base_url
+        .as_deref()
+        .is_some_and(|value| value != before.base_url.as_str())
+        || input
+            .app_name
+            .as_ref()
+            .is_some_and(|value| value != &before.app_name)
+        || input
+            .app_logo_uri
+            .as_ref()
+            .is_some_and(|value| value != &before.app_logo_uri)
+        || input.obo_endpoints.as_ref().is_some_and(|values| {
+            let mut values = values.clone();
+            values.sort_by(|left, right| left.endpoint_id.cmp(&right.endpoint_id));
+            values != current_endpoints
+        });
+    if !changes_application {
+        return Err(ApiError::conflict("application_unchanged"));
+    }
     if input.base_url.is_some() || input.app_name.is_some() || input.app_logo_uri.is_some() {
         sqlx::query(
             r"
@@ -1248,21 +1277,33 @@ async fn resolve_app(
     }
     .map_err(|_| ApiError::internal("application_resolve"))?
     .ok_or_else(ApiError::not_found)?;
+    context::select_organization(transaction, app.organization_id)
+        .await
+        .map_err(|_| ApiError::internal("application_organization_context_select"))?;
     if let Some(carbon_id) = carbon_id {
         lock_current_application_manager(transaction, app.organization_id, carbon_id).await?;
     }
+    select_application_context(transaction, app.id, app.organization_id).await?;
+    Ok(app)
+}
+
+async fn select_application_context(
+    transaction: &mut Transaction<'_, Postgres>,
+    application_id: Uuid,
+    organization_id: Uuid,
+) -> Result<(), ApiError> {
     sqlx::query(
         r"
         SELECT set_config('iam.application_id', $1, true),
                set_config('iam.organization_id', $2, true)
         ",
     )
-    .bind(app.id.to_string())
-    .bind(app.organization_id.to_string())
+    .bind(application_id.to_string())
+    .bind(organization_id.to_string())
     .execute(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("application_context_select"))?;
-    Ok(app)
+    Ok(())
 }
 
 pub(crate) async fn load_detail(
@@ -1835,12 +1876,20 @@ fn review_decision_name(decision: &str) -> &'static str {
 }
 
 fn input_as_json(input: &ApplicationPatch) -> serde_json::Value {
-    json!({
-        "base_url": input.base_url,
-        "app_name": input.app_name,
-        "app_logo_uri": input.app_logo_uri,
-        "obo_endpoints": input.obo_endpoints,
-    })
+    let mut object = serde_json::Map::new();
+    if let Some(value) = &input.base_url {
+        object.insert("base_url".to_owned(), json!(value));
+    }
+    if let Some(value) = &input.app_name {
+        object.insert("app_name".to_owned(), json!(value));
+    }
+    if let Some(value) = &input.app_logo_uri {
+        object.insert("app_logo_uri".to_owned(), json!(value));
+    }
+    if let Some(value) = &input.obo_endpoints {
+        object.insert("obo_endpoints".to_owned(), json!(value));
+    }
+    serde_json::Value::Object(object)
 }
 
 async fn replace_obo_endpoints(

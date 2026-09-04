@@ -60,6 +60,15 @@ const CURRENT_APPLICATION_CLIENT_LOCK_QUERY: &str = r"
     SELECT iam_private.lock_current_application_client($1, $2)
 ";
 
+const CURRENT_APPLICATION_OAUTH_SUBJECT_AUTHORITY_QUERY: &str = r"
+    SELECT subject_auth_epoch, membership_authz_epoch, org_id,
+           subject_public_id, session_idle_expires_at,
+           session_absolute_expires_at
+    FROM iam_private.lock_current_application_oauth_subject_authority(
+        $1, $2, $3, $4, $5::iam.principal_kind, $6, $7
+    )
+";
+
 const AUTHORIZATION_CODE_LOOKUP_QUERY: &str = r"
     WITH supplied_digest (key_version, digest) AS (
         SELECT * FROM unnest($1::smallint[], $2::bytea[])
@@ -69,9 +78,7 @@ const AUTHORIZATION_CODE_LOOKUP_QUERY: &str = r"
            request.authentication_session_id,
            request.subject_principal_id, request.subject_kind::text AS subject_kind,
            request.organization_id, request.membership_id,
-           consent.id AS consent_grant_id,
-           principal.auth_epoch AS subject_auth_epoch,
-           membership.authz_epoch AS membership_authz_epoch
+           consent.id AS consent_grant_id
     FROM supplied_digest
     JOIN iam.oauth_authorization_codes AS code
       ON code.digest_key_version = supplied_digest.key_version
@@ -82,12 +89,6 @@ const AUTHORIZATION_CODE_LOOKUP_QUERY: &str = r"
       ON principal.id = request.subject_principal_id
      AND principal.kind = request.subject_kind
      AND principal.status = 'active'
-    LEFT JOIN iam.organization_memberships AS membership
-      ON membership.id = request.membership_id
-     AND membership.organization_id = request.organization_id
-     AND membership.principal_id = request.subject_principal_id
-     AND membership.principal_kind = request.subject_kind
-     AND membership.status = 'active'
     JOIN iam.authentication_sessions AS session
       ON session.id = request.authentication_session_id
      AND session.subject_principal_id = request.subject_principal_id
@@ -108,7 +109,7 @@ const AUTHORIZATION_CODE_LOOKUP_QUERY: &str = r"
       AND code.consumed_at IS NULL
       AND code.expires_at > transaction_timestamp()
       AND request.status = 'approved'
-    FOR UPDATE OF code, request, consent
+    FOR UPDATE OF code, request
     FOR SHARE OF principal, session
 ";
 
@@ -125,10 +126,10 @@ const CODE_EXCHANGE_ACTIVE_SCOPES_QUERY: &str = r"
     ORDER BY request_scope.scope
 ";
 
-const REFRESH_REUSE_ACCESS_REVOCATION_QUERY: &str = r"
+const OAUTH_SESSION_CLIENT_ACCESS_REVOCATION_QUERY: &str = r"
     UPDATE iam.access_tokens
     SET revoked_at = COALESCE(revoked_at, transaction_timestamp()),
-        revocation_reason = COALESCE(revocation_reason, 'refresh_token_reuse')
+        revocation_reason = COALESCE(revocation_reason, $3)
     WHERE authentication_session_id = $1
       AND client_application_id = $2
 ";
@@ -157,50 +158,11 @@ const REFRESH_TOKEN_CANDIDATE_QUERY: &str = r"
     LIMIT 1
 ";
 
-const REFRESH_SESSION_AUTHORITY_LOCK_QUERY: &str = r"
-    SELECT principal.auth_epoch AS subject_auth_epoch
-    FROM iam.principals AS principal
-    JOIN iam.authentication_sessions AS session
-      ON session.id = $2
-     AND session.subject_principal_id = principal.id
-     AND session.subject_kind = principal.kind
-     AND session.subject_auth_epoch = principal.auth_epoch
-     AND session.status = 'active'
-     AND session.idle_expires_at > transaction_timestamp()
-     AND session.absolute_expires_at > transaction_timestamp()
-    WHERE principal.id = $1
-      AND principal.kind = $3::iam.principal_kind
-      AND principal.status = 'active'
-    FOR SHARE OF principal, session
-";
-
-const REFRESH_MEMBERSHIP_AUTHORITY_LOCK_QUERY: &str = r"
-    SELECT membership.authz_epoch
-    FROM iam.organizations AS organization
-    JOIN iam.organization_memberships AS membership
-      ON membership.organization_id = organization.id
-     AND membership.id = $2
-     AND membership.principal_id = $3
-     AND membership.principal_kind = $4::iam.principal_kind
-     AND membership.status = 'active'
-    WHERE organization.id = $1
-      AND organization.status = 'active'
-    FOR SHARE OF organization, membership
-";
-
-const REFRESH_GRANT_AUTHORITY_LOCK_QUERY: &str = r"
-    SELECT consent.application_id, consent.subject_principal_id,
-           consent.subject_kind::text AS subject_kind,
-           consent.organization_id, consent.membership_id,
-           consent.parent_authentication_session_id, consent.status
-    FROM iam.oauth_consent_grants AS consent
-    WHERE consent.id = $1
-    FOR SHARE OF consent
-";
-
 const REFRESH_CREDENTIAL_LOCK_QUERY: &str = r"
     SELECT refresh.token_digest, refresh.digest_key_version,
            refresh.consumed_at, refresh.revoked_at,
+           refresh.created_at,
+           LEAST(refresh.expires_at, family.absolute_expires_at) AS expires_at,
            refresh.expires_at > transaction_timestamp() AS token_unexpired,
            family.status AS family_status,
            family.absolute_expires_at > transaction_timestamp() AS family_unexpired
@@ -267,8 +229,6 @@ struct AuthorizationCodeRow {
     organization_id: Option<Uuid>,
     membership_id: Option<Uuid>,
     consent_grant_id: Uuid,
-    subject_auth_epoch: i64,
-    membership_authz_epoch: Option<i64>,
 }
 
 #[derive(FromRow)]
@@ -291,49 +251,27 @@ struct LockedRefreshCredentialRow {
     digest_key_version: i16,
     consumed_at: Option<OffsetDateTime>,
     revoked_at: Option<OffsetDateTime>,
+    created_at: OffsetDateTime,
+    expires_at: OffsetDateTime,
     token_unexpired: bool,
     family_status: String,
     family_unexpired: bool,
 }
 
 #[derive(FromRow)]
-struct RefreshSessionAuthorityRow {
+struct OAuthSubjectAuthorityRow {
     subject_auth_epoch: i64,
-}
-
-#[derive(FromRow)]
-struct RefreshGrantAuthorityRow {
-    application_id: Uuid,
-    subject_principal_id: Uuid,
-    subject_kind: String,
-    organization_id: Option<Uuid>,
-    membership_id: Option<Uuid>,
-    parent_authentication_session_id: Uuid,
-    status: String,
+    membership_authz_epoch: Option<i64>,
+    org_id: Option<String>,
+    subject_public_id: String,
+    session_idle_expires_at: OffsetDateTime,
+    session_absolute_expires_at: OffsetDateTime,
 }
 
 #[derive(FromRow)]
 struct AccessIntrospectionMetadata {
     app_id: String,
     org_id: Option<String>,
-    created_at: OffsetDateTime,
-    expires_at: OffsetDateTime,
-    subject_auth_epoch: i64,
-    membership_authz_epoch: Option<i64>,
-}
-
-#[derive(FromRow)]
-struct RefreshIntrospectionRow {
-    token_digest: Vec<u8>,
-    digest_key_version: i16,
-    family_id: Uuid,
-    consent_grant_id: Uuid,
-    subject_principal_id: Uuid,
-    subject_kind: String,
-    org_id: Option<String>,
-    membership_id: Option<Uuid>,
-    authentication_session_id: Uuid,
-    app_id: String,
     created_at: OffsetDateTime,
     expires_at: OffsetDateTime,
     subject_auth_epoch: i64,
@@ -350,6 +288,11 @@ enum TokenIdempotencyResult {
 enum RefreshExchange {
     Issued(Box<TokenResponse>),
     ReuseDetected,
+}
+
+enum RevokedTarget {
+    AccessToken(Uuid),
+    RefreshFamily(Uuid),
 }
 
 /// Signs the caller in for a configured application and hands back a
@@ -548,12 +491,8 @@ async fn mint_short_lived_token(
                 authorization_request_id, application_id, scope, approved_at
             )
             SELECT $1, $2, approved.scope, approved.approved_at
-            FROM iam.application_approved_scopes AS approved
-            WHERE approved.application_id = $2
-              AND approved.scope = $3
-              AND approved.revoked_at IS NULL
-            ORDER BY approved.approved_at DESC
-            LIMIT 1
+            FROM iam_private.list_application_login_approved_scopes($2) AS approved
+            WHERE approved.scope = $3
             ",
         )
         .bind(request_id)
@@ -582,6 +521,9 @@ pub(super) async fn issue_short_lived_token(
     Json(input): Json<ShortLivedTokenRequest>,
 ) -> Result<Response, ApiError> {
     validation::app_id(&input.app_id)?;
+    if let Some(org_id) = input.org_id.as_deref() {
+        validation::org_id(org_id)?;
+    }
     let subject_kind = match access.subject.actor_type {
         ActorType::Carbon => "carbon",
         ActorType::Silicon => "silicon",
@@ -591,8 +533,11 @@ pub(super) async fn issue_short_lived_token(
         .await
         .map_err(|_| ApiError::internal("short_lived_token_context"))?;
     let caller_scope = format!("{subject_kind}:{}", access.subject.id);
-    let canonical = serde_json::to_vec(&json!({ "app_id": input.app_id }))
-        .map_err(|_| ApiError::internal("short_lived_token_canonical"))?;
+    let canonical = serde_json::to_vec(&json!({
+        "app_id": input.app_id,
+        "org_id": input.org_id,
+    }))
+    .map_err(|_| ApiError::internal("short_lived_token_canonical"))?;
     let claim = idempotency::claim::<ShortLivedTokenResponse>(
         &mut transaction,
         &state.crypto,
@@ -638,6 +583,38 @@ pub(super) async fn issue_short_lived_token(
             .fetch_all(&mut *transaction)
             .await
             .map_err(|_| ApiError::internal("short_lived_token_scopes"))?;
+    let requested_organization = if let Some(org_id) = input.org_id.as_deref() {
+        Some(
+            sqlx::query_as::<_, SubjectOrganizationRow>(
+                r"
+                SELECT organization.id AS organization_id,
+                       membership.id AS membership_id
+                FROM iam.organizations AS organization
+                JOIN iam.organization_memberships AS membership
+                  ON membership.organization_id = organization.id
+                 AND membership.principal_id = $2
+                 AND membership.principal_kind = $3::iam.principal_kind
+                 AND membership.status = 'active'
+                WHERE organization.org_id = $1 AND organization.status = 'active'
+                ",
+            )
+            .bind(org_id)
+            .bind(access.subject.id)
+            .bind(subject_kind)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|_| ApiError::internal("short_lived_token_org"))?
+            .ok_or_else(|| ApiError::forbidden("organization_context_forbidden"))?,
+        )
+    } else {
+        None
+    };
+    let organization_id = requested_organization
+        .as_ref()
+        .map_or(access.organization_id, |value| Some(value.organization_id));
+    let membership_id = requested_organization
+        .as_ref()
+        .map_or(access.membership_id, |value| Some(value.membership_id));
     let (_, token) = mint_short_lived_token(
         &mut transaction,
         &state,
@@ -646,8 +623,8 @@ pub(super) async fn issue_short_lived_token(
             session_id: access.authentication_session_id,
             principal_id: access.subject.id,
             subject_kind,
-            organization_id: access.organization_id,
-            membership_id: access.membership_id,
+            organization_id,
+            membership_id,
             redirect_uri: None,
         },
         &scopes,
@@ -953,6 +930,7 @@ pub(super) async fn introspect(
     if input.token.starts_with("ort_") {
         return introspect_refresh_token(&state, &client, &headers, &input.token).await;
     }
+    let org_context = optional_org_context(&headers)?;
     let token = SecretString::from(input.token);
     let access = match tokens::authenticate(state.db(), &state.crypto, &token).await {
         Ok(Some(access)) if access.client_application_id == Some(client.application_id) => access,
@@ -961,42 +939,123 @@ pub(super) async fn introspect(
         }
         Err(_) => return Err(ApiError::internal("oauth_introspection")),
     };
-    if let Some(org_handle) = headers
-        .get("x-org-id")
-        .and_then(|value| value.to_str().ok())
-    {
-        let matches = sqlx::query_scalar::<_, bool>(
-            r"
-            SELECT EXISTS (
-                SELECT 1 FROM iam.organizations
-                WHERE id = $1 AND org_id = $2 AND status = 'active'
-            )
-            ",
-        )
-        .bind(access.organization_id)
-        .bind(org_handle)
-        .fetch_one(state.db())
-        .await
-        .map_err(|_| ApiError::internal("oauth_introspection_org"))?;
-        if !matches {
-            return Ok(Json(inactive_introspection()));
-        }
+    // The bearer token is what proves which subject and organization may be
+    // selected. Lock the authenticated Application first, then make that exact
+    // subject the RLS principal for one authoritative metadata projection.
+    let mut transaction = context::begin(
+        state.db(),
+        DatabaseContext::application(client.application_id, client.application_id),
+    )
+    .await
+    .map_err(|_| ApiError::internal("oauth_introspection_context"))?;
+    if !lock_current_application_client(&mut transaction, &client).await? {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("oauth_introspection_client_commit"))?;
+        return Ok(Json(inactive_introspection()));
     }
+    sqlx::query(
+        r"
+        SELECT set_config('iam.principal_id', $1, true),
+               set_config('iam.organization_id', COALESCE($2, ''), true)
+        ",
+    )
+    .bind(access.subject.id.to_string())
+    .bind(access.organization_id.map(|id| id.to_string()))
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("oauth_introspection_subject_context"))?;
     let metadata = sqlx::query_as::<_, AccessIntrospectionMetadata>(
         r"
         SELECT application.app_id, organization.org_id,
                token.created_at, token.expires_at,
                token.subject_auth_epoch, token.membership_authz_epoch
         FROM iam.access_tokens AS token
-        JOIN iam.applications AS application ON application.id = token.client_application_id
-        LEFT JOIN iam.organizations AS organization ON organization.id = token.organization_id
+        JOIN iam.applications AS application
+          ON application.id = token.client_application_id
+         AND application.id = token.audience_application_id
+         AND application.app_id = token.audience
+         AND application.review_status = 'verified'
+         AND application.deleted_at IS NULL
+        JOIN iam.principals AS application_principal
+          ON application_principal.id = application.id
+         AND application_principal.kind = 'application'
+         AND application_principal.status = 'active'
+         AND application_principal.auth_epoch = token.client_auth_epoch
+        JOIN iam.principals AS subject
+          ON subject.id = token.subject_principal_id
+         AND subject.kind = token.subject_kind
+         AND subject.status = 'active'
+         AND subject.auth_epoch = token.subject_auth_epoch
+        JOIN iam.authentication_sessions AS session
+          ON session.id = token.authentication_session_id
+         AND session.subject_principal_id = subject.id
+         AND session.subject_kind = subject.kind
+         AND session.subject_auth_epoch = subject.auth_epoch
+         AND session.status = 'active'
+         AND session.idle_expires_at > transaction_timestamp()
+         AND session.absolute_expires_at > transaction_timestamp()
+        LEFT JOIN iam.organizations AS organization
+          ON organization.id = token.organization_id
+         AND organization.status = 'active'
+        LEFT JOIN iam.organization_memberships AS membership
+          ON membership.organization_id = token.organization_id
+         AND membership.id = token.membership_id
+         AND membership.principal_id = subject.id
+         AND membership.principal_kind = subject.kind
+         AND membership.status = 'active'
         WHERE token.id = $1
+          AND token.token_class = 'application_access'
+          AND token.client_application_id = $2
+          AND token.audience_application_id = $2
+          AND token.audience = $3
+          AND token.subject_principal_id = $4
+          AND token.subject_kind = $5::iam.principal_kind
+          AND token.authentication_session_id = $6
+          AND token.organization_id IS NOT DISTINCT FROM $7
+          AND token.membership_id IS NOT DISTINCT FROM $8
+          AND token.revoked_at IS NULL
+          AND token.expires_at > transaction_timestamp()
+          AND (
+              token.organization_id IS NULL
+              OR (
+                  organization.id IS NOT NULL
+                  AND membership.id IS NOT NULL
+                  AND membership.authz_epoch = token.membership_authz_epoch
+              )
+          )
         ",
     )
     .bind(access.token_id)
-    .fetch_one(state.db())
+    .bind(client.application_id)
+    .bind(&client.app_id)
+    .bind(access.subject.id)
+    .bind(access.subject.actor_type.as_str())
+    .bind(access.authentication_session_id)
+    .bind(access.organization_id)
+    .bind(access.membership_id)
+    .fetch_optional(&mut *transaction)
     .await
     .map_err(|_| ApiError::internal("oauth_introspection_metadata"))?;
+    let Some(metadata) = metadata else {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("oauth_introspection_inactive_commit"))?;
+        return Ok(Json(inactive_introspection()));
+    };
+    if org_context.is_some_and(|org_id| metadata.org_id.as_deref() != Some(org_id)) {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("oauth_introspection_org_commit"))?;
+        return Ok(Json(inactive_introspection()));
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("oauth_introspection_commit"))?;
     Ok(Json(IntrospectionResponse {
         active: true,
         principal_id: Some(access.subject.id),
@@ -1023,6 +1082,7 @@ async fn introspect_refresh_token(
     headers: &HeaderMap,
     raw_token: &str,
 ) -> Result<Json<IntrospectionResponse>, ApiError> {
+    let org_context = optional_org_context(headers)?;
     if raw_token.len() != 47 {
         return Ok(Json(inactive_introspection()));
     }
@@ -1045,97 +1105,33 @@ async fn introspect_refresh_token(
     )
     .await
     .map_err(|_| ApiError::internal("refresh_introspection_context"))?;
-    let row = sqlx::query_as::<_, RefreshIntrospectionRow>(
-        r"
-        WITH supplied_digest (key_version, digest) AS (
-            SELECT * FROM unnest($1::smallint[], $2::bytea[])
-        )
-        SELECT token.token_digest, token.digest_key_version,
-               family.id AS family_id,
-               family.oauth_consent_grant_id AS consent_grant_id,
-               family.subject_principal_id, principal.kind::text AS subject_kind,
-               organization.org_id, consent.membership_id,
-               family.authentication_session_id, application.app_id,
-               token.created_at,
-               LEAST(token.expires_at, family.absolute_expires_at,
-                     session.absolute_expires_at) AS expires_at,
-               principal.auth_epoch AS subject_auth_epoch,
-               membership.authz_epoch AS membership_authz_epoch
-        FROM supplied_digest
-        JOIN iam.refresh_tokens AS token
-          ON token.digest_key_version = supplied_digest.key_version
-         AND token.token_digest = supplied_digest.digest
-        JOIN iam.refresh_token_families AS family ON family.id = token.family_id
-        JOIN iam.principals AS principal
-          ON principal.id = family.subject_principal_id
-         AND principal.status = 'active'
-        JOIN iam.authentication_sessions AS session
-          ON session.id = family.authentication_session_id
-         AND session.subject_principal_id = family.subject_principal_id
-         AND session.subject_kind = principal.kind
-         AND session.subject_auth_epoch = principal.auth_epoch
-         AND session.status = 'active'
-         AND session.idle_expires_at > transaction_timestamp()
-         AND session.absolute_expires_at > transaction_timestamp()
-        JOIN iam.oauth_consent_grants AS consent
-          ON consent.id = family.oauth_consent_grant_id
-         AND consent.application_id = family.client_application_id
-         AND consent.subject_principal_id = family.subject_principal_id
-         AND consent.subject_kind = principal.kind
-         AND consent.parent_authentication_session_id = family.authentication_session_id
-         AND consent.status = 'active'
-        JOIN iam.applications AS application
-          ON application.id = family.client_application_id
-         AND application.review_status = 'verified'
-         AND application.deleted_at IS NULL
-        JOIN iam.principals AS application_principal
-         ON application_principal.id = application.id
-         AND application_principal.kind = 'application'
-         AND application_principal.status = 'active'
-         AND application_principal.auth_epoch = $4
-        LEFT JOIN iam.organizations AS organization
-          ON organization.id = consent.organization_id
-         AND organization.status = 'active'
-        LEFT JOIN iam.organization_memberships AS membership
-          ON membership.id = consent.membership_id
-         AND membership.organization_id = consent.organization_id
-         AND membership.principal_id = family.subject_principal_id
-         AND membership.principal_kind = principal.kind
-         AND membership.status = 'active'
-        WHERE family.client_application_id = $3
-          AND family.status = 'active'
-          AND family.absolute_expires_at > transaction_timestamp()
-          AND token.consumed_at IS NULL
-          AND token.revoked_at IS NULL
-          AND token.expires_at > transaction_timestamp()
-          AND (consent.organization_id IS NULL OR membership.id IS NOT NULL)
-        LIMIT 1
-        ",
-    )
-    .bind(versions)
-    .bind(bytes)
-    .bind(client.application_id)
-    .bind(client.auth_epoch)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("refresh_introspection_lookup"))?;
-    let Some(row) = row else {
+    if !lock_current_application_client(&mut transaction, client).await? {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("refresh_introspection_client_commit"))?;
+        return Ok(Json(inactive_introspection()));
+    }
+    let candidate = sqlx::query_as::<_, RefreshCandidateRow>(REFRESH_TOKEN_CANDIDATE_QUERY)
+        .bind(versions)
+        .bind(bytes)
+        .bind(client.application_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|_| ApiError::internal("refresh_introspection_lookup"))?;
+    let Some(candidate) = candidate else {
         transaction
             .commit()
             .await
             .map_err(|_| ApiError::internal("refresh_introspection_inactive_commit"))?;
         return Ok(Json(inactive_introspection()));
     };
-    let expected = SecretDigest::from_parts(row.digest_key_version, &row.token_digest)
+    let expected = SecretDigest::from_parts(candidate.digest_key_version, &candidate.token_digest)
         .ok_or_else(|| ApiError::internal("refresh_introspection_shape"))?;
     if !state
         .crypto
         .verify_secret(DigestPurpose::OAuthRefreshToken, &supplied, expected)
         .map_err(|_| ApiError::internal("refresh_introspection_verify"))?
-        || headers
-            .get("x-org-id")
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|org_id| row.org_id.as_deref() != Some(org_id))
     {
         transaction
             .commit()
@@ -1143,25 +1139,70 @@ async fn introspect_refresh_token(
             .map_err(|_| ApiError::internal("refresh_introspection_mismatch_commit"))?;
         return Ok(Json(inactive_introspection()));
     }
-    let scopes =
-        refresh_family_scopes(&mut transaction, row.family_id, row.consent_grant_id).await?;
+    let authority = lock_current_application_oauth_subject_authority(
+        &mut transaction,
+        client.application_id,
+        candidate.consent_grant_id,
+        candidate.authentication_session_id,
+        candidate.subject_principal_id,
+        &candidate.subject_kind,
+        candidate.organization_id,
+        candidate.membership_id,
+    )
+    .await?;
+    let credential =
+        lock_refresh_credential(&mut transaction, client.application_id, &candidate).await?;
+    let (Some(authority), Some(credential)) = (authority, credential) else {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("refresh_introspection_authority_commit"))?;
+        return Ok(Json(inactive_introspection()));
+    };
+    if credential.consumed_at.is_some()
+        || credential.revoked_at.is_some()
+        || !credential.token_unexpired
+        || credential.family_status != "active"
+        || !credential.family_unexpired
+        || org_context.is_some_and(|org_id| authority.org_id.as_deref() != Some(org_id))
+    {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("refresh_introspection_mismatch_commit"))?;
+        return Ok(Json(inactive_introspection()));
+    }
+    let scopes = refresh_family_scopes(
+        &mut transaction,
+        candidate.family_id,
+        candidate.consent_grant_id,
+    )
+    .await?;
+    let expires_at = credential
+        .expires_at
+        .min(authority.session_idle_expires_at)
+        .min(authority.session_absolute_expires_at);
     transaction
         .commit()
         .await
         .map_err(|_| ApiError::internal("refresh_introspection_commit"))?;
     Ok(Json(IntrospectionResponse {
         active: true,
-        principal_id: Some(row.subject_principal_id),
-        actor_type: Some(row.subject_kind),
-        client_id: Some(row.app_id.clone()),
-        org_id: row.org_id,
-        membership_id: row.membership_id,
-        session_id: Some(row.authentication_session_id),
+        principal_id: Some(candidate.subject_principal_id),
+        actor_type: Some(candidate.subject_kind),
+        client_id: Some(client.app_id.clone()),
+        org_id: authority.org_id,
+        membership_id: candidate.membership_id,
+        session_id: Some(candidate.authentication_session_id),
         scope: Some(scopes.join(" ")),
-        audience: Some(row.app_id),
-        issued_at: Some(row.created_at.unix_timestamp()),
-        expires_at: Some(row.expires_at.unix_timestamp()),
-        authorization_epoch: Some(row.membership_authz_epoch.unwrap_or(row.subject_auth_epoch)),
+        audience: Some(client.app_id.clone()),
+        issued_at: Some(credential.created_at.unix_timestamp()),
+        expires_at: Some(expires_at.unix_timestamp()),
+        authorization_epoch: Some(
+            authority
+                .membership_authz_epoch
+                .unwrap_or(authority.subject_auth_epoch),
+        ),
     }))
 }
 
@@ -1209,22 +1250,37 @@ pub(super) async fn revoke(
     let Claim::Acquired(idempotency_id) = claim else {
         return Err(ApiError::internal("oauth_revoke_idempotency"));
     };
-    let revoked_id = if token.expose_secret().starts_with("oat_") {
-        revoke_access_token(&mut transaction, &state, &client, &token).await?
+    let revoked_target = if token.expose_secret().starts_with("oat_") {
+        revoke_access_token(&mut transaction, &state, &client, &token)
+            .await?
+            .map(RevokedTarget::AccessToken)
     } else if token.expose_secret().starts_with("ort_") {
-        revoke_refresh_family(&mut transaction, &state, &client, &token).await?
+        revoke_refresh_family(&mut transaction, &state, &client, &token)
+            .await?
+            .map(RevokedTarget::RefreshFamily)
     } else {
         None
     };
-    if let Some(target_id) = revoked_id {
+    if let Some(target) = revoked_target {
+        let (target_type, target_id, payload) = match target {
+            RevokedTarget::AccessToken(id) => {
+                ("access_token", id, json!({ "access_token_id": id }))
+            }
+            RevokedTarget::RefreshFamily(id) => (
+                "refresh_token_family",
+                id,
+                json!({ "refresh_token_family_id": id }),
+            ),
+        };
         protocol_event(
             &mut transaction,
             &client,
             "oauth.token.revoke",
-            "oauth_token",
+            target_type,
             target_id,
+            if target_type == "access_token" { 2 } else { 1 },
             "oauth.token_revoked",
-            json!({ "token_id": target_id }),
+            payload,
         )
         .await?;
     }
@@ -1292,13 +1348,24 @@ async fn exchange_authorization_code(
         .crypto
         .verify_secret(DigestPurpose::AuthorizationCode, &supplied, expected)
         .map_err(|_| ApiError::internal("authorization_code_verify"))?
-        || (row.organization_id.is_some() && row.membership_authz_epoch.is_none())
     {
         return Err(ApiError::bad_request(
             "invalid_grant",
             "The authorization code is invalid.",
         ));
     }
+    let authority = lock_current_application_oauth_subject_authority(
+        transaction,
+        client.application_id,
+        row.consent_grant_id,
+        row.authentication_session_id,
+        row.subject_principal_id,
+        &row.subject_kind,
+        row.organization_id,
+        row.membership_id,
+    )
+    .await?
+    .ok_or_else(|| ApiError::bad_request("invalid_grant", "The authorization code is invalid."))?;
     let scopes = authorized_code_exchange_scopes(
         transaction,
         row.authorization_request_id,
@@ -1324,11 +1391,13 @@ async fn exchange_authorization_code(
             session_id: row.authentication_session_id,
             principal_id: row.subject_principal_id,
             subject_kind: row.subject_kind,
-            subject_auth_epoch: row.subject_auth_epoch,
+            subject_auth_epoch: authority.subject_auth_epoch,
             organization_id: row.organization_id,
             membership_id: row.membership_id,
-            membership_authz_epoch: row.membership_authz_epoch,
+            membership_authz_epoch: authority.membership_authz_epoch,
             consent_grant_id: row.consent_grant_id,
+            org_id: authority.org_id,
+            subject_public_id: authority.subject_public_id,
         },
         &scopes,
         None,
@@ -1363,6 +1432,30 @@ async fn lock_current_application_client(
         .await
         .map_err(|_| ApiError::internal("oauth_client_authority_lock"))?;
     Ok(locked.flatten().is_some())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn lock_current_application_oauth_subject_authority(
+    transaction: &mut Transaction<'_, Postgres>,
+    application_id: Uuid,
+    consent_grant_id: Uuid,
+    authentication_session_id: Uuid,
+    subject_principal_id: Uuid,
+    subject_kind: &str,
+    organization_id: Option<Uuid>,
+    membership_id: Option<Uuid>,
+) -> Result<Option<OAuthSubjectAuthorityRow>, ApiError> {
+    sqlx::query_as::<_, OAuthSubjectAuthorityRow>(CURRENT_APPLICATION_OAUTH_SUBJECT_AUTHORITY_QUERY)
+        .bind(application_id)
+        .bind(consent_grant_id)
+        .bind(authentication_session_id)
+        .bind(subject_principal_id)
+        .bind(subject_kind)
+        .bind(organization_id)
+        .bind(membership_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(|_| ApiError::internal("oauth_subject_authority_lock"))
 }
 
 async fn exchange_refresh_token(
@@ -1402,14 +1495,22 @@ async fn exchange_refresh_token(
     }
 
     // Keep this order aligned with lifecycle and consent revocation: app,
-    // subject/session, optional membership, consent, then credential family.
+    // subject/session/membership/consent, then credential family.
     let application_current = lock_current_application_client(transaction, client).await?;
-    let session_authority = lock_refresh_session_authority(transaction, &candidate).await?;
-    let membership_authority = lock_refresh_membership_authority(transaction, &candidate).await?;
-    let grant_authority =
-        lock_refresh_grant_authority(transaction, candidate.consent_grant_id).await?;
-    let credential =
-        lock_refresh_credential(transaction, client.application_id, &candidate).await?;
+    let subject_authority = lock_current_application_oauth_subject_authority(
+        transaction,
+        client.application_id,
+        candidate.consent_grant_id,
+        candidate.authentication_session_id,
+        candidate.subject_principal_id,
+        &candidate.subject_kind,
+        candidate.organization_id,
+        candidate.membership_id,
+    )
+    .await?;
+    let credential = lock_refresh_credential(transaction, client.application_id, &candidate)
+        .await?
+        .ok_or_else(invalid_refresh_grant)?;
 
     let locked_expected =
         SecretDigest::from_parts(credential.digest_key_version, &credential.token_digest)
@@ -1422,26 +1523,29 @@ async fn exchange_refresh_token(
         return Err(invalid_refresh_grant());
     }
     if credential.consumed_at.is_some() {
-        compromise_refresh_family(
+        let newly_compromised = compromise_refresh_family(
             transaction,
             candidate.family_id,
             candidate.authentication_session_id,
             client.application_id,
         )
         .await?;
-        protocol_event(
-            transaction,
-            client,
-            "oauth.refresh.reuse_detected",
-            "refresh_token_family",
-            candidate.family_id,
-            "oauth.refresh_family_compromised",
-            json!({
-                "family_id": candidate.family_id,
-                "reused_token_id": candidate.token_id,
-            }),
-        )
-        .await?;
+        if newly_compromised {
+            protocol_event(
+                transaction,
+                client,
+                "oauth.refresh.reuse_detected",
+                "refresh_token_family",
+                candidate.family_id,
+                1,
+                "oauth.refresh_family_compromised",
+                json!({
+                    "family_id": candidate.family_id,
+                    "reused_token_id": candidate.token_id,
+                }),
+            )
+            .await?;
+        }
         events::authentication_event(
             transaction,
             client.application_id,
@@ -1464,13 +1568,7 @@ async fn exchange_refresh_token(
         || credential.family_status != "active"
         || !credential.family_unexpired
         || !application_current
-        || session_authority.is_none()
-        || !membership_authority.current
-        || !refresh_grant_authority_is_current(
-            grant_authority.as_ref(),
-            client.application_id,
-            &candidate,
-        )
+        || subject_authority.is_none()
     {
         return Err(invalid_refresh_grant());
     }
@@ -1481,7 +1579,7 @@ async fn exchange_refresh_token(
         client.application_id,
     )
     .await?;
-    let session_authority = session_authority.ok_or_else(invalid_refresh_grant)?;
+    let subject_authority = subject_authority.ok_or_else(invalid_refresh_grant)?;
     let response = issue_tokens(
         transaction,
         state,
@@ -1490,11 +1588,13 @@ async fn exchange_refresh_token(
             session_id: candidate.authentication_session_id,
             principal_id: candidate.subject_principal_id,
             subject_kind: candidate.subject_kind,
-            subject_auth_epoch: session_authority.subject_auth_epoch,
+            subject_auth_epoch: subject_authority.subject_auth_epoch,
             organization_id: candidate.organization_id,
             membership_id: candidate.membership_id,
-            membership_authz_epoch: membership_authority.authz_epoch,
+            membership_authz_epoch: subject_authority.membership_authz_epoch,
             consent_grant_id: candidate.consent_grant_id,
+            org_id: subject_authority.org_id,
+            subject_public_id: subject_authority.subject_public_id,
         },
         &scopes,
         Some(candidate.family_id),
@@ -1532,66 +1632,11 @@ async fn load_refresh_candidate(
         .ok_or_else(invalid_refresh_grant)
 }
 
-async fn lock_refresh_session_authority(
-    transaction: &mut Transaction<'_, Postgres>,
-    candidate: &RefreshCandidateRow,
-) -> Result<Option<RefreshSessionAuthorityRow>, ApiError> {
-    sqlx::query_as::<_, RefreshSessionAuthorityRow>(REFRESH_SESSION_AUTHORITY_LOCK_QUERY)
-        .bind(candidate.subject_principal_id)
-        .bind(candidate.authentication_session_id)
-        .bind(&candidate.subject_kind)
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(|_| ApiError::internal("refresh_session_authority_lock"))
-}
-
-struct RefreshMembershipAuthority {
-    current: bool,
-    authz_epoch: Option<i64>,
-}
-
-async fn lock_refresh_membership_authority(
-    transaction: &mut Transaction<'_, Postgres>,
-    candidate: &RefreshCandidateRow,
-) -> Result<RefreshMembershipAuthority, ApiError> {
-    let (Some(organization_id), Some(membership_id)) =
-        (candidate.organization_id, candidate.membership_id)
-    else {
-        return Ok(RefreshMembershipAuthority {
-            current: candidate.organization_id.is_none() && candidate.membership_id.is_none(),
-            authz_epoch: None,
-        });
-    };
-    let authz_epoch = sqlx::query_scalar::<_, i64>(REFRESH_MEMBERSHIP_AUTHORITY_LOCK_QUERY)
-        .bind(organization_id)
-        .bind(membership_id)
-        .bind(candidate.subject_principal_id)
-        .bind(&candidate.subject_kind)
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(|_| ApiError::internal("refresh_membership_authority_lock"))?;
-    Ok(RefreshMembershipAuthority {
-        current: authz_epoch.is_some(),
-        authz_epoch,
-    })
-}
-
-async fn lock_refresh_grant_authority(
-    transaction: &mut Transaction<'_, Postgres>,
-    consent_grant_id: Uuid,
-) -> Result<Option<RefreshGrantAuthorityRow>, ApiError> {
-    sqlx::query_as::<_, RefreshGrantAuthorityRow>(REFRESH_GRANT_AUTHORITY_LOCK_QUERY)
-        .bind(consent_grant_id)
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(|_| ApiError::internal("refresh_grant_authority_lock"))
-}
-
 async fn lock_refresh_credential(
     transaction: &mut Transaction<'_, Postgres>,
     application_id: Uuid,
     candidate: &RefreshCandidateRow,
-) -> Result<LockedRefreshCredentialRow, ApiError> {
+) -> Result<Option<LockedRefreshCredentialRow>, ApiError> {
     sqlx::query_as::<_, LockedRefreshCredentialRow>(REFRESH_CREDENTIAL_LOCK_QUERY)
         .bind(candidate.token_id)
         .bind(candidate.family_id)
@@ -1603,24 +1648,7 @@ async fn lock_refresh_credential(
         .bind(candidate.token_digest.as_slice())
         .fetch_optional(&mut **transaction)
         .await
-        .map_err(|_| ApiError::internal("refresh_credential_lock"))?
-        .ok_or_else(invalid_refresh_grant)
-}
-
-fn refresh_grant_authority_is_current(
-    authority: Option<&RefreshGrantAuthorityRow>,
-    application_id: Uuid,
-    candidate: &RefreshCandidateRow,
-) -> bool {
-    authority.is_some_and(|consent| {
-        consent.application_id == application_id
-            && consent.subject_principal_id == candidate.subject_principal_id
-            && consent.subject_kind == candidate.subject_kind
-            && consent.organization_id == candidate.organization_id
-            && consent.membership_id == candidate.membership_id
-            && consent.parent_authentication_session_id == candidate.authentication_session_id
-            && consent.status == "active"
-    })
+        .map_err(|_| ApiError::internal("refresh_credential_lock"))
 }
 
 async fn locked_refresh_issuance_scopes(
@@ -1655,6 +1683,8 @@ struct TokenSubject {
     membership_id: Option<Uuid>,
     membership_authz_epoch: Option<i64>,
     consent_grant_id: Uuid,
+    org_id: Option<String>,
+    subject_public_id: String,
 }
 
 async fn issue_tokens(
@@ -1813,40 +1843,13 @@ async fn issue_tokens(
         }
     }
     let refresh_token = raw_refresh.expose_secret().to_owned();
-    let org_id = if let Some(organization_id) = subject.organization_id {
-        sqlx::query_scalar::<_, String>("SELECT org_id FROM iam.organizations WHERE id = $1")
-            .bind(organization_id)
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(|_| ApiError::internal("oauth_token_org_id"))?
-    } else {
-        None
-    };
-    let actor_public_id = match actor_type {
-        ActorType::Carbon => {
-            sqlx::query_scalar::<_, String>("SELECT carbon_id FROM iam.carbons WHERE id = $1")
-                .bind(subject.principal_id)
-                .fetch_one(&mut **transaction)
-                .await
-                .map_err(|_| ApiError::internal("oauth_carbon_public_id"))?
-        }
-        ActorType::Silicon => sqlx::query_scalar::<_, String>(
-            "SELECT global_silicon_id FROM iam.silicons WHERE id = $1",
-        )
-        .bind(subject.principal_id)
-        .fetch_one(&mut **transaction)
-        .await
-        .map_err(|_| ApiError::internal("oauth_silicon_public_id"))?,
-        ActorType::Application | ActorType::Service => {
-            return Err(ApiError::internal("oauth_subject_kind"));
-        }
-    };
     protocol_event(
         transaction,
         client,
         "oauth.token.issue",
         "access_token",
         access_id,
+        1,
         "oauth.token_issued",
         json!({
             "token_id": access_id,
@@ -1865,9 +1868,9 @@ async fn issue_tokens(
         actor: PublicActor {
             principal_id: subject.principal_id,
             actor_type: actor_type.as_str().to_owned(),
-            public_id: actor_public_id,
+            public_id: subject.subject_public_id,
         },
-        org_id,
+        org_id: subject.org_id,
     })
 }
 
@@ -2158,12 +2161,12 @@ async fn revoke_refresh_family(
         .iter()
         .map(|digest| digest.as_bytes().to_vec())
         .collect::<Vec<_>>();
-    let family_id = sqlx::query_scalar::<_, Uuid>(
+    let target = sqlx::query_as::<_, (Uuid, Uuid)>(
         r"
         WITH supplied_digest (key_version, digest) AS (
             SELECT * FROM unnest($1::smallint[], $2::bytea[])
         )
-        SELECT family.id
+        SELECT family.id, family.authentication_session_id
         FROM supplied_digest
         JOIN iam.refresh_tokens AS refresh
           ON refresh.digest_key_version = supplied_digest.key_version
@@ -2179,8 +2182,8 @@ async fn revoke_refresh_family(
     .fetch_optional(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("revoke_refresh_lookup"))?;
-    if let Some(family_id) = family_id {
-        sqlx::query(
+    if let Some((family_id, authentication_session_id)) = target {
+        let transitioned = sqlx::query(
             r"
             UPDATE iam.refresh_token_families
             SET status = 'revoked', revoked_at = transaction_timestamp(),
@@ -2192,8 +2195,30 @@ async fn revoke_refresh_family(
         .execute(&mut **transaction)
         .await
         .map_err(|_| ApiError::internal("revoke_refresh_family"))?;
+        if transitioned.rows_affected() != 1 {
+            return Ok(None);
+        }
+        sqlx::query(
+            r"
+            UPDATE iam.refresh_tokens
+            SET revoked_at = COALESCE(revoked_at, transaction_timestamp())
+            WHERE family_id = $1
+            ",
+        )
+        .bind(family_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|_| ApiError::internal("revoke_refresh_tokens"))?;
+        sqlx::query(OAUTH_SESSION_CLIENT_ACCESS_REVOCATION_QUERY)
+            .bind(authentication_session_id)
+            .bind(client.application_id)
+            .bind("client_revoked")
+            .execute(&mut **transaction)
+            .await
+            .map_err(|_| ApiError::internal("revoke_refresh_access_tokens"))?;
+        return Ok(Some(family_id));
     }
-    Ok(family_id)
+    Ok(None)
 }
 
 async fn compromise_refresh_family(
@@ -2201,8 +2226,8 @@ async fn compromise_refresh_family(
     family_id: Uuid,
     authentication_session_id: Uuid,
     client_application_id: Uuid,
-) -> Result<(), ApiError> {
-    sqlx::query(
+) -> Result<bool, ApiError> {
+    let transitioned = sqlx::query(
         r"
         UPDATE iam.refresh_token_families
         SET status = 'compromised', compromised_at = transaction_timestamp(),
@@ -2214,6 +2239,9 @@ async fn compromise_refresh_family(
     .execute(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("refresh_family_compromise"))?;
+    if transitioned.rows_affected() != 1 {
+        return Ok(false);
+    }
     sqlx::query(
         r"
         UPDATE iam.refresh_tokens
@@ -2225,13 +2253,14 @@ async fn compromise_refresh_family(
     .execute(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("refresh_family_tokens_revoke"))?;
-    sqlx::query(REFRESH_REUSE_ACCESS_REVOCATION_QUERY)
+    sqlx::query(OAUTH_SESSION_CLIENT_ACCESS_REVOCATION_QUERY)
         .bind(authentication_session_id)
         .bind(client_application_id)
+        .bind("refresh_token_reuse")
         .execute(&mut **transaction)
         .await
         .map_err(|_| ApiError::internal("refresh_reuse_access_revoke"))?;
-    Ok(())
+    Ok(true)
 }
 
 async fn protocol_event(
@@ -2240,13 +2269,14 @@ async fn protocol_event(
     action: &'static str,
     target_type: &'static str,
     target_id: Uuid,
+    aggregate_version: i64,
     event_type: &'static str,
     payload: Value,
 ) -> Result<(), ApiError> {
     let aggregate = AggregateVersion {
         aggregate_type: target_type,
         aggregate_id: target_id,
-        version: 1,
+        version: aggregate_version,
     };
     persistence_events::record_audit(
         transaction,
@@ -2377,6 +2407,25 @@ fn validate_token_type_hint(token_type_hint: Option<&str>) -> Result<(), ApiErro
     }
 }
 
+fn optional_org_context(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
+    let mut values = headers.get_all("x-org-id").iter();
+    let Some(first) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(ApiError::bad_request(
+            "invalid_request",
+            "X-Org-ID must be supplied at most once.",
+        ));
+    }
+    let value = first
+        .to_str()
+        .map_err(|_| ApiError::bad_request("invalid_request", "X-Org-ID has an invalid format."))?;
+    validation::org_id(value)
+        .map_err(|_| ApiError::bad_request("invalid_request", "X-Org-ID has an invalid format."))?;
+    Ok(Some(value))
+}
+
 fn escape_html(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -2395,13 +2444,14 @@ mod tests {
     /// UPDATE policies and an application does not manage itself.
     const CLIENT_LOCK_MIGRATION: &str =
         include_str!("../../../migrations/0057_short_lived_token_login.sql");
+    const APPLICATION_AUTHORITY_MIGRATION: &str =
+        include_str!("../../../migrations/0062_application_oauth_authority_locks.sql");
 
     use super::{
         AUTHORIZATION_CODE_LOOKUP_QUERY, CODE_EXCHANGE_ACTIVE_SCOPES_QUERY,
-        CURRENT_APPLICATION_CLIENT_LOCK_QUERY, OAUTH_REFRESH_INSERT_QUERY,
-        REFRESH_CREDENTIAL_LOCK_QUERY, REFRESH_GRANT_AUTHORITY_LOCK_QUERY,
-        REFRESH_ISSUANCE_SCOPES_QUERY, REFRESH_MEMBERSHIP_AUTHORITY_LOCK_QUERY,
-        REFRESH_REUSE_ACCESS_REVOCATION_QUERY, REFRESH_SESSION_AUTHORITY_LOCK_QUERY,
+        CURRENT_APPLICATION_CLIENT_LOCK_QUERY, CURRENT_APPLICATION_OAUTH_SUBJECT_AUTHORITY_QUERY,
+        OAUTH_REFRESH_INSERT_QUERY, OAUTH_SESSION_CLIENT_ACCESS_REVOCATION_QUERY,
+        REFRESH_CREDENTIAL_LOCK_QUERY, REFRESH_ISSUANCE_SCOPES_QUERY,
         REFRESH_TOKEN_CANDIDATE_QUERY, append_redirect_parameters, empty_idempotent_response,
         escape_html, login_html_response, scopes_retain_exact_authority,
     };
@@ -2496,7 +2546,7 @@ mod tests {
             "session.subject_auth_epoch = principal.auth_epoch",
             "session.status = 'active'",
             "consent.parent_authentication_session_id = request.authentication_session_id",
-            "FOR UPDATE OF code, request, consent",
+            "FOR UPDATE OF code, request",
             "FOR SHARE OF principal, session",
         ] {
             assert!(
@@ -2504,6 +2554,10 @@ mod tests {
                 "authorization-code lookup is missing `{required_fragment}`"
             );
         }
+        assert!(
+            CURRENT_APPLICATION_OAUTH_SUBJECT_AUTHORITY_QUERY
+                .contains("lock_current_application_oauth_subject_authority")
+        );
     }
 
     #[test]
@@ -2539,16 +2593,16 @@ mod tests {
     fn refresh_reuse_revocation_is_bounded_to_the_session_and_client() {
         for required_fragment in [
             "UPDATE iam.access_tokens",
-            "revocation_reason = COALESCE(revocation_reason, 'refresh_token_reuse')",
+            "revocation_reason = COALESCE(revocation_reason, $3)",
             "authentication_session_id = $1",
             "client_application_id = $2",
         ] {
             assert!(
-                REFRESH_REUSE_ACCESS_REVOCATION_QUERY.contains(required_fragment),
+                OAUTH_SESSION_CLIENT_ACCESS_REVOCATION_QUERY.contains(required_fragment),
                 "refresh-reuse containment is missing `{required_fragment}`"
             );
         }
-        assert!(!REFRESH_REUSE_ACCESS_REVOCATION_QUERY.contains("authentication_sessions"));
+        assert!(!OAUTH_SESSION_CLIENT_ACCESS_REVOCATION_QUERY.contains("authentication_sessions"));
     }
 
     #[test]
@@ -2564,37 +2618,15 @@ mod tests {
             );
         }
         for required_fragment in [
-            "session.subject_principal_id = principal.id",
-            "session.subject_kind = principal.kind",
-            "session.subject_auth_epoch = principal.auth_epoch",
-            "session.status = 'active'",
-            "FOR SHARE OF principal, session",
-        ] {
-            assert!(
-                REFRESH_SESSION_AUTHORITY_LOCK_QUERY.contains(required_fragment),
-                "refresh session lock is missing `{required_fragment}`"
-            );
-        }
-        for required_fragment in [
             "organization.status = 'active'",
-            "membership.principal_id = $3",
-            "membership.principal_kind = $4::iam.principal_kind",
+            "membership.principal_id = principal.id",
+            "membership.principal_kind = principal.kind",
             "membership.status = 'active'",
-            "FOR SHARE OF organization, membership",
-        ] {
-            assert!(
-                REFRESH_MEMBERSHIP_AUTHORITY_LOCK_QUERY.contains(required_fragment),
-                "refresh membership lock is missing `{required_fragment}`"
-            );
-        }
-        for required_fragment in [
-            "consent.subject_kind::text AS subject_kind",
             "consent.parent_authentication_session_id",
-            "FOR SHARE OF consent",
         ] {
             assert!(
-                REFRESH_GRANT_AUTHORITY_LOCK_QUERY.contains(required_fragment),
-                "refresh consent lock is missing `{required_fragment}`"
+                APPLICATION_AUTHORITY_MIGRATION.contains(required_fragment),
+                "OAuth subject authority lock is missing `{required_fragment}`"
             );
         }
         for required_fragment in [

@@ -43,8 +43,9 @@
   After the first IAM call, <code>client.update_status()</code> reports <code>Current</code>,
   <code>Updated</code>, <code>Disabled</code>, <code>NoCargoProject</code>, or <code>Failed</code>.
   A registry timeout, absent manifest, incompatible version constraint, or failed Cargo command
-  never changes the IAM request's result. Update checks have a three-second timeout and happen
-  only once per client process.
+  never changes the IAM request's result. The registry check has a three-second timeout and runs
+  once for one client instance and its clones; separately constructed clients have their own
+  updater state.
 </p>
 
 <div class="banner banner-info">

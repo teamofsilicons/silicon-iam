@@ -66,6 +66,13 @@ pub struct Profile {
     /// Organization assumed when a command does not name one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org: Option<String>,
+    /// Organization defaults inside isolated testing environments.
+    ///
+    /// Production and every testing plane have independent data, so carrying
+    /// a production handle into a test plane only manufactures misleading
+    /// not-found responses.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub test_orgs: BTreeMap<Uuid, String>,
 }
 
 /// Tokens, kept apart from the settings so the secret file can be locked down
@@ -141,6 +148,36 @@ impl Credentials {
     }
 }
 
+/// The actor represented by a stored session.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionActor {
+    /// A person signing in through a verified contact challenge.
+    #[default]
+    Carbon,
+    /// A service identity signing in with its Silicon credential.
+    Silicon,
+}
+
+/// A remote logout that may have committed even if its response was lost.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingLogoutMode {
+    /// Revoke only the session represented by the stored credential.
+    CurrentSession,
+    /// Revoke every session owned by the Carbon.
+    AllSessions,
+}
+
+/// Durable retry identity for a remote logout.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PendingLogout {
+    /// Scope bound into the original logout request.
+    pub mode: PendingLogoutMode,
+    /// Idempotency key reserved before the request was sent.
+    pub idempotency_key: String,
+}
+
 /// One signed-in session.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
@@ -151,8 +188,18 @@ pub struct Session {
     /// When the access token stops being accepted.
     #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
-    /// Who this session belongs to, for `iam whoami` without a round trip.
-    pub carbon_id: String,
+    /// Which kind of principal owns the tokens.
+    #[serde(default)]
+    pub actor_type: SessionActor,
+    /// Public Carbon or Silicon identifier for display and refresh continuity.
+    #[serde(alias = "carbon_id")]
+    pub actor_id: String,
+    /// Key reserved before a rotating refresh request is sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_refresh_key: Option<String>,
+    /// Request identity retained until remote logout is confirmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_logout: Option<PendingLogout>,
 }
 
 impl Session {
@@ -303,7 +350,7 @@ mod tests {
     use time::{Duration, OffsetDateTime};
     use uuid::Uuid;
 
-    use super::{Config, Credentials, Session};
+    use super::{Config, Credentials, Profile, Session, SessionActor};
 
     #[test]
     fn automatic_updates_default_on_for_new_and_old_configs() {
@@ -312,13 +359,72 @@ mod tests {
         assert!(decoded.is_ok_and(|config| config.auto_update));
     }
 
+    #[test]
+    fn old_profiles_load_without_test_environment_defaults() {
+        let decoded =
+            serde_json::from_str::<Profile>(r#"{"url":"https://example.test","org":"production"}"#);
+        assert!(decoded.is_ok_and(|profile| profile.test_orgs.is_empty()));
+    }
+
     fn session(expires_in: Duration) -> Session {
         Session {
             access_token: "cat_x".to_owned(),
             refresh_token: "rft_x".to_owned(),
             expires_at: OffsetDateTime::now_utc() + expires_in,
-            carbon_id: "founder".to_owned(),
+            actor_type: SessionActor::Carbon,
+            actor_id: "founder".to_owned(),
+            pending_refresh_key: None,
+            pending_logout: None,
         }
+    }
+
+    #[test]
+    fn old_carbon_sessions_keep_their_identity() {
+        let decoded = serde_json::from_str::<Credentials>(
+            r#"{
+                "sessions": {
+                    "default": {
+                        "access_token":"cat_x",
+                        "refresh_token":"rft_x",
+                        "expires_at":"2026-09-04T00:00:00Z",
+                        "carbon_id":"founder"
+                    }
+                }
+            }"#,
+        );
+        let Ok(credentials) = decoded else {
+            panic!("the old credentials-file shape must remain readable");
+        };
+        let Some(session) = credentials.session("default", None) else {
+            panic!("the old Carbon session must remain present");
+        };
+        assert_eq!(session.actor_type, SessionActor::Carbon);
+        assert_eq!(session.actor_id, "founder");
+    }
+
+    #[test]
+    fn silicon_sessions_round_trip_with_their_actor_kind() {
+        let mut credentials = Credentials::default();
+        let mut silicon = session(Duration::minutes(30));
+        silicon.access_token = "sat_x".to_owned();
+        silicon.actor_type = SessionActor::Silicon;
+        silicon.actor_id = "builder:tos".to_owned();
+        credentials.set_session("default", None, silicon);
+
+        let encoded = serde_json::to_vec(&credentials);
+        let Ok(encoded) = encoded else {
+            panic!("credentials must serialize");
+        };
+        let decoded = serde_json::from_slice::<Credentials>(&encoded);
+        let Ok(decoded) = decoded else {
+            panic!("credentials must deserialize");
+        };
+        let Some(session) = decoded.session("default", None) else {
+            panic!("the Silicon session must remain present");
+        };
+        assert_eq!(session.actor_type, SessionActor::Silicon);
+        assert_eq!(session.actor_id, "builder:tos");
+        assert_eq!(session.access_token, "sat_x");
     }
 
     #[test]
@@ -337,28 +443,28 @@ mod tests {
         let mut credentials = Credentials::default();
         credentials.set_session("default", None, session(Duration::minutes(5)));
         let mut first = session(Duration::minutes(6));
-        first.carbon_id = "first-test".to_owned();
+        first.actor_id = "first-test".to_owned();
         credentials.set_session("default", Some(first_id), first);
         let mut second = session(Duration::minutes(7));
-        second.carbon_id = "second-test".to_owned();
+        second.actor_id = "second-test".to_owned();
         credentials.set_session("default", Some(second_id), second);
 
         assert_eq!(
             credentials
                 .session("default", None)
-                .map(|value| value.carbon_id.as_str()),
+                .map(|value| value.actor_id.as_str()),
             Some("founder")
         );
         assert_eq!(
             credentials
                 .session("default", Some(first_id))
-                .map(|value| value.carbon_id.as_str()),
+                .map(|value| value.actor_id.as_str()),
             Some("first-test")
         );
         assert_eq!(
             credentials
                 .session("default", Some(second_id))
-                .map(|value| value.carbon_id.as_str()),
+                .map(|value| value.actor_id.as_str()),
             Some("second-test")
         );
     }

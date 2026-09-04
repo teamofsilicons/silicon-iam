@@ -2,24 +2,39 @@
 
 use std::io::Write as _;
 
-use silicon_iam_client::{Credential, models};
+use silicon_iam_client::{Client, Credential, IdempotencyKey, Mutation, models};
 use time::OffsetDateTime;
 
 use crate::{
-    cli::{LoginArgs, SignupArgs, SiliconLoginArgs},
+    cli::{
+        LoginArgs, LogoutArgs, SignupArgs, SiliconLoginArgs, StepUpActionArg, StepUpArgs,
+        StepUpChannel,
+    },
     context::Context,
     error::{CliError, Result},
     output::{Format, Table, json},
-    store::Session,
+    store::{PendingLogout, PendingLogoutMode, Session, SessionActor},
 };
 
 /// Builds a stored session from a token response.
 pub fn session_from(tokens: &models::IamTokenResponse, carbon_id: &str) -> Session {
+    session_from_actor(tokens, carbon_id, SessionActor::Carbon)
+}
+
+/// Builds a stored session while preserving the authenticated actor kind.
+pub fn session_from_actor(
+    tokens: &models::IamTokenResponse,
+    actor_id: &str,
+    actor_type: SessionActor,
+) -> Session {
     Session {
         access_token: tokens.access_token.clone(),
         refresh_token: tokens.refresh_token.clone(),
         expires_at: OffsetDateTime::now_utc() + time::Duration::seconds(tokens.expires_in),
-        carbon_id: carbon_id.to_owned(),
+        actor_type,
+        actor_id: actor_id.to_owned(),
+        pending_refresh_key: None,
+        pending_logout: None,
     }
 }
 
@@ -31,8 +46,13 @@ pub fn session_from(tokens: &models::IamTokenResponse, carbon_id: &str) -> Sessi
 /// session cannot be stored.
 pub async fn login(context: &Context, args: LoginArgs) -> Result<()> {
     if args.email.is_none() && args.phone.is_none() && args.carbon_id.is_none() {
+        if let Some(app_id) = args.app_id.as_deref() {
+            let authenticated = context.authenticated().await?;
+            return report_short_lived_token(context, &authenticated, app_id).await;
+        }
         return Err(CliError::Usage(
-            "give one of --email, --phone or --carbon-id".to_owned(),
+            "give one of --email, --phone or --carbon-id, or use --app-id with the stored session"
+                .to_owned(),
         ));
     }
 
@@ -55,7 +75,7 @@ pub async fn login(context: &Context, args: LoginArgs) -> Result<()> {
         // allowed it, which is how a local run avoids needing a real inbox.
         None => match challenge.local_otp.clone() {
             Some(code) => code,
-            None => prompt("Verification code: ")?,
+            None => prompt_secret("Verification code: ")?,
         },
     };
 
@@ -72,7 +92,8 @@ pub async fn login(context: &Context, args: LoginArgs) -> Result<()> {
     context.remember(session_from(&tokens, &signed_in.carbon_id))?;
 
     if let Some(app_id) = args.app_id.as_deref() {
-        return report_short_lived_token(context, &tokens.access_token, app_id).await;
+        let authenticated = context.authenticated().await?;
+        return report_short_lived_token(context, &authenticated, app_id).await;
     }
 
     match context.format {
@@ -103,11 +124,12 @@ pub async fn silicon_login(context: &Context, args: SiliconLoginArgs) -> Result<
         Some(value) => value,
         None => prompt("Silicon ID: ")?,
     };
+    let (sid, org) = context.silicon_identity(&sid)?;
     // Prompted rather than flagged by default so the token stays out of shell
     // history and out of the process table.
     let stk = match args.stk {
         Some(value) => value,
-        None => prompt("Silicon token: ")?,
+        None => prompt_secret("Silicon token: ")?,
     };
 
     let client = context.anonymous();
@@ -122,32 +144,40 @@ pub async fn silicon_login(context: &Context, args: SiliconLoginArgs) -> Result<
         )
         .await?;
 
+    context.remember(session_from_actor(&tokens, &sid, SessionActor::Silicon))?;
+    let authenticated = context.authenticated().await?;
+
     if let Some(app_id) = args.app_id.as_deref() {
-        return report_short_lived_token(context, &tokens.access_token, app_id).await;
+        return report_short_lived_token(context, &authenticated, app_id).await;
     }
 
+    let signed_in = authenticated.silicons().get(&org, &sid).await?;
+    report_silicon_login(context, &signed_in)
+}
+
+fn report_silicon_login(context: &Context, signed_in: &models::Silicon) -> Result<()> {
     match context.format {
-        Format::Json => json(&tokens),
+        Format::Json => json(&signed_in),
         Format::Text => {
-            println!("Signed in as {sid}.");
-            println!("Access token: {}", tokens.access_token);
-            println!("Refresh token: {}", tokens.refresh_token);
+            println!(
+                "Signed in as {} on profile {}.",
+                signed_in.silicon_id, context.profile_name
+            );
             Ok(())
         }
     }
 }
 
 /// Asks for a short-lived token on an existing session and prints it.
-async fn report_short_lived_token(
-    context: &Context,
-    access_token: &str,
-    app_id: &str,
-) -> Result<()> {
-    let issued = context
-        .anonymous()
-        .with_credential(Credential::bearer(access_token.to_owned()))
+async fn report_short_lived_token(context: &Context, client: &Client, app_id: &str) -> Result<()> {
+    let app_id = context.application_id(app_id)?;
+    let issued = client
         .auth()
-        .short_lived_token(app_id, &context.mutation())
+        .short_lived_token_in_organization(
+            &app_id,
+            context.organization_if_set(),
+            &context.mutation(),
+        )
         .await?;
     match context.format {
         Format::Json => json(&issued),
@@ -162,22 +192,122 @@ async fn report_short_lived_token(
     }
 }
 
-/// Forgets the stored session.
+/// Ends a Carbon session remotely and then forgets the local credential.
 ///
-/// Local only: it does not end the session on the service, because a person
-/// clearing a laptop should not silently sign out their other devices. Use
-/// `iam session revoke` for that.
+/// The idempotency key is persisted before sending so a retry after response
+/// loss can confirm the exact already-committed logout with the now-revoked
+/// bearer. Silicon sessions are forgotten locally because the public logout
+/// endpoint deliberately accepts Carbon authority only; rotate or remove a
+/// Silicon to revoke its server-side authority.
 ///
 /// # Errors
 ///
-/// Returns an error when the credential file cannot be written.
-pub fn logout(context: &Context) -> Result<()> {
-    if context.forget()? {
-        println!("Signed out of profile {}.", context.profile_name);
-    } else {
-        println!("Profile {} was not signed in.", context.profile_name);
+/// Returns an error when the remote logout is refused or the credential file
+/// cannot be written.
+pub async fn logout(context: &Context, args: LogoutArgs) -> Result<()> {
+    if args.local_only {
+        return report_local_logout(context, context.forget()?);
     }
-    Ok(())
+
+    let initial = context.session()?;
+    if initial.actor_type == SessionActor::Silicon {
+        if args.all {
+            return Err(CliError::Usage(
+                "--all applies only to Carbon sessions; use `iam logout --local-only`, or rotate/remove the Silicon to revoke its authority"
+                    .to_owned(),
+            ));
+        }
+        let existed = context.forget()?;
+        return report_local_logout(context, existed);
+    }
+
+    let requested_mode = if args.all {
+        PendingLogoutMode::AllSessions
+    } else {
+        PendingLogoutMode::CurrentSession
+    };
+    if let Some(pending) = initial.pending_logout.as_ref()
+        && pending.mode != requested_mode
+    {
+        let prior = match pending.mode {
+            PendingLogoutMode::CurrentSession => "`iam logout`",
+            PendingLogoutMode::AllSessions => "`iam logout --all`",
+        };
+        return Err(CliError::Usage(format!(
+            "a previous remote logout may already have committed; retry {prior} exactly, or use --local-only to forget the credential"
+        )));
+    }
+
+    // Refresh, when needed, before reserving the logout key. Once the key is
+    // pending, the bearer must remain byte-for-byte stable for replay.
+    let client = context.authenticated_for_logout().await?;
+    let mut session = context.session()?;
+    let pending = if let Some(pending) = session.pending_logout.clone() {
+        pending
+    } else {
+        let key = IdempotencyKey::generate();
+        let pending = PendingLogout {
+            mode: requested_mode,
+            idempotency_key: key.as_str().to_owned(),
+        };
+        session.pending_logout = Some(pending.clone());
+        context.remember(session)?;
+        pending
+    };
+
+    let mode = match pending.mode {
+        PendingLogoutMode::CurrentSession => models::LogoutRequestMode::CurrentSession,
+        PendingLogoutMode::AllSessions => models::LogoutRequestMode::AllSessions,
+    };
+    let mutation = Mutation::with_key(IdempotencyKey::parse(pending.idempotency_key)?);
+    let mutation = match context.step_up.as_ref() {
+        Some(assertion) => mutation.step_up(assertion.clone()),
+        None => mutation,
+    };
+    client
+        .auth()
+        .logout(&models::LogoutRequest { mode: Some(mode) }, &mutation)
+        .await?;
+    context.forget()?;
+
+    match context.format {
+        Format::Json => json(&serde_json::json!({
+            "mode": match pending.mode {
+                PendingLogoutMode::CurrentSession => "current_session",
+                PendingLogoutMode::AllSessions => "all_sessions",
+            },
+            "remote": true,
+        })),
+        Format::Text => {
+            let scope = match pending.mode {
+                PendingLogoutMode::CurrentSession => "the current remote session",
+                PendingLogoutMode::AllSessions => "all remote sessions",
+            };
+            println!(
+                "Ended {scope} and signed out profile {}.",
+                context.profile_name
+            );
+            Ok(())
+        }
+    }
+}
+
+fn report_local_logout(context: &Context, existed: bool) -> Result<()> {
+    match context.format {
+        Format::Json => json(&serde_json::json!({
+            "mode": "local_only",
+            "remote": false,
+            "forgotten": existed,
+        })),
+        Format::Text => {
+            if existed {
+                println!("Signed out profile {} locally.", context.profile_name);
+            } else {
+                println!("Profile {} was not signed in.", context.profile_name);
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Shows who is signed in.
@@ -186,7 +316,30 @@ pub fn logout(context: &Context) -> Result<()> {
 ///
 /// Returns an error when there is no session, or the service refuses it.
 pub async fn whoami(context: &Context) -> Result<()> {
-    let me = context.authenticated().await?.carbons().me().await?;
+    let session = context.session()?;
+    let client = context.authenticated().await?;
+    if session.actor_type == SessionActor::Silicon {
+        let (silicon_id, org) = context.silicon_identity(&session.actor_id)?;
+        let silicon = client.silicons().get(&org, &silicon_id).await?;
+        return match context.format {
+            Format::Json => json(&silicon),
+            Format::Text => {
+                let mut table = Table::new(["field", "value"]);
+                table.row(["silicon_id", &silicon.silicon_id]);
+                table.row(["display_name", &silicon.display_name]);
+                table.row(["organization", &silicon.org_id]);
+                table.row(["profile", &context.profile_name]);
+                table.row(["service", context.anonymous().base_url().as_str()]);
+                if let Some(environment_id) = context.testing_environment_id() {
+                    table.row(["test_environment", &environment_id.to_string()]);
+                }
+                table.print();
+                Ok(())
+            }
+        };
+    }
+
+    let me = client.carbons().me().await?;
     match context.format {
         Format::Json => json(&me),
         Format::Text => {
@@ -203,6 +356,79 @@ pub async fn whoami(context: &Context) -> Result<()> {
             }
             table.print();
             Ok(())
+        }
+    }
+}
+
+/// Mints a token bound to one sensitive action and one resource.
+///
+/// # Errors
+///
+/// Returns an error when the resource is not eligible, delivery fails, the
+/// code is refused, or the current session is not a Carbon session.
+pub async fn step_up(context: &Context, args: StepUpArgs) -> Result<()> {
+    let client = context.authenticated().await?;
+    let challenge = client
+        .auth()
+        .start_step_up(
+            &models::StepUpChallengeCreate {
+                channel: match args.channel {
+                    StepUpChannel::Email => models::StepUpChallengeCreateChannel::Email,
+                    StepUpChannel::Phone => models::StepUpChallengeCreateChannel::PhoneNumber,
+                },
+                action: step_up_action(args.action),
+                resource_id: args.resource_id,
+            },
+            &context.mutation(),
+        )
+        .await?;
+    let code = match args.code.or(challenge.local_otp) {
+        Some(code) => code,
+        None => prompt_secret("Step-up verification code: ")?,
+    };
+    let token = client
+        .auth()
+        .verify_step_up(challenge.session_id, &code, &context.mutation())
+        .await?;
+    match context.format {
+        Format::Json => json(&token),
+        Format::Text => {
+            println!("Step-up token: {}", token.step_up_token);
+            println!(
+                "It is valid for {} seconds and only this action/resource.",
+                token.expires_in
+            );
+            Ok(())
+        }
+    }
+}
+
+const fn step_up_action(action: StepUpActionArg) -> models::StepUpAction {
+    match action {
+        StepUpActionArg::AccountSessionRevoke => models::StepUpAction::AccountSessionRevoke,
+        StepUpActionArg::AccountSessionsRevokeAll => models::StepUpAction::AccountSessionsRevokeAll,
+        StepUpActionArg::OrganizationTransferOwnership => {
+            models::StepUpAction::OrganizationTransferOwnership
+        }
+        StepUpActionArg::OrganizationAuthorizationChange => {
+            models::StepUpAction::OrganizationAuthorizationChange
+        }
+        StepUpActionArg::OrganizationSsoChange => models::StepUpAction::OrganizationSsoChange,
+        StepUpActionArg::OrganizationSiliconWebhookRedirect => {
+            models::StepUpAction::OrganizationSiliconWebhookRedirect
+        }
+        StepUpActionArg::ApplicationClientSecretRotate => {
+            models::StepUpAction::ApplicationClientSecretRotate
+        }
+        StepUpActionArg::ApplicationWebhookSecretRotate => {
+            models::StepUpAction::ApplicationWebhookSecretRotate
+        }
+        StepUpActionArg::SiliconRotateToken => models::StepUpAction::SiliconRotateToken,
+        StepUpActionArg::PlatformAdminSsoEntitlement => {
+            models::StepUpAction::PlatformAdminSsoEntitlement
+        }
+        StepUpActionArg::PlatformAdminApplicationReview => {
+            models::StepUpAction::PlatformAdminApplicationReview
         }
     }
 }
@@ -256,7 +482,7 @@ pub async fn signup(context: &Context, args: SignupArgs) -> Result<()> {
             &models::CarbonSignupComplete {
                 carbon_id: args.carbon_id.clone(),
                 display_name: args.display_name.unwrap_or_else(|| args.carbon_id.clone()),
-                timezone: args.timezone.map(serde_json::Value::String),
+                timezone: args.timezone,
                 description: None,
                 profile_photo: None,
             },
@@ -279,8 +505,13 @@ pub async fn signup(context: &Context, args: SignupArgs) -> Result<()> {
 fn collect_code(echoed: Option<String>, prompt_text: &str) -> Result<String> {
     match echoed {
         Some(code) => Ok(code),
-        None => prompt(prompt_text),
+        None => prompt_secret(prompt_text),
     }
+}
+
+/// Reads one line without echoing it to the terminal.
+pub(crate) fn prompt_secret(label: &str) -> Result<String> {
+    Ok(rpassword::prompt_password(label)?)
 }
 
 /// Reads one line from the terminal.

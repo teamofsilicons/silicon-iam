@@ -21,8 +21,8 @@ the JSON contract and are not described in `openapi.yaml`:
 
 | Path | Surface |
 | --- | --- |
-| `/docs/api/` | The HTTP contract, in eleven sections |
-| `/docs/client/` | The official Rust SDK, in seven sections |
+| `/docs/api/` | The sectioned HTTP contract |
+| `/docs/client/` | The sectioned official Rust SDK manual |
 | `/openapi.yaml` | The normative contract itself |
 | `/admin` | The platform-administration console |
 
@@ -31,10 +31,11 @@ the JSON contract and are not described in `openapi.yaml`:
 `/openapi.yaml`, and must not appear in the specification. Contract routes
 belong in a feature router and in `openapi.yaml`, as they always have.
 
-Applications integrating in Rust should use the official SDK rather than this
-document. It implements the version handshake, proof signing, signature
-verification and the retry policy, and fails closed where this contract expects
-a client to. See `/docs/client/`.
+Applications integrating in Rust can use the official SDK for typed API methods
+and wire models, explicit version negotiation, credential transports, and
+webhook verification. It deliberately leaves credential persistence, refresh
+coordination, and retry decisions with the calling application. See
+`/docs/client/`.
 
 The `/admin` console is a thin client over `/api/v1/admin/*`. It performs no
 authentication of its own and executes no SQL; authority stays entirely in the
@@ -105,7 +106,8 @@ excluded from logs, traces, metrics, error details, audit diffs, and webhooks.
 | Signup session | 48 hours |
 | Email/phone OTP | 10 minutes; after 10 failed attempts, a reusable challenge cools down for 1 minute before a fresh 10-attempt window |
 | IAM/OAuth access token | 30 minutes |
-| Carbon/Silicon/OAuth refresh-session family | 900 days absolute |
+| IAM session refresh family (Carbon or Silicon) | 900 days absolute |
+| Application OAuth refresh family | 900 days absolute |
 | Short-lived login token | 2 minutes, single use |
 | Step-up token | 5 minutes, action/resource bound |
 | Carbon invitation | 48 hours |
@@ -114,11 +116,16 @@ excluded from logs, traces, metrics, error details, audit diffs, and webhooks.
 | One-time secret replay envelope | 10 minutes |
 
 Access and refresh tokens are opaque 256-bit random values. Refresh tokens
-rotate on every successful use. Reuse of a consumed refresh token revokes its
-entire family and creates a security audit event. Applications use authenticated
-introspection when they need immediate revocation and current organization
-membership state. OAuth access and refresh tokens remain opaque and are never
-published through a signing-key discovery surface.
+rotate on every successful use, and reuse of a consumed token compromises its
+own family and creates a security audit event. An IAM family belongs to one
+Carbon device session or Silicon session; compromise invalidates that session
+and authority descended from it, not the principal's other device sessions. An
+OAuth family belongs to one parent IAM session and one client Application;
+compromise revokes that Application family and its access tokens without
+revoking the parent IAM session or another Application's tokens. Applications
+use authenticated introspection when they need immediate revocation and current
+organization membership state. OAuth access and refresh tokens remain opaque
+and are never published through a signing-key discovery surface.
 
 ### Request headers and concurrency
 
@@ -142,6 +149,13 @@ a response body also contains `version`, it is the same version represented by
 that ETag. A stale value returns `412 version_mismatch`; an omitted required
 precondition returns `428 precondition_required`. Every externally visible
 aggregate mutation increments the version by exactly one.
+
+Every `PATCH` route consumes `application/merge-patch+json`. For a nullable
+property, the three JSON states are distinct: omitting the property leaves it
+unchanged, sending it as `null` clears it, and sending a concrete value replaces
+it. Use `null` only where the OpenAPI property is nullable. Clients must not
+serialize an absent nullable optional as `null`, because that turns "leave
+unchanged" into "clear this field."
 
 `X-Request-ID` is accepted when valid and otherwise generated. On errors it is
 returned as `error.request_id`. `X-Org-ID` may be sent to introspection, but it
@@ -203,7 +217,7 @@ code that no reader asked for.
 | 401 | Missing, invalid, expired, or revoked authentication | `invalid_credentials`, `token_expired`, `token_revoked` |
 | 403 | Actor type, capability, scope, consent, or step-up is insufficient | `forbidden`, `insufficient_scope`, `step_up_required` |
 | 404 | Missing or tenant-hidden resource | `not_found` |
-| 409 | Unique, idempotency, replay, lifecycle, or terminal-state conflict | `identifier_unavailable`, `idempotency_conflict`, `refresh_replay`, `state_conflict` |
+| 409 | Unique, idempotency, replay, lifecycle, or terminal-state conflict | `identifier_unavailable`, `idempotency_conflict`, `state_conflict` |
 | 410 | Expired one-time state | `challenge_expired`, `invite_expired`, `authorization_code_expired`, `proof_expired` |
 | 412 | Stale ETag | `version_mismatch` |
 | 413 | Body exceeds the endpoint limit | `payload_too_large` |
@@ -215,13 +229,27 @@ code that no reader asked for.
 | 504 | A bounded server or provider deadline elapsed | `gateway_timeout` |
 
 A `validation_failed` body carries `details.fields`, each entry naming the
-offending `field`. A body that cannot be decoded at all still names the
+offending `field` and its safe `message`, as an array such as
+`[{"field":"job_role","message":"at most 5000 characters"}]`. A body that
+cannot be decoded at all still names the
 responsible property: an unrecognized property reports that property with
 `is not a recognized field`, a missing required property reports it with
 `is required`, a request without `Content-Type: application/json` reports
 `content-type`, and malformed JSON reports `body`. Submitted values are never
 echoed back, so any rejection whose explanation would have to quote a value
 degrades to `body` with `must match the documented JSON schema`.
+
+A mutation that would leave the resource unchanged returns a stable `409`
+rather than incrementing its version or writing audit/outbox work. The current
+no-op codes are `carbon_profile_unchanged`, `organization_unchanged`,
+`member_directory_unchanged`, `job_role_unchanged`, `tag_set_unchanged`,
+`tag_name_unchanged`, `trust_default_unchanged`, `trust_rule_unchanged`,
+`silicon_profile_unchanged`, `silicon_webhook_subscription_unchanged`,
+`application_unchanged`, `application_webhook_unchanged`, and
+`testing_environment_unchanged`. `approval_request_exists` separately means an
+equivalent pending governance request already exists. Treat these as completed
+or duplicate intent, not as transient failures to retry with a new idempotency
+key.
 
 `429` includes `Retry-After`, `RateLimit-Limit`,
 `RateLimit-Remaining`, and `RateLimit-Reset`. Carbon login initiation returns
@@ -261,9 +289,10 @@ and complete retry/rate-limit header set.
 
 Health responses contain no dependency credentials or sensitive topology.
 
-Every official client performs the unversioned `/api/version` handshake before
-making a versioned request. It sends its distinct supported versions in
-descending preference order:
+A client must perform the unversioned `/api/version` handshake before its first
+versioned request. The Rust SDK exposes this as `client.system().negotiate()`;
+it is an explicit integration step. The request sends distinct supported
+versions in descending preference order:
 
 ```http
 Silicon-IAM-Supported-API-Versions: v1
@@ -379,6 +408,11 @@ from the current session, the authenticating session must also be at least 12
 hours old. Every request requires a verified-channel
 `account.session_revoke` step-up assertion whose `resource_id` is exactly the
 target session UUID. Assertion consumption and revocation commit atomically.
+IAM reports failed age checks with the stable precondition codes
+`session_revocation_target_too_young`,
+`session_revocation_authority_too_young`, and
+`session_revoke_all_target_too_young`, rather than a generic authorization
+failure.
 
 ### Silicon login
 
@@ -458,7 +492,10 @@ login endpoint never expects a bearer header on a top-level navigation.
 
 Redirect URIs are not registered. The caller names one in the query string and
 IAM appends `slt` to it. Short-lived tokens are keyed-digest stored, two-minute,
-single-use, and bound to client, actor, organization and parent session.
+single-use, and bound to client, actor and parent session. When the login names
+`org_id` (or its IAM bearer already carries organization context), the token is
+additionally bound to that exact active membership; otherwise it remains
+unscoped.
 
 Before consuming a token, the exchange locks and revalidates current authority:
 the client application must still be verified on its current authentication
@@ -491,15 +528,33 @@ session may read.
 
 `POST /api/v1/app-auth/short-lived-tokens` is how a Silicon signs in to an
 application: it has no browser to be redirected in. A Carbon that already holds
-a session uses the same route rather than starting another login.
+a session uses the same route rather than starting another login. Its JSON body
+always names `app_id` and may name `org_id`. Supplying `org_id` requires the
+actor's active membership and binds the exchanged Application token family to
+that organization. Omitting it preserves an unscoped login unless the IAM
+bearer already carries organization context. OBO requires an organization-bound
+Application access token.
 
 The token page's Content-Security-Policy is `default-src 'none'` widened only
 to `style-src 'self'`, `img-src 'self' data:` and `font-src` for the webfont. It
 has no `script-src` at all, which is why the page reports expiry with a meta
 refresh onto `/api/v1/login/status` rather than a timer.
 
+| Method | Endpoint | Behavior |
+| --- | --- | --- |
 | POST | `/api/v1/oauth/introspect` | Authenticated current-state introspection |
 | POST | `/api/v1/oauth/revoke` | Idempotent token/family revocation |
+
+Both routes use Application Basic authentication and form fields `token` plus
+optional `token_type_hint=access_token|refresh_token`. Introspection returns
+`active: false` for an unknown token, a token owned by another Application, a
+currently invalid token, or a valid `X-Org-ID` that does not match its authority.
+A malformed or duplicated `X-Org-ID`, or an unsupported token hint, returns
+`400 invalid_request` instead. Revoking an access token affects only that token;
+revoking a refresh token affects its complete OAuth family and access authority
+for the same Application session. An unknown token deliberately returns `200`.
+Neither operation logs out the parent IAM session; Application-triggered global
+logout uses `POST /api/v1/logout` with that Application's OAuth bearer.
 
 OAuth access tokens remain linked to the parent IAM session, application,
 consent grant, and organization membership. Logout, app suspension, consent
@@ -524,6 +579,13 @@ organization and derives its tenant from its credential. Switching
 `join_method` to `sso` is rejected until platform SSO entitlement, an active
 connection, and an active SSO configuration exist. Disabling SSO requires first
 moving the organization to a safe join method.
+
+`GET /api/v1/organizations` defaults to `status=active`. Its `status=active` or
+`status=removed` query filters the authenticated Carbon's membership in each
+organization, not the organization's lifecycle state. The `status` field in
+each returned Organization still describes the organization itself and remains
+`active` or `disabled`; a row reached through a removed membership can therefore
+still describe an active organization.
 
 Ownership transfer requires the current owner, step-up, an ETag, and an active
 Carbon membership as the target. The new owner becomes the sole owner in the
@@ -1044,6 +1106,10 @@ deliveries use the successor immediately. Consumers retain prior key versions
 long enough to verify already in-flight signed bodies. Changing a webhook URL
 reuses a production or already test-owned signing secret unless the replacement
 request explicitly supplies a new one.
+Repeating the active or pending URL without a replacement secret is rejected
+with `409 application_webhook_unchanged`; supplying the exact current secret
+with the current endpoint is rejected by the same stable code. These no-op
+requests do not increment the Application version or emit audit/outbox events.
 
 ### Platform application review
 
@@ -1130,7 +1196,8 @@ The exchange request is:
 ```
 
 IAM confirms that App A and App B are verified and belong to the same
-organization; the subject token was issued to App A and is active; its actor
+organization; the subject token was issued to App A, is active, and was minted
+from an organization-bound login for that same organization; its actor
 has an active membership in that same organization; App A's reviewed scopes
 permit OBO issuance; and the selected App B endpoint and metadata are current
 and valid. It returns a random `obo_` proof with a unique ID and at most 60
@@ -1347,7 +1414,7 @@ Each request includes:
 X-Silicon-IAM-Event-ID: <uuid>
 X-Silicon-IAM-Timestamp: <unix-seconds>
 X-Silicon-IAM-Key-Version: <integer>
-X-Silicon-IAM-Signature: v1=<lowercase-hex-hmac>
+X-Silicon-IAM-Signature: v1=<64 lowercase hexadecimal characters>
 ```
 
 The signature is HMAC-SHA-256 over:
@@ -1463,7 +1530,7 @@ The shipped AWS production stack provisions this plane on a private,
 single-AZ `db.t4g.micro` PostgreSQL instance with minimal storage, migrates it,
 applies runtime grants, and supplies both the API and worker connection URLs.
 
-Every planed route accepts the header:
+Every plane-selectable route accepts the header:
 
 ```
 X-Testing-Environment-Key: <32 alphanumeric characters>
@@ -1533,8 +1600,11 @@ There are two explicit ways to obtain an Application:
 
 1. Call ordinary `POST /api/v1/applications` with the environment key and a
    test Carbon owner/admin bearer. This creates test-owned configuration through
-   the same code path as production. Its canonical ID must not already exist in
-   production.
+   the same code path as production. The body must include the local handle,
+   `org_id`, `base_url`, webhook URL, and a caller-chosen `webhook_secret`; IAM
+   generates only the test Application client secret and echoes the supplied
+   webhook secret for v1 compatibility. Its canonical ID must not already exist
+   in production.
 2. Call `POST /api/v1/testing-environment/applications/imports` with body
    `{ "app_id": "google>drive" }`, the environment key, an idempotency key,
    and a bearer for a Carbon created inside the environment. Import preserves

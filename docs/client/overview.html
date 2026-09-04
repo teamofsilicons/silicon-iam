@@ -1,94 +1,100 @@
 <p class="lede">
   <a href="https://crates.io/crates/silicon-iam-client" rel="external noreferrer"><code>silicon-iam-client</code></a>
-  is the official Rust client for integrating an Application with Silicon IAM. It keeps wire paths,
-  authentication headers, signatures, response validation and retry policy inside the crate, and exposes only the inputs an Application actually owns.
+  is the official Rust client for Silicon IAM. It exposes the HTTP v1 resources with generated
+  wire models, explicit credentials, idempotency keys and ETags, plus local webhook verification.
 </p>
 
 <h2>What it covers</h2>
 
 <table>
-  <thead><tr><th>Area</th><th>What the SDK does for you</th></tr></thead>
+  <thead><tr><th>Area</th><th>Client groups</th></tr></thead>
   <tbody>
-    <tr>
-      <td><strong>Connection</strong></td>
-      <td>The unversioned compatibility handshake, then every later call pinned to the agreed
-        API major.</td>
-    </tr>
-    <tr>
-      <td><strong>Login</strong></td>
-      <td>The short-lived-token exchange, token refresh, introspection, revocation, and
-        Application-triggered global logout.</td>
-    </tr>
-    <tr>
-      <td><strong>Delegation</strong></td>
-      <td>Same-organization, request-bound on-behalf-of proof exchange and single-use
-        verification, including the HMAC over method, path and body digest.</td>
-    </tr>
-    <tr>
-      <td><strong>Webhooks</strong></td>
-      <td>Exact-byte signature verification, secret-version transitions, and the complete
-        Silicon event-type catalog.</td>
-    </tr>
+    <tr><td><strong>Identity and IAM sessions</strong></td><td><code>signup()</code>,
+      <code>auth()</code>, and <code>carbons()</code></td></tr>
+    <tr><td><strong>Organizations</strong></td><td><code>organizations()</code>,
+      <code>members()</code>, <code>invitations()</code>, <code>tags()</code>,
+      <code>trust()</code>, <code>governance()</code>, and <code>sso()</code></td></tr>
+    <tr><td><strong>Silicons and Applications</strong></td><td><code>silicons()</code>,
+      <code>applications()</code>, <code>oauth()</code>, and catalog-bound OBO signing through
+      <code>obo()</code></td></tr>
+    <tr><td><strong>Operations</strong></td><td><code>system()</code> and
+      <code>environments()</code></td></tr>
+    <tr><td><strong>Inbound webhooks</strong></td><td><code>WebhookVerifier</code> authenticates
+      exact bytes, timestamp, event ID and secret version before parsing.</td></tr>
   </tbody>
 </table>
 
+<p>
+  The crate is not restricted to an Application credential. Build an anonymous client for public
+  routes, clone it with an IAM bearer for Carbon or Silicon administration, or clone it with an
+  Application Basic credential for OAuth, discovery and OBO. The <code>cli-session</code> feature
+  that starts and verifies direct Carbon login challenges is reserved for the official CLI;
+  normal Application integrations begin login only with an SLT.
+</p>
+
 <h2>What it deliberately does not cover</h2>
 
-<div class="banner banner-info">
-  <div>
-    <strong>Carbon identity and organization administration are not exposed.</strong>
-    Those endpoints require a direct IAM bearer belonging to a human, not an Application's client
-    credentials. Putting them behind an Application client would invite exactly the confusion the
-    contract's separate transports exist to prevent.
-  </div>
-</div>
-
 <p>
-  Signup, login, invitations, tags, trust and governance are console operations. If you are
-  building an interface for them you want an IAM bearer and the
-  <a href="/docs/api/">HTTP contract</a> directly, not this crate.
+  Platform-administrator routes, inbound provider webhooks and the browser-hosted login/SSO
+  redirects are absent. Those belong to the IAM operator, provider, and browser. The client also
+  does not store sessions, refresh credentials automatically, cache authorization, or choose a
+  retry policy for your application.
 </p>
 
 <h2>The design rule</h2>
 
 <p>
-  Everything a caller can get wrong <em>and would not notice</em> is inside the crate. Everything
-  a caller genuinely owns is a parameter.
+  Inputs with security meaning stay visible at the call site. A mutating method takes a
+  <code>Mutation</code>; an optimistic update takes the current resource version; a privileged
+  mutation takes a step-up assertion; and a test-plane call carries an
+  <code>EnvironmentKey</code>. That makes accidental omission a compile-time or service error
+  instead of hidden client state.
 </p>
 
 <p>
-  A signature computed over re-serialised JSON still produces a hex string. A refresh retried after an ambiguous
-  response still returns a token — right up until it revokes the user's entire 900-day family.
-  These are the failures that pass a smoke test and surface weeks later, so the SDK does not offer
-  the option of getting them wrong.
+  JSON Merge Patch has three states. For generated fields typed
+  <code>Option&lt;Option&lt;T&gt;&gt;</code>, <code>None</code> omits the field and leaves it unchanged,
+  <code>Some(None)</code> sends JSON <code>null</code> and clears it, and
+  <code>Some(Some(value))</code> replaces it.
 </p>
 
-<h2>Operational guarantees</h2>
+<h2>Actual request behavior</h2>
 
 <ul>
-  <li>Secrets are redacted from <code>Debug</code>, and response buffers carrying secrets are
-    zeroized.</li>
-  <li>Token and proof responses are rejected unless they carry the documented no-store cache
-    headers.</li>
-  <li>Redirects are disabled, response sizes are bounded, and production transport is HTTPS-only.
-    Literal loopback HTTP can be enabled explicitly for local integration tests.</li>
-  <li>Safe, idempotent calls retry only within a small bounded policy. A server
-    <code>Retry-After</code> longer than that policy is surfaced to the caller rather than
-    silently shortened.</li>
-  <li>API errors retain the request ID, retry metadata and rate-limit metadata, and never include
-    credentials.</li>
+  <li>Every API request advertises <code>v1</code>; compatibility negotiation is available through
+    <code>client.system().negotiate()</code> but is not run by the constructor. The explicit call
+    validates the service, catalog, highest shared selection, selected header/body agreement, and
+    <code>Vary</code>.</li>
+  <li>The HTTP timeout defaults to 30 seconds and can be changed on
+    <code>ClientBuilder</code>.</li>
+  <li>Each method sends once. After an uncertain mutation, the caller decides whether to retry and
+    must reuse the original <code>Mutation</code>.</li>
+  <li><code>Error::Api</code> retains the service envelope and request ID.
+    <code>Error::RateLimited</code> additionally exposes the parsed delay and rate-limit counts.</li>
+  <li>Credential wrapper types redact secrets from <code>Debug</code>. Successful response models
+    may contain tokens or one-time secrets, so do not log those models.</li>
 </ul>
+
+<h2>Organization SSO</h2>
+
+<p>
+  <code>client.sso()</code> exposes <code>get</code>, <code>setup_link</code>,
+  <code>test</code>, and <code>disable</code>. Setup links live five minutes. Disable takes the
+  current SSO configuration version and a <code>Mutation</code> carrying a verified-channel
+  <code>organization.sso_change</code> assertion bound to the organization's internal UUID. The
+  browser authorization and callback remain hosted IAM flows, not SDK methods, and SSO never
+  creates a Carbon account.
+</p>
 
 <h2>Where to go next</h2>
 
 <p>
-  <a href="/docs/client/connecting">Connecting</a> covers installation and the handshake. After
-  that, understand the default-on <a href="/docs/client/updates">automatic updater</a>. The
-  remaining sections match the order an integration is actually built:
-  <a href="/docs/client/login">sign users in</a>,
-  <a href="/docs/client/tokens">manage their tokens</a>,
-  <a href="/docs/client/obo">delegate between applications</a>, and
-  <a href="/docs/client/webhooks">receive directory events</a>. Before shipping, use
-  <a href="/docs/client/testing-environments">a testing environment</a> to prove the entire
-  integration without production identities.
+  Start with <a href="/docs/client/connecting">Connecting</a>, then
+  <a href="/docs/client/login">sign users in with an SLT</a>,
+  <a href="/docs/client/tokens">manage tokens</a>,
+  <a href="/docs/client/obo">delegate between Applications</a>, and
+  <a href="/docs/client/webhooks">verify webhooks</a>. Use
+  <a href="/docs/client/testing-environments">a testing environment</a> to prove both successful
+  and rejected cross-plane flows before production. The crate README contains the complete group
+  index and organization/SSO examples.
 </p>

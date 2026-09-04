@@ -69,9 +69,17 @@ pub(crate) struct CarbonProfileResponse {
 pub(super) struct CarbonProfilePatch {
     display_name: Option<String>,
     timezone: Option<String>,
-    #[serde(default, with = "serde_with::rust::double_option")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
     description: Option<Option<String>>,
-    #[serde(default, with = "serde_with::rust::double_option")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
     profile_photo: Option<Option<String>>,
 }
 
@@ -157,7 +165,7 @@ pub(super) async fn patch(
     let description = input.description.as_ref().and_then(Clone::clone);
     let photo_present = input.profile_photo.is_some();
     let profile_photo = input.profile_photo.as_ref().and_then(Clone::clone);
-    sqlx::query(
+    let updated = sqlx::query(
         r"
         UPDATE iam.carbons
         SET display_name = COALESCE($2, display_name),
@@ -165,6 +173,12 @@ pub(super) async fn patch(
             description = CASE WHEN $4 THEN $5 ELSE description END,
             profile_photo_uri = CASE WHEN $6 THEN $7 ELSE profile_photo_uri END
         WHERE id = $1 AND version = $8 AND deleted_at IS NULL
+          AND (
+              ($2::text IS NOT NULL AND display_name IS DISTINCT FROM $2)
+              OR ($3::text IS NOT NULL AND timezone_id IS DISTINCT FROM $3)
+              OR ($4 AND description IS DISTINCT FROM $5)
+              OR ($6 AND profile_photo_uri IS DISTINCT FROM $7)
+          )
         ",
     )
     .bind(carbon_id)
@@ -178,6 +192,11 @@ pub(super) async fn patch(
     .execute(&mut *transaction)
     .await
     .map_err(|_| internal("carbon_profile_update"))?;
+    if updated.rows_affected() != 1 {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("carbon_profile_unchanged"),
+        });
+    }
     let after = read_profile(&mut transaction, &state, carbon_id, false).await?;
     if after.version != expected_version.saturating_add(1) {
         return Err(AppError::PreconditionFailed {
@@ -393,14 +412,20 @@ fn validate_patch(
     {
         return Err(validation("timezone", "must be a valid IANA TZ identifier"));
     }
-    if let Some(Some(value)) = input.description.take() {
-        input.description = Some(Some(bounded_text("description", value, 0, 5_000, true)?));
+    if let Some(description) = input.description.take() {
+        input.description = Some(match description {
+            Some(value) => Some(bounded_text("description", value, 0, 5_000, true)?),
+            None => None,
+        });
     }
-    if let Some(Some(value)) = input.profile_photo.take() {
-        input.profile_photo = Some(Some(validate_profile_photo(
-            &value,
-            state.settings.environment == crate::config::RuntimeEnvironment::Production,
-        )?));
+    if let Some(profile_photo) = input.profile_photo.take() {
+        input.profile_photo = Some(match profile_photo {
+            Some(value) => Some(validate_profile_photo(
+                &value,
+                state.settings.environment == crate::config::RuntimeEnvironment::Production,
+            )?),
+            None => None,
+        });
     }
     Ok(input)
 }

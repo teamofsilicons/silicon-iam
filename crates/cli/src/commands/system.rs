@@ -77,15 +77,15 @@ async fn health(context: &Context) -> Result<()> {
     client.system().liveness().await?;
     // Liveness only says the process answered. Readiness is the one that
     // matters before pointing anything at it.
-    let ready = client.system().readiness().await;
+    client.system().readiness().await?;
     match context.format {
         Format::Json => json(&serde_json::json!({
             "live": true,
-            "ready": ready.is_ok(),
+            "ready": true,
         })),
         Format::Text => {
             println!("live:  yes");
-            println!("ready: {}", if ready.is_ok() { "yes" } else { "no" });
+            println!("ready: yes");
             Ok(())
         }
     }

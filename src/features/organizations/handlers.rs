@@ -29,7 +29,7 @@ use super::{
     model::{
         AvailabilityResponse, MembershipPage, MembershipResponse, OrganizationCreate,
         OrganizationPage, OrganizationPatch, OrganizationResponse, OwnershipTransfer, PageInfo,
-        PageQuery, SiliconResponse, TagInput, TagPage, TagResponse,
+        PageQuery, SiliconResponse, StatusPageQuery, TagInput, TagPage, TagResponse,
     },
     support::{self, Claim, MutationEvent},
     validation,
@@ -81,50 +81,71 @@ pub(super) async fn organization_id_availability(
 pub(super) async fn list_organizations(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Query(query): Query<PageQuery>,
+    Query(query): Query<StatusPageQuery>,
 ) -> Result<Response, AppError> {
     let carbon_id = support::require_carbon(&authenticated)?;
-    let (cursor, limit) = validation::page(&query)?;
+    if query
+        .status
+        .as_deref()
+        .is_some_and(|status| !matches!(status, "active" | "removed"))
+    {
+        return Err(validation::field("status", "must be active or removed"));
+    }
+    let (cursor, limit) = validation::page_parts(query.cursor.as_deref(), query.limit)?;
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(support::database)?;
-    let mut organizations = sqlx::query_as::<_, OrganizationResponse>(
-        r"
-        SELECT
-            organization.id,
-            organization.org_id,
-            organization.name,
-            organization.logo_uri AS logo,
-            organization.description,
-            owner.id AS owner_membership_id,
-            organization.join_method,
-            COALESCE(sso.status, 'disabled') AS sso_status,
-            CASE WHEN organization.status = 'active' THEN 'active' ELSE 'disabled' END AS status,
-            organization.version,
-            organization.created_at,
-            organization.updated_at
-        FROM iam.organizations AS organization
-        JOIN iam.organization_memberships AS owner
-          ON owner.organization_id = organization.id
-         AND owner.org_role = 'owner'
-         AND owner.status = 'active'
-        LEFT JOIN iam.organization_sso_configs AS sso
-          ON sso.organization_id = organization.id
-        JOIN iam.organization_memberships AS caller_membership
-          ON caller_membership.organization_id = organization.id
-         AND caller_membership.principal_id = $1
-        WHERE caller_membership.status = 'active'
-          AND ($2::uuid IS NULL OR organization.id > $2)
-        ORDER BY organization.id
-        LIMIT $3
-        ",
-    )
-    .bind(carbon_id)
-    .bind(cursor)
-    .bind(limit + 1)
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(support::database)?;
+    let mut organizations = if query.status.as_deref() == Some("removed") {
+        sqlx::query_as::<_, OrganizationResponse>(
+            r"
+            SELECT *
+            FROM iam_private.list_removed_organizations_for_current_carbon($1::uuid, $2::integer)
+            ",
+        )
+        .bind(cursor)
+        .bind(limit + 1)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(support::database)?
+    } else {
+        sqlx::query_as::<_, OrganizationResponse>(
+            r"
+            SELECT
+                organization.id,
+                organization.org_id,
+                organization.name,
+                organization.logo_uri AS logo,
+                organization.description,
+                owner.id AS owner_membership_id,
+                organization.join_method,
+                COALESCE(sso.status, 'disabled') AS sso_status,
+                CASE WHEN organization.status = 'active' THEN 'active' ELSE 'disabled' END AS status,
+                organization.version,
+                organization.created_at,
+                organization.updated_at
+            FROM iam.organizations AS organization
+            JOIN iam.organization_memberships AS owner
+              ON owner.organization_id = organization.id
+             AND owner.org_role = 'owner'
+             AND owner.status = 'active'
+            LEFT JOIN iam.organization_sso_configs AS sso
+              ON sso.organization_id = organization.id
+            JOIN iam.organization_memberships AS caller_membership
+              ON caller_membership.organization_id = organization.id
+             AND caller_membership.principal_id = $1
+            WHERE caller_membership.status = 'active'
+              AND ($2::uuid IS NULL OR organization.id > $2)
+            ORDER BY organization.id
+            LIMIT $3
+            ",
+        )
+        .bind(carbon_id)
+        .bind(cursor)
+        .bind(limit + 1)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(support::database)?
+    };
     transaction.commit().await.map_err(support::database)?;
     let page = take_page(&mut organizations, limit)?;
     support::json(
@@ -291,7 +312,7 @@ pub(super) async fn update_organization(
     if before.version != expected_version {
         return Err(precondition_failed());
     }
-    if input.join_method.as_deref() == Some("sso") {
+    if input.join_method.as_deref() == Some("sso") && before.join_method != "sso" {
         let ready = sqlx::query_scalar::<_, bool>(
             r"
             SELECT EXISTS (
@@ -324,6 +345,12 @@ pub(super) async fn update_organization(
             description = CASE WHEN $5 THEN $6 ELSE description END,
             join_method = COALESCE($7, join_method)
         WHERE id = $1 AND version = $8
+          AND (
+              ($2::text IS NOT NULL AND name IS DISTINCT FROM $2)
+              OR ($3 AND logo_uri IS DISTINCT FROM $4)
+              OR ($5 AND description IS DISTINCT FROM $6)
+              OR ($7::text IS NOT NULL AND join_method::text IS DISTINCT FROM $7)
+          )
         ",
     )
     .bind(scope.access.organization_id)
@@ -338,7 +365,14 @@ pub(super) async fn update_organization(
     .await
     .map_err(support::database)?;
     if result.rows_affected() != 1 {
-        return Err(precondition_failed());
+        let current =
+            fetch_organization(&mut scope.transaction, scope.access.organization_id).await?;
+        if current.version != expected_version {
+            return Err(precondition_failed());
+        }
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("organization_unchanged"),
+        });
     }
     let organization =
         fetch_organization(&mut scope.transaction, scope.access.organization_id).await?;
@@ -813,6 +847,11 @@ pub(super) async fn update_tag(
     let before = fetch_tag(&mut scope.transaction, scope.access.organization_id, tag_id).await?;
     if before.version != expected_version {
         return Err(precondition_failed());
+    }
+    if before.name == input.name {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("tag_name_unchanged"),
+        });
     }
     let webhook_scope = lock_tag_webhook_scope(
         &mut scope.transaction,

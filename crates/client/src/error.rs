@@ -30,13 +30,20 @@ pub enum Error {
         source: Box<ApiError>,
     },
 
-    /// The request never completed: connection, TLS, timeout, or redirect.
-    #[error("the request did not reach a response")]
+    /// The request never completed: connection, TLS, or timeout.
+    #[error("the request did not reach a response: {0}")]
     Transport(#[source] reqwest::Error),
 
     /// A response arrived but did not match the contract.
     #[error("the response could not be understood: {0}")]
     Decode(String),
+
+    /// A response body exceeded the client's fixed memory-safety bound.
+    #[error("the response body exceeded the {limit}-byte limit")]
+    ResponseTooLarge {
+        /// Maximum body size accepted by this client release.
+        limit: usize,
+    },
 
     /// The client and service share no API version.
     #[error("no mutually supported API version; the service offers {}", offered.join(", "))]
@@ -72,6 +79,20 @@ pub struct ApiError {
 impl fmt::Display for ApiError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{} ({})", self.message, self.code)?;
+        if let Some(fields) = self
+            .details
+            .as_ref()
+            .and_then(|details| details.get("fields"))
+            .and_then(serde_json::Value::as_array)
+        {
+            for field in fields {
+                let name = field.get("field").and_then(serde_json::Value::as_str);
+                let message = field.get("message").and_then(serde_json::Value::as_str);
+                if let (Some(name), Some(message)) = (name, message) {
+                    write!(formatter, " {name}: {message}.")?;
+                }
+            }
+        }
         if let Some(request_id) = &self.request_id {
             write!(formatter, " [request {request_id}]")?;
         }
@@ -104,13 +125,23 @@ impl ApiError {
     /// Whether an `If-Match` version no longer matched the resource.
     #[must_use]
     pub fn is_version_conflict(&self) -> bool {
-        self.status == 412 && self.code == "etag_mismatch"
+        self.status == 412 && matches!(self.code.as_str(), "etag_mismatch" | "version_mismatch")
     }
 
     /// Whether the route requires a step-up assertion this request lacked.
     #[must_use]
     pub fn requires_step_up(&self) -> bool {
-        self.code == "step_up_required" || self.code == "step_up_invalid"
+        self.code == "step_up_required"
+            || self.code == "step_up_invalid"
+            || (self.code == "precondition_required"
+                && self
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.get("precondition"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|precondition| {
+                        precondition.eq_ignore_ascii_case("X-Step-Up-Token")
+                    }))
     }
 
     /// Whether the same idempotency key was reused with a different body.
@@ -193,6 +224,20 @@ mod tests {
         let rendered = api(409, "conflict").to_string();
         assert!(rendered.contains("conflict"), "{rendered}");
         assert!(rendered.contains("01a0-req"), "{rendered}");
+    }
+
+    #[test]
+    fn display_surfaces_safe_field_validation_details() {
+        let mut error = api(422, "validation_failed");
+        error.details = Some(serde_json::json!({
+            "fields": [{
+                "field": "app_id",
+                "message": "must be a qualified Application ID"
+            }]
+        }));
+        let rendered = error.to_string();
+        assert!(rendered.contains("app_id"), "{rendered}");
+        assert!(rendered.contains("must be a qualified"), "{rendered}");
     }
 
     #[test]

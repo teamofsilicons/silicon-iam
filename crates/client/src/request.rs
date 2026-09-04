@@ -30,10 +30,8 @@ impl IdempotencyKey {
     /// ASCII characters, which is the service's accepted form.
     pub fn parse(key: impl Into<String>) -> crate::Result<Self> {
         let key = key.into();
-        let valid = (16..=255).contains(&key.len())
-            && key
-                .bytes()
-                .all(|byte| byte.is_ascii_graphic() || byte == b' ');
+        let valid =
+            (16..=255).contains(&key.len()) && key.bytes().all(|byte| byte.is_ascii_graphic());
         if valid {
             Ok(Self(key))
         } else {

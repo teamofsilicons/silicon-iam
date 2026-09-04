@@ -16,7 +16,7 @@ mod updater;
 
 use clap::Parser as _;
 
-use crate::{cli::Cli, context::Context, error::CliError};
+use crate::{cli::Cli, context::Context};
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -41,9 +41,7 @@ async fn main() -> std::process::ExitCode {
             }
             // The correlation identifier is what makes a report actionable on
             // the service side, so it is printed whenever there is one.
-            if let CliError::Client(client_error) = &error
-                && let Some(request_id) = client_error.request_id()
-            {
+            if let Some(request_id) = error.request_id() {
                 eprintln!("request: {request_id}");
             }
             std::process::ExitCode::from(u8::try_from(error.exit_code()).unwrap_or(1))
@@ -57,6 +55,7 @@ async fn run(cli: Cli) -> error::Result<()> {
         cli.global.profile,
         cli.global.url,
         cli.global.org,
+        cli.global.no_org,
         cli.global.test,
         cli.global.step_up,
     )?;

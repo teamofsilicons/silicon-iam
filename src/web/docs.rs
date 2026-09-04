@@ -3,8 +3,8 @@
 //! Two manuals share one renderer:
 //!
 //! - `/docs/api/` — the HTTP contract. What every endpoint does, and why.
-//! - `/docs/client/` — the official Rust SDK. How to integrate an Application
-//!   without reimplementing PKCE, proof signing, or signature verification.
+//! - `/docs/client/` — the official Rust SDK. Typed API calls, explicit
+//!   credentials and mutations, and local webhook signature verification.
 //!
 //! Content is authored as HTML fragments under `docs/` and embedded at compile
 //! time, so a release image serves documentation that is guaranteed to match
@@ -153,7 +153,7 @@ const CLIENT_SECTIONS: &[Section] = &[
     Section {
         slug: "connecting",
         title: "Connecting",
-        summary: "Installation, credentials, and the fail-closed compatibility handshake.",
+        summary: "Installation, credentials, service URLs, and an explicit compatibility check.",
         body: include_str!("../../docs/client/connecting.html"),
     },
     Section {
@@ -165,7 +165,7 @@ const CLIENT_SECTIONS: &[Section] = &[
     Section {
         slug: "login",
         title: "Signing users in",
-        summary: "Sending someone to IAM, taking the short-lived token off the callback, and exchanging it.",
+        summary: "Minting organization-bound or unscoped short-lived tokens and exchanging them without exposing IAM credentials.",
         body: include_str!("../../docs/client/login.html"),
     },
     Section {
@@ -177,7 +177,7 @@ const CLIENT_SECTIONS: &[Section] = &[
     Section {
         slug: "obo",
         title: "Delegated access",
-        summary: "Discovering endpoints, exchanging a request-bound proof, and consuming it.",
+        summary: "Using an organization-bound subject token to sign an exchange and consume its proof.",
         body: include_str!("../../docs/client/obo.html"),
     },
     Section {
@@ -214,9 +214,10 @@ const CLIENT: Manual = Manual {
     prefix: "client",
     label: "Client documentation",
     title: "Silicon IAM for Rust.",
-    lede: "The official SDK for integrating an Application. It keeps wire paths, PKCE material, \
-           proof signatures, and retry policy inside the crate, and exposes only the inputs an \
-           Application actually owns.",
+    lede: "The official Rust SDK for Silicon IAM. It provides typed API calls and wire models, \
+           explicit credentials, idempotency and versions, catalog-bound OBO signing, and local \
+           webhook verification. The caller owns sessions, refresh coordination, and retry \
+           decisions.",
     sections: CLIENT_SECTIONS,
 };
 
@@ -232,8 +233,8 @@ pub(crate) async fn landing() -> Document {
           <h1>Documentation.</h1>
           <p class="lede">
             Two manuals. Read the contract if you are calling the API directly; read the client
-            if you are integrating an Application in Rust and would rather not reimplement PKCE,
-            proof signing, and signature verification yourself.
+            for typed Rust calls, explicit credentials and mutations, and local webhook
+            verification.
           </p>
         </div>
 
@@ -468,9 +469,11 @@ fn index_banner(manual: &Manual) -> &'static str {
         r#"        <div class="banner banner-info">
           <div>
             <strong>Integrating in Rust?</strong>
-            The <a href="/docs/client/">official client</a> already implements everything on these
-            pages — PKCE, the version handshake, proof signing, signature verification, and the
-            retry policy. Read the contract when you need to know why it behaves as it does.
+            The <a href="/docs/client/">official client</a> provides typed calls and models,
+            explicit credentials and mutations, catalog-bound OBO signing, strict version
+            negotiation, and webhook verification. The caller still owns session storage,
+            refresh coordination, compatibility policy, and retry decisions. Read this contract
+            for the exact wire semantics.
           </div>
         </div>
 

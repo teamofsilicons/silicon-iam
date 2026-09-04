@@ -1,6 +1,7 @@
 <p class="lede">
-  A client is created once, at startup, and reused. Creating one performs a compatibility
-  handshake that either agrees on an API major or returns no client at all.
+  Build one client for an IAM service URL and reuse it. Construction validates local
+  configuration and creates the HTTP pool; it does not contact IAM or negotiate a version until
+  you make a request.
 </p>
 
 <h2>Install</h2>
@@ -11,103 +12,110 @@
 silicon-iam-client = "1.1.0"</code></pre>
 
 <p>
-  View releases, dependency metadata and installation details on
-  <a href="https://crates.io/crates/silicon-iam-client" rel="external noreferrer">the silicon-iam-client
-    package page on crates.io</a>. Keep the dependency version explicit: this client fails closed
-  on a contract mismatch. By default it maintains the compatible lockfile selection from crates.io;
-  <a href="/docs/client/updates">Automatic updates</a> explains the next-build boundary and opt-out.
+  View releases and dependency metadata on
+  <a href="https://crates.io/crates/silicon-iam-client" rel="external noreferrer">the
+    <code>silicon-iam-client</code> package page</a>. Version <code>1.1.0</code> speaks HTTP API
+  major <code>v1</code> and requires Rust 1.98 or newer. The crate's SemVer and the HTTP API major
+  are separate version lines: upgrading the crate does not select a different API major.
 </p>
 
-<p>The minimum supported Rust version is 1.98.</p>
-
-<h2>Credentials</h2>
+<h2>Choose the credential for the route</h2>
 
 <p>
-  An Application authenticates with its ID and secret, the pair issued once when it was
-  registered. Both come from the environment or a secret store — never from source.
+  A client starts anonymous. Clone it with the credential that the route requires; cloning is
+  cheap and shares the connection pool. Secrets are redacted from <code>Debug</code>.
 </p>
 
-<pre><code>use silicon_iam::prelude::*;
+<pre><code>use silicon_iam_client::{Client, Credential};
 
-let credentials = ApplicationCredentials::new(
-    std::env::var("SILICON_IAM_APP_ID")?,
-    std::env::var("SILICON_IAM_APP_SECRET")?,
-)?;
+let iam = Client::builder("https://backend.iam.teamofsilicons.com")?
+    .user_agent("checkout/2.3.0")
+    .build()?;
 
-let client = Client::connect(credentials).await?;
-assert_eq!(client.service_info().api_version(), ApiVersion::V1);</code></pre>
+let signed_in = iam.with_credential(Credential::bearer(iam_access_token));
+let application = iam.with_credential(Credential::application(
+    "acme&gt;checkout",
+    application_secret,
+));</code></pre>
+
+<table>
+  <thead><tr><th>Credential</th><th>Use it for</th></tr></thead>
+  <tbody>
+    <tr><td><code>Credential::Anonymous</code></td><td>Public system routes and the beginning of
+      signup. Direct IAM login methods are available only to the CLI feature.</td></tr>
+    <tr><td><code>Credential::bearer(...)</code></td><td>Carbon or Silicon IAM routes after IAM
+      authentication, and an Application-triggered logout using a Carbon Application access token.</td></tr>
+    <tr><td><code>Credential::application(app_id, secret)</code></td><td>Application token exchange,
+      refresh, introspection, revocation, discovery and OBO.</td></tr>
+  </tbody>
+</table>
 
 <p>
-  <code>ApplicationCredentials</code> redacts itself from <code>Debug</code>. Reaching the wire
-  value requires an explicit <code>expose_secret</code> call, so a credential cannot reach a log
-  line by accident.
+  Application credentials are the canonical organization-qualified ID, such as
+  <code>acme&gt;checkout</code>, plus the generated client secret. The webhook signing secret is a
+  separate, caller-chosen credential and cannot authenticate API requests.
 </p>
 
-<h2>The handshake</h2>
+<h2>API compatibility</h2>
 
-<p>
-  <code>Client::connect</code> always calls the unversioned
-  <code>GET /api/version</code> first, advertising the majors this SDK implements:
-</p>
+<p>Every request advertises the single major this release implements:</p>
 
 <pre><code>Silicon-IAM-Supported-API-Versions: v1</code></pre>
 
 <p>
-  The server replies with the highest mutually supported version, its own catalog, and a
-  <code>Silicon-IAM-API-Version</code> header. The SDK then verifies all of it before returning a
-  client:
+  To check compatibility at startup, call the unversioned negotiation endpoint explicitly before
+  serving traffic:
 </p>
 
-<ul>
-  <li>the service identifies itself as <code>silicon-iam</code>;</li>
-  <li>the advertised catalog is non-empty, bounded, well-formed, free of duplicates, and in
-    descending order;</li>
-  <li>the selected version is exactly the highest version both sides support — not merely
-    <em>a</em> version both support;</li>
-  <li>the response header agrees with the body.</li>
-</ul>
-
-<div class="banner banner-danger">
-  <div>
-    <strong>It fails closed.</strong>
-    If any of those checks fails, <code>connect</code> returns an error and no client exists. There
-    is no degraded mode and no way to skip the handshake, because a client that guesses at the
-    wire contract is a client that will eventually send a well-formed request that means something
-    different from what its author intended.
-  </div>
-</div>
+<pre><code>let negotiated = iam.system().negotiate().await?;
+assert_eq!(negotiated.selected_api_version, silicon_iam_client::API_VERSION);</code></pre>
 
 <p>
-  Every later request is pinned to the negotiated major. The SDK builds its own paths from it, so
-  an Application never writes <code>/api/v1/…</code> anywhere.
+  A service with no shared version produces <code>Error::ApiVersionUnsupported</code>.
+  <code>Client::new</code> and <code>ClientBuilder::build</code> do not perform this network check
+  automatically. <code>system().negotiate()</code> fails closed unless the response identifies
+  Silicon IAM, carries a valid ordered version catalog, selects the highest shared version,
+  agrees between its selected-version header and body, and names the offered-version header in
+  <code>Vary</code>. An inconsistent successful response produces <code>Error::Decode</code>.
 </p>
 
-<h2>Choosing an origin</h2>
+<h2>Choosing the IAM service URL</h2>
 
 <p>
-  The default is <code>https://backend.iam.teamofsilicons.com</code>, exposed as
-  <code>silicon_iam::DEFAULT_BASE_URL</code>. Override it through the builder:
+  Supply the IAM service URL explicitly; the crate has no implicit default. HTTPS is required
+  except for literal <code>localhost</code>, <code>127.0.0.1</code>, and <code>::1</code> loopback
+  hosts used for local development. The builder rejects a missing host, embedded username or
+  password, port zero, query, or fragment. A missing trailing slash is normalized.
 </p>
 
-<pre><code>let client = Client::builder(credentials)
-    .base_url("https://iam.staging.example.com")?
-    .connect()
-    .await?;</code></pre>
+<pre><code>use std::time::Duration;
+
+let iam = Client::builder("https://iam.staging.example")?
+    .timeout(Duration::from_secs(15))
+    .auto_update(false)
+    .build()?;</code></pre>
 
 <p>
-  A custom origin must be HTTPS. Literal loopback HTTP has to be enabled explicitly, which keeps
-  a local-development shortcut from surviving into a production configuration by accident.
-</p>
-
-<h2>Lifetime</h2>
-
-<p>
-  Connect once and share the client. It owns a connection pool and the negotiated version, and
-  reconnecting per request would repeat the handshake on every call for no benefit.
+  This is the IAM service URL, not an Application's registered <code>base_url</code>. Application
+  base URLs follow the stricter pathless-origin rule documented in
+  <a href="/docs/api/applications">Applications</a>.
 </p>
 
 <p>
-  <code>client.service_info()</code> exposes the negotiated version, the server's advertised
-  catalog, and its build and commit — useful in a health endpoint, and the first thing worth
-  attaching to a bug report.
+  API requests never follow redirects. A redirect is a service error instead of an opportunity
+  to forward bearer, Basic, testing-environment, or step-up authority to another location. Every
+  response body, including an error body without a trustworthy <code>Content-Length</code>, is
+  streamed only up to 4 MiB; crossing that fixed bound returns
+  <code>Error::ResponseTooLarge</code>.
+</p>
+
+<h2>Lifetime and request behavior</h2>
+
+<p>
+  Keep and clone the client instead of rebuilding it per request. Requests have a 30-second
+  timeout by default and are sent once. The crate does not automatically retry, refresh
+  credentials, retain sessions, or cache responses. Your application owns that state and must
+  reuse the same <code>Mutation</code> after an uncertain mutating request. A decode failure or
+  oversized response can happen after IAM applied a mutation, so preserve its key even though
+  neither error is automatically classified as retryable.
 </p>

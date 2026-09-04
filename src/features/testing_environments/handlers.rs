@@ -368,26 +368,35 @@ pub(super) async fn update_environment(
             code: "etag_mismatch".into(),
         });
     }
-
     let affected = sqlx::query(
         r"
         UPDATE iam.testing_environments
         SET name = COALESCE($2, name),
             description = CASE WHEN $3 THEN $4 ELSE description END
-        WHERE id = $1 AND status = 'active'
+        WHERE id = $1 AND status = 'active' AND version = $5
+          AND (
+              ($2::text IS NOT NULL AND name IS DISTINCT FROM $2)
+              OR ($3 AND description IS DISTINCT FROM $4)
+          )
         ",
     )
     .bind(environment_id)
     .bind(input.name.as_ref())
     .bind(input.description.is_some())
     .bind(input.description.clone().flatten())
+    .bind(expected_version)
     .execute(&mut *scope.transaction)
     .await
     .map_err(|error| support::conflict_from_database(error, "testing_environment_name_taken"))?
     .rows_affected();
-    if affected != 1 {
-        return Err(AppError::Forbidden);
-    }
+    ensure_environment_updated(
+        &mut scope.transaction,
+        scope.access.organization_id,
+        environment_id,
+        expected_version,
+        affected,
+    )
+    .await?;
 
     let after = fetch(&mut scope.transaction, environment_id).await?;
     support::record_audit(
@@ -421,6 +430,27 @@ pub(super) async fn update_environment(
         .await
         .map_err(support::database)?;
     support::json_response(StatusCode::OK, body, Some(after.version), false)
+}
+
+async fn ensure_environment_updated(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    environment_id: Uuid,
+    expected_version: i64,
+    affected: u64,
+) -> Result<(), AppError> {
+    if affected == 1 {
+        return Ok(());
+    }
+    let current = fetch_in_organization(transaction, organization_id, environment_id).await?;
+    if current.version != expected_version {
+        return Err(AppError::PreconditionFailed {
+            code: "etag_mismatch".into(),
+        });
+    }
+    Err(AppError::Conflict {
+        code: "testing_environment_unchanged".into(),
+    })
 }
 
 /// Retires an environment, keeping it recoverable for the configured window.

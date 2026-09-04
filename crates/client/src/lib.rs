@@ -130,7 +130,9 @@
 //! thing to match on; [`Error::RateLimited`] is held apart because it is the
 //! one failure with a mechanical remedy. [`Error::Transport`] means the
 //! request never reached a response, which is the case where a retry is
-//! reasonable but the outcome is genuinely unknown.
+//! reasonable but the outcome is genuinely unknown. [`Error::ResponseTooLarge`]
+//! rejects a body above the fixed 4 MiB memory-safety bound and is not
+//! retryable because a mutation may already have completed.
 //!
 //! # What is not here
 //!
@@ -170,7 +172,10 @@ impl Error {
         match self {
             Self::Api(error) => error.is_retryable(),
             Self::RateLimited { .. } | Self::Transport(_) => true,
-            Self::Decode(_) | Self::ApiVersionUnsupported { .. } | Self::Invalid(_) => false,
+            Self::Decode(_)
+            | Self::ResponseTooLarge { .. }
+            | Self::ApiVersionUnsupported { .. }
+            | Self::Invalid(_) => false,
         }
     }
 

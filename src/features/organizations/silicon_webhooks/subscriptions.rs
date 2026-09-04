@@ -37,7 +37,7 @@ const SUBSCRIPTION_REPLACE_ROUTE: &str =
 const SUBSCRIPTION_DELETE_ROUTE: &str =
     "DELETE /api/v1/organizations/{org_id}/silicons/{silicon_id}/webhook/subscription";
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct CanonicalSubscription {
     mode: SiliconWebhookSubscriptionMode,
     topics: Vec<SiliconWebhookTopic>,
@@ -136,6 +136,36 @@ pub(in crate::features::organizations) async fn replace_subscription(
     )
     .await?;
     shared::authorize(&authenticated, &scope.access, &target)?;
+    let existing = sqlx::query_as::<_, SubscriptionIdentity>(
+        r"
+        SELECT id, version
+        FROM iam.silicon_webhook_subscriptions
+        WHERE organization_id = $1 AND silicon_id = $2
+        FOR UPDATE
+        ",
+    )
+    .bind(scope.access.organization_id)
+    .bind(target.principal_id)
+    .fetch_optional(&mut *scope.transaction)
+    .await
+    .map_err(support::database)?;
+    enforce_existing_version(&headers, existing.map(|subscription| subscription.version))?;
+    if existing.is_some() {
+        let current = load_subscription(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            &target,
+        )
+        .await?;
+        if current.mode == canonical.mode
+            && current.topics == canonical.topics
+            && current.tag_filter == canonical.tag_filter
+        {
+            return Err(AppError::Conflict {
+                code: Cow::Borrowed("silicon_webhook_subscription_unchanged"),
+            });
+        }
+    }
     shared::consume_carbon_step_up(
         &mut scope.transaction,
         &state,
@@ -162,20 +192,6 @@ pub(in crate::features::organizations) async fn replace_subscription(
         "subscription_replaced",
     )
     .await?;
-    let existing = sqlx::query_as::<_, SubscriptionIdentity>(
-        r"
-        SELECT id, version
-        FROM iam.silicon_webhook_subscriptions
-        WHERE organization_id = $1 AND silicon_id = $2
-        FOR UPDATE
-        ",
-    )
-    .bind(scope.access.organization_id)
-    .bind(target.principal_id)
-    .fetch_optional(&mut *scope.transaction)
-    .await
-    .map_err(support::database)?;
-    enforce_existing_version(&headers, existing.map(|subscription| subscription.version))?;
     let subscription_id = existing.map_or_else(Uuid::now_v7, |subscription| subscription.id);
     let version = if existing.is_some() {
         sqlx::query_scalar::<_, i64>(

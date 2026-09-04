@@ -17,9 +17,9 @@ impl Auth<'_> {
     #[doc(hidden)]
     /// Starts a Carbon login by email, phone number, or Carbon ID.
     ///
-    /// Answers with a challenge session, not a token. The response is
-    /// deliberately identical whether or not the identity exists, so it says
-    /// nothing about who is registered.
+    /// Answers with a challenge session, not a token. An unknown identity is
+    /// reported as not found; callers must not use this route as a public
+    /// account-discovery surface.
     ///
     /// # Errors
     ///
@@ -162,11 +162,35 @@ impl Auth<'_> {
         app_id: &str,
         mutation: &Mutation,
     ) -> Result<models::ShortLivedToken> {
+        self.short_lived_token_in_organization(app_id, None, mutation)
+            .await
+    }
+
+    /// Gets a short-lived token bound to an optional organization membership.
+    ///
+    /// Supplying `org_id` makes the exchanged Application tokens usable only
+    /// in that exact organization and is required before issuing OBO proofs.
+    /// The authenticated principal must have an active membership there.
+    /// When omitted, the resulting login preserves any organization already
+    /// carried by the bearer. A global Carbon session therefore stays
+    /// unscoped, while an organization-bound Silicon session stays bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the application is unknown, the organization
+    /// handle is invalid, or the caller is not an active member.
+    pub async fn short_lived_token_in_organization(
+        &self,
+        app_id: &str,
+        org_id: Option<&str>,
+        mutation: &Mutation,
+    ) -> Result<models::ShortLivedToken> {
         self.0
             .post(
                 &["app-auth", "short-lived-tokens"],
                 &models::ShortLivedTokenRequest {
                     app_id: app_id.to_owned(),
+                    org_id: org_id.map(ToOwned::to_owned),
                 },
                 mutation,
             )

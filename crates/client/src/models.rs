@@ -1025,13 +1025,27 @@ pub struct ApplicationPage {
 
 /// Contract type `ApplicationPatch`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(
+    clippy::option_option,
+    reason = "JSON Merge Patch distinguishes omitted fields from explicit null"
+)]
 pub struct ApplicationPatch {
     /// The contract's `app_name`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app_name: Option<String>,
+    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
+    #[serde(
+        with = "serde_with::rust::double_option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub app_name: Option<Option<String>>,
     /// The contract's `app_logo`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub app_logo: Option<String>,
+    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
+    #[serde(
+        with = "serde_with::rust::double_option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub app_logo: Option<Option<String>>,
     /// Pathless backend origin without a trailing slash; HTTPS except for
     /// literal loopback development.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1262,6 +1276,10 @@ pub struct CarbonInviteCreate {
 
 /// Contract type `CarbonProfilePatch`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(
+    clippy::option_option,
+    reason = "JSON Merge Patch distinguishes omitted fields from explicit null"
+)]
 pub struct CarbonProfilePatch {
     /// The contract's `display_name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1270,11 +1288,21 @@ pub struct CarbonProfilePatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<TimeZoneId>,
     /// The contract's `description`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
+    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
+    #[serde(
+        with = "serde_with::rust::double_option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub description: Option<Option<String>>,
     /// The contract's `profile_photo`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile_photo: Option<String>,
+    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
+    #[serde(
+        with = "serde_with::rust::double_option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub profile_photo: Option<Option<String>>,
 }
 
 /// Contract type `CarbonPublic`.
@@ -1344,7 +1372,7 @@ pub struct CarbonSignupComplete {
     pub display_name: String,
     /// Defaults to UTC when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timezone: Option<serde_json::Value>,
+    pub timezone: Option<TimeZoneId>,
     /// The contract's `description`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -1692,22 +1720,41 @@ pub struct MembershipAuthorization {
 
 /// Contract type `MembershipDirectoryPatch`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(
+    clippy::option_option,
+    reason = "JSON Merge Patch distinguishes omitted fields from explicit null"
+)]
 pub struct MembershipDirectoryPatch {
     /// The contract's `first_silicon_membership_id`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_silicon_membership_id: Option<Uuid>,
+    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
+    #[serde(
+        with = "serde_with::rust::double_option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub first_silicon_membership_id: Option<Option<Uuid>>,
     /// The contract's `extra_silicon_membership_ids`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_silicon_membership_ids: Option<Vec<Uuid>>,
     /// Carbon-only advisory trust baseline; requires trust.manage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_trust: Option<serde_json::Value>,
+    pub default_trust: Option<TrustValue>,
     /// The contract's `reports_to_membership_id`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reports_to_membership_id: Option<Uuid>,
+    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
+    #[serde(
+        with = "serde_with::rust::double_option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reports_to_membership_id: Option<Option<Uuid>>,
     /// The contract's `profile_photo`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile_photo: Option<String>,
+    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
+    #[serde(
+        with = "serde_with::rust::double_option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub profile_photo: Option<Option<String>>,
 }
 
 /// Contract type `MembershipPage`.
@@ -1931,16 +1978,30 @@ pub struct OrganizationPage {
 
 /// Contract type `OrganizationPatch`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(
+    clippy::option_option,
+    reason = "JSON Merge Patch distinguishes omitted fields from explicit null"
+)]
 pub struct OrganizationPatch {
     /// The contract's `name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// The contract's `logo`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub logo: Option<String>,
+    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
+    #[serde(
+        with = "serde_with::rust::double_option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub logo: Option<Option<String>>,
     /// The contract's `description`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
+    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
+    #[serde(
+        with = "serde_with::rust::double_option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub description: Option<Option<String>>,
     /// The contract's `join_method`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join_method: Option<OrganizationPatchJoinMethod>,
@@ -2075,6 +2136,10 @@ pub struct ShortLivedToken {
 pub struct ShortLivedTokenRequest {
     /// The contract's `app_id`.
     pub app_id: AppId,
+    /// Optional organization membership to bind into the resulting
+    /// Application tokens. Omit for an unscoped login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_id: Option<OrgId>,
 }
 
 /// Contract type `Silicon`.
@@ -2139,7 +2204,7 @@ pub struct SiliconCreate {
     pub display_name: Option<String>,
     /// Defaults to UTC when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timezone: Option<serde_json::Value>,
+    pub timezone: Option<TimeZoneId>,
     /// The contract's `description`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -2179,6 +2244,10 @@ pub struct SiliconPage {
 
 /// Contract type `SiliconPatch`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(
+    clippy::option_option,
+    reason = "JSON Merge Patch distinguishes omitted fields from explicit null"
+)]
 pub struct SiliconPatch {
     /// The contract's `display_name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2187,14 +2256,29 @@ pub struct SiliconPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<TimeZoneId>,
     /// The contract's `description`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
+    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
+    #[serde(
+        with = "serde_with::rust::double_option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub description: Option<Option<String>>,
     /// The contract's `profile_photo`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile_photo: Option<String>,
+    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
+    #[serde(
+        with = "serde_with::rust::double_option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub profile_photo: Option<Option<String>>,
     /// The contract's `reports_to_membership_id`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reports_to_membership_id: Option<Uuid>,
+    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
+    #[serde(
+        with = "serde_with::rust::double_option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reports_to_membership_id: Option<Option<Uuid>>,
 }
 
 /// Contract type `SiliconTokenRotated`.
@@ -2643,13 +2727,22 @@ pub struct TestingEnvironmentPage {
 
 /// Contract type `TestingEnvironmentPatch`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(
+    clippy::option_option,
+    reason = "JSON Merge Patch distinguishes omitted fields from explicit null"
+)]
 pub struct TestingEnvironmentPatch {
     /// The contract's `name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// The contract's `description`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
+    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
+    #[serde(
+        with = "serde_with::rust::double_option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub description: Option<Option<String>>,
 }
 
 /// What a key holder may see about the environment it holds a key to.

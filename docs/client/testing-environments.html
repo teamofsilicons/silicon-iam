@@ -167,13 +167,16 @@ let event = verified.event();</code></pre>
   <li>Assert the environment begins empty.</li>
   <li>Use control-plane tooling to complete both-contact signup and IAM login with <code>000000</code>.</li>
   <li>Create or import the Application and persist every one-time test secret.</li>
-  <li>Give the Application client only the SLT, complete <code>OAuth::login</code>, and introspect it in the same plane.</li>
+  <li>Mint the SLT with <code>short_lived_token_in_organization</code>, give the Application client only that SLT, complete <code>OAuth::login</code>, and introspect it with the matching organization in the same plane. Use an unscoped Carbon bearer and <code>short_lived_token</code> separately when proving an ordinary non-OBO login.</li>
   <li>Prove production credentials fail inside the environment and test credentials fail without it.</li>
-  <li>Verify and deduplicate a wrapped webhook; run OBO exchange/verification when applicable.</li>
+  <li>Verify and deduplicate a wrapped webhook; run OBO exchange/verification with the organization-bound access token, and prove an unscoped access token is refused.</li>
   <li>Call <code>clean_current</code> with the key when the run finishes, or retire it from production.</li>
 </ol>
 
 <p>
   Never construct a second set of test endpoint paths. If a test can pass only through a mock-only
-  route, it is not proving the production integration.
+  route, it is not proving the production integration. The
+  <a href="https://github.com/teamofsilicons/silicon-iam/tree/main/docs/cli#end-to-end-application-proof-in-a-test-environment"
+    rel="external noreferrer">manual CLI walkthrough</a> exercises this sequence and lists the
+  negative cases to verify before production.
 </p>

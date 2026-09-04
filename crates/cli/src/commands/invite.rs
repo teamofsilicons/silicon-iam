@@ -6,7 +6,7 @@ use crate::{
     cli::InviteCommand,
     context::Context,
     error::{CliError, Result},
-    output::{Format, Table, json, timestamp},
+    output::{Format, Table, json, label, next_cursor, timestamp},
 };
 
 /// Runs an invitation command.
@@ -35,11 +35,12 @@ pub async fn run(context: &Context, command: InviteCommand) -> Result<()> {
                         table.row([
                             invite.id.to_string(),
                             invite.target_carbon.carbon_id.clone(),
-                            format!("{:?}", invite.status).to_lowercase(),
+                            label(&invite.status),
                             timestamp(invite.expires_at),
                         ]);
                     }
                     table.print();
+                    next_cursor(listed.page.has_more, listed.page.next_cursor.as_deref());
                     Ok(())
                 }
             }
@@ -96,7 +97,11 @@ pub async fn run(context: &Context, command: InviteCommand) -> Result<()> {
             match context.format {
                 Format::Json => json(&dispatched),
                 Format::Text => {
-                    println!("Sent. Accept with `iam invite accept --code <code>`.");
+                    println!("Sent a code for invitation {}.", dispatched.invite_id);
+                    println!(
+                        "Accept with `iam invite accept {} --code <code>`.",
+                        dispatched.invite_id
+                    );
                     Ok(())
                 }
             }
@@ -131,7 +136,7 @@ fn report(context: &Context, invite: &models::Invite) -> Result<()> {
             let mut table = Table::new(["field", "value"]);
             table.row(["id", &invite.id.to_string()]);
             table.row(["invitee", &invite.target_carbon.carbon_id]);
-            table.row(["status", &format!("{:?}", invite.status).to_lowercase()]);
+            table.row(["status", &label(&invite.status)]);
             table.row(["expires", &timestamp(invite.expires_at)]);
             table.row(["version", &invite.version.to_string()]);
             table.print();

@@ -28,7 +28,6 @@ EXCLUDED_NON_API_BINARY_PATHS = %w[
 # invoker-rights helpers during deferred constraint-trigger execution, so the
 # API role still requires SELECT on them when a transaction reaches commit.
 TRIGGER_ONLY_SELECT_EXCEPTIONS = {
-  "ownership_transfer_requests" => "assert_approval_request_shape",
   "platform_role_grants" => "assert_platform_administrator_present",
   "service_principals" => "assert_active_principal_subtype"
 }.freeze
@@ -48,6 +47,7 @@ CRITICAL_DENIED_TABLES = Set.new(%w[
   contact_blind_indexes
   cryptographic_key_versions
   external_webhook_receipts
+  ownership_transfer_requests
   platform_capability_catalog
   platform_role_capabilities
   platform_role_catalog

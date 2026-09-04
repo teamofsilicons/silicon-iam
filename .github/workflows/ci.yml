@@ -239,14 +239,19 @@ jobs:
             exit 1
           fi
 
-      - name: Smoke-test API readiness through the restricted role
+      - name: Run the live client contract through the restricted API role
+        env:
+          IAM_EXPOSE_LOCAL_OTPS: "true"
+          SILICON_IAM_LIVE_URL: http://127.0.0.1:8080
         run: |
           cargo run --locked --bin iam-api >/tmp/silicon-iam-api.log 2>&1 &
           api_pid=$!
           trap 'kill "${api_pid}" 2>/dev/null || true' EXIT
+          api_ready=false
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8080/readyz >/dev/null; then
-              exit 0
+              api_ready=true
+              break
             fi
             if ! kill -0 "${api_pid}" 2>/dev/null; then
               cat /tmp/silicon-iam-api.log
@@ -254,8 +259,19 @@ jobs:
             fi
             sleep 1
           done
-          cat /tmp/silicon-iam-api.log
-          exit 1
+          if [ "${api_ready}" != true ]; then
+            cat /tmp/silicon-iam-api.log
+            exit 1
+          fi
+          cargo test -p silicon-iam-client \
+            --features cli-session \
+            --test live \
+            --locked \
+            the_client_speaks_the_contract_end_to_end \
+            -- --ignored --exact --test-threads=1
+          kill -TERM "${api_pid}"
+          wait "${api_pid}"
+          trap - EXIT
 
       - name: Exercise restricted monotonic key activation
         env:

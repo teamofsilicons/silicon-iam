@@ -423,7 +423,12 @@ pub(super) fn json<T: Serialize>(
     json_response(status, body, version, false)
 }
 
-pub(super) fn database(_error: sqlx::Error) -> AppError {
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "this function is used directly as an owned Result::map_err adapter"
+)]
+pub(super) fn database(error: sqlx::Error) -> AppError {
+    tracing::error!(error = %error, "testing-environment database operation failed");
     AppError::Internal {
         category: "testing_environment_database",
     }

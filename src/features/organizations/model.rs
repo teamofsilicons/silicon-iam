@@ -34,9 +34,17 @@ pub(super) struct OrganizationCreate {
 #[allow(clippy::option_option)]
 pub(super) struct OrganizationPatch {
     pub(super) name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
     pub(super) logo: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
     pub(super) description: Option<Option<String>>,
     pub(super) join_method: Option<String>,
 }
@@ -170,13 +178,25 @@ pub(super) struct MembershipPage {
 #[allow(clippy::option_option)]
 pub(super) struct MembershipDirectoryPatch {
     pub(super) tag_ids: Option<Vec<Uuid>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
     pub(super) first_silicon_membership_id: Option<Option<Uuid>>,
     pub(super) extra_silicon_membership_ids: Option<Vec<Uuid>>,
     pub(super) default_trust: Option<TrustValue>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
     pub(super) reports_to_membership_id: Option<Option<Uuid>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
     pub(super) profile_photo: Option<Option<String>>,
 }
 
@@ -215,11 +235,23 @@ pub(super) struct SiliconCreate {
 pub(super) struct SiliconPatch {
     pub(super) display_name: Option<String>,
     pub(super) timezone: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
     pub(super) description: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
     pub(super) profile_photo: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
     pub(super) reports_to_membership_id: Option<Option<Uuid>>,
     pub(super) tag_ids: Option<Vec<Uuid>>,
 }
@@ -376,7 +408,7 @@ pub(super) struct SiliconWebhookSubscriptionReplace {
     pub(super) tag_filter: Option<SiliconWebhookTagFilter>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SiliconWebhookTagFilter {
     #[serde(default)]
@@ -405,7 +437,7 @@ pub(super) struct SiliconTokenRotatedResponse {
     pub(super) secret_replay_expires_at: OffsetDateTime,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum TrustBoundary {
     Internal,
@@ -421,7 +453,7 @@ impl TrustBoundary {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum TrustLevel {
     NotTrusted,
@@ -439,14 +471,14 @@ impl TrustLevel {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TrustValue {
     pub(super) boundary: TrustBoundary,
     pub(super) level: TrustLevel,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
 pub(super) enum TrustSelector {
     Tag { tag_id: Uuid },

@@ -14,7 +14,15 @@ impl System<'_> {
     ///
     /// Returns an error when the request fails or the response is unreadable.
     pub async fn version(&self) -> Result<models::VersionInfo> {
-        self.0.get(&["version"]).await
+        let version = self.0.get::<models::VersionInfo>(&["version"]).await?;
+        if version.service.as_str() != Some("silicon-iam")
+            || version.api_version.as_str() != Some(crate::API_VERSION)
+        {
+            return Err(crate::Error::Decode(
+                "the version endpoint identified an unexpected service or API version".to_owned(),
+            ));
+        }
+        Ok(version)
     }
 
     /// Agrees an API version with the service.
@@ -30,7 +38,7 @@ impl System<'_> {
     /// Returns an error when no version is shared, or the request fails.
     pub async fn negotiate(&self) -> Result<models::ApiVersionNegotiation> {
         let request = self.0.unversioned(Method::GET, &["api", "version"])?;
-        self.0.send_json(request).await
+        self.0.send_negotiation(request).await
     }
 
     /// Whether the process is alive. Never touches the database.

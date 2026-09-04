@@ -2,24 +2,18 @@
 
 use std::{io::Read as _, path::Path, time::Duration};
 
-use hmac::{Hmac, Mac as _};
-use http::{HeaderMap, HeaderValue};
-use sha2::{Digest as _, Sha256};
-use silicon_iam_client::{
-    Client, Credential, IdempotencyKey, Mutation, WebhookSecret, WebhookSecretKeyring,
-    WebhookVerifier, models,
-};
-use time::OffsetDateTime;
-
 use crate::{
     cli::{AppCommand, AppOboCommand, AppTokenCommand, AppTokenType, RequestBodyArgs},
     commands::silicon::dead_letters,
     context::Context,
     error::{CliError, Result},
-    output::{Format, Table, json, or_dash, timestamp},
+    output::{Format, Table, json, label, next_cursor, or_dash, timestamp, timestamp_or_dash},
 };
-
-type HmacSha256 = Hmac<Sha256>;
+use http::{HeaderMap, HeaderValue};
+use silicon_iam_client::{
+    Client, Credential, IdempotencyKey, Mutation, WebhookSecret, WebhookSecretKeyring,
+    WebhookVerifier, api::obo::body_sha256, models,
+};
 
 /// Runs an application command.
 ///
@@ -81,12 +75,13 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                         table.row([
                             app.app_id.clone(),
                             or_dash(app.app_name.as_deref()),
-                            format!("{:?}", app.status).to_lowercase(),
+                            label(&app.status),
                             app.org_id.clone(),
                             app.version.to_string(),
                         ]);
                     }
                     table.print();
+                    next_cursor(listed.page.has_more, listed.page.next_cursor.as_deref());
                     Ok(())
                 }
             }
@@ -94,19 +89,19 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
         AppCommand::Create {
             app_id,
             name,
-            org,
+            org: _,
             webhook_url,
             webhook_secret,
             base_url,
             obo_endpoints,
         } => {
-            let organization = context.organization_or(org.as_deref())?;
+            let (app_id, organization) = context.application_creation_identity(&app_id)?;
             let created = client
                 .applications()
                 .create(
                     &models::ApplicationCreate {
                         app_id,
-                        org_id: organization.to_owned(),
+                        org_id: organization,
                         app_name: Some(name),
                         app_logo: None,
                         webhook_url,
@@ -124,6 +119,7 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                 Format::Json => json(&created),
                 Format::Text => {
                     println!("Created {}.", created.application.app_id);
+                    println!("Application ID: {}", created.application.id);
                     println!("Client secret: {}", created.app_secret);
                     println!("IAM stored the webhook signing secret you supplied.");
                     println!("The client secret is shown once. Store it now.");
@@ -132,15 +128,20 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             }
         }
         AppCommand::Show { app_id } => {
+            let app_id = context.application_id(&app_id)?;
             let application = client.applications().get(&app_id).await?;
             report(context, &application)
         }
         AppCommand::Update {
             app_id,
             name,
+            clear_name,
+            logo,
+            clear_logo,
             base_url,
             obo_endpoints,
         } => {
+            let app_id = context.application_id(&app_id)?;
             let current = client.applications().get(&app_id).await?;
             let updated = client
                 .applications()
@@ -148,8 +149,8 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                     &app_id,
                     current.version,
                     &models::ApplicationPatch {
-                        app_name: name,
-                        app_logo: None,
+                        app_name: nullable_patch(name, clear_name),
+                        app_logo: nullable_patch(logo, clear_logo),
                         base_url,
                         obo_endpoints: obo_endpoints
                             .as_deref()
@@ -162,6 +163,7 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             report(context, &updated)
         }
         AppCommand::RotateSecret { app_id } => {
+            let app_id = context.application_id(&app_id)?;
             let current = client.applications().get(&app_id).await?;
             let rotated = client
                 .applications()
@@ -180,6 +182,7 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             app_id,
             webhook_secret,
         } => {
+            let app_id = context.application_id(&app_id)?;
             let current = client.applications().get(&app_id).await?;
             let rotated = client
                 .applications()
@@ -222,14 +225,16 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             }
         }
         AppCommand::Webhook { app_id } => {
+            let app_id = context.application_id(&app_id)?;
             let webhook = client.applications().webhook(&app_id).await?;
-            json(&webhook)
+            report_webhook(context, &webhook)
         }
         AppCommand::SetWebhook {
             app_id,
-            url,
+            webhook_url,
             webhook_secret,
         } => {
+            let app_id = context.application_id(&app_id)?;
             let current = client.applications().get(&app_id).await?;
             let proposed = client
                 .applications()
@@ -237,7 +242,7 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                     &app_id,
                     current.version,
                     &models::ApplicationWebhookReplace {
-                        url,
+                        url: webhook_url,
                         webhook_secret,
                     },
                     &context.mutation(),
@@ -260,11 +265,12 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                         }
                         println!("The inherited production key was replaced.");
                     }
-                    Ok(())
+                    report_webhook(context, &proposed)
                 }
             }
         }
         AppCommand::DeadLetters { app_id, page } => {
+            let app_id = context.application_id(&app_id)?;
             let listed = client
                 .applications()
                 .dead_letters(&app_id, &page.paging())
@@ -272,6 +278,7 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             dead_letters(context, &listed)
         }
         AppCommand::Replay { app_id, deliveries } => {
+            let app_id = context.application_id(&app_id)?;
             let replayed = client
                 .applications()
                 .replay_dead_letters(
@@ -282,9 +289,16 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                     &context.mutation(),
                 )
                 .await?;
-            json(&replayed)
+            match context.format {
+                Format::Json => json(&replayed),
+                Format::Text => {
+                    println!("Re-queued {} delivery(s).", replayed.replayed_count);
+                    Ok(())
+                }
+            }
         }
         AppCommand::History { app_id, page } => {
+            let app_id = context.application_id(&app_id)?;
             let listed = client
                 .applications()
                 .login_history(&app_id, &page.paging())
@@ -292,15 +306,17 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             match context.format {
                 Format::Json => json(&listed),
                 Format::Text => {
-                    let mut table = Table::new(["when", "event", "carbon"]);
+                    let mut table = Table::new(["when", "event", "actor", "outcome"]);
                     for event in &listed.items {
                         table.row([
                             timestamp(event.occurred_at),
-                            format!("{:?}", event.event_type).to_lowercase(),
+                            label(&event.event_type),
                             event.actor.public_id.clone(),
+                            if event.success { "success" } else { "failed" }.to_owned(),
                         ]);
                     }
                     table.print();
+                    next_cursor(listed.page.has_more, listed.page.next_cursor.as_deref());
                     Ok(())
                 }
             }
@@ -315,9 +331,11 @@ async fn discover(
     app_secret: Option<String>,
 ) -> Result<()> {
     let secret = prompted(app_secret, "Requesting Application secret: ")?;
-    let discovered = application_client(context, requester_app_id, &secret)
+    let app_id = context.application_id(app_id)?;
+    let requester_app_id = context.application_id(requester_app_id)?;
+    let discovered = application_client(context, &requester_app_id, &secret)
         .applications()
-        .discover_base_url(app_id)
+        .discover_base_url(&app_id)
         .await?;
     match context.format {
         Format::Json => json(&discovered),
@@ -328,6 +346,14 @@ async fn discover(
     }
 }
 
+#[allow(
+    clippy::option_option,
+    reason = "JSON Merge Patch has distinct omitted, null, and value states"
+)]
+fn nullable_patch<T>(value: Option<T>, clear: bool) -> Option<Option<T>> {
+    if clear { Some(None) } else { value.map(Some) }
+}
+
 async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
     match command {
         AppTokenCommand::Exchange {
@@ -336,6 +362,7 @@ async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
             app_secret,
             idempotency_key,
         } => {
+            let app_id = context.application_id(&app_id)?;
             let secret = prompted(app_secret, "Application secret: ")?;
             let slt = prompted(slt, "Short-lived token: ")?;
             let tokens = application_client(context, &app_id, &secret)
@@ -350,6 +377,7 @@ async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
             app_secret,
             idempotency_key,
         } => {
+            let app_id = context.application_id(&app_id)?;
             let secret = prompted(app_secret, "Application secret: ")?;
             let refresh_token = prompted(refresh_token, "Application refresh token: ")?;
             let tokens = application_client(context, &app_id, &secret)
@@ -369,6 +397,7 @@ async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
             org_context,
             app_secret,
         } => {
+            let app_id = context.application_id(&app_id)?;
             let secret = prompted(app_secret, "Application secret: ")?;
             let token = prompted(token, "Token to introspect: ")?;
             let inspected = application_client(context, &app_id, &secret)
@@ -382,6 +411,34 @@ async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
                 )
                 .await?;
             report_introspection(context, &inspected)
+        }
+        AppTokenCommand::Revoke {
+            app_id,
+            token,
+            token_type,
+            app_secret,
+            idempotency_key,
+        } => {
+            let app_id = context.application_id(&app_id)?;
+            let secret = prompted(app_secret, "Application secret: ")?;
+            let token = prompted(token, "Token to revoke: ")?;
+            application_client(context, &app_id, &secret)
+                .oauth()
+                .revoke(
+                    &models::OAuthRevocationRequest {
+                        token,
+                        token_type_hint: token_type.map(revocation_token_type_hint),
+                    },
+                    &mutation_with_optional_key(idempotency_key)?,
+                )
+                .await?;
+            match context.format {
+                Format::Json => json(&serde_json::json!({ "accepted": true })),
+                Format::Text => {
+                    println!("Revocation accepted.");
+                    Ok(())
+                }
+            }
         }
     }
 }
@@ -397,6 +454,8 @@ async fn obo(context: &Context, command: AppOboCommand) -> Result<()> {
             requester_app_id,
             app_secret,
         } => {
+            let audience_app_id = context.application_id(&audience_app_id)?;
+            let requester_app_id = context.application_id(&requester_app_id)?;
             let secret = prompted(app_secret, "Requesting Application secret: ")?;
             let catalog = application_client(context, &requester_app_id, &secret)
                 .obo()
@@ -416,56 +475,43 @@ async fn obo(context: &Context, command: AppOboCommand) -> Result<()> {
             timestamp,
             body,
         } => {
+            let audience_app_id = context.application_id(&audience_app_id)?;
+            let requester_app_id = context.application_id(&requester_app_id)?;
             let secret = prompted(app_secret, "Requesting Application secret: ")?;
             let subject_token = prompted(subject_token, "Application access token: ")?;
             let client = application_client(context, &requester_app_id, &secret);
             let catalog = client.obo().endpoints(&audience_app_id).await?;
-            let endpoint = catalog
-                .endpoints
-                .iter()
-                .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-                .ok_or_else(|| {
-                    CliError::Usage(format!(
-                        "endpoint {endpoint_id} is not in {audience_app_id}'s current OBO catalog"
-                    ))
-                })?;
             let method = canonical_method(&method)?;
             let body = request_body(&body)?;
             let body_sha256 = body_sha256(&body);
             let metadata = metadata_object(&metadata)?;
-            let timestamp = timestamp.unwrap_or_else(|| OffsetDateTime::now_utc().unix_timestamp());
-            if timestamp <= 0 {
-                return Err(CliError::Usage(
-                    "an OBO timestamp must be a positive Unix timestamp".to_owned(),
-                ));
-            }
             let mutation = mutation_with_optional_key(idempotency_key)?;
-            let signature = obo_signature(
-                &secret,
-                timestamp,
-                &method,
-                &endpoint.path,
-                &body_sha256,
-                mutation.key().as_str(),
-            )?;
-            let proof = client
-                .obo()
-                .exchange(
-                    &models::OboExchangeRequest {
-                        subject_token,
-                        audience: audience_app_id,
-                        endpoint_id,
-                        metadata,
-                        request: models::OboExchangeRequestBinding {
-                            method,
-                            body_sha256,
-                        },
-                    },
-                    &timestamp.to_string(),
-                    &signature,
-                    &mutation,
-                )
-                .await?;
+            let request = models::OboExchangeRequest {
+                subject_token,
+                audience: audience_app_id,
+                endpoint_id,
+                metadata,
+                request: models::OboExchangeRequestBinding {
+                    method,
+                    body_sha256,
+                },
+            };
+            let proof = if let Some(timestamp) = timestamp {
+                if timestamp <= 0 {
+                    return Err(CliError::Usage(
+                        "an OBO timestamp must be a positive Unix timestamp".to_owned(),
+                    ));
+                }
+                client
+                    .obo()
+                    .exchange_signed_at(&request, &catalog, timestamp, &mutation)
+                    .await?
+            } else {
+                client
+                    .obo()
+                    .exchange_signed(&request, &catalog, &mutation)
+                    .await?
+            };
             report_obo_proof(context, &proof)
         }
         AppOboCommand::Verify {
@@ -476,6 +522,7 @@ async fn obo(context: &Context, command: AppOboCommand) -> Result<()> {
             path,
             body,
         } => {
+            let audience_app_id = context.application_id(&audience_app_id)?;
             let secret = prompted(app_secret, "Audience Application secret: ")?;
             let access_proof = prompted(access_proof, "OBO access proof: ")?;
             let result = application_client(context, &audience_app_id, &secret)
@@ -564,7 +611,7 @@ fn application_client(context: &Context, app_id: &str, secret: &str) -> Client {
 fn prompted(value: Option<String>, label: &str) -> Result<String> {
     match value {
         Some(value) => Ok(value),
-        None => crate::commands::auth::prompt(label),
+        None => crate::commands::auth::prompt_secret(label),
     }
 }
 
@@ -579,6 +626,15 @@ const fn token_type_hint(kind: AppTokenType) -> models::TokenIntrospectionReques
     match kind {
         AppTokenType::AccessToken => models::TokenIntrospectionRequestTokenTypeHint::AccessToken,
         AppTokenType::RefreshToken => models::TokenIntrospectionRequestTokenTypeHint::RefreshToken,
+    }
+}
+
+const fn revocation_token_type_hint(
+    kind: AppTokenType,
+) -> models::OAuthRevocationRequestTokenTypeHint {
+    match kind {
+        AppTokenType::AccessToken => models::OAuthRevocationRequestTokenTypeHint::AccessToken,
+        AppTokenType::RefreshToken => models::OAuthRevocationRequestTokenTypeHint::RefreshToken,
     }
 }
 
@@ -604,10 +660,10 @@ fn report_introspection(context: &Context, inspected: &models::TokenIntrospectio
             table.row(["active", &inspected.active.to_string()]);
             table.row([
                 "actor_type",
-                &inspected.actor_type.as_ref().map_or_else(
-                    || "-".to_owned(),
-                    |value| format!("{value:?}").to_lowercase(),
-                ),
+                &inspected
+                    .actor_type
+                    .as_ref()
+                    .map_or_else(|| "-".to_owned(), label),
             ]);
             table.row(["client_id", &or_dash(inspected.client_id.as_deref())]);
             table.row(["org_id", &or_dash(inspected.org_id.as_deref())]);
@@ -615,9 +671,13 @@ fn report_introspection(context: &Context, inspected: &models::TokenIntrospectio
             table.row(["audience", &or_dash(inspected.audience.as_deref())]);
             table.row([
                 "expires_at",
-                &inspected
-                    .expires_at
-                    .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+                &inspected.expires_at.map_or_else(
+                    || "-".to_owned(),
+                    |value| {
+                        time::OffsetDateTime::from_unix_timestamp(value)
+                            .map_or_else(|_| value.to_string(), timestamp)
+                    },
+                ),
             ]);
             table.print();
             Ok(())
@@ -676,10 +736,6 @@ fn read_body(path: &Path) -> Result<Vec<u8>> {
     }
 }
 
-fn body_sha256(body: &[u8]) -> String {
-    hex::encode(Sha256::digest(body))
-}
-
 fn canonical_method(input: &str) -> Result<String> {
     let canonical = input.to_ascii_uppercase();
     http::Method::from_bytes(canonical.as_bytes())
@@ -703,20 +759,6 @@ fn obo_endpoint_definitions(input: &str) -> Result<Vec<models::ApplicationOboEnd
         .map_err(|error| CliError::Usage(format!("--obo-endpoints is not valid JSON: {error}")))
 }
 
-fn obo_signature(
-    app_secret: &str,
-    timestamp: i64,
-    method: &str,
-    path: &str,
-    body_sha256: &str,
-    idempotency_key: &str,
-) -> Result<String> {
-    let mut mac = <HmacSha256 as hmac::Mac>::new_from_slice(app_secret.as_bytes())
-        .map_err(|error| CliError::Config(format!("cannot initialize OBO signing: {error}")))?;
-    mac.update(format!("{timestamp}.{method}.{path}.{body_sha256}.{idempotency_key}").as_bytes());
-    Ok(hex::encode(mac.finalize().into_bytes()))
-}
-
 fn insert_header(headers: &mut HeaderMap, name: &'static str, value: &str) -> Result<()> {
     let value = HeaderValue::from_str(value)
         .map_err(|_| CliError::Usage(format!("{name} is not a valid HTTP header value")))?;
@@ -729,13 +771,11 @@ fn report(context: &Context, application: &models::Application) -> Result<()> {
         Format::Json => json(application),
         Format::Text => {
             let mut table = Table::new(["field", "value"]);
+            table.row(["id", &application.id.to_string()]);
             table.row(["app", &application.app_id]);
             table.row(["name", &or_dash(application.app_name.as_deref())]);
             table.row(["base_url", &application.base_url]);
-            table.row([
-                "status",
-                &format!("{:?}", application.status).to_lowercase(),
-            ]);
+            table.row(["status", &label(&application.status)]);
             table.row(["org", &application.org_id]);
             table.row(["scopes", &application.approved_scopes.join(", ")]);
             table.row(["version", &application.version.to_string()]);
@@ -745,11 +785,30 @@ fn report(context: &Context, application: &models::Application) -> Result<()> {
     }
 }
 
+fn report_webhook(context: &Context, webhook: &models::ApplicationWebhook) -> Result<()> {
+    match context.format {
+        Format::Json => json(webhook),
+        Format::Text => {
+            let mut table = Table::new(["field", "value"]);
+            table.row(["active_url", &or_dash(webhook.active_url.as_deref())]);
+            table.row(["pending_url", &or_dash(webhook.pending_url.as_deref())]);
+            table.row(["status", &label(&webhook.status)]);
+            table.row(["secret_version", &webhook.secret_version.to_string()]);
+            table.row([
+                "secret_replay_expires_at",
+                &timestamp_or_dash(webhook.secret_replay_expires_at),
+            ]);
+            table.row(["version", &webhook.version.to_string()]);
+            table.print();
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        body_sha256, canonical_method, metadata_object, obo_endpoint_definitions, obo_signature,
-        request_body,
+        body_sha256, canonical_method, metadata_object, obo_endpoint_definitions, request_body,
     };
     use crate::cli::RequestBodyArgs;
 
@@ -760,25 +819,6 @@ mod tests {
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
         );
         assert_ne!(body_sha256(b"hello"), body_sha256(b"hello\n"));
-    }
-
-    #[test]
-    fn obo_signature_covers_the_contracts_canonical_string() {
-        let signature = obo_signature(
-            "app_secret",
-            1_700_000_000,
-            "POST",
-            "/v1/files",
-            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
-            "018bcfe5680070008000000000000000",
-        );
-        let Ok(signature) = signature else {
-            panic!("a non-empty HMAC key is valid");
-        };
-        assert_eq!(
-            signature,
-            "ddc63ca12795e78a577134cbef558e212f11cc94d3a2ccaa1b98c22a3317c2ce"
-        );
     }
 
     #[test]

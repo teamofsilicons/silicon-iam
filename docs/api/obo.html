@@ -12,6 +12,15 @@
   </div>
 </div>
 
+<div class="banner banner-info">
+  <div>
+    <strong>The subject token must already be organization-bound.</strong>
+    Include <code>org_id</code> when minting its SLT (or start the browser login with that query
+    parameter), then exchange the SLT normally. IAM requires a current active membership and
+    rejects an unscoped Application access token with <code>403 obo_organization_required</code>.
+  </div>
+</div>
+
 <h2>The shape of it</h2>
 
 <p>
@@ -126,8 +135,12 @@ X-OBO-Signature: HMAC-SHA256(
 <table>
   <thead><tr><th>Status</th><th>Means</th><th>Do</th></tr></thead>
   <tbody>
-    <tr><td><code>403</code></td><td>The two applications are not in one organization</td>
-      <td>Nothing. This is not retryable and never will be.</td></tr>
+    <tr><td><code>403</code></td>
+      <td>The subject token is unscoped, belongs to a different organization, or lacks current OBO authority</td>
+      <td>Start a new organization-bound Application login and re-check membership and reviewed scope.</td></tr>
+    <tr><td><code>404</code> <code>not_found</code></td>
+      <td>The target does not exist or is outside the caller's organization; those cases are intentionally indistinguishable</td>
+      <td>Do not retry without correcting the target or caller context.</td></tr>
     <tr><td><code>409</code></td><td>The proof was already consumed</td>
       <td>Do not retry. Mint a new proof for a new request.</td></tr>
     <tr><td><code>410</code> <code>proof_expired</code></td><td>More than 60 seconds elapsed</td>

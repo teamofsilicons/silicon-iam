@@ -38,7 +38,8 @@ pub struct Cli {
 /// Options accepted by every command.
 #[derive(Debug, Args)]
 pub struct Global {
-    /// Service base URL.
+    /// Service base URL. HTTPS is required except for localhost, 127.0.0.1, or
+    /// `::1`; credentials, port zero, query, and fragment are rejected.
     #[arg(long, global = true, env = "SILICON_IAM_URL")]
     pub url: Option<String>,
 
@@ -46,11 +47,18 @@ pub struct Global {
     #[arg(long, global = true, env = "SILICON_IAM_PROFILE")]
     pub profile: Option<String>,
 
-    /// Organization handle to act on.
-    #[arg(long, global = true, env = "SILICON_IAM_ORG")]
+    /// Organization handle to act on. Falls back to `SILICON_IAM_ORG`, then the
+    /// current profile's stored organization.
+    #[arg(long, global = true)]
     pub org: Option<String>,
 
-    /// Run inside a testing environment, by its UUID.
+    /// Ignore any stored or environment organization for this invocation.
+    /// Useful with a canonical app ID for an unscoped Application login.
+    #[arg(long, global = true, conflicts_with = "org")]
+    pub no_org: bool,
+
+    /// Run inside a testing environment, by its hyphenated UUID (never its
+    /// root key).
     #[arg(
         long,
         global = true,
@@ -60,7 +68,7 @@ pub struct Global {
     )]
     pub test: Option<Uuid>,
 
-    /// Step-up assertion for commands that require one.
+    /// Step-up assertion minted by `iam step-up <ACTION> <RESOURCE_ID>`.
     #[arg(long, global = true)]
     pub step_up: Option<String>,
 
@@ -76,18 +84,26 @@ pub enum Command {
     Login(LoginArgs),
     /// Sign in as a Silicon with its credential.
     SiliconLogin(SiliconLoginArgs),
-    /// Sign out, forgetting the stored session.
-    Logout,
+    /// End a Carbon session remotely; forget a Silicon session locally.
+    Logout(LogoutArgs),
     /// Show who is signed in.
     Whoami,
+    /// Mint a one-action, one-resource step-up token.
+    StepUp(StepUpArgs),
     /// Create a Carbon account.
     Signup(SignupArgs),
+    /// Your Carbon profile and public Carbon lookup.
+    #[command(subcommand)]
+    Carbon(CarbonCommand),
     /// Print every command this CLI accepts.
     Commands,
 
     /// Organizations.
     #[command(subcommand)]
     Org(OrgCommand),
+    /// Organization single sign-on.
+    #[command(subcommand)]
+    Sso(SsoCommand),
     /// Members of an organization.
     #[command(subcommand)]
     Member(MemberCommand),
@@ -110,6 +126,10 @@ pub enum Command {
     #[command(subcommand)]
     App(AppCommand),
     /// Testing environments.
+    ///
+    /// Lifecycle commands use a production Carbon session and organization;
+    /// omit --test for them. `env current`, `app import`, and `env clean`
+    /// without an explicit environment ID are test-only and require --test.
     #[command(subcommand)]
     Env(EnvCommand),
     /// Your own sessions and login history.
@@ -125,15 +145,21 @@ pub enum Command {
 
 /// Arguments for signing in.
 #[derive(Debug, Args)]
+#[command(group(
+    clap::ArgGroup::new("identity")
+        .args(["email", "phone", "carbon_id"])
+        .required(false)
+        .multiple(false)
+))]
 pub struct LoginArgs {
     /// Email address to sign in with.
-    #[arg(long, group = "identity")]
+    #[arg(long)]
     pub email: Option<String>,
     /// Phone number, in E.164 form.
-    #[arg(long, group = "identity")]
+    #[arg(long)]
     pub phone: Option<String>,
     /// Carbon ID.
-    #[arg(long, group = "identity")]
+    #[arg(long)]
     pub carbon_id: Option<String>,
     /// Verification code, if you already have it. Prompted for otherwise.
     #[arg(long)]
@@ -141,6 +167,19 @@ pub struct LoginArgs {
     /// Application to sign in to. Prints a short-lived token for it.
     #[arg(long = "app-id", value_name = "APP_ID")]
     pub app_id: Option<String>,
+}
+
+/// Arguments for signing out.
+#[derive(Debug, Args)]
+pub struct LogoutArgs {
+    /// End every Carbon session. Needs --step-up: action
+    /// `account.sessions_revoke_all`, resource = the signed-in Carbon's
+    /// principal UUID. Every affected session must be at least 12 hours old.
+    #[arg(long, conflicts_with = "local_only")]
+    pub all: bool,
+    /// Only forget this device's stored credential; do not call IAM.
+    #[arg(long, conflicts_with = "all")]
+    pub local_only: bool,
 }
 
 /// Arguments for signing a Silicon in.
@@ -177,11 +216,146 @@ pub struct SignupArgs {
     pub timezone: Option<String>,
 }
 
+/// Carbon profile and lookup commands.
+#[derive(Debug, Subcommand)]
+pub enum CarbonCommand {
+    /// Show the signed-in Carbon's complete profile.
+    Show,
+    /// Update the signed-in Carbon's profile.
+    #[command(group(
+        clap::ArgGroup::new("changes")
+            .args([
+                "display_name",
+                "timezone",
+                "description",
+                "clear_description",
+                "profile_photo",
+                "clear_profile_photo"
+            ])
+            .required(true)
+            .multiple(true)
+    ))]
+    Update {
+        /// New display name.
+        #[arg(long)]
+        display_name: Option<String>,
+        /// New IANA time zone, such as `Asia/Kolkata`.
+        #[arg(long)]
+        timezone: Option<String>,
+        /// New profile description.
+        #[arg(long)]
+        description: Option<String>,
+        /// Remove the current profile description.
+        #[arg(long, conflicts_with = "description")]
+        clear_description: bool,
+        /// New profile-photo URL.
+        #[arg(long)]
+        profile_photo: Option<String>,
+        /// Restore the generated default profile photo.
+        #[arg(long, conflicts_with = "profile_photo")]
+        clear_profile_photo: bool,
+    },
+    /// Check whether a Carbon ID can be claimed.
+    Available {
+        /// Carbon ID to check; this does not reserve it.
+        carbon_id: String,
+    },
+    /// Suggest public Carbon IDs matching a partial handle.
+    Search {
+        /// Non-empty partial Carbon ID, up to 100 characters.
+        query: String,
+        /// Maximum suggestions to return, from 1 through 10.
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=10))]
+        limit: Option<u16>,
+    },
+    /// Resolve an exact verified email address to a Carbon ID.
+    ResolveEmail {
+        /// Exact verified email address.
+        email: String,
+    },
+    /// Resolve an exact verified E.164 phone number to a Carbon ID.
+    ResolvePhone {
+        /// Exact verified phone number, such as `+12025550123`.
+        phone: String,
+    },
+}
+
+/// Arguments for verified-channel step-up.
+#[derive(Debug, Args)]
+pub struct StepUpArgs {
+    /// Sensitive action the token will authorize.
+    #[arg(value_enum)]
+    pub action: StepUpActionArg,
+    /// Internal UUID of the exact resource being changed.
+    pub resource_id: Uuid,
+    /// Verified channel that receives the code.
+    #[arg(long, value_enum, default_value_t = StepUpChannel::Email)]
+    pub channel: StepUpChannel,
+    /// Verification code, if already known. Prompted for otherwise.
+    #[arg(long)]
+    pub code: Option<String>,
+}
+
+/// Sensitive actions supported by the IAM step-up contract.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum StepUpActionArg {
+    /// Revoke one of the current Carbon's sessions.
+    #[value(name = "account.session_revoke")]
+    AccountSessionRevoke,
+    /// Revoke every session belonging to the current Carbon.
+    #[value(name = "account.sessions_revoke_all")]
+    AccountSessionsRevokeAll,
+    /// Transfer an organization's ownership.
+    #[value(name = "organization.transfer_ownership")]
+    OrganizationTransferOwnership,
+    /// Change organization roles, capabilities, members, or Silicon access.
+    #[value(name = "organization.authorization_change")]
+    OrganizationAuthorizationChange,
+    /// Change organization SSO configuration.
+    #[value(name = "organization.sso_change")]
+    OrganizationSsoChange,
+    /// Create, redirect, delete, or resubscribe a Silicon webhook.
+    #[value(name = "organization.silicon_webhook.redirect")]
+    OrganizationSiliconWebhookRedirect,
+    /// Rotate an Application client secret.
+    #[value(name = "application.client_secret.rotate")]
+    ApplicationClientSecretRotate,
+    /// Rotate an Application webhook signing secret.
+    #[value(name = "application.webhook_secret.rotate")]
+    ApplicationWebhookSecretRotate,
+    /// Rotate a Silicon credential.
+    #[value(name = "silicon.rotate_token")]
+    SiliconRotateToken,
+    /// Change an organization's platform SSO entitlement.
+    #[value(name = "platform_admin.sso_entitlement")]
+    PlatformAdminSsoEntitlement,
+    /// Record a platform Application review decision.
+    #[value(name = "platform_admin.application_review")]
+    PlatformAdminApplicationReview,
+}
+
+/// Verified channel used by step-up.
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum StepUpChannel {
+    /// Send the code to the primary email address.
+    #[default]
+    Email,
+    /// Send the code to the primary phone number.
+    Phone,
+}
+
 /// Organization commands.
 #[derive(Debug, Subcommand)]
 pub enum OrgCommand {
     /// List organizations you belong to.
-    List(PageArgs),
+    List {
+        /// Only active or removed memberships.
+        #[arg(long, value_parser = ["active", "removed"])]
+        status: Option<String>,
+        /// Paging.
+        #[command(flatten)]
+        page: PageArgs,
+    },
     /// Create an organization.
     Create {
         /// Handle to claim.
@@ -199,17 +373,39 @@ pub enum OrgCommand {
         handle: Option<String>,
     },
     /// Rename or re-describe an organization.
+    #[command(group(
+        clap::ArgGroup::new("changes")
+            .args([
+                "name",
+                "logo",
+                "clear_logo",
+                "description",
+                "clear_description",
+                "join_method"
+            ])
+            .required(true)
+            .multiple(true)
+    ))]
     Update {
         /// Handle. Defaults to --org.
         handle: Option<String>,
         /// New display name.
         #[arg(long)]
         name: Option<String>,
+        /// New logo URL.
+        #[arg(long)]
+        logo: Option<String>,
+        /// Remove the current logo.
+        #[arg(long, conflicts_with = "logo")]
+        clear_logo: bool,
         /// New description.
         #[arg(long)]
         description: Option<String>,
+        /// Remove the current description.
+        #[arg(long, conflicts_with = "description")]
+        clear_description: bool,
         /// Join method: `email` or `sso`.
-        #[arg(long)]
+        #[arg(long, value_parser = ["email", "sso"])]
         join_method: Option<String>,
     },
     /// Check whether a handle can be claimed.
@@ -217,14 +413,29 @@ pub enum OrgCommand {
         /// Handle to check.
         handle: String,
     },
-    /// Hand ownership to another member. Needs --step-up.
+    /// Hand ownership to another member. Needs --step-up: action
+    /// `organization.transfer_ownership`, resource = the organization UUID.
     Transfer {
         /// Membership that becomes the owner.
         membership_id: Uuid,
-        /// Handle. Defaults to --org.
-        #[arg(long)]
+        /// Reserved for handler compatibility; use the global --org option.
+        #[arg(skip)]
         org: Option<String>,
     },
+}
+
+/// Organization SSO commands.
+#[derive(Debug, Subcommand)]
+pub enum SsoCommand {
+    /// Show the selected organization's SSO configuration. Requires `sso.manage`.
+    Show,
+    /// Create a five-minute `WorkOS` setup link. Requires entitlement and `sso.manage`.
+    SetupLink,
+    /// Check the active `WorkOS` connection end to end. Requires `sso.manage`.
+    Test,
+    /// Disable SSO. Requires `sso.manage` and --step-up: action
+    /// `organization.sso_change`, resource = the organization UUID.
+    Disable,
 }
 
 /// Member commands.
@@ -233,13 +444,13 @@ pub enum MemberCommand {
     /// List members.
     List {
         /// Only Carbons, or only Silicons.
-        #[arg(long, value_name = "carbon|silicon")]
+        #[arg(long, value_parser = ["carbon", "silicon"])]
         principal_type: Option<String>,
-        /// Only members carrying this tag.
-        #[arg(long)]
+        /// Only members carrying this tag UUID from `iam tag list`.
+        #[arg(long, value_name = "TAG_ID", value_parser = parse_tag_id)]
         tag: Option<Uuid>,
         /// Only members in this state.
-        #[arg(long)]
+        #[arg(long, value_parser = ["active", "removed"])]
         status: Option<String>,
         /// Paging.
         #[command(flatten)]
@@ -256,17 +467,46 @@ pub enum MemberCommand {
         membership_id: Uuid,
     },
     /// Update a member's directory metadata.
+    ///
+    /// `--first-silicon` applies only to Carbon memberships. Reporting-line
+    /// and profile-photo options apply only to Silicon memberships.
+    #[command(group(
+        clap::ArgGroup::new("changes")
+            .args([
+                "first_silicon",
+                "clear_first_silicon",
+                "reports_to",
+                "clear_reports_to",
+                "profile_photo",
+                "clear_profile_photo"
+            ])
+            .required(true)
+            .multiple(true)
+    ))]
     Update {
         /// Membership identifier.
         membership_id: Uuid,
-        /// New reporting line.
+        /// Carbon only: assign the Carbon's first Silicon membership.
+        #[arg(long)]
+        first_silicon: Option<Uuid>,
+        /// Carbon only: unassign the Carbon's first Silicon.
+        #[arg(long, conflicts_with = "first_silicon")]
+        clear_first_silicon: bool,
+        /// Silicon only: assign a new reporting line.
         #[arg(long)]
         reports_to: Option<Uuid>,
-        /// New profile photo URL.
+        /// Silicon only: remove the current reporting line.
+        #[arg(long, conflicts_with = "reports_to")]
+        clear_reports_to: bool,
+        /// Silicon only: set a profile-photo override URL.
         #[arg(long)]
         profile_photo: Option<String>,
+        /// Silicon only: remove the profile-photo override.
+        #[arg(long, conflicts_with = "profile_photo")]
+        clear_profile_photo: bool,
     },
-    /// Remove a member.
+    /// Remove a member. Needs --step-up: action
+    /// `organization.authorization_change`, resource = this membership UUID.
     Remove {
         /// Membership identifier.
         membership_id: Uuid,
@@ -274,28 +514,52 @@ pub enum MemberCommand {
         #[arg(long)]
         reassign_reports_to: Option<Uuid>,
     },
-    /// Promote a member to administrator. Needs --step-up.
+    /// Promote a member to administrator. Needs --step-up: action
+    /// `organization.authorization_change`, resource = this membership UUID.
     Promote {
         /// Membership identifier.
         membership_id: Uuid,
     },
-    /// Demote an administrator. Needs --step-up.
+    /// Demote an administrator. Needs --step-up: action
+    /// `organization.authorization_change`, resource = this membership UUID.
     Demote {
         /// Membership identifier.
         membership_id: Uuid,
     },
-    /// Replace an administrator's capabilities. Needs --step-up.
+    /// Replace an administrator's capabilities. Needs --step-up: action
+    /// `organization.authorization_change`, resource = this membership UUID.
     Capabilities {
         /// Membership identifier.
         membership_id: Uuid,
         /// The complete set to grant; anything omitted is revoked.
-        #[arg(long = "capability", value_name = "CAPABILITY")]
+        #[arg(
+            long = "capability",
+            value_name = "CAPABILITY",
+            value_parser = [
+                "organization.update",
+                "members.invite",
+                "members.update_directory",
+                "members.remove",
+                "silicons.create",
+                "silicons.update_directory",
+                "silicons.manage_hierarchy",
+                "silicons.remove",
+                "silicons.rotate_token",
+                "tags.manage",
+                "trust.manage",
+                "roles.request",
+                "roles.approve",
+                "admins.create",
+                "admins.manage",
+                "sso.manage"
+            ]
+        )]
         capabilities: Vec<String>,
     },
     /// Show the organization directory.
     Directory {
-        /// Field selector the service understands.
-        #[arg(long)]
+        /// Comma-separated fields: name,id,role,org,tags,trust.
+        #[arg(long, value_parser = parse_directory_fields)]
         fields: Option<String>,
         /// Paging.
         #[command(flatten)]
@@ -303,8 +567,16 @@ pub enum MemberCommand {
     },
     /// Show your own directory entry.
     Self_ {
-        /// Field selector the service understands.
-        #[arg(long)]
+        /// Comma-separated fields: name,id,role,org,tags,trust.
+        #[arg(long, value_parser = parse_directory_fields)]
+        fields: Option<String>,
+    },
+    /// Show one member through the sparse organization directory.
+    DirectoryMember {
+        /// Membership identifier.
+        membership_id: Uuid,
+        /// Comma-separated fields: name,id,role,org,tags,trust.
+        #[arg(long, value_parser = parse_directory_fields)]
         fields: Option<String>,
     },
 }
@@ -315,28 +587,45 @@ pub enum InviteCommand {
     /// List invitations this organization issued.
     List {
         /// Only invitations in this state.
-        #[arg(long)]
+        #[arg(
+            long,
+            value_parser = ["pending", "accepted", "revoked", "expired"]
+        )]
         status: Option<String>,
         /// Paging.
         #[command(flatten)]
         page: PageArgs,
     },
     /// Invite a Carbon by handle or email.
+    #[command(group(
+        clap::ArgGroup::new("identity")
+            .args(["carbon_id", "email"])
+            .required(true)
+            .multiple(false)
+    ))]
     Create {
         /// Carbon ID to invite.
-        #[arg(long, group = "identity")]
+        #[arg(long)]
         carbon_id: Option<String>,
         /// Email address to invite.
-        #[arg(long, group = "identity")]
+        #[arg(long)]
         email: Option<String>,
         /// Job role granted on acceptance.
         #[arg(long)]
         job_role: String,
         /// Trust boundary the new member starts with.
-        #[arg(long, default_value = "internal")]
+        #[arg(
+            long,
+            default_value = "internal",
+            value_parser = ["internal", "external"]
+        )]
         boundary: String,
         /// Trust level the new member starts with.
-        #[arg(long, default_value = "not_trusted")]
+        #[arg(
+            long,
+            default_value = "not_trusted",
+            value_parser = ["not_trusted", "needs_approval", "trusted"]
+        )]
         level: String,
     },
     /// Show one invitation.
@@ -409,33 +698,53 @@ pub enum TrustCommand {
     /// Replace the organization-wide default.
     SetDefault {
         /// `internal` or `external`.
-        #[arg(long)]
+        #[arg(long, value_parser = ["internal", "external"])]
         boundary: String,
         /// `not_trusted`, `needs_approval`, or `trusted`.
-        #[arg(long)]
+        #[arg(
+            long,
+            value_parser = ["not_trusted", "needs_approval", "trusted"]
+        )]
         level: String,
     },
     /// List trust rules.
     List(PageArgs),
     /// Create a trust rule.
+    #[command(
+        group(
+            clap::ArgGroup::new("subject")
+                .args(["subject_tag", "subject_membership"])
+                .required(true)
+                .multiple(false)
+        ),
+        group(
+            clap::ArgGroup::new("target")
+                .args(["target_tag", "target_membership"])
+                .required(true)
+                .multiple(false)
+        )
+    )]
     Create {
-        /// Subject tag.
-        #[arg(long, group = "subject")]
+        /// Subject tag UUID from `iam tag list`.
+        #[arg(long, value_name = "TAG_ID")]
         subject_tag: Option<Uuid>,
-        /// Subject membership.
-        #[arg(long, group = "subject")]
+        /// Subject membership UUID from `iam member list`.
+        #[arg(long, value_name = "MEMBERSHIP_ID")]
         subject_membership: Option<Uuid>,
-        /// Target tag.
-        #[arg(long, group = "target")]
+        /// Target tag UUID from `iam tag list`.
+        #[arg(long, value_name = "TAG_ID")]
         target_tag: Option<Uuid>,
-        /// Target Silicon membership.
-        #[arg(long, group = "target")]
+        /// Target active Silicon membership UUID from `iam silicon show`.
+        #[arg(long, value_name = "SILICON_MEMBERSHIP_ID")]
         target_membership: Option<Uuid>,
         /// `internal` or `external`.
-        #[arg(long)]
+        #[arg(long, value_parser = ["internal", "external"])]
         boundary: String,
         /// `not_trusted`, `needs_approval`, or `trusted`.
-        #[arg(long)]
+        #[arg(
+            long,
+            value_parser = ["not_trusted", "needs_approval", "trusted"]
+        )]
         level: String,
     },
     /// Show one trust rule.
@@ -448,10 +757,13 @@ pub enum TrustCommand {
         /// Rule identifier.
         rule_id: Uuid,
         /// `internal` or `external`.
-        #[arg(long)]
+        #[arg(long, value_parser = ["internal", "external"])]
         boundary: String,
         /// `not_trusted`, `needs_approval`, or `trusted`.
-        #[arg(long)]
+        #[arg(
+            long,
+            value_parser = ["not_trusted", "needs_approval", "trusted"]
+        )]
         level: String,
     },
     /// Archive a trust rule.
@@ -461,11 +773,11 @@ pub enum TrustCommand {
     },
     /// Explain the trust between a subject and a target Silicon.
     Evaluate {
-        /// Subject membership.
-        #[arg(long)]
+        /// Subject membership UUID from `iam member list`.
+        #[arg(long, value_name = "MEMBERSHIP_ID")]
         subject: Uuid,
-        /// Target Silicon membership.
-        #[arg(long)]
+        /// Target active Silicon membership UUID from `iam silicon show`.
+        #[arg(long, value_name = "SILICON_MEMBERSHIP_ID")]
         target: Uuid,
     },
 }
@@ -476,10 +788,22 @@ pub enum ApprovalCommand {
     /// List approval requests.
     List {
         /// Only requests in this state.
-        #[arg(long)]
+        #[arg(
+            long,
+            value_parser = ["pending", "approved", "rejected", "completed"]
+        )]
         status: Option<String>,
         /// Only requests of this kind.
-        #[arg(long)]
+        #[arg(
+            long,
+            value_parser = [
+                "carbon_job_role_change",
+                "silicon_job_role_change",
+                "carbon_tag_change",
+                "silicon_tag_change",
+                "silicon_token_rotation"
+            ]
+        )]
         kind: Option<String>,
         /// Only requests you can decide now.
         #[arg(long)]
@@ -493,18 +817,19 @@ pub enum ApprovalCommand {
         /// Request identifier.
         request_id: Uuid,
     },
-    /// Approve or reject a request.
+    /// Approve or reject a request. A Silicon token rotation needs --step-up:
+    /// action `silicon.rotate_token`, resource = the Silicon principal UUID.
     Decide {
         /// Request identifier.
         request_id: Uuid,
         /// `approve` or `reject`.
-        #[arg(long)]
+        #[arg(long, value_parser = ["approve", "reject"])]
         decision: String,
         /// Reason recorded with the decision.
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Request a job-role change.
+    /// Request a Silicon job-role change. Silicon-only; Carbon callers are forbidden.
     RequestRole {
         /// Membership whose role should change.
         #[arg(long)]
@@ -513,7 +838,13 @@ pub enum ApprovalCommand {
         #[arg(long)]
         job_role: String,
     },
-    /// Request a tag change for a member.
+    /// Request a Silicon tag change. Silicon-only; Carbon callers are forbidden.
+    #[command(group(
+        clap::ArgGroup::new("changes")
+            .args(["add", "remove"])
+            .required(true)
+            .multiple(true)
+    ))]
     RequestTags {
         /// Membership whose tags should change.
         #[arg(long)]
@@ -563,8 +894,8 @@ pub enum ApprovalCommand {
 pub enum SiliconCommand {
     /// List Silicons.
     List {
-        /// Only Silicons carrying this tag.
-        #[arg(long)]
+        /// Only Silicons carrying this tag UUID from `iam tag list`.
+        #[arg(long, value_name = "TAG_ID", value_parser = parse_tag_id)]
         tag: Option<Uuid>,
         /// Paging.
         #[command(flatten)]
@@ -572,7 +903,9 @@ pub enum SiliconCommand {
     },
     /// Create a Silicon, returning its credential once.
     Create {
-        /// Handle component; the global ID becomes `handle:org`.
+        /// Local handle using --org, or canonical `handle:org`. A canonical ID
+        /// supplies its organization when none is selected and must match one
+        /// that is selected.
         handle: String,
         /// Job role this Silicon holds.
         #[arg(long)]
@@ -580,7 +913,7 @@ pub enum SiliconCommand {
         /// Display name.
         #[arg(long)]
         display_name: Option<String>,
-        /// Membership this Silicon reports to.
+        /// Active Silicon membership this Silicon reports to.
         #[arg(long)]
         reports_to: Option<Uuid>,
         /// Tags to assign at creation.
@@ -589,85 +922,137 @@ pub enum SiliconCommand {
     },
     /// Show one Silicon.
     Show {
-        /// Global Silicon ID.
+        /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
     },
     /// Update a Silicon's directory configuration.
+    #[command(group(
+        clap::ArgGroup::new("changes")
+            .args([
+                "display_name",
+                "timezone",
+                "description",
+                "clear_description",
+                "profile_photo",
+                "clear_profile_photo",
+                "reports_to",
+                "clear_reports_to"
+            ])
+            .required(true)
+            .multiple(true)
+    ))]
     Update {
-        /// Global Silicon ID.
+        /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
         /// New display name.
         #[arg(long)]
         display_name: Option<String>,
-        /// New reporting line.
+        /// New IANA time-zone identifier.
+        #[arg(long)]
+        timezone: Option<String>,
+        /// New description.
+        #[arg(long)]
+        description: Option<String>,
+        /// Remove the current description.
+        #[arg(long, conflicts_with = "description")]
+        clear_description: bool,
+        /// New profile photo URL.
+        #[arg(long)]
+        profile_photo: Option<String>,
+        /// Remove the profile-photo override.
+        #[arg(long, conflicts_with = "profile_photo")]
+        clear_profile_photo: bool,
+        /// New active Silicon membership to report to.
         #[arg(long)]
         reports_to: Option<Uuid>,
+        /// Remove the current reporting line.
+        #[arg(long, conflicts_with = "reports_to")]
+        clear_reports_to: bool,
     },
-    /// Remove a Silicon.
+    /// Remove a Silicon. Needs --step-up: action
+    /// `organization.authorization_change`, resource = its membership UUID.
     Remove {
-        /// Global Silicon ID.
+        /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
-        /// Membership to inherit anyone reporting to it.
+        /// Active Silicon membership to inherit anyone reporting to it.
         #[arg(long)]
         reassign_reports_to: Option<Uuid>,
     },
-    /// Request credential rotation. Needs --step-up.
+    /// Request credential rotation. Needs --step-up: action
+    /// `silicon.rotate_token`, resource = the Silicon principal UUID.
     RotateRequest {
-        /// Global Silicon ID.
+        /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
     },
-    /// Complete an approved rotation. Needs --step-up.
+    /// Complete an approved rotation. Needs --step-up: action
+    /// `silicon.rotate_token`, resource = the Silicon principal UUID.
     RotateComplete {
-        /// Global Silicon ID.
+        /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
         /// The approved request.
         request_id: Uuid,
     },
     /// Show the webhook endpoint.
     Webhook {
-        /// Global Silicon ID.
+        /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
     },
-    /// Configure or replace the webhook endpoint.
+    /// Configure or replace the webhook endpoint. Needs --step-up: action
+    /// `organization.silicon_webhook.redirect`, resource = its membership UUID.
     SetWebhook {
-        /// Global Silicon ID.
+        /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
         /// HTTPS endpoint to deliver to.
-        #[arg(long)]
-        url: String,
+        #[arg(long = "webhook-url")]
+        webhook_url: String,
     },
-    /// Remove the webhook endpoint.
+    /// Remove the webhook endpoint. Needs --step-up: action
+    /// `organization.silicon_webhook.redirect`, resource = its membership UUID.
     DeleteWebhook {
-        /// Global Silicon ID.
+        /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
     },
     /// Show the webhook subscription.
     Subscription {
-        /// Global Silicon ID.
+        /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
     },
-    /// Replace the webhook subscription.
+    /// Replace the webhook subscription. Needs --step-up: action
+    /// `organization.silicon_webhook.redirect`, resource = its membership UUID.
     SetSubscription {
-        /// Global Silicon ID.
+        /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
         /// `all` for every event, or `selected` with --topic.
-        #[arg(long, default_value = "all")]
+        #[arg(long, default_value = "all", value_parser = ["all", "selected"])]
         mode: String,
         /// Topics to receive when mode is `selected`.
-        #[arg(long = "topic", value_name = "TOPIC")]
+        #[arg(
+            long = "topic",
+            value_name = "TOPIC",
+            value_parser = [
+                "membership_lifecycle",
+                "member_updates",
+                "trust_updates"
+            ],
+            required_if_eq("mode", "selected")
+        )]
         topics: Vec<String>,
         /// Additional tags whose events should also be delivered.
         #[arg(long = "tag", value_name = "TAG_ID")]
         tags: Vec<Uuid>,
+        /// Filter to the Silicon's own event-time tags, with no additional tags.
+        #[arg(long, conflicts_with = "tags")]
+        own_tags_only: bool,
     },
-    /// Remove the webhook subscription.
+    /// Remove the webhook subscription. Needs --step-up: action
+    /// `organization.silicon_webhook.redirect`, resource = its membership UUID.
     DeleteSubscription {
-        /// Global Silicon ID.
+        /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
     },
     /// List deliveries that exhausted their retries.
     DeadLetters {
-        /// Global Silicon ID.
+        /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
         /// Paging.
         #[command(flatten)]
@@ -675,10 +1060,10 @@ pub enum SiliconCommand {
     },
     /// Re-queue dead-lettered deliveries.
     Replay {
-        /// Global Silicon ID.
+        /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
         /// Deliveries to replay.
-        #[arg(long = "delivery", value_name = "DELIVERY_ID")]
+        #[arg(long = "delivery", value_name = "DELIVERY_ID", required = true)]
         deliveries: Vec<Uuid>,
     },
 }
@@ -686,10 +1071,22 @@ pub enum SiliconCommand {
 /// Application commands.
 #[derive(Debug, Subcommand)]
 pub enum AppCommand {
-    /// List applications you can administer.
+    /// List applications across all organizations you can administer.
+    ///
+    /// This is an intentionally cross-organization view. --org does not
+    /// filter it; use --status to filter by Application state.
     List {
         /// Only applications in this state.
-        #[arg(long)]
+        #[arg(
+            long,
+            value_parser = [
+                "under_review",
+                "verified",
+                "rejected",
+                "suspended",
+                "deleted"
+            ]
+        )]
         status: Option<String>,
         /// Paging.
         #[command(flatten)]
@@ -697,21 +1094,24 @@ pub enum AppCommand {
     },
     /// Register an application, returning its generated client secret once.
     Create {
-        /// Local Application handle to claim; IAM prefixes the organization.
+        /// Local handle using --org, or canonical `org>handle`. A canonical ID
+        /// supplies its organization when none is selected and must match one
+        /// that is selected.
         app_id: String,
         /// Display name.
         #[arg(long)]
         name: String,
-        /// Owning organization. Defaults to --org.
-        #[arg(long)]
+        /// Reserved for handler compatibility; use the global --org option.
+        #[arg(skip)]
         org: Option<String>,
         /// HTTPS endpoint the service delivers webhooks to.
         #[arg(long)]
         webhook_url: String,
-        /// Caller-chosen webhook signing secret.
+        /// Caller-chosen secret: 32-512 non-whitespace ASCII characters. IAM never generates it.
         #[arg(long)]
         webhook_secret: String,
-        /// Pathless public origin, without a trailing slash, that other applications discover.
+        /// Pathless public origin without a trailing slash, credentials,
+        /// query, or fragment. HTTPS except for localhost, 127.0.0.1, or `::1`.
         #[arg(long)]
         base_url: String,
         /// JSON array of OBO endpoint definitions.
@@ -720,48 +1120,73 @@ pub enum AppCommand {
     },
     /// Show one application.
     Show {
-        /// Canonical Application identifier (`org>handle`).
+        /// Local handle, or canonical `org>handle`; local uses --org.
         app_id: String,
     },
     /// Update an application.
+    #[command(group(
+        clap::ArgGroup::new("changes")
+            .args([
+                "name",
+                "clear_name",
+                "logo",
+                "clear_logo",
+                "base_url",
+                "obo_endpoints"
+            ])
+            .required(true)
+            .multiple(true)
+    ))]
     Update {
-        /// Canonical Application identifier (`org>handle`).
+        /// Local handle, or canonical `org>handle`; local uses --org.
         app_id: String,
         /// New display name.
         #[arg(long)]
         name: Option<String>,
-        /// New pathless public origin, without a trailing slash.
+        /// Remove the current display name.
+        #[arg(long, conflicts_with = "name")]
+        clear_name: bool,
+        /// New logo URL.
+        #[arg(long)]
+        logo: Option<String>,
+        /// Remove the current logo.
+        #[arg(long, conflicts_with = "logo")]
+        clear_logo: bool,
+        /// New pathless public origin without a trailing slash, credentials,
+        /// query, or fragment. HTTPS except for localhost, 127.0.0.1, or `::1`.
         #[arg(long)]
         base_url: Option<String>,
         /// Complete replacement OBO endpoint array as JSON.
         #[arg(long, value_name = "JSON")]
         obo_endpoints: Option<String>,
     },
-    /// Rotate the client secret. Needs --step-up.
+    /// Rotate the client secret. Needs --step-up: action
+    /// `application.client_secret.rotate`, resource = the Application UUID.
     RotateSecret {
-        /// Canonical Application identifier (`org>handle`).
+        /// Local handle, or canonical `org>handle`; local uses --org.
         app_id: String,
     },
-    /// Rotate the webhook signing secret. Needs --step-up.
+    /// Rotate the webhook signing secret. Needs --step-up: action
+    /// `application.webhook_secret.rotate`, resource = the Application UUID.
     RotateWebhookSecret {
-        /// Canonical Application identifier (`org>handle`).
+        /// Local handle, or canonical `org>handle`; local uses --org.
         app_id: String,
-        /// Caller-chosen successor webhook signing secret.
+        /// Caller-chosen secret: 32-512 non-whitespace ASCII characters. IAM never generates it.
         #[arg(long)]
         webhook_secret: String,
     },
     /// Discover an application's base URL as another application.
     Discover {
-        /// Canonical Application whose base URL to discover.
+        /// Target local handle or canonical `org>handle`; local uses --org.
         app_id: String,
-        /// Canonical Application making the request.
+        /// Requester local handle or canonical `org>handle`; local uses --org.
         #[arg(long = "as-app-id", value_name = "APP_ID")]
         requester_app_id: String,
         /// Requester's application secret. Prompted for when omitted.
         #[arg(long)]
         app_secret: Option<String>,
     },
-    /// Application token exchange, refresh, and introspection.
+    /// Application token exchange, refresh, introspection, and revocation.
     #[command(subcommand)]
     Token(AppTokenCommand),
     /// Same-organization on-behalf-of access.
@@ -784,7 +1209,7 @@ pub enum AppCommand {
         /// Value of `X-Silicon-IAM-Signature`.
         #[arg(long)]
         signature: String,
-        /// Signing secret for this key version.
+        /// Signing secret for this key version: 32-512 non-whitespace ASCII characters.
         #[arg(long)]
         webhook_secret: String,
         /// Maximum accepted clock distance in seconds.
@@ -792,29 +1217,32 @@ pub enum AppCommand {
         tolerance_seconds: u64,
     },
     /// Import a production application into the selected testing environment.
+    /// Requires --test and a signed-in test Carbon; an existing target
+    /// organization must be administered by that Carbon.
     Import {
         /// Canonical production application identifier, such as `google>drive`.
         app_id: String,
     },
     /// Show the webhook endpoint.
     Webhook {
-        /// Canonical Application identifier (`org>handle`).
+        /// Local handle, or canonical `org>handle`; local uses --org.
         app_id: String,
     },
     /// Propose a webhook endpoint.
     SetWebhook {
-        /// Canonical Application identifier (`org>handle`).
+        /// Local handle, or canonical `org>handle`; local uses --org.
         app_id: String,
         /// HTTPS endpoint to deliver to.
-        #[arg(long)]
-        url: String,
-        /// New signing secret; required when replacing an imported test webhook.
+        #[arg(long = "webhook-url")]
+        webhook_url: String,
+        /// New 32-512 non-whitespace ASCII secret; required when replacing an
+        /// imported test webhook.
         #[arg(long)]
         webhook_secret: Option<String>,
     },
     /// List deliveries that exhausted their retries.
     DeadLetters {
-        /// Canonical Application identifier (`org>handle`).
+        /// Local handle, or canonical `org>handle`; local uses --org.
         app_id: String,
         /// Paging.
         #[command(flatten)]
@@ -822,15 +1250,15 @@ pub enum AppCommand {
     },
     /// Re-queue dead-lettered deliveries.
     Replay {
-        /// Canonical Application identifier (`org>handle`).
+        /// Local handle, or canonical `org>handle`; local uses --org.
         app_id: String,
         /// Deliveries to replay.
-        #[arg(long = "delivery", value_name = "DELIVERY_ID")]
+        #[arg(long = "delivery", value_name = "DELIVERY_ID", required = true)]
         deliveries: Vec<Uuid>,
     },
     /// Show logins performed through an application.
     History {
-        /// Canonical Application identifier (`org>handle`).
+        /// Local handle, or canonical `org>handle`; local uses --org.
         app_id: String,
         /// Paging.
         #[command(flatten)]
@@ -843,7 +1271,7 @@ pub enum AppCommand {
 pub enum AppTokenCommand {
     /// Exchange a single-use short-lived token for an Application session.
     Exchange {
-        /// Canonical Application identifier (`org>handle`).
+        /// Local handle, or canonical `org>handle`; local uses --org.
         app_id: String,
         /// Short-lived token. Prompted for when omitted.
         #[arg(long)]
@@ -851,13 +1279,14 @@ pub enum AppTokenCommand {
         /// Application secret. Prompted for when omitted.
         #[arg(long)]
         app_secret: Option<String>,
-        /// Reuse this after an uncertain exchange of the same short-lived token.
+        /// A 16-255 character visible-ASCII key. Reuse it after an uncertain
+        /// exchange of the same short-lived token; generated when omitted.
         #[arg(long)]
         idempotency_key: Option<String>,
     },
     /// Rotate an Application refresh token and its access token.
     Refresh {
-        /// Canonical Application identifier (`org>handle`).
+        /// Local handle, or canonical `org>handle`; local uses --org.
         app_id: String,
         /// Refresh token. Prompted for when omitted.
         #[arg(long)]
@@ -865,13 +1294,14 @@ pub enum AppTokenCommand {
         /// Application secret. Prompted for when omitted.
         #[arg(long)]
         app_secret: Option<String>,
-        /// Reuse this after an uncertain refresh; never retry with a new key.
+        /// A 16-255 character visible-ASCII key. Reuse it after an uncertain
+        /// refresh; never retry with a new key. Generated when omitted.
         #[arg(long)]
         idempotency_key: Option<String>,
     },
     /// Ask IAM for a token's current, authoritative state.
     Introspect {
-        /// Canonical Application identifier (`org>handle`).
+        /// Local handle, or canonical `org>handle`; local uses --org.
         app_id: String,
         /// Access or refresh token. Prompted for when omitted.
         #[arg(long)]
@@ -879,16 +1309,34 @@ pub enum AppTokenCommand {
         /// Hint which kind of token is being checked.
         #[arg(long, value_enum)]
         token_type: Option<AppTokenType>,
-        /// Optional organization context sent as `X-Org-ID`.
+        /// Exact organization handle sent as `X-Org-ID`; a mismatch makes the token inactive.
         #[arg(long)]
         org_context: Option<String>,
         /// Application secret. Prompted for when omitted.
         #[arg(long)]
         app_secret: Option<String>,
     },
+    /// Revoke one access token, or the complete family of a refresh token.
+    Revoke {
+        /// Local handle, or canonical `org>handle`; local uses --org.
+        app_id: String,
+        /// Access or refresh token. Prompted for when omitted.
+        #[arg(long)]
+        token: Option<String>,
+        /// Hint which kind of token is being revoked.
+        #[arg(long, value_enum)]
+        token_type: Option<AppTokenType>,
+        /// Application secret. Prompted for when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+        /// A 16-255 character visible-ASCII key. Reuse it after an uncertain
+        /// revocation of the same token; generated when omitted.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
 }
 
-/// Token type hints accepted by Application introspection.
+/// Token type hints accepted by Application introspection and revocation.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum AppTokenType {
     /// An Application access token.
@@ -902,9 +1350,9 @@ pub enum AppTokenType {
 pub enum AppOboCommand {
     /// Discover an Application's callable OBO endpoint catalog.
     Endpoints {
-        /// Canonical audience Application identifier (`org>handle`).
+        /// Audience local handle or canonical `org>handle`; local uses --org.
         audience_app_id: String,
-        /// Canonical Application making the request.
+        /// Requester local handle or canonical `org>handle`; local uses --org.
         #[arg(long = "as-app-id", value_name = "APP_ID")]
         requester_app_id: String,
         /// Requester's Application secret. Prompted for when omitted.
@@ -913,11 +1361,11 @@ pub enum AppOboCommand {
     },
     /// Bind a single-use proof to one exact downstream request.
     Exchange {
-        /// Canonical audience Application identifier (`org>handle`).
+        /// Audience local handle or canonical `org>handle`; local uses --org.
         audience_app_id: String,
         /// Registered endpoint identifier from `app obo endpoints`.
         endpoint_id: String,
-        /// Canonical Application making the request.
+        /// Requester local handle or canonical `org>handle`; local uses --org.
         #[arg(long = "as-app-id", value_name = "APP_ID")]
         requester_app_id: String,
         /// Requester's Application secret. Prompted for when omitted.
@@ -932,10 +1380,12 @@ pub enum AppOboCommand {
         /// JSON object required by the registered endpoint.
         #[arg(long, default_value = "{}")]
         metadata: String,
-        /// Reuse this with the same timestamp and request after an uncertain exchange.
+        /// A 16-255 character visible-ASCII key. Reuse it with the same request
+        /// after an uncertain exchange; the timestamp may refresh. Generated
+        /// when omitted.
         #[arg(long)]
         idempotency_key: Option<String>,
-        /// Unix timestamp used in the OBO signature. Defaults to now.
+        /// Override the OBO Unix timestamp; normally omit so the client uses now.
         #[arg(long)]
         timestamp: Option<i64>,
         /// Exact downstream body bytes.
@@ -944,7 +1394,7 @@ pub enum AppOboCommand {
     },
     /// Consume and verify an OBO proof as its audience Application.
     Verify {
-        /// Canonical audience Application identifier (`org>handle`).
+        /// Audience local handle or canonical `org>handle`; local uses --org.
         audience_app_id: String,
         /// Audience Application secret. Prompted for when omitted.
         #[arg(long)]
@@ -981,7 +1431,7 @@ pub enum EnvCommand {
     /// List environments.
     List {
         /// `active`, `deleted`, or `all`.
-        #[arg(long)]
+        #[arg(long, value_parser = ["active", "deleted", "all"])]
         status: Option<String>,
         /// Paging.
         #[command(flatten)]
@@ -1001,6 +1451,12 @@ pub enum EnvCommand {
         environment_id: Uuid,
     },
     /// Rename or re-describe an environment.
+    #[command(group(
+        clap::ArgGroup::new("changes")
+            .args(["name", "description", "clear_description"])
+            .required(true)
+            .multiple(true)
+    ))]
     Update {
         /// Environment identifier.
         environment_id: Uuid,
@@ -1010,6 +1466,9 @@ pub enum EnvCommand {
         /// New description.
         #[arg(long)]
         description: Option<String>,
+        /// Remove the current description.
+        #[arg(long, conflicts_with = "description")]
+        clear_description: bool,
     },
     /// Retire an environment, keeping it recoverable.
     Delete {
@@ -1032,20 +1491,26 @@ pub enum EnvCommand {
         environment_id: Uuid,
     },
     /// Erase everything inside an environment.
+    ///
+    /// With an ID, run outside --test using the production control plane.
+    /// Without an ID, --test is required and authorizes cleaning with the
+    /// locally stored environment key.
     Clean {
         /// Environment identifier. Omit to clean the one selected by --test.
         environment_id: Option<Uuid>,
     },
-    /// Describe the environment selected by --test.
+    /// Describe the environment selected by --test. Requires --test.
     Current,
 }
 
 /// Session commands.
 #[derive(Debug, Subcommand)]
 pub enum SessionCommand {
-    /// List your active sessions.
+    /// List active and recently revoked sessions.
     List(PageArgs),
-    /// Revoke one of your sessions. Needs --step-up.
+    /// Revoke one of your sessions. Needs --step-up: action
+    /// `account.session_revoke`, resource = this session UUID. The target,
+    /// and the current session when different, must be at least 12 hours old.
     Revoke {
         /// Session identifier.
         session_id: Uuid,
@@ -1064,13 +1529,16 @@ pub enum ConfigCommand {
     /// Set a value on the current profile.
     Set {
         /// One of `url`, `org`, `auto-update`.
+        #[arg(value_parser = ["url", "org", "auto-update"])]
         key: String,
-        /// The value to store.
+        /// The value to store. For auto-update use on/off; URL follows --url's
+        /// security rules; org is an organization handle.
         value: String,
     },
     /// Clear a value on the current profile.
     Unset {
         /// `org`, or `auto-update` to restore its default-on policy.
+        #[arg(value_parser = ["org", "auto-update"])]
         key: String,
     },
     /// Switch the default profile.
@@ -1098,8 +1566,34 @@ pub struct PageArgs {
     #[arg(long)]
     pub cursor: Option<String>,
     /// Maximum entries to return.
-    #[arg(long)]
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..=100))]
     pub limit: Option<u16>,
+}
+
+/// Validate and normalize the directory's comma-separated field selector.
+fn parse_directory_fields(value: &str) -> Result<String, String> {
+    const ALLOWED: [&str; 6] = ["name", "id", "role", "org", "tags", "trust"];
+
+    let fields = value.split(',').map(str::trim).collect::<Vec<_>>();
+    if fields.iter().any(|field| field.is_empty()) {
+        return Err(format!(
+            "expected a comma-separated field list: {}",
+            ALLOWED.join(",")
+        ));
+    }
+    if let Some(invalid) = fields.iter().find(|field| !ALLOWED.contains(field)) {
+        return Err(format!(
+            "unknown directory field `{invalid}`; expected one of {}",
+            ALLOWED.join(",")
+        ));
+    }
+    Ok(fields.join(","))
+}
+
+/// Parses a tag filter with a message that points to the command that supplies
+/// the UUID. A tag name is deliberately not accepted here.
+fn parse_tag_id(value: &str) -> Result<Uuid, String> {
+    Uuid::parse_str(value).map_err(|_| "expected a tag UUID from `iam tag list`".to_owned())
 }
 
 /// Accepts only the familiar hyphenated UUID form.
@@ -1167,10 +1661,95 @@ mod tests {
     }
 
     #[test]
+    fn organization_scope_has_one_unambiguous_global_flag() {
+        use clap::Parser as _;
+
+        let parsed = Cli::try_parse_from([
+            "iam",
+            "app",
+            "create",
+            "billing",
+            "--name",
+            "Billing",
+            "--webhook-url",
+            "https://billing.example/hooks",
+            "--webhook-secret",
+            "caller-chosen-webhook-secret-0001",
+            "--base-url",
+            "https://billing.example",
+            "--org",
+            "acme",
+        ]);
+        assert!(parsed.is_ok(), "the global --org must work: {parsed:?}");
+        let Ok(cli) = parsed else { return };
+        assert_eq!(cli.global.org.as_deref(), Some("acme"));
+        assert!(matches!(
+            cli.command,
+            super::Command::App(super::AppCommand::Create { org: None, .. })
+        ));
+
+        let member_id = "0198aa41-52e7-7f32-8ab3-bd42110a6e2c";
+        let parsed = Cli::try_parse_from(["iam", "org", "transfer", member_id, "--org", "acme"]);
+        assert!(parsed.is_ok(), "the global --org must work: {parsed:?}");
+        let Ok(cli) = parsed else { return };
+        assert_eq!(cli.global.org.as_deref(), Some("acme"));
+        assert!(matches!(
+            cli.command,
+            super::Command::Org(super::OrgCommand::Transfer { org: None, .. })
+        ));
+    }
+
+    #[test]
+    fn webhook_urls_cannot_overwrite_the_service_url() {
+        use clap::Parser as _;
+
+        let parsed = Cli::try_parse_from([
+            "iam",
+            "--url",
+            "http://127.0.0.1:8080",
+            "silicon",
+            "set-webhook",
+            "builder",
+            "--webhook-url",
+            "https://hooks.example/events",
+        ]);
+        assert!(parsed.is_ok(), "{parsed:?}");
+        let Ok(cli) = parsed else { return };
+        assert_eq!(cli.global.url.as_deref(), Some("http://127.0.0.1:8080"));
+        assert!(matches!(
+            cli.command,
+            super::Command::Silicon(super::SiliconCommand::SetWebhook {
+                webhook_url,
+                ..
+            }) if webhook_url == "https://hooks.example/events"
+        ));
+
+        let parsed = Cli::try_parse_from([
+            "iam",
+            "app",
+            "set-webhook",
+            "acme>console",
+            "--webhook-url",
+            "https://hooks.example/app",
+        ]);
+        assert!(matches!(
+            parsed,
+            Ok(Cli {
+                command: super::Command::App(super::AppCommand::SetWebhook {
+                    webhook_url,
+                    ..
+                }),
+                ..
+            }) if webhook_url == "https://hooks.example/app"
+        ));
+    }
+
+    #[test]
     fn login_admits_exactly_one_identity() {
         use clap::Parser as _;
 
         assert!(Cli::try_parse_from(["iam", "login", "--email", "a@b.test"]).is_ok());
+        assert!(Cli::try_parse_from(["iam", "login"]).is_err());
         // Two identities is ambiguous, and the grammar says so rather than
         // silently preferring one.
         assert!(
@@ -1184,6 +1763,349 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn page_limits_are_bounded_by_the_service_contract() {
+        use clap::Parser as _;
+
+        assert!(Cli::try_parse_from(["iam", "org", "list", "--limit", "1"]).is_ok());
+        assert!(Cli::try_parse_from(["iam", "org", "list", "--limit", "100"]).is_ok());
+        assert!(Cli::try_parse_from(["iam", "org", "list", "--limit", "0"]).is_err());
+        assert!(Cli::try_parse_from(["iam", "org", "list", "--limit", "101"]).is_err());
+    }
+
+    #[test]
+    fn closed_contract_values_are_rejected_before_network_io() {
+        use clap::Parser as _;
+
+        let invalid = [
+            vec!["iam", "org", "update", "--join-method", "password"],
+            vec!["iam", "member", "list", "--principal-type", "robot"],
+            vec!["iam", "member", "list", "--status", "pending"],
+            vec!["iam", "invite", "list", "--status", "unknown"],
+            vec![
+                "iam",
+                "trust",
+                "set-default",
+                "--boundary",
+                "partner",
+                "--level",
+                "trusted",
+            ],
+            vec!["iam", "approval", "list", "--status", "cancelled"],
+            vec!["iam", "approval", "list", "--kind", "role_change"],
+            vec![
+                "iam",
+                "approval",
+                "decide",
+                "0198aa41-52e7-7f32-8ab3-bd42110a6e2c",
+                "--decision",
+                "abstain",
+            ],
+            vec!["iam", "app", "list", "--status", "active"],
+            vec!["iam", "env", "list", "--status", "retired"],
+            vec!["iam", "config", "set", "unknown", "value"],
+            vec!["iam", "config", "unset", "url"],
+            vec!["iam", "member", "directory", "--fields", "name,password"],
+        ];
+        for argv in invalid {
+            assert!(
+                Cli::try_parse_from(argv.clone()).is_err(),
+                "unexpectedly accepted {argv:?}"
+            );
+        }
+
+        assert!(Cli::try_parse_from(["iam", "org", "update", "--join-method", "sso"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["iam", "member", "list", "--principal-type", "silicon"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["iam", "member", "directory", "--fields", "name, tags"]).is_ok()
+        );
+        assert!(Cli::try_parse_from(["iam", "app", "list", "--status", "verified"]).is_ok());
+    }
+
+    #[test]
+    fn silicon_subscriptions_use_closed_modes_and_topics() {
+        use clap::Parser as _;
+
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "silicon",
+                "set-subscription",
+                "builder",
+                "--mode",
+                "all",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "silicon",
+                "set-subscription",
+                "builder",
+                "--mode",
+                "selected",
+                "--topic",
+                "member_updates",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "silicon",
+                "set-subscription",
+                "builder",
+                "--mode",
+                "selected",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "silicon",
+                "set-subscription",
+                "builder",
+                "--mode",
+                "some",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "silicon",
+                "set-subscription",
+                "builder",
+                "--topic",
+                "everything",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn mutating_commands_reject_missing_payloads() {
+        use clap::Parser as _;
+
+        let id = "0198aa41-52e7-7f32-8ab3-bd42110a6e2c";
+        let missing = [
+            vec!["iam", "org", "update"],
+            vec!["iam", "member", "update", id],
+            vec!["iam", "invite", "create", "--job-role", "Engineer"],
+            vec![
+                "iam",
+                "trust",
+                "create",
+                "--boundary",
+                "internal",
+                "--level",
+                "trusted",
+            ],
+            vec!["iam", "approval", "request-tags", "--membership-id", id],
+            vec!["iam", "silicon", "update", "builder"],
+            vec!["iam", "app", "update", "billing"],
+            vec!["iam", "env", "update", id],
+            vec!["iam", "silicon", "replay", "builder"],
+            vec!["iam", "app", "replay", "billing"],
+        ];
+        for argv in missing {
+            assert!(
+                Cli::try_parse_from(argv.clone()).is_err(),
+                "unexpectedly accepted no-op mutation {argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mutating_commands_accept_a_real_payload() {
+        use clap::Parser as _;
+
+        let id = "0198aa41-52e7-7f32-8ab3-bd42110a6e2c";
+
+        assert!(Cli::try_parse_from(["iam", "org", "update", "--name", "Acme"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "member",
+                "update",
+                id,
+                "--profile-photo",
+                "https://example.test/a.png"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "invite",
+                "create",
+                "--email",
+                "person@example.test",
+                "--job-role",
+                "Engineer",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "trust",
+                "create",
+                "--subject-membership",
+                id,
+                "--target-membership",
+                id,
+                "--boundary",
+                "internal",
+                "--level",
+                "trusted",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "approval",
+                "request-tags",
+                "--membership-id",
+                id,
+                "--add",
+                id,
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "silicon",
+                "update",
+                "builder",
+                "--display-name",
+                "Builder"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["iam", "app", "update", "billing", "--name", "Billing"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["iam", "env", "update", id, "--description", "proof"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["iam", "silicon", "replay", "builder", "--delivery", id]).is_ok()
+        );
+        assert!(Cli::try_parse_from(["iam", "app", "replay", "billing", "--delivery", id]).is_ok());
+    }
+
+    #[test]
+    fn privileged_help_names_the_step_up_contract() {
+        fn command_at<'a>(root: &'a clap::Command, path: &[&str]) -> &'a clap::Command {
+            path.iter().fold(root, |command, name| {
+                command
+                    .find_subcommand(name)
+                    .unwrap_or_else(|| panic!("missing command {}", path.join(" ")))
+            })
+        }
+
+        let command = Cli::command();
+        let contracts = [
+            (&["org", "transfer"][..], "organization.transfer_ownership"),
+            (
+                &["member", "remove"][..],
+                "organization.authorization_change",
+            ),
+            (
+                &["member", "promote"][..],
+                "organization.authorization_change",
+            ),
+            (
+                &["member", "demote"][..],
+                "organization.authorization_change",
+            ),
+            (
+                &["member", "capabilities"][..],
+                "organization.authorization_change",
+            ),
+            (
+                &["silicon", "remove"][..],
+                "organization.authorization_change",
+            ),
+            (&["silicon", "rotate-request"][..], "silicon.rotate_token"),
+            (&["silicon", "rotate-complete"][..], "silicon.rotate_token"),
+            (
+                &["silicon", "set-webhook"][..],
+                "organization.silicon_webhook.redirect",
+            ),
+            (
+                &["silicon", "delete-webhook"][..],
+                "organization.silicon_webhook.redirect",
+            ),
+            (
+                &["silicon", "set-subscription"][..],
+                "organization.silicon_webhook.redirect",
+            ),
+            (
+                &["silicon", "delete-subscription"][..],
+                "organization.silicon_webhook.redirect",
+            ),
+            (
+                &["app", "rotate-secret"][..],
+                "application.client_secret.rotate",
+            ),
+            (
+                &["app", "rotate-webhook-secret"][..],
+                "application.webhook_secret.rotate",
+            ),
+            (&["session", "revoke"][..], "account.session_revoke"),
+            (&["approval", "decide"][..], "silicon.rotate_token"),
+        ];
+
+        for (path, action) in contracts {
+            let subcommand = command_at(&command, path);
+            let about = subcommand
+                .get_long_about()
+                .or_else(|| subcommand.get_about())
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            assert!(
+                about.to_ascii_lowercase().contains("needs --step-up"),
+                "{} help omits the step-up requirement: {about}",
+                path.join(" ")
+            );
+            assert!(
+                about.contains(action) && about.contains("resource"),
+                "{} help omits {action} or its resource: {about}",
+                path.join(" ")
+            );
+        }
+    }
+
+    #[test]
+    fn silicon_only_approval_requests_say_so_in_help() {
+        let command = Cli::command();
+        let Some(approval) = command.find_subcommand("approval") else {
+            panic!("approval exists")
+        };
+        for name in ["request-role", "request-tags"] {
+            let Some(subcommand) = approval.find_subcommand(name) else {
+                panic!("approval {name} exists")
+            };
+            let about = subcommand
+                .get_long_about()
+                .or_else(|| subcommand.get_about())
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            assert!(
+                about.contains("Silicon-only") && about.contains("Carbon callers are forbidden"),
+                "approval {name} help must state its caller boundary: {about}"
+            );
+        }
     }
 
     #[test]
@@ -1313,6 +2235,18 @@ mod tests {
 
         assert!(Cli::try_parse_from(["iam", "app", "token", "exchange", "acme>checkout"]).is_ok());
         assert!(Cli::try_parse_from(["iam", "app", "token", "refresh", "acme>checkout"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "app",
+                "token",
+                "revoke",
+                "acme>checkout",
+                "--token-type",
+                "refresh-token",
+            ])
+            .is_ok()
+        );
         assert!(
             Cli::try_parse_from([
                 "iam",

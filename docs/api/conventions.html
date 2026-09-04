@@ -1,5 +1,5 @@
 <p class="lede">
-  Five rules apply to nearly every call in the contract. Getting them right once, in your HTTP
+  A small set of rules applies to nearly every call in the contract. Getting them right once, in your HTTP
   layer, removes most of the failure modes you would otherwise meet one endpoint at a time.
 </p>
 
@@ -31,11 +31,11 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
 
 <div class="banner banner-info">
   <div>
-    <strong>Official clients fail closed.</strong>
-    They verify the catalog, the header, and that the selection really is the highest common
-    version — and refuse to construct a client otherwise. A client that guesses at the wire
-    contract will eventually send a well-formed request that means something other than its author
-    intended.
+    <strong>Fail closed on a disagreement.</strong>
+    Verify the catalog, the header, and that the selection really is the highest common version
+    before making a versioned request. The Rust SDK exposes this explicit call as
+    <code>client.system().negotiate()</code>. A client that guesses at the wire contract will
+    eventually send a well-formed request that means something other than its author intended.
   </div>
 </div>
 
@@ -75,6 +75,30 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
   proof is consumed — it is single-use by design. And a response containing a
   <strong>newly generated secret</strong> stays replayable for only ten minutes, rather than the
   usual twenty-four hours.
+</p>
+
+<h2>JSON Merge Patch</h2>
+
+<p>
+  Every <code>PATCH</code> endpoint consumes <code>application/merge-patch+json</code>. For a nullable
+  property, three wire states have three different meanings:
+</p>
+
+<table>
+  <thead><tr><th>JSON state</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td>Property omitted</td><td>Leave the stored value unchanged</td></tr>
+    <tr><td><code>"property": null</code></td><td>Clear a nullable stored value</td></tr>
+    <tr><td><code>"property": value</code></td><td>Replace the stored value</td></tr>
+  </tbody>
+</table>
+
+<p>
+  Use <code>null</code> only where the OpenAPI property is nullable. Do not serialize an absent
+  nullable optional as <code>null</code>: that turns “leave unchanged” into “clear this field.” A
+  patch that produces no state change returns its resource-specific stable
+  <code>409 …_unchanged</code> code rather than incrementing the version or emitting audit and
+  outbox work.
 </p>
 
 <h2>Optimistic concurrency</h2>
@@ -144,7 +168,8 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
 </p>
 
 <p>
-  The full list of statuses and codes is in the <a href="/docs/api/errors">error index</a>.
+  Status guidance and stable no-op conflict codes are in the
+  <a href="/docs/api/errors">error index</a>.
 </p>
 
 <h2>Rate limits</h2>

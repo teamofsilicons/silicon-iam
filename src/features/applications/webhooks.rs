@@ -12,6 +12,7 @@ use secrecy::ExposeSecret as _;
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use sqlx::{FromRow, Postgres, Transaction};
+use subtle::ConstantTimeEq as _;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -192,6 +193,24 @@ pub(super) async fn replace(
     }
     let old_key = replacement_signing_key(&mut transaction, app.id).await?;
     let inherited_secret = signing_secret_is_inherited(&mut transaction, old_key.id).await?;
+    let current_webhook = load_webhook(&mut transaction, &state, app.id, app.version).await?;
+    let matches_active_url = current_webhook.active_url.as_deref() == Some(input.url.as_str());
+    let matches_pending_url = current_webhook.pending_url.as_deref() == Some(input.url.as_str());
+    if input.webhook_secret.is_none() && (matches_active_url || matches_pending_url) {
+        return Err(ApiError::conflict("application_webhook_unchanged"));
+    }
+    // The selected key belongs to the active endpoint, or to the sole pending
+    // endpoint during initial production review. In those cases it is safe to
+    // recognize an exact URL-and-secret retry without exposing secret data or
+    // rotating another key/version.
+    if let Some(supplied_secret) = requested_secret
+        && (matches_active_url || (current_webhook.active_url.is_none() && matches_pending_url))
+    {
+        let current_secret = decrypt_signing_secret(&state, app.id, &old_key)?;
+        if bool::from(current_secret.as_slice().ct_eq(supplied_secret.as_bytes())) {
+            return Err(ApiError::conflict("application_webhook_unchanged"));
+        }
+    }
     // There is deliberately no production platform reviewer inside an
     // isolated testing plane. A replacement there must become the sole active
     // endpoint immediately so a caller-supplied test-only signing secret can

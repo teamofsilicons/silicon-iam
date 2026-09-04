@@ -6,7 +6,7 @@ use crate::{
     cli::ApprovalCommand,
     context::Context,
     error::{CliError, Result},
-    output::{Format, Table, json, timestamp},
+    output::{Format, Table, json, label, next_cursor, or_dash, timestamp, timestamp_or_dash},
 };
 
 /// Runs a governance command.
@@ -47,12 +47,13 @@ pub async fn run(context: &Context, command: ApprovalCommand) -> Result<()> {
                     for request in &listed.items {
                         table.row([
                             request.id.to_string(),
-                            format!("{:?}", request.kind).to_lowercase(),
-                            format!("{:?}", request.status).to_lowercase(),
+                            label(&request.kind),
+                            label(&request.status),
                             timestamp(request.created_at),
                         ]);
                     }
                     table.print();
+                    next_cursor(listed.page.has_more, listed.page.next_cursor.as_deref());
                     Ok(())
                 }
             }
@@ -203,6 +204,7 @@ pub async fn run(context: &Context, command: ApprovalCommand) -> Result<()> {
                         ]);
                     }
                     table.print();
+                    next_cursor(listed.page.has_more, listed.page.next_cursor.as_deref());
                     Ok(())
                 }
             }
@@ -231,6 +233,7 @@ pub async fn run(context: &Context, command: ApprovalCommand) -> Result<()> {
                         ]);
                     }
                     table.print();
+                    next_cursor(listed.page.has_more, listed.page.next_cursor.as_deref());
                     Ok(())
                 }
             }
@@ -244,8 +247,46 @@ fn report(context: &Context, request: &models::ApprovalRequest) -> Result<()> {
         Format::Text => {
             let mut table = Table::new(["field", "value"]);
             table.row(["id", &request.id.to_string()]);
-            table.row(["kind", &format!("{:?}", request.kind).to_lowercase()]);
-            table.row(["status", &format!("{:?}", request.status).to_lowercase()]);
+            table.row(["org", &request.org_id]);
+            table.row(["kind", &label(&request.kind)]);
+            table.row(["status", &label(&request.status)]);
+            table.row([
+                "requested_by",
+                &format!(
+                    "{}:{} ({})",
+                    label(&request.requested_by.type_field),
+                    request.requested_by.public_id,
+                    request.requested_by.principal_id
+                ),
+            ]);
+            table.row([
+                "target_membership",
+                &request.target_membership_id.to_string(),
+            ]);
+            table.row(["immutable_payload", &request.immutable_payload.to_string()]);
+            table.row([
+                "required_approvals",
+                &request.required_approvals.to_string(),
+            ]);
+            for (index, decision) in request.decisions.iter().enumerate() {
+                table.row([
+                    format!("decision[{}]", index + 1),
+                    format!(
+                        "{} by {}:{} ({}) at {}; comment: {}; id: {}",
+                        label(&decision.decision),
+                        label(&decision.approver.type_field),
+                        decision.approver.public_id,
+                        decision.approver.principal_id,
+                        timestamp(decision.decided_at),
+                        or_dash(decision.comment.as_deref()),
+                        decision.id
+                    ),
+                ]);
+            }
+            if request.decisions.is_empty() {
+                table.row(["decisions".to_owned(), "(none)".to_owned()]);
+            }
+            table.row(["completed", &timestamp_or_dash(request.completed_at)]);
             table.row(["version", &request.version.to_string()]);
             table.row(["created", &timestamp(request.created_at)]);
             table.print();

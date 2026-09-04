@@ -9,13 +9,14 @@ use std::{
     time::Duration,
 };
 
-use reqwest::{Method, StatusCode};
+use reqwest::{Method, StatusCode, header::HeaderMap};
 use serde::{Serialize, de::DeserializeOwned};
 use url::Url;
 
 use crate::{
     credentials::{Credential, EnvironmentKey},
     error::{ApiError, Envelope, Error, Result},
+    models,
     request::Mutation,
     update::{
         CLIENT_CRATE, CLIENT_VERSION, Release, UpdatePolicy, UpdateStatus, check, find_manifest,
@@ -27,7 +28,9 @@ use crate::{
 pub const API_VERSION: &str = "v1";
 
 const SUPPORTED_VERSIONS_HEADER: &str = "silicon-iam-supported-api-versions";
+const SELECTED_VERSION_HEADER: &str = "silicon-iam-api-version";
 const ENVIRONMENT_KEY_HEADER: &str = "x-testing-environment-key";
+const MAX_RESPONSE_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// A configured Silicon IAM client.
 ///
@@ -97,7 +100,8 @@ impl Client {
         self.environment.as_ref()
     }
 
-    /// The result of this process's one-time automatic client update.
+    /// The result of this client's one-time automatic update. Clones share the
+    /// same result; independently built clients do not.
     ///
     /// The check begins immediately before the first IAM request. Updating a
     /// lockfile cannot replace code in the running process, so [`UpdateStatus::Updated`]
@@ -363,18 +367,71 @@ impl Client {
         self.send(request).await.map(|_| ())
     }
 
+    pub(crate) async fn send_negotiation(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<models::ApiVersionNegotiation> {
+        let (headers, body) = self.send_response(request).await?;
+        if body.is_empty() {
+            return Err(Error::Decode(
+                "the version negotiation returned an empty body".to_owned(),
+            ));
+        }
+        let negotiated =
+            serde_json::from_slice::<models::ApiVersionNegotiation>(&body).map_err(|error| {
+                Error::Decode(format!(
+                    "unexpected version-negotiation response shape: {error}"
+                ))
+            })?;
+        validate_negotiation(&headers, &negotiated)?;
+        Ok(negotiated)
+    }
+
     /// Sends one request and turns anything other than success into an error.
     async fn send(&self, request: reqwest::RequestBuilder) -> Result<Vec<u8>> {
+        self.send_response(request).await.map(|(_, body)| body)
+    }
+
+    async fn send_response(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<(HeaderMap, Vec<u8>)> {
         self.updater.run().await;
-        let response = request.send().await.map_err(Error::Transport)?;
+        let mut response = request.send().await.map_err(Error::Transport)?;
         let status = response.status();
         let retry_after = header_seconds(&response, "retry-after");
         let limit = header_u64(&response, "ratelimit-limit");
         let remaining = header_u64(&response, "ratelimit-remaining");
-        let body = response.bytes().await.map_err(Error::Transport)?.to_vec();
+        let headers = response.headers().clone();
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_RESPONSE_BODY_BYTES as u64)
+        {
+            return Err(Error::ResponseTooLarge {
+                limit: MAX_RESPONSE_BODY_BYTES,
+            });
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(Error::Transport)? {
+            if body
+                .len()
+                .checked_add(chunk.len())
+                .is_none_or(|length| length > MAX_RESPONSE_BODY_BYTES)
+            {
+                return Err(Error::ResponseTooLarge {
+                    limit: MAX_RESPONSE_BODY_BYTES,
+                });
+            }
+            body.extend_from_slice(&chunk);
+        }
 
         if status.is_success() {
-            return Ok(body);
+            return Ok((headers, body));
+        }
+        if status.is_redirection() {
+            return Err(Error::Decode(format!(
+                "the service returned an unexpected redirect ({status}); redirects are not followed"
+            )));
         }
 
         let api = decode_envelope(status, &body);
@@ -396,6 +453,98 @@ impl Client {
     }
 }
 
+fn validate_negotiation(
+    headers: &HeaderMap,
+    negotiated: &models::ApiVersionNegotiation,
+) -> Result<()> {
+    let mut selected_values = headers.get_all(SELECTED_VERSION_HEADER).iter();
+    let selected_header = selected_values
+        .next()
+        .ok_or_else(|| {
+            Error::Decode(format!(
+                "version negotiation omitted the {SELECTED_VERSION_HEADER} response header"
+            ))
+        })?
+        .to_str()
+        .map_err(|_| {
+            Error::Decode(format!(
+                "version negotiation returned a non-text {SELECTED_VERSION_HEADER} header"
+            ))
+        })?;
+    if selected_values.next().is_some() {
+        return Err(Error::Decode(format!(
+            "version negotiation returned {SELECTED_VERSION_HEADER} more than once"
+        )));
+    }
+    if selected_header != API_VERSION || negotiated.selected_api_version != selected_header {
+        return Err(Error::Decode(format!(
+            "version negotiation disagreed: this client offered {API_VERSION}, the response header selected {selected_header}, and the body selected {}",
+            negotiated.selected_api_version
+        )));
+    }
+    if negotiated.service.as_str() != Some("silicon-iam") {
+        return Err(Error::Decode(
+            "version negotiation identified an unexpected service".to_owned(),
+        ));
+    }
+    if negotiated.supported_api_versions.is_empty()
+        || negotiated.supported_api_versions.len() > 16
+        || negotiated
+            .supported_api_versions
+            .iter()
+            .any(|version| !is_valid_api_version(version))
+        || negotiated
+            .supported_api_versions
+            .iter()
+            .enumerate()
+            .any(|(index, version)| negotiated.supported_api_versions[..index].contains(version))
+        || negotiated
+            .supported_api_versions
+            .windows(2)
+            .any(|pair| !api_version_descends(&pair[0], &pair[1]))
+        || !negotiated
+            .supported_api_versions
+            .iter()
+            .any(|version| version == selected_header)
+    {
+        return Err(Error::Decode(
+            "version negotiation returned an invalid or inconsistent supported-version catalog"
+                .to_owned(),
+        ));
+    }
+    let vary_names_supported_versions = headers
+        .get_all(reqwest::header::VARY)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|name| name.trim().eq_ignore_ascii_case(SUPPORTED_VERSIONS_HEADER));
+    if !vary_names_supported_versions {
+        return Err(Error::Decode(format!(
+            "version negotiation did not vary on {SUPPORTED_VERSIONS_HEADER}"
+        )));
+    }
+    Ok(())
+}
+
+fn is_valid_api_version(version: &str) -> bool {
+    version.strip_prefix('v').is_some_and(|major| {
+        !major.is_empty()
+            && major.len() <= 9
+            && !major.starts_with('0')
+            && major.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+fn api_version_descends(left: &str, right: &str) -> bool {
+    let left = left
+        .strip_prefix('v')
+        .and_then(|major| major.parse::<u32>().ok());
+    let right = right
+        .strip_prefix('v')
+        .and_then(|major| major.parse::<u32>().ok());
+    matches!((left, right), (Some(left), Some(right)) if left > right)
+}
+
 impl ClientBuilder {
     /// Starts from a service base URL.
     ///
@@ -409,6 +558,26 @@ impl ClientBuilder {
         if !matches!(base_url.scheme(), "http" | "https") {
             return Err(Error::Invalid(
                 "the base URL must be http or https".to_owned(),
+            ));
+        }
+        if base_url.host_str().is_none()
+            || !base_url.username().is_empty()
+            || base_url.password().is_some()
+            || base_url.port() == Some(0)
+            || base_url.query().is_some()
+            || base_url.fragment().is_some()
+        {
+            return Err(Error::Invalid(
+                "the base URL must contain a host and no credentials, zero port, query, or fragment"
+                    .to_owned(),
+            ));
+        }
+        if base_url.scheme() == "http"
+            && !matches!(base_url.host_str(), Some("localhost" | "127.0.0.1" | "::1"))
+        {
+            return Err(Error::Invalid(
+                "the base URL must use HTTPS; HTTP is limited to localhost, 127.0.0.1, or ::1"
+                    .to_owned(),
             ));
         }
         // Every route is joined onto this, and `Url::join` discards the last
@@ -502,6 +671,10 @@ impl ClientBuilder {
         let http = reqwest::Client::builder()
             .timeout(self.timeout)
             .user_agent(user_agent)
+            // An IAM response is never a navigation. Refusing redirects keeps
+            // bearer, Basic, environment, and step-up authority on the exact
+            // origin the caller configured.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(Error::Transport)?;
         let environment_policy = UpdatePolicy::from_environment();

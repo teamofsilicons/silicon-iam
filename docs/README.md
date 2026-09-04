@@ -18,13 +18,18 @@ into public contracts, runnable examples, and client guidance.
 
 ## Feature guides
 
-| Topic | Raw API guide | Rust client guide |
+| Topic | Raw API guide | Client or CLI guide |
 | --- | --- | --- |
+| Carbon accounts and session lifecycle | [`api/carbons.html`](./api/carbons.html) | [`client/README.md`](./client/README.md#what-the-api-groups-look-like) |
+| Organizations, membership directory, and SSO | [`api/organizations.html`](./api/organizations.html) | [`client/README.md`](./client/README.md#what-the-api-groups-look-like) |
+| Silicon identity lifecycle | [`api/silicons.html`](./api/silicons.html) | [`client/README.md`](./client/README.md#what-the-api-groups-look-like) |
+| Tags, trust, and governance | [`api/governance.html`](./api/governance.html) | [`client/README.md`](./client/README.md#what-the-api-groups-look-like) |
 | Applications and qualified Application IDs | [`api/applications.html`](./api/applications.html) | [`client/overview.html`](./client/overview.html) |
 | Authentication and tokens | [`api/authentication.html`](./api/authentication.html) | [`client/login.html`](./client/login.html), [`client/tokens.html`](./client/tokens.html) |
 | On-behalf-of access | [`api/obo.html`](./api/obo.html) | [`client/obo.html`](./client/obo.html) |
 | Webhook delivery and verification | [`api/webhooks.html`](./api/webhooks.html) | [`client/webhooks.html`](./client/webhooks.html) |
 | Testing environments | [`api/testing-environments.html`](./api/testing-environments.html) | [`client/testing-environments.html`](./client/testing-environments.html) |
+| Manual end-to-end Application proof | [`api/testing-environments.html`](./api/testing-environments.html) | [`cli/README.md`](./cli/README.md#end-to-end-application-proof-in-a-test-environment) |
 | Errors and recovery | [`api/errors.html`](./api/errors.html) | [`client/errors.html`](./client/errors.html) |
 | Automatic crate updates | — | [`client/updates.html`](./client/updates.html) |
 

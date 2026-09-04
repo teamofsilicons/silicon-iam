@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use sha2::Sha256;
 use sqlx::FromRow;
 use subtle::ConstantTimeEq as _;
-use time::{Duration, OffsetDateTime};
+use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::{
@@ -67,7 +67,6 @@ struct ProofRow {
     issuer_app_id: String,
     subject_principal_id: Uuid,
     subject_kind: String,
-    subject_public_id: String,
     organization_id: Uuid,
     membership_id: Uuid,
     parent_access_token_id: Uuid,
@@ -115,6 +114,7 @@ struct OboApplicationReference {
 #[derive(FromRow)]
 struct CurrentProofContext {
     org_id: String,
+    subject_public_id: String,
     subject_auth_epoch: i64,
     membership_authz_epoch: i64,
     issuer_auth_epoch: i64,
@@ -257,6 +257,29 @@ pub(super) async fn exchange(
     let membership_id = access
         .membership_id
         .ok_or_else(|| ApiError::forbidden("obo_membership_required"))?;
+    let authority = sqlx::query_as::<_, ExchangeAuthorityRow>(
+        r"
+        SELECT audience_application_id, endpoint_path, metadata_definition,
+               endpoint_version, audience_auth_epoch, subject_auth_epoch,
+               membership_authz_epoch
+        FROM iam_private.lock_current_application_obo_exchange_authority(
+            $1, $2, $3, $4, $5::iam.principal_kind, $6, $7, $8, $9
+        )
+        ",
+    )
+    .bind(client.application_id)
+    .bind(client.auth_epoch)
+    .bind(access.token_id)
+    .bind(access.subject.id)
+    .bind(access.subject.actor_type.as_str())
+    .bind(organization_id)
+    .bind(membership_id)
+    .bind(&input.audience)
+    .bind(&input.endpoint_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("obo_exchange_authority"))?
+    .ok_or_else(ApiError::not_found)?;
     install_subject_context(
         &mut transaction,
         access.subject.id,
@@ -264,100 +287,6 @@ pub(super) async fn exchange(
         client.application_id,
     )
     .await?;
-
-    let authority = sqlx::query_as::<_, ExchangeAuthorityRow>(
-        r"
-        WITH wall_clock AS MATERIALIZED (
-            SELECT clock_timestamp() AS value
-        )
-        SELECT audience.id AS audience_application_id,
-               endpoint.path AS endpoint_path,
-               endpoint.metadata_definition,
-               endpoint.version AS endpoint_version,
-               audience_principal.auth_epoch AS audience_auth_epoch,
-               subject_principal.auth_epoch AS subject_auth_epoch,
-               membership.authz_epoch AS membership_authz_epoch
-        FROM wall_clock
-        JOIN iam.applications AS audience ON TRUE
-        JOIN iam.principals AS audience_principal
-          ON audience_principal.id = audience.id
-         AND audience_principal.kind = 'application'
-         AND audience_principal.status = 'active'
-        JOIN iam.organizations AS organization
-          ON organization.id = $3
-         AND organization.status = 'active'
-        JOIN iam.applications AS issuer
-          ON issuer.id = $7
-         AND issuer.organization_id = organization.id
-         AND issuer.review_status = 'verified'
-         AND issuer.deleted_at IS NULL
-        JOIN iam.principals AS issuer_principal
-          ON issuer_principal.id = issuer.id
-         AND issuer_principal.kind = 'application'
-         AND issuer_principal.status = 'active'
-         AND issuer_principal.auth_epoch = $8
-        JOIN iam.organization_memberships AS membership
-          ON membership.organization_id = organization.id
-         AND membership.id = $4
-         AND membership.principal_id = $5
-         AND membership.principal_kind = $6::iam.principal_kind
-         AND membership.status = 'active'
-        JOIN iam.principals AS subject_principal
-          ON subject_principal.id = membership.principal_id
-         AND subject_principal.kind = membership.principal_kind
-         AND subject_principal.status = 'active'
-        JOIN iam.access_tokens AS parent
-          ON parent.id = $9
-         AND parent.token_class = 'application_access'
-         AND parent.client_application_id = issuer.id
-         AND parent.audience_application_id = issuer.id
-         AND parent.subject_principal_id = subject_principal.id
-         AND parent.subject_kind = subject_principal.kind
-         AND parent.organization_id = organization.id
-         AND parent.membership_id = membership.id
-         AND parent.subject_auth_epoch = subject_principal.auth_epoch
-         AND parent.membership_authz_epoch = membership.authz_epoch
-         AND parent.client_auth_epoch = issuer_principal.auth_epoch
-         AND parent.revoked_at IS NULL
-         AND parent.expires_at > wall_clock.value
-        JOIN iam.authentication_sessions AS session
-          ON session.id = parent.authentication_session_id
-         AND session.subject_principal_id = subject_principal.id
-         AND session.subject_kind = subject_principal.kind
-         AND session.subject_auth_epoch = subject_principal.auth_epoch
-         AND session.status = 'active'
-         AND session.idle_expires_at > wall_clock.value
-         AND session.absolute_expires_at > wall_clock.value
-        JOIN iam.access_token_scopes AS parent_scope
-          ON parent_scope.access_token_id = parent.id
-         AND parent_scope.scope = 'obo.issue'
-        JOIN iam.application_obo_endpoints AS endpoint
-          ON endpoint.organization_id = organization.id
-         AND endpoint.application_id = audience.id
-         AND endpoint.endpoint_id = $2
-         AND endpoint.status = 'active'
-        WHERE audience.app_id = $1
-          AND audience.organization_id = organization.id
-          AND audience.review_status = 'verified'
-          AND audience.deleted_at IS NULL
-        FOR SHARE OF issuer, issuer_principal, audience, audience_principal,
-                     organization, membership, subject_principal, parent,
-                     session, parent_scope, endpoint
-        ",
-    )
-    .bind(&input.audience)
-    .bind(&input.endpoint_id)
-    .bind(organization_id)
-    .bind(membership_id)
-    .bind(access.subject.id)
-    .bind(access.subject.actor_type.as_str())
-    .bind(client.application_id)
-    .bind(client.auth_epoch)
-    .bind(access.token_id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("obo_exchange_authority"))?
-    .ok_or_else(ApiError::not_found)?;
     verify_exchange_signature(&client, &signed, &request, &authority.endpoint_path)?;
     validation::obo_request_metadata(&authority.metadata_definition.0, &input.metadata)?;
 
@@ -463,6 +392,9 @@ pub(super) async fn exchange(
         expires_in: u64::try_from(PROOF_LIFETIME_SECONDS).unwrap_or(60),
         expires_at,
     };
+    let expires_at_wire = expires_at
+        .format(&Rfc3339)
+        .map_err(|_| ApiError::internal("obo_proof_expires_at"))?;
     record_protocol_event(
         &mut transaction,
         ActorRef {
@@ -488,7 +420,7 @@ pub(super) async fn exchange(
                 "path": &authority.endpoint_path,
                 "body_sha256": &request.body_sha256_hex,
             },
-            "expires_at": expires_at,
+            "expires_at": expires_at_wire,
         }),
     )
     .await?;
@@ -557,7 +489,6 @@ pub(super) async fn verify(
                proof.issuer_application_id, issuer.app_id AS issuer_app_id,
                proof.subject_principal_id,
                proof.subject_kind::text AS subject_kind,
-               COALESCE(carbon.carbon_id, silicon.global_silicon_id) AS subject_public_id,
                proof.organization_id,
                proof.membership_id, proof.parent_access_token_id, proof.endpoint_id,
                proof.request_method, proof.request_path, proof.request_body_sha256,
@@ -578,10 +509,6 @@ pub(super) async fn verify(
          AND endpoint.application_id = proof.audience_application_id
          AND endpoint.endpoint_id = proof.endpoint_id
          AND endpoint.path = proof.request_path
-        LEFT JOIN iam.carbons AS carbon
-          ON carbon.id = proof.subject_principal_id AND proof.subject_kind = 'carbon'
-        LEFT JOIN iam.silicons AS silicon
-          ON silicon.id = proof.subject_principal_id AND proof.subject_kind = 'silicon'
         WHERE proof.audience_application_id = $3
           AND proof.organization_id = $4
         FOR UPDATE OF proof
@@ -666,7 +593,7 @@ pub(super) async fn verify(
         actor: super::model::PublicActor {
             principal_id: row.subject_principal_id,
             actor_type: actor_type.as_str().to_owned(),
-            public_id: row.subject_public_id,
+            public_id: current.subject_public_id,
         },
         org_id: current.org_id,
         endpoint: OboEndpointReference {
@@ -1043,6 +970,7 @@ async fn load_current_context(
             SELECT clock_timestamp() AS value
         )
         SELECT organization.org_id,
+               COALESCE(carbon.carbon_id, silicon.global_silicon_id) AS subject_public_id,
                subject.auth_epoch AS subject_auth_epoch,
                membership.authz_epoch AS membership_authz_epoch,
                issuer.auth_epoch AS issuer_auth_epoch,
@@ -1093,6 +1021,17 @@ async fn load_current_context(
           ON subject.id = membership.principal_id
          AND subject.kind = membership.principal_kind
          AND subject.status = 'active'
+        LEFT JOIN iam.carbons AS carbon
+          ON carbon.id = subject.id
+         AND subject.kind = 'carbon'
+         AND carbon.deleted_at IS NULL
+        LEFT JOIN iam.silicons AS silicon
+          ON silicon.id = subject.id
+         AND subject.kind = 'silicon'
+         AND silicon.organization_id = organization.id
+         AND silicon.membership_id = membership.id
+         AND silicon.provisioning_status = 'active'
+         AND silicon.deleted_at IS NULL
         JOIN iam.applications AS issuer_application
           ON issuer_application.organization_id = organization.id
          AND issuer_application.id = $4
@@ -1111,7 +1050,12 @@ async fn load_current_context(
           ON audience.id = audience_application.id
          AND audience.kind = 'application'
          AND audience.status = 'active'
-        WHERE organization.id = $2 AND organization.status = 'active'
+        WHERE organization.id = $2
+          AND organization.status = 'active'
+          AND (
+              (subject.kind = 'carbon' AND carbon.id IS NOT NULL)
+              OR (subject.kind = 'silicon' AND silicon.id IS NOT NULL)
+          )
         ",
     )
     .bind(proof.subject_principal_id)

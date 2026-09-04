@@ -29,15 +29,15 @@ boundary in CI.
 | Path | What it is |
 | --- | --- |
 | `/docs` | Chooses between the two manuals |
-| `/docs/api/` | The HTTP contract, eleven sections, authored in `docs/api/*.html` |
-| `/docs/client/` | The official Rust SDK, seven sections, authored in `docs/client/*.html` |
+| `/docs/api/` | The sectioned HTTP contract, authored in `docs/api/*.html` |
+| `/docs/client/` | The sectioned official Rust SDK manual, authored in `docs/client/*.html` |
 | `/openapi.yaml` | The normative contract, at a stable cacheable URL |
 | `/admin` | Platform-administration console: application review, consent policy, SSO entitlement |
 
-The client manual documents [`iam-rust-library`](../iam-rust-library), the
-official SDK. It is published here rather than in that repository so a reader
-finds both manuals at one origin, and so the two can cross-reference each
-other without a dead link when either moves.
+The client manual documents this workspace's
+[`silicon-iam-client`](crates/client) crate. It is published beside the HTTP
+manual so a reader finds both contracts at one origin and each can link to the
+other without depending on a separate documentation deployment.
 
 Everything they need is embedded at compile time — markup, stylesheet, script,
 marks and the IBM Plex latin subsets — so a release image makes no third-party
@@ -297,8 +297,8 @@ Run the same core checks used by CI:
 
 ```sh
 cargo fmt --all --check
-cargo clippy --all-targets --all-features --locked -- -D warnings
-cargo test --all-targets --all-features --locked
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-targets --all-features --locked
 cargo deny --locked --all-features check
 ruby scripts/check-openapi-routes.rb
 ruby scripts/check-migration-security.rb

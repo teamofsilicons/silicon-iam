@@ -39,7 +39,8 @@
     <tr><td><code>X-Silicon-IAM-Event-ID</code></td><td>The deduplication key</td></tr>
     <tr><td><code>X-Silicon-IAM-Timestamp</code></td><td>Unix seconds at signing</td></tr>
     <tr><td><code>X-Silicon-IAM-Key-Version</code></td><td>Which signing-secret version was used</td></tr>
-    <tr><td><code>X-Silicon-IAM-Signature</code></td><td>Hex HMAC-SHA256</td></tr>
+    <tr><td><code>X-Silicon-IAM-Signature</code></td>
+      <td>Exactly <code>v1=&lt;64 lowercase hexadecimal characters&gt;</code></td></tr>
   </tbody>
 </table>
 
@@ -48,9 +49,10 @@
 <ol>
   <li>Reject the request if the timestamp is outside your tolerance — five minutes is a
     reasonable default. This is what stops a replay.</li>
-  <li>Recompute the HMAC over the timestamp and the <strong>exact raw body bytes</strong>, using
-    the signing secret for the named key version.</li>
-  <li>Compare in <strong>constant time</strong>. A byte-by-byte comparison that returns early
+  <li>Recompute HMAC-SHA256 over
+    <code>{timestamp}.{exact raw request body bytes}</code>, using the signing secret for the named
+    key version. Lowercase-hex encode the 32-byte result and prefix it with <code>v1=</code>.</li>
+  <li>Compare the complete header value in <strong>constant time</strong>. A byte-by-byte comparison that returns early
     leaks the signature one character at a time.</li>
 </ol>
 
@@ -97,8 +99,9 @@
 
 <p>
   Imported Applications initially inherit their production signing key without exposing it. The
-  first webhook URL replacement in the test environment creates and returns a test-only key;
-  ordinary URL changes reuse the current key. The complete flow is in
+  first webhook URL replacement in the test environment requires the caller to supply a test-only
+  <code>webhook_secret</code>; IAM switches to and echoes that value but never generates it.
+  Ordinary URL changes reuse the current key. The complete flow is in
   <a href="/docs/api/testing-environments">Testing environments</a>.
 </p>
 

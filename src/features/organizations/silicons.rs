@@ -372,6 +372,13 @@ pub(super) async fn update_silicon(
             updated_at = transaction_timestamp()
         WHERE organization_id = $1 AND id = $2 AND version = $3
           AND provisioning_status <> 'deleted'
+          AND (
+              ($4::text IS NOT NULL AND display_name IS DISTINCT FROM $4)
+              OR ($5::text IS NOT NULL AND timezone_id IS DISTINCT FROM $5)
+              OR ($6 AND description IS DISTINCT FROM $7)
+              OR ($8 AND profile_photo_override_uri IS DISTINCT FROM $9)
+              OR ($10 AND reports_to_membership_id IS DISTINCT FROM $11)
+          )
         ",
     )
     .bind(scope.access.organization_id)
@@ -389,7 +396,16 @@ pub(super) async fn update_silicon(
     .await
     .map_err(|error| support::conflict_from_database(error, "invalid_reporting_hierarchy"))?;
     if result.rows_affected() != 1 {
-        return Err(precondition_failed());
+        let current = fetch_identity(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            &silicon_id,
+        )
+        .await?;
+        require_active_version(&current, expected_version)?;
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("silicon_profile_unchanged"),
+        });
     }
     let provisional_silicons = fetch_silicons(
         &mut scope.transaction,

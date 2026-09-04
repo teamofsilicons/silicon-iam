@@ -244,6 +244,197 @@ async fn the_client_speaks_the_contract_end_to_end() {
         .expect("the caller's organizations");
     assert!(listed.items.iter().any(|entry| entry.org_id == org_id));
 
+    // Application responses carry OffsetDateTime fields that the generated
+    // client accepts only as RFC3339 strings. This create -> list -> get walk
+    // therefore guards both the public timestamp encoding and the tenant /
+    // application RLS context each read needs after an application exists.
+    let application_handle = unique("app");
+    let qualified_app_id = format!("{org_id}>{application_handle}");
+    let created_application = client
+        .applications()
+        .create(
+            &models::ApplicationCreate {
+                app_id: application_handle,
+                org_id: org_id.clone(),
+                app_name: Some("Live Application".to_owned()),
+                app_logo: None,
+                webhook_url: "https://hooks.example.test/iam".to_owned(),
+                webhook_secret: "live-client-webhook-secret-00001".to_owned(),
+                base_url: "https://application.example.test".to_owned(),
+                obo_endpoints: None,
+            },
+            &Mutation::new(),
+        )
+        .await
+        .expect("the application is created and its timestamps decode");
+    assert_eq!(created_application.application.app_id, qualified_app_id);
+    assert!(
+        created_application.application.updated_at >= created_application.application.created_at
+    );
+    assert!(
+        created_application.secret_replay_expires_at > created_application.application.created_at
+    );
+
+    let applications = client
+        .applications()
+        .list(None, &Paging::new().limit(10))
+        .await
+        .expect("the newly created application lists through RLS");
+    let listed_application = applications
+        .items
+        .iter()
+        .find(|application| application.app_id == qualified_app_id)
+        .expect("the application is present in its owner's list");
+    assert_eq!(listed_application.id, created_application.application.id);
+
+    let fetched_application = client
+        .applications()
+        .get(&qualified_app_id)
+        .await
+        .expect("the newly created application reads through RLS");
+    assert_eq!(fetched_application.id, created_application.application.id);
+    assert_eq!(
+        fetched_application.created_at,
+        listed_application.created_at
+    );
+
+    // The Application-login contract is form encoded and starts only from an
+    // IAM-issued SLT. Walk the whole token lifecycle so media-type drift,
+    // application Basic auth, token RLS, retry semantics, and revocation are
+    // all exercised against the real service rather than a mock.
+    let short_lived = client
+        .auth()
+        .short_lived_token(&qualified_app_id, &Mutation::new())
+        .await
+        .expect("an IAM-issued short-lived token");
+    let application_client = anonymous.with_credential(Credential::application(
+        qualified_app_id.clone(),
+        created_application.app_secret.clone(),
+    ));
+
+    let login_mutation = Mutation::new();
+    let application_tokens = application_client
+        .oauth()
+        .login(&qualified_app_id, &short_lived.slt, &login_mutation)
+        .await
+        .expect("the Application exchanges an SLT as a form request");
+    let replayed_tokens = application_client
+        .oauth()
+        .login(&qualified_app_id, &short_lived.slt, &login_mutation)
+        .await
+        .expect("an exact token-exchange retry replays safely");
+    assert_eq!(
+        replayed_tokens.access_token,
+        application_tokens.access_token
+    );
+    assert_eq!(
+        replayed_tokens.refresh_token,
+        application_tokens.refresh_token
+    );
+
+    let spent_slt = application_client
+        .oauth()
+        .login(&qualified_app_id, &short_lived.slt, &Mutation::new())
+        .await;
+    let Err(error) = spent_slt else {
+        panic!("a spent SLT must not start another Application session");
+    };
+    assert_eq!(
+        error.api().map(|api| api.code.as_str()),
+        Some("invalid_grant"),
+        "{error}"
+    );
+
+    let access_introspection = application_client
+        .oauth()
+        .introspect(
+            &models::TokenIntrospectionRequest {
+                token: application_tokens.access_token.clone(),
+                token_type_hint: Some(models::TokenIntrospectionRequestTokenTypeHint::AccessToken),
+            },
+            None,
+        )
+        .await
+        .expect("the Application introspects its access token through RLS");
+    assert!(access_introspection.active);
+    assert_eq!(
+        access_introspection.client_id.as_deref(),
+        Some(qualified_app_id.as_str())
+    );
+    assert_eq!(access_introspection.org_id, None);
+
+    let refresh_mutation = Mutation::new();
+    let refreshed_tokens = application_client
+        .oauth()
+        .refresh(
+            &qualified_app_id,
+            &application_tokens.refresh_token,
+            &refresh_mutation,
+        )
+        .await
+        .expect("the Application rotates its refresh token as a form request");
+    let replayed_refresh = application_client
+        .oauth()
+        .refresh(
+            &qualified_app_id,
+            &application_tokens.refresh_token,
+            &refresh_mutation,
+        )
+        .await
+        .expect("an exact refresh retry replays safely");
+    assert_eq!(replayed_refresh.access_token, refreshed_tokens.access_token);
+    assert_eq!(
+        replayed_refresh.refresh_token,
+        refreshed_tokens.refresh_token
+    );
+
+    application_client
+        .oauth()
+        .revoke(
+            &models::OAuthRevocationRequest {
+                token: refreshed_tokens.refresh_token.clone(),
+                token_type_hint: Some(models::OAuthRevocationRequestTokenTypeHint::RefreshToken),
+            },
+            &Mutation::new(),
+        )
+        .await
+        .expect("the Application revokes a refresh family as a form request");
+    let revoked_refresh = application_client
+        .oauth()
+        .introspect(
+            &models::TokenIntrospectionRequest {
+                token: refreshed_tokens.refresh_token,
+                token_type_hint: Some(models::TokenIntrospectionRequestTokenTypeHint::RefreshToken),
+            },
+            None,
+        )
+        .await
+        .expect("a revoked token introspects as inactive, not as an error");
+    assert!(!revoked_refresh.active);
+    application_client
+        .oauth()
+        .revoke(
+            &models::OAuthRevocationRequest {
+                token: refreshed_tokens.access_token.clone(),
+                token_type_hint: Some(models::OAuthRevocationRequestTokenTypeHint::AccessToken),
+            },
+            &Mutation::new(),
+        )
+        .await
+        .expect("the Application revokes an access token as a form request");
+    let revoked_access = application_client
+        .oauth()
+        .introspect(
+            &models::TokenIntrospectionRequest {
+                token: refreshed_tokens.access_token,
+                token_type_hint: Some(models::TokenIntrospectionRequestTokenTypeHint::AccessToken),
+            },
+            None,
+        )
+        .await
+        .expect("access-token revocation is immediately visible to introspection");
+    assert!(!revoked_access.active);
+
     // Tags, through their whole lifecycle including the cascade on delete.
     let tag = client
         .tags()

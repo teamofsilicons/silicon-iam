@@ -30,7 +30,11 @@ pub(super) struct EnvironmentCreate {
 #[allow(clippy::option_option)]
 pub(super) struct EnvironmentPatch {
     pub(super) name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
     pub(super) description: Option<Option<String>>,
 }
 

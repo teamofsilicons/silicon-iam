@@ -203,7 +203,7 @@ pub(super) async fn create_role_change_request(
         Claim::Replay(response) => return Ok(response),
         Claim::Acquired(lease) => lease,
     };
-    let target = fetch_target(
+    let target = lock_governance_request_target(
         &mut scope.transaction,
         scope.access.organization_id,
         input.target_membership_id,
@@ -217,6 +217,32 @@ pub(super) async fn create_role_change_request(
     if target.job_role == input.proposed_job_role {
         return Err(AppError::Conflict {
             code: Cow::Borrowed("job_role_unchanged"),
+        });
+    }
+    let duplicate = sqlx::query_scalar::<_, bool>(
+        r"
+        SELECT EXISTS (
+            SELECT 1
+            FROM iam.job_role_change_requests AS change
+            JOIN iam.approval_requests AS request
+              ON request.organization_id = change.organization_id
+             AND request.id = change.approval_request_id
+            WHERE change.organization_id = $1
+              AND change.target_membership_id = $2
+              AND change.proposed_job_role = $3
+              AND request.status IN ('pending', 'approved')
+        )
+        ",
+    )
+    .bind(scope.access.organization_id)
+    .bind(target.id)
+    .bind(&input.proposed_job_role)
+    .fetch_one(&mut *scope.transaction)
+    .await
+    .map_err(support::database)?;
+    if duplicate {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("approval_request_exists"),
         });
     }
     let request_id = Uuid::now_v7();
@@ -508,6 +534,7 @@ pub(super) async fn replace_member_tags(
         &input.tag_ids,
     )
     .await?;
+
     if target.principal_kind == "silicon" {
         lock_silicon_projection(
             &mut scope.transaction,
@@ -640,7 +667,7 @@ pub(super) async fn create_tag_change_request(
         Claim::Replay(response) => return Ok(response),
         Claim::Acquired(lease) => lease,
     };
-    let target = fetch_target(
+    let target = lock_governance_request_target(
         &mut scope.transaction,
         scope.access.organization_id,
         membership_id,
@@ -691,6 +718,33 @@ pub(super) async fn create_tag_change_request(
         &proposed_tag_ids,
     )
     .await?;
+
+    let duplicate = sqlx::query_scalar::<_, bool>(
+        r"
+        SELECT EXISTS (
+            SELECT 1
+            FROM iam.tag_change_requests AS change
+            JOIN iam.approval_requests AS request
+              ON request.organization_id = change.organization_id
+             AND request.id = change.approval_request_id
+            WHERE change.organization_id = $1
+              AND change.target_membership_id = $2
+              AND change.proposed_tag_ids = $3
+              AND request.status IN ('pending', 'approved')
+        )
+        ",
+    )
+    .bind(scope.access.organization_id)
+    .bind(membership_id)
+    .bind(&proposed_tag_ids)
+    .fetch_one(&mut *scope.transaction)
+    .await
+    .map_err(support::database)?;
+    if duplicate {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("approval_request_exists"),
+        });
+    }
 
     let request_id = Uuid::now_v7();
     let is_carbon = target.principal_kind == "carbon";
@@ -1975,6 +2029,25 @@ async fn fetch_target(
 ) -> Result<TargetMembership, AppError> {
     sqlx::query_as::<_, TargetMembership>(
         "SELECT id, principal_kind::text AS principal_kind, job_role, status FROM iam.organization_memberships WHERE organization_id = $1 AND id = $2 LIMIT 1",
+    )
+    .bind(organization_id)
+    .bind(membership_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(support::database)?
+    .ok_or(AppError::NotFound)
+}
+
+async fn lock_governance_request_target(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    membership_id: Uuid,
+) -> Result<TargetMembership, AppError> {
+    sqlx::query_as::<_, TargetMembership>(
+        r"
+        SELECT id, principal_kind, job_role, status
+        FROM iam_private.lock_governance_request_target($1, $2)
+        ",
     )
     .bind(organization_id)
     .bind(membership_id)

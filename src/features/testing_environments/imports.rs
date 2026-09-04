@@ -416,7 +416,7 @@ async fn resolve_or_create_organization(
 ) -> Result<ResolvedOrganization, AppError> {
     let existing = sqlx::query_as::<_, ExistingOrganization>(
         r"
-        SELECT organization.id AS organization_id, membership.org_role
+        SELECT organization.id AS organization_id, membership.org_role::text AS org_role
         FROM iam.organizations AS organization
         JOIN iam.organization_memberships AS membership
           ON membership.organization_id = organization.id

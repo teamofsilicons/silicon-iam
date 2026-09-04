@@ -1,5 +1,5 @@
 <p class="lede">
-  Every status the API emits, the codes that accompany it, and what a client should actually do.
+  Common statuses, representative codes, and the stable conflicts integrations need to handle.
   Branch on the code; the message is prose and may change.
 </p>
 
@@ -17,7 +17,7 @@
     <tr><td><code>404</code></td><td>Missing or tenant-hidden resource</td><td><code>not_found</code></td></tr>
     <tr><td><code>409</code></td><td>Unique, idempotency, replay or lifecycle conflict</td>
       <td><code>identifier_unavailable</code>, <code>idempotency_conflict</code>,
-        <code>refresh_replay</code>, <code>state_conflict</code></td></tr>
+        <code>state_conflict</code></td></tr>
     <tr><td><code>410</code></td><td>Expired one-time state</td>
       <td><code>challenge_expired</code>, <code>invite_expired</code>,
         <code>authorization_code_expired</code>, <code>proof_expired</code></td></tr>
@@ -60,11 +60,44 @@
   strip the key and retry, which would risk a duplicate.
 </p>
 
-<h3>409 <code>refresh_replay</code> — the family is revoked</h3>
+<h3>409 no-op and duplicate-intent conflicts</h3>
+
 <p>
-  A consumed refresh token was presented again. Every session in that family is now revoked and
-  a security audit event exists. This is almost always a concurrency bug in the client: refresh
-  must be single-flight.
+  A mutation that would leave state unchanged returns a resource-specific stable code and does not
+  increment the version or emit audit/outbox work:
+</p>
+
+<table>
+  <thead><tr><th>Area</th><th>Codes</th></tr></thead>
+  <tbody>
+    <tr><td>Profiles and directory</td><td><code>carbon_profile_unchanged</code>,
+      <code>member_directory_unchanged</code>, <code>silicon_profile_unchanged</code></td></tr>
+    <tr><td>Organization and governance</td><td><code>organization_unchanged</code>,
+      <code>job_role_unchanged</code>, <code>tag_set_unchanged</code>,
+      <code>tag_name_unchanged</code>, <code>trust_default_unchanged</code>,
+      <code>trust_rule_unchanged</code></td></tr>
+    <tr><td>Webhook configuration</td><td><code>silicon_webhook_subscription_unchanged</code>,
+      <code>application_webhook_unchanged</code></td></tr>
+    <tr><td>Applications and testing</td><td><code>application_unchanged</code>,
+      <code>testing_environment_unchanged</code></td></tr>
+  </tbody>
+</table>
+
+<p>
+  <code>approval_request_exists</code> separately means an equivalent pending governance request
+  already exists. Treat these responses as no-op or duplicate intent, not as transient failures to
+  retry under a new idempotency key.
+</p>
+
+<h3>Refresh-token reuse — the affected family is terminal</h3>
+<p>
+  IAM refresh rejects reuse with <code>401 unauthenticated</code> after invalidating that one IAM
+  session family and authority descended from it. OAuth refresh rejects it with
+  <code>400 invalid_grant</code> after invalidating only that OAuth family and access tokens for the
+  same Application session. Neither case automatically revokes another device session; OAuth reuse
+  also does not revoke the parent IAM session or another Application's tokens. Refresh must be
+  single-flight per family. An exact retry with the original idempotency key replays the first
+  result and is not treated as token reuse.
 </p>
 
 <h3>410 — the state expired</h3>
@@ -109,14 +142,19 @@
 
 <p>
   <code>details</code> is a free-form object whose shape depends on the code. Validation failures
-  populate <code>fields</code>, mapping a request field to a human-readable reason:
+  populate <code>fields</code> with an array of objects, each carrying <code>field</code> and
+  <code>message</code>:
 </p>
 
 <pre><code>{
   "error": {
     "code": "validation_failed",
     "message": "The request was well-formed but could not be accepted.",
-    "details": { "fields": { "job_role": "at most 5000 characters" } },
+    "details": {
+      "fields": [
+        { "field": "job_role", "message": "at most 5000 characters" }
+      ]
+    },
     "request_id": "018f2c1e-…"
   }
 }</code></pre>

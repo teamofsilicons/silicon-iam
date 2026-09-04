@@ -20,16 +20,20 @@
 
 <h2>Step one — send them to IAM</h2>
 
-<pre><code>let login = format!(
-    "{auth_base_url}/login?app_id={app_id}&amp;redirect_uri={callback}",
-);
-// Redirect the user agent to `login`.</code></pre>
+<pre><code>let mut login = url::Url::parse(auth_base_url)?.join("/login")?;
+login.query_pairs_mut()
+    .append_pair("app_id", app_id)
+    .append_pair("redirect_uri", callback)
+    .append_pair("org_id", "acme"); // Omit for an unscoped login.
+// Redirect the user agent to `login`; query values are percent-encoded.</code></pre>
 
 <p>
   Naming <code>app_id</code> is what makes this a login on your behalf; without one it is an
   ordinary Silicon IAM login and no token is minted. <code>redirect_uri</code> is optional and
   decides delivery only — give one and the token comes back on it, omit it and IAM shows the
-  token to the person instead. <code>org_id</code> narrows the session to one organization.
+  token to the person instead. <code>org_id</code> is also optional: when present, IAM requires an
+  active membership in that organization and binds the resulting Application token family to it;
+  when absent, the login is unscoped.
 </p>
 
 <p>
@@ -53,7 +57,7 @@ let application = Client::new(base_url)?
 
 let tokens = application
     .oauth()
-    .login(app_id, slt, &amp;Mutation::new())
+    .login(app_id, &amp;slt, &amp;Mutation::new())
     .await?;</code></pre>
 
 <p>
@@ -79,16 +83,28 @@ let tokens = application
   another one. Either can ask for the token directly on the session it already has:
 </p>
 
-<pre><code>let issued = signed_in
+<pre><code>// Request no new organization context. An unscoped Carbon bearer stays unscoped;
+// a bearer that already carries organization context retains it.
+let inherited_or_unscoped = signed_in
     .auth()
     .short_lived_token("acme&gt;your-app", &amp;Mutation::new())
     .await?;
 
-println!("{} expires in {}s", issued.slt, issued.expires_in);</code></pre>
+// Bind the Application tokens to the caller's active `acme` membership.
+let organization_bound = signed_in
+    .auth()
+    .short_lived_token_in_organization(
+        "acme&gt;your-app",
+        Some("acme"),
+        &amp;Mutation::new(),
+    )
+    .await?;</code></pre>
 
 <p>
   Your server then completes it at the same exchange as any other token. This is the only way a
-  Silicon can sign in to an application.
+  Silicon can sign in to an application. Use the organization-bound form when the resulting
+  access token will issue OBO proofs; an unscoped Application token is deliberately rejected for
+  OBO.
 </p>
 
 <h2>Scope</h2>

@@ -46,13 +46,23 @@ pub(super) struct ApplicationCreate {
     pub(super) obo_endpoints: Vec<ApplicationOboEndpoint>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ApplicationPatch {
     pub(super) base_url: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
     #[allow(clippy::option_option)]
     pub(super) app_name: Option<Option<String>>,
     #[serde(rename = "app_logo")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::rust::double_option"
+    )]
     #[allow(clippy::option_option)]
     pub(super) app_logo_uri: Option<Option<String>>,
     pub(super) obo_endpoints: Option<Vec<ApplicationOboEndpoint>>,
@@ -64,6 +74,7 @@ pub(super) struct ApplicationSecretRotated {
     pub(super) app_secret: String,
     pub(super) app_secret_version: i64,
     pub(super) application_version: i64,
+    #[serde(with = "crate::wire_time")]
     pub(super) secret_replay_expires_at: OffsetDateTime,
 }
 
@@ -73,6 +84,7 @@ pub(super) struct WebhookSecretRotated {
     pub(super) webhook_signing_secret: String,
     pub(super) webhook_secret_version: i64,
     pub(super) application_version: i64,
+    #[serde(with = "crate::wire_time")]
     pub(super) secret_replay_expires_at: OffsetDateTime,
 }
 
@@ -82,7 +94,7 @@ pub(super) struct ApplicationDirectoryEntry {
     pub(super) base_url: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, sqlx::FromRow)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ApplicationOboEndpoint {
     pub(super) endpoint_id: String,
@@ -146,7 +158,9 @@ pub(super) struct ApplicationView {
     pub(super) base_url: String,
     pub(super) review_status: String,
     pub(super) version: i64,
+    #[serde(with = "crate::wire_time")]
     pub(super) created_at: OffsetDateTime,
+    #[serde(with = "crate::wire_time")]
     pub(super) updated_at: OffsetDateTime,
 }
 
@@ -166,7 +180,9 @@ pub(crate) struct ApplicationDetail {
     pub(super) webhook: WebhookView,
     pub(super) has_pending_changes: bool,
     pub(super) version: i64,
+    #[serde(with = "crate::wire_time")]
     pub(super) created_at: OffsetDateTime,
+    #[serde(with = "crate::wire_time")]
     pub(super) updated_at: OffsetDateTime,
 }
 
@@ -177,6 +193,7 @@ pub(super) struct ApplicationCreated {
     pub(super) app_secret_version: i64,
     pub(super) webhook_signing_secret: String,
     pub(super) webhook_secret_version: i64,
+    #[serde(with = "crate::wire_time")]
     pub(super) secret_replay_expires_at: OffsetDateTime,
 }
 
@@ -201,7 +218,11 @@ pub(super) struct WebhookView {
     pub(super) version: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) webhook_signing_secret: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::wire_time::option"
+    )]
     pub(super) secret_replay_expires_at: Option<OffsetDateTime>,
 }
 
@@ -216,6 +237,7 @@ pub(super) struct WebhookDeadLetterView {
     pub(super) delivery_id: Uuid,
     pub(super) event_id: Uuid,
     pub(super) event_type: String,
+    #[serde(with = "crate::wire_time")]
     pub(super) occurred_at: OffsetDateTime,
     pub(super) aggregate_type: String,
     pub(super) aggregate_id: Uuid,
@@ -226,6 +248,7 @@ pub(super) struct WebhookDeadLetterView {
     pub(super) manual_replay_count: i32,
     pub(super) last_http_status: Option<i16>,
     pub(super) last_error_code: Option<String>,
+    #[serde(with = "crate::wire_time::option")]
     pub(super) dead_lettered_at: Option<OffsetDateTime>,
     pub(super) version: i64,
 }
@@ -268,6 +291,7 @@ pub(super) struct LoginEventView {
     pub(super) ip_prefix: Option<String>,
     pub(super) user_agent_summary: Option<String>,
     pub(super) request_id: String,
+    #[serde(with = "crate::wire_time")]
     pub(super) occurred_at: OffsetDateTime,
 }
 
@@ -299,6 +323,8 @@ pub(super) struct LoginQuery {
 #[serde(deny_unknown_fields)]
 pub(super) struct ShortLivedTokenRequest {
     pub(super) app_id: String,
+    #[serde(default)]
+    pub(super) org_id: Option<String>,
 }
 
 /// A short-lived token handed to a caller who is already signed in.
@@ -395,6 +421,7 @@ pub(super) struct OboProofResponse {
     pub(super) access_proof: String,
     pub(super) proof_id: Uuid,
     pub(super) expires_in: u64,
+    #[serde(with = "crate::wire_time")]
     pub(super) expires_at: OffsetDateTime,
 }
 
@@ -429,14 +456,16 @@ pub(super) struct OboAccessResult {
     pub(super) org_id: String,
     pub(super) endpoint: OboEndpointReference,
     pub(super) metadata: serde_json::Value,
+    #[serde(with = "crate::wire_time")]
     pub(super) expires_at: OffsetDateTime,
+    #[serde(with = "crate::wire_time")]
     pub(super) consumed_at: OffsetDateTime,
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
-    use time::macros::datetime;
+    use time::{OffsetDateTime, format_description::well_known::Rfc3339, macros::datetime};
 
     use super::*;
 
@@ -467,6 +496,16 @@ mod tests {
                 "missing required field {field}.{key}"
             );
         }
+    }
+
+    fn assert_rfc3339(value: &Value, field: &str) {
+        let Some(encoded) = value.get(field).and_then(Value::as_str) else {
+            panic!("{field} must be an RFC3339 string");
+        };
+        assert!(
+            OffsetDateTime::parse(encoded, &Rfc3339).is_ok(),
+            "{field} is not RFC3339: {encoded}"
+        );
     }
 
     #[test]
@@ -532,7 +571,7 @@ mod tests {
         })
         .unwrap_or(Value::Null);
         assert_required(
-            value,
+            value.clone(),
             &[
                 "app_id",
                 "webhook_signing_secret",
@@ -541,6 +580,7 @@ mod tests {
                 "secret_replay_expires_at",
             ],
         );
+        assert_rfc3339(&value, "secret_replay_expires_at");
     }
 
     #[test]
@@ -570,6 +610,41 @@ mod tests {
             ],
         );
         assert_nested_required(&value, "actor", &["principal_id", "type", "public_id"]);
+        assert_rfc3339(&value, "occurred_at");
+    }
+
+    #[test]
+    fn application_projection_uses_wire_compatible_timestamps() {
+        let value = serde_json::to_value(ApplicationDetail {
+            id: Uuid::nil(),
+            app_id: "tos>briefcase".to_owned(),
+            org_id: "tos".to_owned(),
+            created_by: actor(),
+            app_name: Some("Briefcase".to_owned()),
+            app_logo: None,
+            base_url: "https://briefcase.example".to_owned(),
+            requested_scopes: Vec::new(),
+            approved_scopes: Vec::new(),
+            obo_endpoints: Vec::new(),
+            status: "verified".to_owned(),
+            webhook: WebhookView {
+                active_url: Some("https://briefcase.example/webhooks/iam".to_owned()),
+                pending_url: None,
+                status: "active".to_owned(),
+                secret_version: 1,
+                version: 1,
+                webhook_signing_secret: None,
+                secret_replay_expires_at: None,
+            },
+            has_pending_changes: false,
+            version: 1,
+            created_at: datetime!(2026-01-01 0:00 UTC),
+            updated_at: datetime!(2026-01-01 0:01 UTC),
+        })
+        .unwrap_or(Value::Null);
+
+        assert_rfc3339(&value, "created_at");
+        assert_rfc3339(&value, "updated_at");
     }
 
     #[test]

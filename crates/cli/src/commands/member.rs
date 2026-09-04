@@ -6,7 +6,7 @@ use crate::{
     cli::MemberCommand,
     context::Context,
     error::Result,
-    output::{Format, Table, json, or_dash},
+    output::{Format, Table, json, label, next_cursor, or_dash, plain},
 };
 
 /// Runs a member command.
@@ -49,9 +49,9 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
                         table.row([
                             member.id.to_string(),
                             member.principal.public_id.clone(),
-                            format!("{:?}", member.principal.type_field).to_lowercase(),
-                            format!("{:?}", member.org_role).to_lowercase(),
-                            format!("{:?}", member.status).to_lowercase(),
+                            label(&member.principal.type_field),
+                            label(&member.org_role),
+                            label(&member.status),
                             member
                                 .tags
                                 .iter()
@@ -61,6 +61,7 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
                         ]);
                     }
                     table.print();
+                    next_cursor(listed.page.has_more, listed.page.next_cursor.as_deref());
                     Ok(())
                 }
             }
@@ -76,16 +77,13 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
                 Format::Text => {
                     let mut table = Table::new(["field", "value"]);
                     table.row(["membership", &authorization.membership_id.to_string()]);
-                    table.row([
-                        "role",
-                        &format!("{:?}", authorization.org_role).to_lowercase(),
-                    ]);
+                    table.row(["role", &label(&authorization.org_role)]);
                     table.row([
                         "capabilities",
                         &authorization
                             .capabilities
                             .iter()
-                            .map(|capability| format!("{capability:?}"))
+                            .map(label)
                             .collect::<Vec<_>>()
                             .join(", "),
                     ]);
@@ -97,8 +95,12 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
         }
         MemberCommand::Update {
             membership_id,
+            first_silicon,
+            clear_first_silicon,
             reports_to,
+            clear_reports_to,
             profile_photo,
+            clear_profile_photo,
         } => {
             let current = client.members().get(org, membership_id).await?;
             let updated = client
@@ -108,11 +110,14 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
                     membership_id,
                     current.version,
                     &models::MembershipDirectoryPatch {
-                        first_silicon_membership_id: None,
+                        first_silicon_membership_id: nullable_patch(
+                            first_silicon,
+                            clear_first_silicon,
+                        ),
                         extra_silicon_membership_ids: None,
                         default_trust: None,
-                        reports_to_membership_id: reports_to,
-                        profile_photo,
+                        reports_to_membership_id: nullable_patch(reports_to, clear_reports_to),
+                        profile_photo: nullable_patch(profile_photo, clear_profile_photo),
                     },
                     &context.mutation(),
                 )
@@ -180,24 +185,13 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
             match context.format {
                 Format::Json => json(&listed),
                 Format::Text => {
-                    let mut table = Table::new(["id", "name", "tags"]);
+                    let fields = directory_fields(fields.as_deref());
+                    let mut table = Table::new(fields.iter().copied());
                     for entry in &listed.items {
-                        table.row([
-                            or_dash(entry.id.as_deref()),
-                            or_dash(entry.name.as_deref()),
-                            entry
-                                .tags
-                                .as_ref()
-                                .map(|tags| {
-                                    tags.iter()
-                                        .map(|tag| tag.name.clone())
-                                        .collect::<Vec<_>>()
-                                        .join(",")
-                                })
-                                .unwrap_or_default(),
-                        ]);
+                        table.row(fields.iter().map(|field| directory_value(entry, field)));
                     }
                     table.print();
+                    next_cursor(listed.page.has_more, listed.page.next_cursor.as_deref());
                     Ok(())
                 }
             }
@@ -207,9 +201,92 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
                 .members()
                 .directory_self(org, fields.as_deref())
                 .await?;
-            json(&entry)
+            report_directory_member(context, &entry, fields.as_deref())
+        }
+        MemberCommand::DirectoryMember {
+            membership_id,
+            fields,
+        } => {
+            let entry = client
+                .members()
+                .directory_member(org, membership_id, fields.as_deref())
+                .await?;
+            report_directory_member(context, &entry, fields.as_deref())
         }
     }
+}
+
+fn report_directory_member(
+    context: &Context,
+    entry: &models::DirectoryMember,
+    fields: Option<&str>,
+) -> Result<()> {
+    match context.format {
+        Format::Json => json(entry),
+        Format::Text => {
+            let mut table = Table::new(["field", "value"]);
+            for field in directory_fields(fields) {
+                table.row([field.to_owned(), directory_value(entry, field)]);
+            }
+            table.print();
+            Ok(())
+        }
+    }
+}
+
+const DIRECTORY_FIELDS: [&str; 6] = ["name", "id", "role", "org", "tags", "trust"];
+
+fn directory_fields(fields: Option<&str>) -> Vec<&str> {
+    fields.map_or_else(
+        || DIRECTORY_FIELDS.to_vec(),
+        |fields| fields.split(',').collect(),
+    )
+}
+
+fn directory_value(entry: &models::DirectoryMember, field: &str) -> String {
+    match field {
+        "name" => or_dash(entry.name.as_deref()),
+        "id" => or_dash(entry.id.as_deref()),
+        "role" => entry.role.as_ref().map_or_else(
+            || "-".to_owned(),
+            |role| {
+                if role.job_role.is_empty() {
+                    label(&role.org_role)
+                } else {
+                    format!("{} ({})", label(&role.org_role), role.job_role)
+                }
+            },
+        ),
+        "org" => entry.org.as_ref().map_or_else(
+            || "-".to_owned(),
+            |organization| format!("{} ({})", organization.id, organization.name),
+        ),
+        "tags" => entry.tags.as_ref().map_or_else(
+            || "-".to_owned(),
+            |tags| {
+                let rendered = tags
+                    .iter()
+                    .map(|tag| tag.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if rendered.is_empty() {
+                    "-".to_owned()
+                } else {
+                    rendered
+                }
+            },
+        ),
+        "trust" => entry.trust.as_ref().map_or_else(|| "-".to_owned(), plain),
+        _ => "-".to_owned(),
+    }
+}
+
+#[allow(
+    clippy::option_option,
+    reason = "JSON Merge Patch has distinct omitted, null, and value states"
+)]
+fn nullable_patch<T>(value: Option<T>, clear: bool) -> Option<Option<T>> {
+    if clear { Some(None) } else { value.map(Some) }
 }
 
 /// Maps a capability name onto the contract's closed vocabulary, keeping
@@ -226,9 +303,9 @@ fn report(context: &Context, member: &models::Membership) -> Result<()> {
             let mut table = Table::new(["field", "value"]);
             table.row(["membership", &member.id.to_string()]);
             table.row(["principal", &member.principal.public_id]);
-            table.row(["role", &format!("{:?}", member.org_role).to_lowercase()]);
+            table.row(["role", &label(&member.org_role)]);
             table.row(["job_role", &member.job_role]);
-            table.row(["status", &format!("{:?}", member.status).to_lowercase()]);
+            table.row(["status", &label(&member.status)]);
             table.row([
                 "tags",
                 &member

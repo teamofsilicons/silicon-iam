@@ -173,6 +173,16 @@ pub(super) async fn update_member_directory(
 
     match identity.principal_kind.as_str() {
         "carbon" => {
+            let before = before_members
+                .get(&membership_id)
+                .ok_or(AppError::Internal {
+                    category: "directory_membership_before_state",
+                })?;
+            if !carbon_directory_patch_changes(&input, before) {
+                return Err(AppError::Conflict {
+                    code: Cow::Borrowed("member_directory_unchanged"),
+                });
+            }
             update_carbon_directory(
                 &mut scope.transaction,
                 scope.access.organization_id,
@@ -183,13 +193,18 @@ pub(super) async fn update_member_directory(
             .await?;
         }
         "silicon" => {
-            update_silicon_directory(
+            let changed = update_silicon_directory(
                 &mut scope.transaction,
                 scope.access.organization_id,
                 membership_id,
                 &input,
             )
             .await?;
+            if !changed {
+                return Err(AppError::Conflict {
+                    code: Cow::Borrowed("member_directory_unchanged"),
+                });
+            }
         }
         _ => {
             return Err(AppError::Internal {
@@ -331,6 +346,27 @@ pub(super) async fn update_member_directory(
         .await
         .map_err(support::database)?;
     support::json_response(StatusCode::OK, body, Some(member.version), false)
+}
+
+fn carbon_directory_patch_changes(
+    input: &MembershipDirectoryPatch,
+    before: &MembershipResponse,
+) -> bool {
+    input
+        .first_silicon_membership_id
+        .as_ref()
+        .is_some_and(|value| value != &before.first_silicon_membership_id)
+        || input
+            .extra_silicon_membership_ids
+            .as_ref()
+            .is_some_and(|values| {
+                let mut values = values.clone();
+                values.sort_unstable();
+                values != before.extra_silicons
+            })
+        || input.default_trust.as_ref().is_some_and(|value| {
+            before.default_trust.as_ref().map(|current| current.0) != Some(*value)
+        })
 }
 
 pub(super) async fn remove_member(
@@ -1015,17 +1051,21 @@ async fn update_silicon_directory(
     organization_id: Uuid,
     membership_id: Uuid,
     input: &MembershipDirectoryPatch,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     if let Some(reports_to) = input.reports_to_membership_id {
         validate_active_silicon(transaction, organization_id, reports_to).await?;
     }
     if input.profile_photo.is_some() || input.reports_to_membership_id.is_some() {
-        sqlx::query(
+        let result = sqlx::query(
             r"
             UPDATE iam.silicons
             SET profile_photo_override_uri = CASE WHEN $3 THEN $4 ELSE profile_photo_override_uri END,
                 reports_to_membership_id = CASE WHEN $5 THEN $6 ELSE reports_to_membership_id END
             WHERE organization_id = $1 AND membership_id = $2 AND provisioning_status <> 'deleted'
+              AND (
+                  ($3 AND profile_photo_override_uri IS DISTINCT FROM $4)
+                  OR ($5 AND reports_to_membership_id IS DISTINCT FROM $6)
+              )
             ",
         )
         .bind(organization_id)
@@ -1037,8 +1077,9 @@ async fn update_silicon_directory(
         .execute(&mut **transaction)
         .await
         .map_err(|error| support::conflict_from_database(error, "invalid_reporting_hierarchy"))?;
+        return Ok(result.rows_affected() == 1);
     }
-    Ok(())
+    Ok(false)
 }
 
 async fn validate_active_silicons(

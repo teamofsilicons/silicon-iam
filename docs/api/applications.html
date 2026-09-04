@@ -76,10 +76,12 @@ Content-Type: application/json
 <ol>
   <li>
     <strong>Send</strong> the person to
-    <code>&lt;auth_base_url&gt;/login?app_id=acme%3Eyour-app&amp;redirect_uri=https://you.example/callback</code>.
+    <code>&lt;auth_base_url&gt;/login?app_id=acme%3Eyour-app&amp;redirect_uri=https://you.example/callback&amp;org_id=acme</code>.
     IAM signs them in if they are not already. Naming an <code>app_id</code> is what makes this a
     login on your behalf; without one it is an ordinary Silicon IAM login and no token is minted.
-    <code>org_id</code> is optional and binds the session to one organization.
+    <code>org_id</code> is optional. When present, IAM requires the person's active membership and
+    binds the resulting Application token family to that organization. When absent, the browser
+    login is unscoped.
   </li>
   <li>
     They arrive back at your <code>redirect_uri</code> with <code>?slt=…</code>. If you gave no
@@ -107,7 +109,8 @@ Content-Type: application/json
 
 <p>
   The short-lived token lives <strong>two minutes</strong> and is good for exactly one exchange.
-  It is bound to the person, to your application, and to the session it was minted from.
+  It is bound to the person, to your application, and to the session it was minted from. When the
+  login names an organization, the exchanged token family is bound to that membership as well.
 </p>
 
 <h3>When there is nobody to redirect</h3>
@@ -121,12 +124,16 @@ Content-Type: application/json
 Authorization: Bearer &lt;access token&gt;
 Idempotency-Key: &lt;key&gt;
 
-{ "app_id": "acme&gt;your-app" }</code></pre>
+{ "app_id": "acme&gt;your-app", "org_id": "acme" }</code></pre>
 
 <p>
   The answer carries <code>slt</code> and <code>expires_in</code>, and your server completes it
   at <code>POST /api/v1/app-auth/tokens</code> exactly as it would one delivered through a
-  redirect. This is the only way a Silicon can sign in to an application.
+  redirect. <code>org_id</code> is optional. Supplying it requires an active membership and binds
+  the exchanged Application token family to that organization; omitting it preserves an unscoped
+  login unless the IAM bearer itself already carries an organization context. OBO requires an
+  organization-bound Application access token. This direct SLT route is the only way a Silicon
+  can sign in to an application.
 </p>
 
 <h3>Scope</h3>
@@ -147,8 +154,27 @@ Idempotency-Key: &lt;key&gt;
 </p>
 
 <p>
+  Send form fields <code>token</code> and optional
+  <code>token_type_hint=access_token|refresh_token</code>. An unknown token, a token belonging to
+  another Application, a currently invalid token, or a valid <code>X-Org-ID</code> that does not
+  match its authority returns <code>{"active":false}</code>. A malformed or duplicated
+  <code>X-Org-ID</code>, or an unsupported hint, is instead <code>400 invalid_request</code>.
+</p>
+
+<p>
   Webhooks are a notification channel, not an authorization one. Never substitute a delivered
   event for an online check.
+</p>
+
+<h3>Revocation</h3>
+
+<p>
+  <code>POST /api/v1/oauth/revoke</code> uses the same Basic authentication and form shape, plus an
+  <code>Idempotency-Key</code>. Revoking an access token invalidates only that token. Revoking a
+  refresh token invalidates its complete OAuth family and access authority for the same Application
+  session. Unknown tokens deliberately return <code>200</code>. This route never logs out the parent
+  IAM session; an Application that needs to trigger that global session logout calls
+  <code>POST /api/v1/logout</code> with its own OAuth bearer.
 </p>
 
 <h2>Credentials</h2>
@@ -209,8 +235,9 @@ Authorization: Basic base64(acme&gt;checkout:ask_…)</code></pre>
   Inside a testing environment there is no platform reviewer: the same route activates the new
   endpoint immediately and answers <code>200</code>. The sole key exception is an imported test
   Application still using an inherited production signing key: its first test URL replacement
-  creates and returns a new test-only secret and <code>secret_replay_expires_at</code>, ready for
-  deliveries to that new active URL.
+  requires the caller to supply a new test-only <code>webhook_secret</code>. IAM switches to and
+  echoes that supplied secret with <code>secret_replay_expires_at</code>; it never generates the
+  webhook secret.
 </p>
 
 <p>

@@ -3,6 +3,7 @@
 pub mod app;
 pub mod approval;
 pub mod auth;
+pub mod carbon;
 pub mod config;
 pub mod env;
 pub mod invite;
@@ -10,6 +11,7 @@ pub mod member;
 pub mod org;
 pub mod session;
 pub mod silicon;
+pub mod sso;
 pub mod system;
 pub mod tag;
 pub mod trust;
@@ -25,14 +27,17 @@ pub async fn dispatch(context: &Context, command: Command) -> Result<()> {
     match command {
         Command::Login(args) => auth::login(context, args).await,
         Command::SiliconLogin(args) => auth::silicon_login(context, args).await,
-        Command::Logout => auth::logout(context),
+        Command::Logout(args) => auth::logout(context, args).await,
         Command::Whoami => auth::whoami(context).await,
+        Command::StepUp(args) => auth::step_up(context, args).await,
         Command::Signup(args) => auth::signup(context, args).await,
+        Command::Carbon(command) => carbon::run(context, command).await,
         Command::Commands => {
             print_commands();
             Ok(())
         }
         Command::Org(command) => org::run(context, command).await,
+        Command::Sso(command) => sso::run(context, command).await,
         Command::Member(command) => member::run(context, command).await,
         Command::Invite(command) => invite::run(context, command).await,
         Command::Tag(command) => tag::run(context, command).await,
@@ -98,6 +103,7 @@ mod tests {
                         | "silicon-login"
                         | "logout"
                         | "whoami"
+                        | "step-up"
                         | "signup"
                         | "commands"
                         | "help"

@@ -1,107 +1,115 @@
 <p class="lede">
-  On-behalf-of lets your Application call another one in the same organization, without either
-  holding the other's credentials. The SDK signs the exchange and binds the resulting proof to one
-  exact downstream request.
-</p>
-
-<h2>Discover, then exchange</h2>
-
-<pre><code>let catalog = client.discover_obo_endpoints("billing_app").await?;
-let endpoint = catalog
-    .endpoint("create_invoice")
-    .ok_or("OBO endpoint not registered")?;
-
-let body = br#"{"amount":1200}"#;
-
-let exchange = client
-    .exchange_obo(endpoint, &subject_token)
-    .metadata(json!({"reason": "checkout"}))?
-    .request_bytes(Method::POST, body)?;
-
-let _operation_key = exchange.idempotency_key();
-let proof = exchange.send().await?;</code></pre>
-
-<p>
-  Discovery returns the audience's registered endpoints and the metadata each one requires. The
-  SDK signs the <em>registered</em> path from the catalog rather than a path you type, so a
-  mismatch is impossible.
+  On-behalf-of (OBO) lets one Application call a registered endpoint on another Application in
+  the same organization. IAM mints a proof for one exact downstream request; the audience
+  authenticates and consumes it before doing the work.
 </p>
 
 <div class="banner banner-info">
   <div>
-    <strong>The bytes never go to IAM.</strong>
-    <code>request_bytes</code> hashes the body and sends only the digest. The payload — a file, an
-    invoice, whatever it is — travels directly from your Application to the audience.
+    <strong>Start with an organization-bound Application login.</strong>
+    Mint the SLT with
+    <code>auth().short_lived_token_in_organization(app_id, Some("acme"), mutation)</code>, then
+    exchange it through <code>oauth().login</code>. IAM requires the actor's membership to be
+    active. An access token produced by an unscoped login cannot issue an OBO proof.
   </div>
 </div>
+
+<h2>Discover, hash, sign, then exchange</h2>
+
+<pre><code>use silicon_iam_client::{Mutation, api::obo::body_sha256, models};
+
+let catalog = caller.obo().endpoints("acme&gt;billing").await?;
+
+// Compute this over the exact downstream bytes, not re-serialized JSON.
+let body_digest = body_sha256(body);
+let exchanging = Mutation::new();
+
+let request = models::OboExchangeRequest {
+    subject_token: subject_access_token.to_owned(),
+    audience: "acme&gt;billing".to_owned(),
+    endpoint_id: "invoices.create".to_owned(),
+    metadata: serde_json::json!({ "reason": "checkout" }),
+    request: models::OboExchangeRequestBinding {
+        method: "POST".to_owned(),
+        body_sha256: body_digest,
+    },
+};
+
+let proof = caller.obo()
+    .exchange_signed(&amp;request, &amp;catalog, &amp;exchanging)
+    .await?;</code></pre>
+
+<p>
+  <code>body_sha256</code> hashes exact bytes and returns the required lowercase digest.
+  <code>exchange_signed</code> generates a fresh Unix-seconds timestamp, selects the endpoint's
+  exact registered path from the supplied catalog, and uses the same
+  <code>Credential::Application</code> secret for Basic authentication and HMAC. It rejects a
+  catalog/audience/endpoint mismatch or a non-canonical method, path, digest, timestamp, or
+  idempotency key before sending. The signature is lowercase HMAC-SHA256 hex over this exact UTF-8
+  string:
+</p>
+
+<pre><code>{timestamp}.{UPPERCASE_METHOD}.{registered_path}.{lowercase_body_sha256}.{idempotency_key}</code></pre>
+
+<p>
+  The request body itself never goes to IAM; it travels directly to the audience Application.
+  For a specialized transport, <code>sign_exchange(request, catalog, timestamp, mutation)</code>
+  exposes the same canonical signer and the low-level <code>exchange</code> method remains available.
+  Normal callers should keep signing and sending coupled through <code>exchange_signed</code>.
+</p>
 
 <h2>What the proof is bound to</h2>
 
 <p>
-  The proof commits to the method, the registered path, the body digest and the idempotency key.
-  It cannot be lifted and replayed against a different call, even by the Application that
-  legitimately obtained it.
+  IAM binds the proof to the source and audience Applications, subject token, actor,
+  organization, endpoint, metadata, method, registered path and exact body digest. It is valid for
+  one verification or at most 60 seconds, whichever comes first. Exchange immediately before the
+  downstream request.
 </p>
 
-<p>
-  It is valid for <strong>one request or sixty seconds, whichever comes first</strong>. Exchange
-  immediately before dispatching, not in advance.
-</p>
+<h2>Consume it against the actual request</h2>
 
-<h2>Consuming a proof</h2>
+<pre><code>let verified = audience.obo().verify(
+    &amp;models::OboVerifyRequest {
+        access_proof: proof.access_proof,
+        request: models::OboVerifyRequestBinding {
+            method: "POST".to_owned(),
+            path: "/v1/invoices".to_owned(),
+            body_sha256: body_sha256(actual_body),
+        },
+    },
+).await?;
 
-<p>On the audience side, verify against the request you actually received:</p>
-
-<pre><code>let result = client
-    .verify_obo(proof)
-    .request_bytes(Method::POST, "/v1/invoices", body)?
-    .send()
-    .await?;
-
-// Only now execute. `result` carries the bound actor, endpoint and metadata.</code></pre>
+// Only now execute the operation. `verified` identifies the actor,
+// issuer Application, endpoint and authenticated metadata.</code></pre>
 
 <div class="banner banner-danger">
   <div>
     <strong>Verification is single-use and must never be retried.</strong>
-    It accepts no idempotency key, no successful response is ever stored, and every attempt after
-    the proof is consumed returns <code>409</code>. If your HTTP layer retries automatically,
-    exempt this call — a retry after a successful verification is indistinguishable from a replay
-    attack and will be refused as one.
+    It accepts no idempotency key. If the call returns a transport or decode error, the proof may
+    already have been consumed; fail the downstream request and mint a fresh proof for a new
+    attempt. A second verification returns <code>409</code>.
   </div>
 </div>
-
-<p>
-  When the SDK cannot tell whether a verification succeeded it returns
-  <code>Error::AmbiguousOboVerification</code>. The proof may already be consumed. Fail the
-  request; do not retry.
-</p>
 
 <h2>Recovering an uncertain exchange</h2>
 
 <p>
-  The <em>exchange</em> is idempotent, so it can be rebuilt after a restart with
-  <code>exchange_obo_with_idempotency_key</code> — but only after rediscovering the endpoint and
-  restoring the same subject token, metadata, method and body digest. Any difference produces a
-  different canonical request and a <code>409 idempotency_conflict</code> rather than a replay.
-</p>
-
-<p>
-  Note the asymmetry: the exchange is recoverable, the verification is not. That is deliberate.
-  Minting a proof twice is harmless because a proof is single-use anyway; consuming one twice is
-  exactly the thing single-use exists to prevent.
+  Exchange, unlike verification, is idempotent. Recreate a <code>Mutation</code> with the saved
+  <code>IdempotencyKey</code> and repeat the exact subject token, audience, endpoint, metadata,
+  method and body digest while the proof is still valid. Call <code>exchange_signed</code> again so
+  the retry receives a fresh timestamp and signature; those two headers are not idempotency
+  material and an old timestamp can fall outside the 60-second window. Any changed request input
+  returns <code>409 idempotency_conflict</code>. The client does not store those inputs or retry the
+  exchange automatically.
 </p>
 
 <h2>How the proof reaches the audience</h2>
 
 <p>
-  It does not travel by a header the SDK invents. The backend contract does not define how the
-  issuer places a proof on the downstream request, so the SDK deliberately leaves that to the two
-  Applications to agree — a header, a field, a wrapper envelope, whatever fits their protocol.
-</p>
-
-<p>
-  Inventing one here would look like a standard without being one, and the first Application to
-  assume it was would be wrong.
+  IAM does not prescribe a downstream proof header or body field. The two Applications must agree
+  how to carry <code>access_proof</code>. Regardless of that transport, the audience calculates the
+  verification method, path and digest from the request it actually received.
 </p>
 
 <h2>Failure modes</h2>
@@ -109,18 +117,27 @@ let proof = exchange.send().await?;</code></pre>
 <table>
   <thead><tr><th>Condition</th><th>Meaning</th><th>Do</th></tr></thead>
   <tbody>
-    <tr><td><code>403</code></td><td>The two Applications are not in one organization</td>
-      <td>Nothing. This is not retryable and never will be.</td></tr>
-    <tr><td><code>409</code></td><td>The proof was already consumed</td>
-      <td>Do not retry. Mint a new proof for a new request.</td></tr>
-    <tr><td><code>410 proof_expired</code></td><td>More than 60 seconds elapsed</td>
-      <td>Exchange again, and look at why the gap was that long.</td></tr>
-    <tr><td><code>422</code></td><td>Metadata does not satisfy the declared schema</td>
-      <td>Re-read the catalog; the audience may have changed it.</td></tr>
+    <tr><td><code>401</code></td><td>The Application Basic credential or exchange HMAC is
+      invalid.</td><td>Correct the credential, canonical string, clock, or signature. Do not retry
+      unchanged.</td></tr>
+    <tr><td><code>403</code></td><td>The subject token is unscoped, belongs to a different
+      organization, or no longer has the required current authority.</td>
+      <td>Start a new organization-bound login and re-check the actor's active membership and the
+      caller's OBO scope.</td></tr>
+    <tr><td><code>404 not_found</code></td><td>The target is nonexistent, invisible, or outside
+      the caller's organization; those cases are intentionally indistinguishable.</td>
+      <td>Correct the audience or organization. Do not retry unchanged.</td></tr>
+    <tr><td><code>409</code></td><td>The proof was consumed, or an idempotency key was reused with
+      different exchange input.</td><td>Do not retry verification. For an exchange conflict,
+      recover the original input or use a new key for a genuinely new operation.</td></tr>
+    <tr><td><code>410 proof_expired</code></td><td>The proof's 60-second life elapsed.</td>
+      <td>Exchange a new proof for a new downstream attempt.</td></tr>
+    <tr><td><code>422</code></td><td>The metadata or presented request binding does not satisfy
+      the registered contract.</td><td>Re-read the catalog and compare the actual request.</td></tr>
   </tbody>
 </table>
 
 <p>
-  The language-independent description of all of this is in
-  <a href="/docs/api/obo">the contract's OBO section</a>.
+  See <a href="/docs/api/obo">the HTTP OBO contract</a> for the complete signature and
+  authorization checks.
 </p>

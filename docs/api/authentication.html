@@ -33,7 +33,8 @@
     <tr><td>Signup session</td><td>48 hours</td></tr>
     <tr><td>Email or phone OTP</td><td>10 minutes</td></tr>
     <tr><td>IAM and application access token</td><td>30 minutes</td></tr>
-    <tr><td>Refresh-session family</td><td>900 days, absolute</td></tr>
+    <tr><td>IAM session refresh family (Carbon or Silicon)</td><td>900 days, absolute</td></tr>
+    <tr><td>Application OAuth refresh family</td><td>900 days, absolute</td></tr>
     <tr><td>Short-lived login token</td><td>2 minutes, single use</td></tr>
     <tr><td>Step-up token</td><td>5 minutes, bound to one action on one resource</td></tr>
     <tr><td>Carbon invitation</td><td>48 hours</td></tr>
@@ -49,24 +50,35 @@
   <div>
     <strong>The single most important rule on this page.</strong>
     Every successful refresh returns a new refresh token and consumes the old one. Presenting a
-    consumed refresh token revokes the <em>entire family</em> — every device, every application —
-    and raises a security audit event.
+    consumed refresh token in a different logical operation compromises that token's
+    <em>own family</em> and raises a security audit event.
   </div>
 </div>
 
 <p>
+  The family boundary matters. An IAM refresh family belongs to one Carbon device session or one
+  Silicon session; compromise invalidates that session and authority descended from it, not the
+  principal's other device sessions. An OAuth refresh family belongs to one parent IAM session and
+  one client Application; compromise revokes that Application family and its access tokens without
+  revoking the parent IAM session or another Application's tokens.
+</p>
+
+<p>
   This is deliberate: it is what makes a stolen refresh token detectable. It also means a client
-  must serialise refresh. Two browser tabs, two worker replicas, or a retry that fires while the
-  first attempt is still in flight will each present the same token and sign the user out
-  everywhere.
+  must serialise refresh per family. Two browser tabs or worker replicas starting separate refresh
+  operations with the same token will compromise that family. An uncertain transport retry is safe
+  only when it repeats the identical request with the original <code>Idempotency-Key</code>.
 </p>
 
 <p>Concretely, a correct client:</p>
 
 <ul>
-  <li>refreshes at most once at a time, across every concurrent caller;</li>
+  <li>refreshes at most once at a time for each family, across every concurrent caller;</li>
   <li>waits for an in-flight refresh rather than starting a second;</li>
-  <li>treats a rejected refresh as terminal and re-authenticates, rather than retrying.</li>
+  <li>persists the replacement token before allowing another refresh;</li>
+  <li>reuses the original idempotency key for an exact transport retry; and</li>
+  <li>treats a reuse rejection — <code>unauthenticated</code> for IAM or
+    <code>invalid_grant</code> for OAuth — as terminal for the affected family and re-authenticates.</li>
 </ul>
 
 <p>
@@ -173,6 +185,9 @@
 <p>
   It is what lets <code>GET /api/v1/login</code> recognise somebody who is already signed in and
   go straight to minting their short-lived token instead of asking them to log in again.
+  Application login may supply <code>org_id</code> to require an active membership and bind the
+  resulting token family to that organization. Omitting it keeps a Carbon login unscoped; OBO
+  issuance requires the organization-bound form.
 </p>
 
 <div class="banner banner-info">

@@ -39,6 +39,16 @@ pub enum CliError {
     #[error("testing environment {0} is not registered on this profile")]
     UnknownTestingEnvironment(uuid::Uuid),
 
+    /// A stored environment key reached IAM but no longer opens that plane.
+    #[error("testing environment {environment_id} rejected its stored key: {source}")]
+    TestingEnvironmentUnavailable {
+        /// Public environment identifier selected by `--test`.
+        environment_id: uuid::Uuid,
+        /// The service response, retained for its correlation identifier.
+        #[source]
+        source: ClientError,
+    },
+
     /// The arguments were valid to clap but wrong in combination.
     #[error("{0}")]
     Usage(String),
@@ -62,24 +72,34 @@ impl CliError {
         match self {
             Self::NotSignedIn => 3,
             Self::Client(ClientError::Transport(_)) | Self::Update(_) => 5,
-            Self::Client(_) | Self::Webhook(_) => 4,
             // Everything else is the invocation's own fault: bad arguments,
             // a missing organization, an unreadable store.
-            Self::Usage(_)
+            Self::Client(ClientError::Invalid(_))
+            | Self::Usage(_)
             | Self::NoOrganization
             | Self::TestEnvironmentRequired
             | Self::UnknownTestingEnvironment(_)
             | Self::Config(_)
             | Self::Io(_) => 2,
+            Self::Client(_) | Self::Webhook(_) | Self::TestingEnvironmentUnavailable { .. } => 4,
         }
     }
 
     /// A hint worth printing under the message, when there is an obvious one.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeping the stable API error-to-hint catalogue together makes omissions auditable"
+    )]
     #[must_use]
     pub fn hint(&self) -> Option<String> {
         if let Self::UnknownTestingEnvironment(id) = self {
             return Some(format!(
                 "Run `iam env key {id}` outside a test environment to authorize this device."
+            ));
+        }
+        if let Self::TestingEnvironmentUnavailable { environment_id, .. } = self {
+            return Some(format!(
+                "Outside --test, run `iam env restore {environment_id}` if it was deleted, or `iam env key {environment_id}` to refresh this profile's stored key."
             ));
         }
         let Self::Client(error) = self else {
@@ -89,6 +109,12 @@ impl CliError {
             return Some(format!("Retry in {} seconds.", retry_after.as_secs()));
         }
         let api = error.api()?;
+        if api.code == "invalid_client" {
+            return Some(
+                "Check the Application ID and secret; Application authentication does not use `iam login`."
+                    .to_owned(),
+            );
+        }
         if api.is_unauthenticated() {
             return Some("Run `iam login` to sign in again.".to_owned());
         }
@@ -100,10 +126,220 @@ impl CliError {
         if api.is_version_conflict() {
             return Some("Someone changed this first. Read it again, then retry.".to_owned());
         }
+        if api.is_idempotency_conflict() {
+            return Some(
+                "An idempotency key can only replay its original request. Restore the exact original input, or use a new key for a genuinely new operation."
+                    .to_owned(),
+            );
+        }
+        if matches!(
+            api.code.as_str(),
+            "session_revocation_target_too_young"
+                | "session_revocation_authority_too_young"
+                | "session_revoke_all_target_too_young"
+        ) {
+            return Some(
+                "For takeover resistance, the session doing the revocation and every session it targets must be at least 12 hours old."
+                    .to_owned(),
+            );
+        }
+        match api.code.as_str() {
+            "obo_organization_required" => {
+                return Some(
+                    "Mint an organization-bound subject token with `iam --org <handle> login --app-id <requester-app>`, then exchange that SLT."
+                        .to_owned(),
+                );
+            }
+            "obo_organization_mismatch" => {
+                return Some(
+                    "The subject token must be bound to the requesting Application's organization."
+                        .to_owned(),
+                );
+            }
+            "obo_subject_token_forbidden" => {
+                return Some(
+                    "Use an active Application access token issued to --as-app-id with the obo.issue scope."
+                        .to_owned(),
+                );
+            }
+            "obo_request_binding_mismatch" => {
+                return Some(
+                    "The method, registered path, and body bytes must exactly match the request bound into this proof."
+                        .to_owned(),
+                );
+            }
+            "obo_proof_consumed" => {
+                return Some(
+                    "OBO proofs are single-use. Issue a new proof for the next downstream request."
+                        .to_owned(),
+                );
+            }
+            "obo_proof_expired" => {
+                return Some(
+                    "This OBO proof exceeded its 60-second lifetime. Issue a fresh proof immediately before the downstream request."
+                        .to_owned(),
+                );
+            }
+            "obo_proof_revoked" | "obo_authority_revoked" => {
+                return Some(
+                    "Authority changed after this proof was issued. Re-check access and issue a new proof."
+                        .to_owned(),
+                );
+            }
+            "idempotency_response_expired" => {
+                return Some(
+                    "The original response can no longer be replayed. Issue a new request with a new idempotency key."
+                        .to_owned(),
+                );
+            }
+            "approval_request_exists" => {
+                return Some(
+                    "A matching governance request is already pending. List pending requests instead of submitting another."
+                        .to_owned(),
+                );
+            }
+            "approval_request_closed" | "approval_already_decided" => {
+                return Some(
+                    "This approval is already closed. Read its current state instead of deciding it again."
+                        .to_owned(),
+                );
+            }
+            "job_role_changed_since_request" => {
+                return Some(
+                    "The target's job role changed after this request was opened. Close the stale request and submit a new one."
+                        .to_owned(),
+                );
+            }
+            "testing_application_already_exists" => {
+                return Some(
+                    "That Application is already imported in this testing environment. Use `iam app show`, or clean the environment before importing it again."
+                        .to_owned(),
+                );
+            }
+            "sso_not_active" => {
+                return Some(
+                    "SSO has no active provider connection. Finish provider setup before testing or using SSO."
+                        .to_owned(),
+                );
+            }
+            "sso_entitlement_required" => {
+                return Some(
+                    "This organization does not have the SSO entitlement. Enable it before requesting a setup link."
+                        .to_owned(),
+                );
+            }
+            "sso_join_method_active" => {
+                return Some(
+                    "This organization currently requires SSO joins. Change that policy before disabling SSO."
+                        .to_owned(),
+                );
+            }
+            "testing_environment_required" => {
+                return Some(
+                    "Select the isolated plane with `--test <environment-id>` and use that environment's stored key."
+                        .to_owned(),
+                );
+            }
+            "testing_environment_deleted" => {
+                return Some(
+                    "Run `iam env restore <environment-id>` from the production control plane before using it again."
+                        .to_owned(),
+                );
+            }
+            "testing_environment_not_deleted" => {
+                return Some(
+                    "This environment is already active; it does not need restoring.".to_owned(),
+                );
+            }
+            "testing_environment_not_recoverable" => {
+                return Some(
+                    "The recovery window has closed. Create a new testing environment instead."
+                        .to_owned(),
+                );
+            }
+            "testing_environment_limit_reached" => {
+                return Some(
+                    "Retire an unused active testing environment before creating another."
+                        .to_owned(),
+                );
+            }
+            "testing_environment_unchanged" => {
+                return Some(
+                    "Supply a name or description that actually changes the environment."
+                        .to_owned(),
+                );
+            }
+            "reassign_reports_to_required" => {
+                return Some(
+                    "This member has direct reports. Pass --reassign-reports-to with an active Silicon membership UUID."
+                        .to_owned(),
+                );
+            }
+            "owner_cannot_be_removed" => {
+                return Some(
+                    "Transfer organization ownership before removing this membership.".to_owned(),
+                );
+            }
+            "invalid_reporting_hierarchy" => {
+                return Some(
+                    "Choose an active Silicon membership that does not create a reporting cycle."
+                        .to_owned(),
+                );
+            }
+            "trust_selector_inactive" => {
+                return Some(
+                    "Both selectors must be active memberships in the selected organization, and the target must be a Silicon membership."
+                        .to_owned(),
+                );
+            }
+            "dead_letter_not_replayable" => {
+                return Some(
+                    "Only deliveries that are still in the dead-letter state can be replayed. Refresh the list first."
+                        .to_owned(),
+                );
+            }
+            "application_webhook_not_configured" => {
+                return Some(
+                    "Configure the Application webhook before performing this operation."
+                        .to_owned(),
+                );
+            }
+            "application_webhook_not_active" => {
+                return Some(
+                    "The webhook destination is not active yet. Check its pending review state with `iam app webhook`."
+                        .to_owned(),
+                );
+            }
+            "application_unchanged" | "application_webhook_unchanged" => {
+                return Some("Supply a value that actually changes the Application.".to_owned());
+            }
+            "job_role_unchanged" => {
+                return Some(
+                    "Supply a job role different from the member's current role.".to_owned(),
+                );
+            }
+            _ => {}
+        }
         if api.is_forbidden() {
             return Some("Your role in this organization does not allow it.".to_owned());
         }
+        if api.is_not_found() {
+            return Some(
+                "Check the identifier and the active --org/--test scope; testing environments have their own organizations."
+                    .to_owned(),
+            );
+        }
         None
+    }
+
+    /// Correlation identifier retained from a service response, if any.
+    #[must_use]
+    pub fn request_id(&self) -> Option<&str> {
+        match self {
+            Self::Client(error) => error.request_id(),
+            Self::TestingEnvironmentUnavailable { source, .. } => source.request_id(),
+            _ => None,
+        }
     }
 }
 
@@ -161,5 +397,10 @@ mod tests {
             .is_some_and(|hint| hint.contains("12 seconds"))
         );
         assert!(CliError::Client(api(409, "conflict")).hint().is_none());
+        assert!(
+            CliError::Client(api(404, "not_found"))
+                .hint()
+                .is_some_and(|hint| hint.contains("--org/--test"))
+        );
     }
 }

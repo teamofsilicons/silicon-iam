@@ -72,6 +72,17 @@
   </div>
 </div>
 
+<h2>Listing your organizations</h2>
+
+<p>
+  <code>GET /api/v1/organizations</code> is Carbon-only and defaults to
+  <code>status=active</code>. Its <code>status=active|removed</code> query filters the authenticated
+  Carbon's <em>membership</em> in each organization, not the organization's own lifecycle state.
+  The <code>status</code> property in every returned Organization still describes the organization
+  itself and remains <code>active</code> or <code>disabled</code>; a result reached through a removed
+  membership may therefore describe an active organization.
+</p>
+
 <h2>The directory</h2>
 
 <p>
@@ -139,7 +150,7 @@
 </ol>
 
 <p>
-  Both calls need an IAM bearer: joining attaches an organization to an existing Silicon account,
+  Both calls need an IAM bearer: joining attaches an organization to an existing Carbon account,
   so the visitor must already be signed in. Say so before they start.
 </p>
 

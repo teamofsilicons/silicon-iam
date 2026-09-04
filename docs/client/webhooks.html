@@ -35,6 +35,13 @@ let event = verified.event();</code></pre>
   <li>only then parses JSON.</li>
 </ul>
 
+<p>
+  <code>X-Silicon-IAM-Signature</code> must have the exact canonical form
+  <code>v1=&lt;64 lowercase hexadecimal characters&gt;</code>. It is HMAC-SHA256 over
+  <code>{timestamp}.{exact body bytes}</code>; the version prefix is part of the header format,
+  not part of the digest.
+</p>
+
 <h2>Secret versions</h2>
 
 <p>

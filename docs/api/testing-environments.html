@@ -8,7 +8,7 @@
 
 <p>
   A normal request without an environment header operates on production. Add the root key to a
-  planed request to execute that same route inside one environment:
+  plane-selectable request to execute that same route inside one environment:
 </p>
 
 <pre><code>X-Testing-Environment-Key: &lt;32 alphanumeric characters&gt;</code></pre>
@@ -60,7 +60,7 @@
   days without accepted activity causes the same soft deletion automatically.
 </p>
 
-<h2>Verification without delivery</h2>
+<h2>Fixed OTPs without email or SMS delivery</h2>
 
 <p>
   Test data never triggers real email or SMS. Use <code>000000</code> for signup email and phone
@@ -74,9 +74,11 @@
 <p>
   To create a test-only Application, call ordinary <code>POST /api/v1/applications</code> with a
   test Carbon owner/admin bearer and the environment key. The request supplies a local handle,
-  <code>org_id</code>, <code>base_url</code>, webhook URL, and optional OBO catalog. IAM returns the
-  canonical <code>{org_id}&gt;{handle}</code> ID and fresh secrets. A test creation may not claim an
-  ID already registered in production.
+  <code>org_id</code>, <code>base_url</code>, webhook URL, a caller-chosen
+  <code>webhook_secret</code>, and an optional OBO catalog. IAM returns the canonical
+  <code>{org_id}&gt;{handle}</code> ID and a generated test-only client secret, and echoes the
+  supplied webhook secret for v1 compatibility. IAM never generates a webhook secret. A test
+  creation may not claim an ID already registered in production.
 </p>
 
 <p>
@@ -148,12 +150,14 @@ Content-Type: application/json
   <li>Create an environment from production and store UUID and key separately.</li>
   <li>Run ordinary signup under the key, verify both contacts with <code>000000</code>, then log in and retain the test bearer under the environment UUID.</li>
   <li>Create a test organization/Application or import the production Application; persist the returned test-only client secret during its ten-minute replay window.</li>
-  <li>Complete short-lived-token login and introspection entirely in the test plane. Assert that production credentials fail there and test credentials fail without the header.</li>
-  <li>Trigger a directory change; verify, route, deduplicate, and apply the wrapped webhook. Exercise OBO too when the Application publishes endpoints.</li>
+  <li>Complete an organization-bound short-lived-token login and matching-organization introspection entirely in the test plane. Also prove an unscoped login remains valid for ordinary Application use. Assert that production credentials fail there and test credentials fail without the header.</li>
+  <li>Trigger a directory change; verify, route, deduplicate, and apply the wrapped webhook. Exercise OBO with the organization-bound token, and prove the unscoped token is refused.</li>
   <li>Clean the environment for another run or retire it from the production control plane.</li>
 </ol>
 
 <p>
   The <a href="/docs/client/testing-environments">Rust client guide</a> and the
-  <code>silicon-iam-cli</code> README show the same proof without constructing headers by hand.
+  <a href="https://github.com/teamofsilicons/silicon-iam/tree/main/docs/cli#end-to-end-application-proof-in-a-test-environment"
+    rel="external noreferrer"><code>silicon-iam-cli</code> guide</a> show the same proof without
+  constructing headers by hand.
 </p>

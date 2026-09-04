@@ -1,119 +1,151 @@
 <p class="lede">
-  Refresh, introspection, revocation and logout are modelled as <em>operation values</em>: you
-  build one, read its idempotency key, persist that key with your input, and only then send it.
-  The shape exists because of one contract fact.
+  Application access tokens are opaque. Refresh rotates one Application refresh family;
+  introspection answers what a token authorizes now; revocation removes either one access token or
+  one refresh family; logout can revoke the parent IAM session.
 </p>
 
 <div class="banner banner-danger">
   <div>
-    <strong>Refresh tokens rotate on every use, and reuse revokes the family.</strong>
-    Presenting a consumed refresh token revokes every session in the 900-day family — every
-    device — and raises a security audit event. A careless retry does not fail; it signs your user
-    out everywhere.
+    <strong>Serialize refresh and retain its idempotency key.</strong>
+    Reusing a consumed Application refresh token under a new key is treated as compromise and
+    revokes that Application refresh family and its related access authority. It does not revoke
+    the parent IAM session, unrelated devices, or other Applications.
   </div>
 </div>
 
 <h2>Refresh</h2>
 
-<pre><code>let operation = client.oauth().refresh(OAuthRefreshToken::new(stored)?);
-let operation_key = operation.idempotency_key();
+<pre><code>use silicon_iam_client::Mutation;
 
-// Persist `operation_key` alongside the old token BEFORE sending.
-let replacement = operation.send().await?;
-let _was_replayed = replacement.operation().idempotency_replayed();
+let refreshing = Mutation::new();
+let key_to_persist = refreshing.key().as_str().to_owned();
 
-// Atomically replace the stored refresh token with the new one.
-Ok(replacement.into_parts())</code></pre>
+// Persist `key_to_persist` with `stored_refresh_token` before this call.
+let replacement = application
+    .oauth()
+    .refresh(app_id, &amp;stored_refresh_token, &amp;refreshing)
+    .await?;
 
-<p>Two rules, both load-bearing:</p>
+// Atomically replace the stored token pair with `replacement`.</code></pre>
+
+<p>Two rules are load-bearing:</p>
 
 <ul>
-  <li>
-    <strong>One refresh at a time per token family.</strong> Two concurrent workers, two browser
-    tabs, or a retry racing its own first attempt will each present the same token. Serialise it —
-    a database row lock, a distributed lease, whatever your deployment already has.
-  </li>
-  <li>
-    <strong>Replace the old token atomically on success.</strong> A crash between receiving the
-    replacement and storing it leaves you holding a token that no longer works, with no way back.
-  </li>
+  <li><strong>One refresh at a time per family.</strong> Serialize workers and browser tabs that
+    share a refresh token.</li>
+  <li><strong>Store the replacement atomically.</strong> A crash after the server rotates but
+    before the new token is committed otherwise leaves only a consumed token.</li>
 </ul>
-
-<p>
-  <code>idempotency_replayed()</code> reports whether the server returned a stored result rather
-  than performing a fresh rotation. It is the signal that your recovery path worked.
-</p>
 
 <h2>Recovering an uncertain refresh</h2>
 
 <p>
-  If the process restarts mid-refresh, rebuild the <em>same</em> operation rather than starting a
-  new one:
+  Reconstruct the same <code>Mutation</code>, and send the exact same Application ID and old
+  refresh token. A changed body with the same key returns <code>409 idempotency_conflict</code>;
+  the same body with a new key is refresh-token reuse.
 </p>
 
-<pre><code>let operation = client
+<pre><code>use silicon_iam_client::{IdempotencyKey, Mutation};
+
+let key = IdempotencyKey::parse(saved_key)?;
+let refreshing = Mutation::with_key(key);
+let replacement = application
     .oauth()
-    .refresh_with_idempotency_key(OAuthRefreshToken::new(stored)?, saved_key);
-let replacement = operation.send().await?;</code></pre>
+    .refresh(app_id, &amp;stored_refresh_token, &amp;refreshing)
+    .await?;</code></pre>
 
 <p>
-  Same key, same input, same result — the server replays its stored response. Issuing a
-  <em>new</em> key for the same mutation is what triggers the family revocation, so never
-  "recover" that way.
+  The service may return its stored result with <code>Idempotency-Replayed: true</code>. Version
+  1.1.0 returns the typed response body but does not expose that response header, so recovery must
+  be keyed by the <code>Mutation</code> your application persisted rather than by an SDK replay
+  flag.
 </p>
 
 <h2>Introspection</h2>
 
-<p>
-  Tokens are opaque; there is nothing to verify locally. When an Application needs to know whether
-  a token is good <strong>right now</strong> — after a revocation, or a membership change — it
-  asks:
-</p>
+<pre><code>use silicon_iam_client::models::{
+    TokenIntrospectionRequest,
+    TokenIntrospectionRequestTokenTypeHint,
+};
 
-<pre><code>let introspection = client
-    .oauth()
-    .introspect(&access_token)
-    .send()
-    .await?;
+let current = application.oauth().introspect(
+    &amp;TokenIntrospectionRequest {
+        token: access_token.to_owned(),
+        token_type_hint: Some(TokenIntrospectionRequestTokenTypeHint::AccessToken),
+    },
+    Some("acme"),
+).await?;
 
-if let ActiveToken::Active(active) = introspection.token() {
-    let _actor = active.actor();
+if current.active {
+    let actor = current.principal_id;
 }</code></pre>
 
 <p>
-  The response reflects current revocation and organization-membership state. A webhook is a
-  notification channel, never an authorization one: do not substitute a delivered event for an
-  online check on a request that matters.
+  The optional organization context must be one canonical organization handle. A valid handle
+  that does not match the token returns <code>active: false</code>, including when the token came
+  from an unscoped login. A malformed or duplicate
+  <code>X-Org-ID</code> is a request error. Unknown, expired and revoked tokens also return an
+  inactive response rather than revealing which condition applied. Use introspection for current
+  authorization; a webhook is a notification, not an authorization cache. Mint the SLT with
+  <code>short_lived_token_in_organization</code> when the token must be active in an organization
+  or used for OBO.
 </p>
 
-<h2>Revocation and global logout</h2>
+<h2>Revocation</h2>
 
-<p>Both follow the same operation pattern as refresh.</p>
+<pre><code>use silicon_iam_client::{Mutation, models};
 
-<pre><code>// Revoke one token this Application issued.
-client.oauth().revoke(token).send().await?;
-
-// End the user's IAM session across every configured Application.
-client.oauth().global_logout(&access_token).send().await?;</code></pre>
+application.oauth().revoke(
+    &amp;models::OAuthRevocationRequest {
+        token: refresh_token.to_owned(),
+        token_type_hint: Some(
+            models::OAuthRevocationRequestTokenTypeHint::RefreshToken,
+        ),
+    },
+    &amp;Mutation::new(),
+).await?;</code></pre>
 
 <p>
-  Global logout is only available when the Application is the token's own audience, and it revokes
-  every IAM and Application authority bound to that parent session — not just yours. Reach for it
-  when the user asked to sign out of everything, not merely out of your product.
+  Revoking an access token removes only that token. Revoking a refresh token removes its complete
+  Application refresh family and related access authority. Revoking an unknown token deliberately
+  succeeds, so callers cannot use the route as a token-existence oracle.
 </p>
 
-<h2>The operation pattern, in one place</h2>
+<h2>Application-triggered global logout</h2>
+
+<p>
+  To honor “sign out everywhere” for a Carbon, authenticate <code>auth().logout</code> with the
+  Carbon Application access token itself, not with the Application's Basic credential:
+</p>
+
+<pre><code>use silicon_iam_client::{Credential, Mutation, models};
+
+let actor = iam.with_credential(Credential::bearer(application_access_token));
+actor.auth().logout(
+    &amp;models::LogoutRequest { mode: None },
+    &amp;Mutation::new(),
+).await?;</code></pre>
+
+<p>
+  The token must have been issued to the calling Application as both client and audience. This
+  form revokes the token's parent IAM session and every IAM/Application authority tied to that
+  session. It cannot request account-wide <code>all_sessions</code>; that is a separate,
+  step-up-protected first-party Carbon operation.
+</p>
+
+<h2>The mutation pattern</h2>
 
 <ol>
-  <li>Build the operation. Nothing has been sent.</li>
-  <li>Read <code>idempotency_key()</code> and persist it with the input.</li>
-  <li><code>send().await</code>.</li>
-  <li>On success, commit the result and the key's retirement together.</li>
-  <li>On a transport or protocol error, keep both and rebuild the same operation later.</li>
-  <li>On an authoritative terminal error, retire the key.</li>
+  <li>Create one <code>Mutation</code> per logical operation.</li>
+  <li>Persist <code>mutation.key().as_str()</code> with the exact input before sending.</li>
+  <li>On success, commit the result and retire the saved key together.</li>
+  <li>After an uncertain transport outcome, rebuild with
+    <code>Mutation::with_key(IdempotencyKey::parse(saved_key)?)</code> and resend unchanged.</li>
+  <li>On an authoritative terminal API error, fix the request or stop; do not blindly retry it.</li>
 </ol>
 
 <p>
-  Every mutating call in this SDK works this way, which means one recovery routine covers all of
-  them. The general rules are in <a href="/docs/client/errors">Errors and recovery</a>.
+  The crate sends each call once and does not persist mutations for you. OBO proof verification is
+  intentionally different: it consumes a single-use proof and accepts no idempotency key, so an
+  ambiguous verification must not be retried.
 </p>

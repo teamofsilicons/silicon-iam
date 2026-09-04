@@ -45,7 +45,7 @@ tags:
     description: >-
       A testing environment is an organization-owned replica of Silicon IAM
       running against a separate database and starting completely empty. Every
-      planed route accepts an `X-Testing-Environment-Key` header; supplying one
+      plane-selectable route accepts an `X-Testing-Environment-Key` header; supplying one
       executes that request inside the named environment instead of production,
       against the same contract. OTP delivery is suppressed and verification
       accepts `000000`. Test webhook deliveries are explicitly marked and
@@ -474,6 +474,9 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TokenIntrospection' }
+        '400':
+          description: The token-type hint or optional X-Org-ID header is malformed or duplicated.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/oauth/revoke:
@@ -482,6 +485,10 @@ paths:
     post:
       tags: [OAuth]
       operationId: revokeOAuthToken
+      description: |
+        Revoking an access token invalidates that token only. Revoking a refresh
+        token invalidates its complete refresh family and access authority issued
+        for the same Application session. Unknown tokens deliberately succeed.
       security: [{ applicationBasic: [] }]
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
@@ -3080,6 +3087,10 @@ paths:
         review while the current endpoint remains active. In a testing
         environment, which deliberately has no platform reviewer, atomically
         retires the old endpoint and activates this replacement immediately.
+        Repeating the active or pending URL without a replacement secret, or
+        supplying the exact current URL and secret where they can be compared,
+        returns `409 application_webhook_unchanged` without changing the
+        Application version or emitting audit/outbox events.
       security: [{ iamBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/AppIdPath' }
@@ -3501,7 +3512,7 @@ components:
       required: false
       description: >-
         Optionally selects an isolated testing data plane for this otherwise
-        ordinary planed operation. Omit the header to use production. The value
+        ordinary plane-selected operation. Omit the header to use production. The value
         is the 32-character alphanumeric key issued for an active testing
         environment; it supplies selection context, not sole authorization.
       schema: { $ref: '#/components/schemas/TestingEnvironmentKeyValue' }
@@ -3509,14 +3520,14 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: Opaque caller-generated key. Reuse with different bytes returns idempotency_conflict.
-      schema: { type: string, minLength: 16, maxLength: 255 }
+      description: Opaque caller-generated key containing 16 to 255 printable ASCII bytes. Reuse with different bytes returns idempotency_conflict.
+      schema: { type: string, minLength: 16, maxLength: 255, pattern: '^[\x21-\x7E]{16,255}$' }
     OboTimestamp:
       name: X-OBO-Timestamp
       in: header
       required: true
       description: Canonical positive Unix timestamp in seconds; accepted only within 60 seconds of IAM's clock.
-      schema: { type: string, pattern: '^(0|[1-9][0-9]{0,18})$' }
+      schema: { type: string, pattern: '^[1-9][0-9]{0,18}$' }
     OboSignature:
       name: X-OBO-Signature
       in: header
@@ -4075,6 +4086,9 @@ components:
       additionalProperties: false
       properties:
         app_id: { $ref: '#/components/schemas/AppId' }
+        org_id:
+          allOf: [{ $ref: '#/components/schemas/OrgId' }]
+          description: Optional organization membership to bind into the resulting Application tokens. Omit for an unscoped login.
     ShortLivedToken:
       type: object
       required: [slt, expires_in]
@@ -5313,7 +5327,7 @@ components:
           type: string
           minLength: 1
           maxLength: 2048
-          pattern: '^/(?!/)(?!.*(?:^|/)\.\.?(?:/|$))(?!.*[?#\s]).*$'
+          pattern: '^/(?!/)(?!.*(?:^|/)\.\.?(?:/|$))(?!.*[?#\x00-\x20\x7F]).*$'
           description: Stable absolute audience-application endpoint path.
         metadata:
           type: object
@@ -5371,7 +5385,7 @@ components:
           type: string
           minLength: 1
           maxLength: 2048
-          pattern: '^/(?!/)(?!.*(?:^|/)\.\.?/)(?!.*[?#\s]).*$'
+          pattern: '^/(?!/)(?!.*(?:^|/)\.\.?(?:/|$))(?!.*[?#\x00-\x20\x7F]).*$'
           description: Exact registered path of the downstream request.
         body_sha256: { $ref: '#/components/schemas/OboBodySha256' }
     OboExchangeRequest:

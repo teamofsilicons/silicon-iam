@@ -4,7 +4,7 @@ use crate::{
     cli::SessionCommand,
     context::Context,
     error::Result,
-    output::{Format, Table, json, or_dash, timestamp},
+    output::{Format, Table, json, label, next_cursor, or_dash, timestamp},
 };
 
 /// Runs a session command.
@@ -24,12 +24,13 @@ pub async fn run(context: &Context, command: SessionCommand) -> Result<()> {
                     for session in &listed.items {
                         table.row([
                             session.session_id.to_string(),
-                            format!("{:?}", session.status).to_lowercase(),
+                            label(&session.status),
                             timestamp(session.created_at),
                             timestamp(session.last_used_at),
                         ]);
                     }
                     table.print();
+                    next_cursor(listed.page.has_more, listed.page.next_cursor.as_deref());
                     Ok(())
                 }
             }
@@ -51,12 +52,13 @@ pub async fn run(context: &Context, command: SessionCommand) -> Result<()> {
                     for event in &listed.items {
                         table.row([
                             timestamp(event.occurred_at),
-                            format!("{:?}", event.event_type).to_lowercase(),
+                            label(&event.event_type),
                             if event.success { "ok" } else { "failed" }.to_owned(),
                             or_dash(event.app_id.as_deref()),
                         ]);
                     }
                     table.print();
+                    next_cursor(listed.page.has_more, listed.page.next_cursor.as_deref());
                     Ok(())
                 }
             }

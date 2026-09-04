@@ -6,7 +6,7 @@ use crate::{
     cli::TagCommand,
     context::Context,
     error::Result,
-    output::{Format, Table, json, timestamp},
+    output::{Format, Table, json, label, next_cursor, timestamp},
 };
 
 /// Runs a tag command.
@@ -36,6 +36,7 @@ pub async fn run(context: &Context, command: TagCommand) -> Result<()> {
                         ]);
                     }
                     table.print();
+                    next_cursor(listed.page.has_more, listed.page.next_cursor.as_deref());
                     Ok(())
                 }
             }
@@ -89,11 +90,12 @@ pub async fn run(context: &Context, command: TagCommand) -> Result<()> {
                         table.row([
                             member.id.to_string(),
                             member.principal.public_id.clone(),
-                            format!("{:?}", member.org_role).to_lowercase(),
-                            format!("{:?}", member.status).to_lowercase(),
+                            label(&member.org_role),
+                            label(&member.status),
                         ]);
                     }
                     table.print();
+                    next_cursor(listed.page.has_more, listed.page.next_cursor.as_deref());
                     Ok(())
                 }
             }

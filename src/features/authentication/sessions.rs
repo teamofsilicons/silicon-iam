@@ -761,7 +761,9 @@ async fn require_mature_target_session(
 
     match mature {
         Some(true) => Ok(()),
-        Some(false) => Err(AppError::Forbidden),
+        Some(false) => Err(AppError::PreconditionFailed {
+            code: "session_revocation_target_too_young".into(),
+        }),
         None => Err(AppError::NotFound),
     }
 }
@@ -783,7 +785,9 @@ async fn require_mature_current_session(
 
     match mature {
         Some(true) => Ok(()),
-        Some(false) => Err(AppError::Forbidden),
+        Some(false) => Err(AppError::PreconditionFailed {
+            code: "session_revocation_authority_too_young".into(),
+        }),
         None => Err(AppError::Unauthenticated),
     }
 }
@@ -807,7 +811,9 @@ async fn authorize_all_sessions_logout(
         return Ok(false);
     };
     if !all_other_sessions_mature {
-        return Err(AppError::Forbidden);
+        return Err(AppError::PreconditionFailed {
+            code: "session_revoke_all_target_too_young".into(),
+        });
     }
     require_mature_current_session(transaction, principal_id, current_session_id).await?;
     Ok(true)

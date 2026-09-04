@@ -23,7 +23,25 @@ impl Organizations<'_> {
     ///
     /// Returns an error when the request fails.
     pub async fn list(&self, paging: &Paging) -> Result<models::OrganizationPage> {
-        self.0.get_with(&["organizations"], &paging.query()).await
+        self.list_with_status(None, paging).await
+    }
+
+    /// Organizations the caller belongs to, optionally filtered by membership
+    /// status (`active` or `removed`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the status is invalid or the request fails.
+    pub async fn list_with_status(
+        &self,
+        status: Option<&str>,
+        paging: &Paging,
+    ) -> Result<models::OrganizationPage> {
+        let mut query = paging.query();
+        if let Some(status) = status {
+            query.push(("status", status.to_owned()));
+        }
+        self.0.get_with(&["organizations"], &query).await
     }
 
     /// Creates an organization, with the caller as its owner.

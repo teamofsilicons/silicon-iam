@@ -1,12 +1,12 @@
 //! Testing environments.
 
-use silicon_iam_client::models;
+use silicon_iam_client::{Error as ClientError, models};
 
 use crate::{
     cli::EnvCommand,
     context::Context,
-    error::Result,
-    output::{Format, Table, json, or_dash, timestamp, timestamp_or_dash},
+    error::{CliError, Result},
+    output::{Format, Table, json, label, next_cursor, or_dash, timestamp, timestamp_or_dash},
 };
 
 /// Runs a testing environment command.
@@ -22,8 +22,13 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
     // The two key-authorized commands work without a signed-in session, which
     // is the point of an environment key.
     if let EnvCommand::Current = command {
-        context.require_test()?;
-        let described = context.anonymous().environments().current().await?;
+        let environment_id = context.require_test()?;
+        let described = context
+            .anonymous()
+            .environments()
+            .current()
+            .await
+            .map_err(|error| environment_error(environment_id, error))?;
         return match context.format {
             Format::Json => json(&described),
             Format::Text => {
@@ -43,12 +48,13 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
         environment_id: None,
     } = command
     {
-        context.require_test()?;
+        let environment_id = context.require_test()?;
         let cleaned = context
             .anonymous()
             .environments()
             .clean_current(&context.mutation())
-            .await?;
+            .await
+            .map_err(|error| environment_error(environment_id, error))?;
         return report_cleaning(context, &cleaned);
     }
 
@@ -73,12 +79,23 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
                         table.row([
                             entry.id.to_string(),
                             entry.name.clone(),
-                            format!("{:?}", entry.status).to_lowercase(),
+                            label(&entry.status),
                             entry.key_generation.to_string(),
                             timestamp(entry.last_activity_at),
                         ]);
                     }
                     table.print();
+                    next_cursor(
+                        listed
+                            .page
+                            .get("has_more")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false),
+                        listed
+                            .page
+                            .get("next_cursor")
+                            .and_then(serde_json::Value::as_str),
+                    );
                     Ok(())
                 }
             }
@@ -114,6 +131,7 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
             environment_id,
             name,
             description,
+            clear_description,
         } => {
             let current = client.environments().get(org, environment_id).await?;
             let updated = client
@@ -122,7 +140,10 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
                     org,
                     environment_id,
                     current.version,
-                    &models::TestingEnvironmentPatch { name, description },
+                    &models::TestingEnvironmentPatch {
+                        name,
+                        description: nullable_patch(description, clear_description),
+                    },
                     &context.mutation(),
                 )
                 .await?;
@@ -193,6 +214,28 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
     }
 }
 
+fn environment_error(environment_id: uuid::Uuid, error: ClientError) -> CliError {
+    if error
+        .api()
+        .is_some_and(silicon_iam_client::ApiError::is_unauthenticated)
+    {
+        CliError::TestingEnvironmentUnavailable {
+            environment_id,
+            source: error,
+        }
+    } else {
+        CliError::Client(error)
+    }
+}
+
+#[allow(
+    clippy::option_option,
+    reason = "JSON Merge Patch has distinct omitted, null, and value states"
+)]
+fn nullable_patch<T>(value: Option<T>, clear: bool) -> Option<Option<T>> {
+    if clear { Some(None) } else { value.map(Some) }
+}
+
 fn report(context: &Context, environment: &models::TestingEnvironment) -> Result<()> {
     match context.format {
         Format::Json => json(environment),
@@ -201,10 +244,7 @@ fn report(context: &Context, environment: &models::TestingEnvironment) -> Result
             table.row(["id", &environment.id.to_string()]);
             table.row(["name", &environment.name]);
             table.row(["description", &or_dash(environment.description.as_deref())]);
-            table.row([
-                "status",
-                &format!("{:?}", environment.status).to_lowercase(),
-            ]);
+            table.row(["status", &label(&environment.status)]);
             table.row(["key_generation", &environment.key_generation.to_string()]);
             table.row(["last_activity", &timestamp(environment.last_activity_at)]);
             table.row(["purge_after", &timestamp_or_dash(environment.purge_after)]);

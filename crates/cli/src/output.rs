@@ -27,6 +27,25 @@ pub fn json<T: Serialize>(value: &T) -> Result<()> {
     Ok(())
 }
 
+/// Prints the JSON representation of a successful response with no body.
+pub fn json_empty() {
+    println!("null");
+}
+
+/// Prints the opaque cursor needed to continue a paginated text listing.
+///
+/// JSON output already carries the complete page object. Text output needs to
+/// surface the same continuation value explicitly so a person can pass it to
+/// the next command with `--cursor`.
+pub fn next_cursor(has_more: bool, next_cursor: Option<&str>) {
+    if has_more {
+        println!(
+            "Next cursor: {}",
+            next_cursor.unwrap_or("<missing from service response>")
+        );
+    }
+}
+
 /// A table built column by column, printed with aligned headers.
 ///
 /// Deliberately simple: no wrapping, no colour, no borders. The output is as
@@ -120,6 +139,19 @@ pub fn plain(value: &serde_json::Value) -> String {
     value
         .as_str()
         .map_or_else(|| value.to_string(), str::to_owned)
+}
+
+/// Renders a serializable enum or scalar using its wire spelling.
+///
+/// Debug formatting loses separators in names such as `needs_approval`, which
+/// is especially confusing when the displayed value is meant to be accepted
+/// by a later CLI flag.
+#[must_use]
+pub fn label<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .as_ref()
+        .map_or_else(|| "<unprintable>".to_owned(), plain)
 }
 
 /// Renders an optional timestamp, or a dash.
