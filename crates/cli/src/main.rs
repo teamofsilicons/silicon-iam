@@ -12,6 +12,7 @@ mod context;
 mod error;
 mod output;
 mod store;
+mod updater;
 
 use clap::Parser as _;
 
@@ -20,6 +21,17 @@ use crate::{cli::Cli, context::Context, error::CliError};
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
+    match updater::automatic(&cli.command).await {
+        Ok(updater::Outcome::Updated { from, to }) => {
+            eprintln!(
+                "Updated iam from {from} to {to}; this command will finish on {from}, and the next invocation will use {to}."
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("warning: automatic update skipped: {error}");
+        }
+    }
     match run(cli).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {

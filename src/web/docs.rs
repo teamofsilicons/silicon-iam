@@ -157,6 +157,12 @@ const CLIENT_SECTIONS: &[Section] = &[
         body: include_str!("../../docs/client/connecting.html"),
     },
     Section {
+        slug: "updates",
+        title: "Automatic updates",
+        summary: "Default-on crates.io checks, Cargo lockfile updates, status, and opting out.",
+        body: include_str!("../../docs/client/updates.html"),
+    },
+    Section {
         slug: "login",
         title: "Signing users in",
         summary: "Sending someone to IAM, taking the short-lived token off the callback, and exchanging it.",

@@ -101,7 +101,6 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             obo_endpoints,
         } => {
             let organization = context.organization_or(org.as_deref())?;
-            let webhook_secret = prompted(webhook_secret, "Webhook signing secret: ")?;
             let created = client
                 .applications()
                 .create(
@@ -181,7 +180,6 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             app_id,
             webhook_secret,
         } => {
-            let webhook_secret = prompted(webhook_secret, "New webhook signing secret: ")?;
             let current = client.applications().get(&app_id).await?;
             let rotated = client
                 .applications()
@@ -516,10 +514,10 @@ fn verify_webhook(
     timestamp: &str,
     key_version: &str,
     signature: &str,
-    webhook_secret: Option<String>,
+    webhook_secret: String,
     tolerance_seconds: u64,
 ) -> Result<()> {
-    let secret = WebhookSecret::new(prompted(webhook_secret, "Webhook signing secret: ")?)?;
+    let secret = WebhookSecret::new(webhook_secret)?;
     let parsed_key_version = key_version.parse::<i64>().map_err(|_| {
         CliError::Usage("X-Silicon-IAM-Key-Version must be a signed integer".to_owned())
     })?;

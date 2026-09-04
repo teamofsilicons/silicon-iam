@@ -15,7 +15,42 @@ use crate::{
 pub async fn run(context: &Context, command: SystemCommand) -> Result<()> {
     match command {
         SystemCommand::Version => version(context).await,
+        SystemCommand::Update => update(context).await,
         SystemCommand::Health => health(context).await,
+    }
+}
+
+async fn update(context: &Context) -> Result<()> {
+    let outcome = crate::updater::update_now().await?;
+    match context.format {
+        Format::Json => json(&match outcome {
+            crate::updater::Outcome::Current { version } => serde_json::json!({
+                "updated": false,
+                "current_version": version.to_string(),
+                "latest_version": version.to_string(),
+            }),
+            crate::updater::Outcome::Updated { from, to } => serde_json::json!({
+                "updated": true,
+                "current_version": from.to_string(),
+                "latest_version": to.to_string(),
+                "restart_required": true,
+            }),
+            crate::updater::Outcome::Skipped => serde_json::json!({
+                "updated": false,
+            }),
+        }),
+        Format::Text => {
+            match outcome {
+                crate::updater::Outcome::Current { version } => {
+                    println!("iam {version} is current.");
+                }
+                crate::updater::Outcome::Updated { from, to } => {
+                    println!("Updated iam from {from} to {to}. Run iam again to use it.");
+                }
+                crate::updater::Outcome::Skipped => {}
+            }
+            Ok(())
+        }
     }
 }
 

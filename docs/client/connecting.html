@@ -8,17 +8,17 @@
 <p>The package name uses a hyphen; Rust imports it with an underscore.</p>
 
 <pre><code>[dependencies]
-silicon-iam = "0.1.0"</code></pre>
+silicon-iam-client = "1.1.0"</code></pre>
 
 <p>
   View releases, dependency metadata and installation details on
-  <a href="https://crates.io/crates/silicon-iam" rel="external noreferrer">the silicon-iam
+  <a href="https://crates.io/crates/silicon-iam-client" rel="external noreferrer">the silicon-iam-client
     package page on crates.io</a>. Keep the dependency version explicit: this client fails closed
-  on a contract mismatch, and an unplanned SDK upgrade should not accompany an unrelated backend
-  deployment.
+  on a contract mismatch. By default it maintains the compatible lockfile selection from crates.io;
+  <a href="/docs/client/updates">Automatic updates</a> explains the next-build boundary and opt-out.
 </p>
 
-<p>The minimum supported Rust version is 1.88.</p>
+<p>The minimum supported Rust version is 1.98.</p>
 
 <h2>Credentials</h2>
 

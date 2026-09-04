@@ -6,6 +6,22 @@ Silicon IAM from the command line. Installs a single binary, `iam`.
 cargo install silicon-iam-cli
 ```
 
+The installed binary checks crates.io at most once every 24 hours and updates
+itself with `cargo install` when a newer stable release exists. Automatic
+updates are on by default. An offline registry or unavailable Cargo executable
+only prints a warning and never prevents the requested IAM command from
+running.
+
+```sh
+iam config set auto-update off   # opt out persistently
+iam config unset auto-update     # restore the default-on policy
+iam system update                # force a check now, even while opted out
+```
+
+`SILICON_IAM_AUTO_UPDATE=false` is the process-level opt-out; set it to `true`
+to override a stored opt-out. After an update, the command already in progress
+finishes with the old binary and the next `iam` invocation uses the new one.
+
 Everything the CLI can do, the [`silicon-iam-client`](https://crates.io/crates/silicon-iam-client) crate can do —
 the CLI is a shell over it and has no capability of its own. What it adds is
 memory: which service, which profile, whose session, and a terminal to read a
@@ -67,14 +83,16 @@ iam silicon set-webhook builder:acme --url https://example.com/hooks
 # Applications
 iam app create billing --name Billing \
     --base-url https://billing.example.com \
-    --webhook-url https://billing.example.com/hooks
+    --webhook-url https://billing.example.com/hooks \
+    --webhook-secret "$WEBHOOK_SECRET"
 iam app rotate-secret 'acme>billing' --step-up "$TOKEN"
-iam app rotate-webhook-secret 'acme>billing' --step-up "$TOKEN"
+iam app rotate-webhook-secret 'acme>billing' \
+    --webhook-secret "$NEW_WEBHOOK_SECRET" --step-up "$TOKEN"
 ```
 
-`app create` and `app rotate-webhook-secret` prompt for the caller-chosen
-webhook secret when `--webhook-secret` is omitted. IAM encrypts that value and
-never generates an Application webhook secret.
+`app create` and `app rotate-webhook-secret` require the caller-chosen
+`--webhook-secret`; it appears in each command's generated usage and help.
+IAM encrypts that value and never generates an Application webhook secret.
 
 ## Output
 
@@ -136,7 +154,8 @@ must not collide with a production application in the same organization:
 ```sh
 iam --test "$TEST_ID" app create checkout --org acme --name Checkout \
     --base-url http://127.0.0.1:4100 \
-    --webhook-url https://hooks.example.test/iam
+    --webhook-url https://hooks.example.test/iam \
+    --webhook-secret "$TEST_WEBHOOK_SECRET"
 ```
 
 Or import an existing production application by canonical ID. Import creates
@@ -272,11 +291,12 @@ event ID, and event schema locally:
 ```sh
 iam app verify-webhook delivery.json \
     --event-id "$EVENT_ID" --timestamp "$TIMESTAMP" \
-    --key-version "$KEY_VERSION" --signature "$SIGNATURE"
+    --key-version "$KEY_VERSION" --signature "$SIGNATURE" \
+    --webhook-secret "$WEBHOOK_SECRET"
 ```
 
-The signing secret is prompted for when `--webhook-secret` is omitted. For a
-test delivery, add `--test "$TEST_ID"`; the CLI then also compares the wrapped
+The signing secret is required explicitly. For a test delivery, add
+`--test "$TEST_ID"`; the CLI then also compares the wrapped
 `testing_key` in constant time with that environment's locally stored key. A
 wrapped test event without `--test`, a production event with `--test`, or a key
 for a different environment is rejected. Successful output is the normalized
@@ -294,8 +314,9 @@ iam config use staging
 ```
 
 Every setting can also come from the environment: `SILICON_IAM_URL`,
-`SILICON_IAM_PROFILE`, `SILICON_IAM_ORG`, `SILICON_IAM_TEST`. Flags win
-over environment variables, which win over stored settings.
+`SILICON_IAM_PROFILE`, `SILICON_IAM_ORG`, `SILICON_IAM_TEST`, and
+`SILICON_IAM_AUTO_UPDATE`. Flags win over environment variables, which win
+over stored settings.
 
 `SILICON_IAM_HOME` moves the store somewhere else, which is what to use in CI so
 a build never touches a developer's real credentials.

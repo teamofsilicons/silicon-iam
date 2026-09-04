@@ -9,6 +9,10 @@ pub enum CliError {
     #[error(transparent)]
     Client(#[from] ClientError),
 
+    /// Checking or installing a crates.io release failed.
+    #[error(transparent)]
+    Update(#[from] silicon_iam_client::update::UpdateError),
+
     /// A captured webhook failed local cryptographic or envelope validation.
     #[error("webhook verification failed: {0}")]
     Webhook(#[from] silicon_iam_client::WebhookError),
@@ -57,7 +61,7 @@ impl CliError {
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::NotSignedIn => 3,
-            Self::Client(ClientError::Transport(_)) => 5,
+            Self::Client(ClientError::Transport(_)) | Self::Update(_) => 5,
             Self::Client(_) | Self::Webhook(_) => 4,
             // Everything else is the invocation's own fault: bad arguments,
             // a missing organization, an unreadable store.

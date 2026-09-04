@@ -131,7 +131,7 @@ App creation can happen from the frontend by org_owner/org_admin of an organisat
 
 Applications are in the scope of organisations, and owned by organisations. Only org admins and org owner should be able to control their applications. 
 
-base_url is the base url of the application, and is configured, this is nowhere used by the application but can be requested via any other application (even outside the org) for the base_url just using the app_id which would give them this base_url, and when requesting for base_url it would also send it's app_id and app_secret so we know which app requested it. 
+	base_url is the base url of the application, and is configured, this is nowhere used by the application but can be requested via any other application (even outside the org) for the base_url just using the app_id which would give them this base_url, and when requesting for base_url it would also send it's app_id and app_secret so we know which app requested it. 
 
 The organization administers the Application, but anyone may use it. 
 
@@ -537,6 +537,8 @@ if you need a local store for auth or something else, use ~/.{appname}/ dir.
 For both package and the cli write detailed docs on how to use the package and how to use the cli, and also another doc on how to use the package. 
 
 Package and CLI must only expose the client side actions, and not the internal actions performed by the backend. For the CLI follow the standard command line grammar rules, and also include a -h command that shows all the possible commands.
+
+For both cli and client we would also package in an auto updater, the task of this auto updater is to compare the current version to the latest version in crates for them, and if there's a new verion auto update it to the said new version. By default auto update is on, users can specifically come and opt in to stop auto update. Which would stop auto updating the package.
 
 In the CLI and the and the client both there must be silicon login commands and endpoints, this command would ask the silicon for the sid and the stk, an optional argument can be passed for the app-id, if the app-id is passed generate a short lived token that can be used by that application for further authenticating the said silicon. 
 

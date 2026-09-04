@@ -1,5 +1,5 @@
 <p class="lede">
-  <a href="https://crates.io/crates/silicon-iam" rel="external noreferrer"><code>silicon-iam</code></a>
+  <a href="https://crates.io/crates/silicon-iam-client" rel="external noreferrer"><code>silicon-iam-client</code></a>
   is the official Rust client for integrating an Application with Silicon IAM. It keeps wire paths,
   authentication headers, signatures, response validation and retry policy inside the crate, and exposes only the inputs an Application actually owns.
 </p>
@@ -83,7 +83,8 @@
 
 <p>
   <a href="/docs/client/connecting">Connecting</a> covers installation and the handshake. After
-  that the sections match the order an integration is actually built:
+  that, understand the default-on <a href="/docs/client/updates">automatic updater</a>. The
+  remaining sections match the order an integration is actually built:
   <a href="/docs/client/login">sign users in</a>,
   <a href="/docs/client/tokens">manage their tokens</a>,
   <a href="/docs/client/obo">delegate between applications</a>, and

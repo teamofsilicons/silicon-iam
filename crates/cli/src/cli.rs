@@ -708,9 +708,9 @@ pub enum AppCommand {
         /// HTTPS endpoint the service delivers webhooks to.
         #[arg(long)]
         webhook_url: String,
-        /// Caller-chosen webhook signing secret. Prompted for when omitted.
+        /// Caller-chosen webhook signing secret.
         #[arg(long)]
-        webhook_secret: Option<String>,
+        webhook_secret: String,
         /// Pathless public origin, without a trailing slash, that other applications discover.
         #[arg(long)]
         base_url: String,
@@ -746,9 +746,9 @@ pub enum AppCommand {
     RotateWebhookSecret {
         /// Canonical Application identifier (`org>handle`).
         app_id: String,
-        /// Caller-chosen successor webhook signing secret. Prompted for when omitted.
+        /// Caller-chosen successor webhook signing secret.
         #[arg(long)]
-        webhook_secret: Option<String>,
+        webhook_secret: String,
     },
     /// Discover an application's base URL as another application.
     Discover {
@@ -784,9 +784,9 @@ pub enum AppCommand {
         /// Value of `X-Silicon-IAM-Signature`.
         #[arg(long)]
         signature: String,
-        /// Signing secret for this key version. Prompted for when omitted.
+        /// Signing secret for this key version.
         #[arg(long)]
-        webhook_secret: Option<String>,
+        webhook_secret: String,
         /// Maximum accepted clock distance in seconds.
         #[arg(long, default_value_t = 300)]
         tolerance_seconds: u64,
@@ -1063,14 +1063,14 @@ pub enum ConfigCommand {
     Profiles,
     /// Set a value on the current profile.
     Set {
-        /// One of `url`, `org`.
+        /// One of `url`, `org`, `auto-update`.
         key: String,
         /// The value to store.
         value: String,
     },
     /// Clear a value on the current profile.
     Unset {
-        /// `org`.
+        /// `org`, or `auto-update` to restore its default-on policy.
         key: String,
     },
     /// Switch the default profile.
@@ -1085,6 +1085,8 @@ pub enum ConfigCommand {
 pub enum SystemCommand {
     /// Show the service's version, and agree an API version.
     Version,
+    /// Check crates.io now and install the latest CLI release.
+    Update,
     /// Check that the service is alive and ready.
     Health,
 }
@@ -1147,6 +1149,14 @@ mod tests {
     }
 
     #[test]
+    fn updater_controls_are_reachable() {
+        use clap::Parser as _;
+
+        assert!(Cli::try_parse_from(["iam", "system", "update"]).is_ok());
+        assert!(Cli::try_parse_from(["iam", "config", "set", "auto-update", "off"]).is_ok());
+    }
+
+    #[test]
     fn global_flags_are_accepted_after_the_command_too() {
         use clap::Parser as _;
 
@@ -1196,9 +1206,10 @@ mod tests {
     }
 
     #[test]
-    fn application_creation_requires_the_discoverable_base_url() {
+    fn application_creation_requires_every_contract_input() {
         use clap::Parser as _;
 
+        // Missing base URL.
         assert!(
             Cli::try_parse_from([
                 "iam",
@@ -1209,6 +1220,24 @@ mod tests {
                 "Billing",
                 "--webhook-url",
                 "https://billing.example/hooks",
+                "--webhook-secret",
+                "caller-chosen-webhook-secret-0001",
+            ])
+            .is_err()
+        );
+        // Missing caller-chosen webhook secret.
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "app",
+                "create",
+                "billing",
+                "--name",
+                "Billing",
+                "--webhook-url",
+                "https://billing.example/hooks",
+                "--base-url",
+                "https://billing.example",
             ])
             .is_err()
         );
@@ -1224,9 +1253,58 @@ mod tests {
                 "https://billing.example/hooks",
                 "--base-url",
                 "https://billing.example",
+                "--webhook-secret",
+                "caller-chosen-webhook-secret-0001",
             ])
             .is_ok()
         );
+    }
+
+    #[test]
+    fn application_help_surfaces_required_webhook_secrets() {
+        let command = Cli::command();
+        let Some(app) = command.find_subcommand("app") else {
+            panic!("app must exist");
+        };
+        for name in ["create", "rotate-webhook-secret", "verify-webhook"] {
+            let Some(subcommand) = app.find_subcommand(name) else {
+                panic!("app {name} must exist");
+            };
+            let secret = subcommand
+                .get_arguments()
+                .find(|argument| argument.get_id() == "webhook_secret");
+            assert!(
+                secret.is_some_and(clap::Arg::is_required_set),
+                "app {name} must require --webhook-secret in its generated usage"
+            );
+        }
+        let Some(create) = app.find_subcommand("create") else {
+            return;
+        };
+        let usage = create.clone().render_usage().to_string();
+        assert!(usage.contains("--webhook-secret <WEBHOOK_SECRET>"));
+    }
+
+    #[test]
+    fn every_user_supplied_argument_has_help() {
+        fn walk(command: &clap::Command, path: &str) {
+            for argument in command.get_arguments() {
+                if matches!(argument.get_id().as_str(), "help" | "version") {
+                    continue;
+                }
+                assert!(
+                    argument.get_help().is_some(),
+                    "{path} argument {} has no help",
+                    argument.get_id()
+                );
+            }
+            for subcommand in command.get_subcommands() {
+                let child = format!("{path} {}", subcommand.get_name());
+                walk(subcommand, &child);
+            }
+        }
+
+        walk(&Cli::command(), "iam");
     }
 
     #[test]
@@ -1335,6 +1413,8 @@ mod tests {
             "1",
             "--signature",
             "v1=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--webhook-secret",
+            "caller-chosen-webhook-secret-0001",
         ];
         assert!(Cli::try_parse_from(complete).is_ok());
         assert!(
@@ -1349,6 +1429,8 @@ mod tests {
                 "1700000000",
                 "--key-version",
                 "1",
+                "--webhook-secret",
+                "caller-chosen-webhook-secret-0001",
             ])
             .is_err()
         );
