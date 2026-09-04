@@ -9,7 +9,7 @@ so they cannot drift from the service.
 
 ```toml
 [dependencies]
-silicon-iam-client = "1.0.0"
+silicon-iam-client = "1.0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
