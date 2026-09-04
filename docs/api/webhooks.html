@@ -68,6 +68,41 @@
 </p>
 
 <p>
+  Organization administrators rotate an Application signing key independently with
+  <code>POST /api/v1/applications/{app_id}/webhook-secret-rotations</code>. The no-store response
+  reveals the successor once. New deliveries switch immediately; already persisted in-flight
+  deliveries retain their original bytes and key version, so consumers keep old versions until
+  that retry window closes.
+</p>
+
+<h2>Testing-environment deliveries</h2>
+
+<p>
+  A test environment delivers a visibly different signed JSON shape. Instead of production's
+  top-level event metadata and data, it sends one top-level <code>test</code> object containing
+  <code>testing_key</code>, <code>metadata</code>, and <code>data</code>. Signature verification still
+  covers the exact complete body. After verification, deduplicate on
+  <code>test.metadata.event_id</code> and order on
+  <code>test.metadata.aggregate.version</code>.
+</p>
+
+<div class="banner banner-danger">
+  <div>
+    <strong>The test key in that envelope remains root authority.</strong>
+    Compare it to the expected environment key without timing leakage, use it only to route the
+    event to its isolated run, then redact it. Never write it to request logs, traces, analytics,
+    dead-letter payload views, or your event table.
+  </div>
+</div>
+
+<p>
+  Imported Applications initially inherit their production signing key without exposing it. The
+  first webhook URL replacement in the test environment creates and returns a test-only key;
+  ordinary URL changes reuse the current key. The complete flow is in
+  <a href="/docs/api/testing-environments">Testing environments</a>.
+</p>
+
+<p>
   Respond <code>2xx</code> quickly and do the work asynchronously. A slow endpoint becomes a
   retrying endpoint, and a retrying endpoint becomes a dead-lettered one.
 </p>

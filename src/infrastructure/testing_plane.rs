@@ -7,7 +7,7 @@
 //! against, and the transaction-local setting the row-security policies read.
 //!
 //! Threading it through several hundred call sites would be noise, and putting
-//! it in [`ApiState`](crate::api::ApiState) would not work -- that value is
+//! it in `ApiState` would not work -- that value is
 //! shared by every concurrent request. It lives here as request-scoped state
 //! instead, alongside the request correlation identifier, which is the same
 //! shape of problem.

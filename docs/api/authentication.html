@@ -119,7 +119,8 @@
   Some actions need proof that the person at the keyboard is still the account holder. Step-up is
   a second factor over an already-authenticated session, and the resulting token is bound to
   <strong>one action on one resource</strong>: a token minted for
-  <code>application.client_secret.rotate</code> on application A is rejected for application B.
+  <code>application.client_secret.rotate</code> or
+  <code>application.webhook_secret.rotate</code> on application A is rejected for application B.
 </p>
 
 <ol>
@@ -135,7 +136,8 @@
   <li><code>account.session_revoke</code>, <code>account.sessions_revoke_all</code></li>
   <li><code>organization.transfer_ownership</code>, <code>organization.authorization_change</code></li>
   <li><code>organization.sso_change</code>, <code>organization.silicon_webhook.redirect</code></li>
-  <li><code>application.client_secret.rotate</code>, <code>silicon.rotate_token</code></li>
+  <li><code>application.client_secret.rotate</code>,
+    <code>application.webhook_secret.rotate</code>, <code>silicon.rotate_token</code></li>
   <li><code>platform_admin.application_review</code>, <code>platform_admin.sso_entitlement</code></li>
 </ul>
 

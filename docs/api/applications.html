@@ -7,9 +7,19 @@
 <h2>Registration</h2>
 
 <p>
-  <code>POST /api/v1/applications</code> takes the application ID, the owning organization, and a
-  webhook URL. There are no redirect URIs to register and no scopes to request: a login names its
-  redirect URI in the query string and carries the whole catalogue.
+  <code>POST /api/v1/applications</code> takes a local application handle, the owning organization,
+  a webhook URL, and the backend <code>base_url</code>. IAM qualifies the handle with the
+  organization: creating <code>drive</code> in <code>google</code> returns the canonical ID
+  <code>google&gt;drive</code>. Use that canonical ID for credentials, login, discovery, path
+  parameters, and OBO. There are no redirect URIs to register and no login scopes to request: a
+  login names its redirect URI in the query string and carries the whole catalogue.
+</p>
+
+<p>
+  <code>base_url</code> identifies the application's backend for discovery. It must be absolute,
+  contain no user information, query, or fragment, and use HTTPS except for literal loopback HTTP
+  during local development. IAM returns it to callers; it does not navigate to it, append login
+  tokens to it, or treat it as a redirect allowlist.
 </p>
 
 <div class="banner banner-danger">
@@ -22,9 +32,11 @@
 </div>
 
 <p>
-  A new application is usable immediately: there is no review to wait behind. A change that widens
-  authority — a new webhook destination — is still held as <code>has_pending_changes</code> and
-  reviewed, so where an application delivers cannot quietly move.
+  A new application is usable immediately: there is no review to wait behind. In production, a
+  change that widens authority — a new webhook destination — is still held as
+  <code>has_pending_changes</code> and reviewed, so where an application delivers cannot quietly
+  move. A testing environment activates its endpoint immediately because it has no platform
+  reviewer.
 </p>
 
 <table>
@@ -47,7 +59,7 @@
 <ol>
   <li>
     <strong>Send</strong> the person to
-    <code>&lt;auth_base_url&gt;/login?app_id=your-app&amp;redirect_uri=https://you.example/callback</code>.
+    <code>&lt;auth_base_url&gt;/login?app_id=acme%3Eyour-app&amp;redirect_uri=https://you.example/callback</code>.
     IAM signs them in if they are not already. Naming an <code>app_id</code> is what makes this a
     login on your behalf; without one it is an ordinary Silicon IAM login and no token is minted.
     <code>org_id</code> is optional and binds the session to one organization.
@@ -92,7 +104,7 @@
 Authorization: Bearer &lt;access token&gt;
 Idempotency-Key: &lt;key&gt;
 
-{ "app_id": "your-app" }</code></pre>
+{ "app_id": "acme&gt;your-app" }</code></pre>
 
 <p>
   The answer carries <code>slt</code> and <code>expires_in</code>, and your server completes it
@@ -135,6 +147,34 @@ Idempotency-Key: &lt;key&gt;
   instance before rotating, not after.
 </p>
 
+<p>
+  <code>POST /api/v1/applications/{app_id}/webhook-secret-rotations</code> independently rotates
+  the <code>whs_…</code> signing secret. It requires the current Application ETag, an idempotency
+  key, and a verified-channel step-up token for
+  <code>application.webhook_secret.rotate</code>. The no-store response exposes the successor and
+  its version once, with an exact ten-minute idempotent replay window. New deliveries switch to
+  it immediately; retain older key versions until already in-flight deliveries have drained.
+</p>
+
+<h2>Base URL discovery</h2>
+
+<pre><code>GET /api/v1/application-directory/other%3Ebilling
+Authorization: Basic base64(acme&gt;checkout:ask_…)</code></pre>
+
+<p>
+  Any verified Application may discover any other verified Application, including one outside
+  its organization. The response is deliberately small:
+  <code>{"app_id":"other&gt;billing","base_url":"https://billing.example"}</code>.
+  The Basic credential identifies the requester; there is no caller ID in the query or body.
+</p>
+
+<p>
+  In a testing environment, also send <code>X-Testing-Environment-Key</code>. Both the requesting
+  credential and target resolve only inside that environment, and IAM never falls through to a
+  production target. See <a href="/docs/api/testing-environments">Testing environments</a> for the
+  complete application proof flow.
+</p>
+
 <h2>Redirect URIs</h2>
 
 <p>
@@ -148,7 +188,12 @@ Idempotency-Key: &lt;key&gt;
 <p>
   <code>PUT /api/v1/applications/{app_id}/webhook</code> <em>proposes</em> a replacement and
   answers <code>202</code>: deliveries continue to the current URL until Silicon approves the new
-  one. The existing encrypted signing secret is reused, so no new secret is returned.
+  one. The existing encrypted signing secret is normally reused, so no new secret is returned.
+  Inside a testing environment there is no platform reviewer: the same route activates the new
+  endpoint immediately and answers <code>200</code>. The sole key exception is an imported test
+  Application still using an inherited production signing key: its first test URL replacement
+  creates and returns a new test-only secret and <code>secret_replay_expires_at</code>, ready for
+  deliveries to that new active URL.
 </p>
 
 <p>

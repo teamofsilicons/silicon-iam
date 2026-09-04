@@ -10,7 +10,7 @@ const MAX_OBO_METADATA_BYTES: usize = 16_384;
 const MAX_OBO_METADATA_DEPTH: usize = 8;
 const MAX_OBO_METADATA_NODES: usize = 512;
 
-pub(super) fn app_id(value: &str) -> Result<(), ApiError> {
+pub(super) fn local_app_id(value: &str) -> Result<(), ApiError> {
     if !(3..=80).contains(&value.len())
         || !value.bytes().enumerate().all(|(index, byte)| {
             (index != 0 && (byte.is_ascii_digit() || matches!(byte, b'_' | b'-')))
@@ -25,9 +25,38 @@ pub(super) fn app_id(value: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+pub(super) fn app_id(value: &str) -> Result<(), ApiError> {
+    let Some((organization_handle, local_id)) = value.split_once('>') else {
+        return Err(ApiError::validation(
+            "app_id",
+            "must be a qualified Application ID in the form 'organization>application'",
+        ));
+    };
+    if value.matches('>').count() != 1
+        || org_id(organization_handle).is_err()
+        || local_app_id(local_id).is_err()
+    {
+        return Err(ApiError::validation(
+            "app_id",
+            "must be a qualified Application ID in the form 'organization>application'",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn qualify_app_id(
+    organization_handle: &str,
+    local_id: &str,
+) -> Result<String, ApiError> {
+    org_id(organization_handle)?;
+    local_app_id(local_id)?;
+    Ok(format!("{organization_handle}>{local_id}"))
+}
+
 pub(super) fn application_create(input: &model::ApplicationCreate) -> Result<(), ApiError> {
-    app_id(&input.app_id)?;
+    local_app_id(&input.app_id)?;
     org_id(&input.org_id)?;
+    base_url(&input.base_url)?;
     optional_text("app_name", input.app_name.as_deref(), 1, 200)?;
     optional_https_uri("app_logo_uri", input.app_logo_uri.as_deref(), 2_048)?;
     webhook_url(&input.webhook_url)?;
@@ -36,11 +65,18 @@ pub(super) fn application_create(input: &model::ApplicationCreate) -> Result<(),
 }
 
 pub(super) fn application_patch(input: &model::ApplicationPatch) -> Result<(), ApiError> {
-    if input.app_name.is_none() && input.app_logo_uri.is_none() && input.obo_endpoints.is_none() {
+    if input.base_url.is_none()
+        && input.app_name.is_none()
+        && input.app_logo_uri.is_none()
+        && input.obo_endpoints.is_none()
+    {
         return Err(ApiError::validation(
             "body",
             "must change at least one field",
         ));
+    }
+    if let Some(value) = &input.base_url {
+        base_url(value)?;
     }
     if let Some(value) = input.app_name.as_ref().and_then(|value| value.as_deref()) {
         optional_text("app_name", Some(value), 1, 200)?;
@@ -70,6 +106,7 @@ fn redirect_uri_value(field: &'static str, value: &str) -> Result<(), ApiError> 
         || !parsed.username().is_empty()
         || parsed.password().is_some()
         || parsed.host_str().is_none()
+        || !(value.starts_with("https://") || value.starts_with("http://"))
         || !matches!(parsed.scheme(), "https" | "http")
         || (parsed.scheme() == "http"
             && !matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "::1")))
@@ -102,6 +139,31 @@ pub(super) fn delivery_ids(values: &[uuid::Uuid]) -> Result<(), ApiError> {
 pub(super) fn webhook_url(value: &str) -> Result<Url, ApiError> {
     crate::features::webhook_url::parse(value)
         .map_err(|message| ApiError::validation("webhook_url", message))
+}
+
+pub(super) fn base_url(value: &str) -> Result<Url, ApiError> {
+    let parsed = Url::parse(value)
+        .map_err(|_| ApiError::validation("base_url", "must be a valid absolute URL"))?;
+    if value.len() > 2_048
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.host_str().is_none()
+        || !(value.starts_with("https://") || value.starts_with("http://"))
+        || !matches!(parsed.scheme(), "https" | "http")
+        || (parsed.scheme() == "http"
+            && !matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "::1")))
+    {
+        return Err(ApiError::validation(
+            "base_url",
+            "must be an HTTPS base URL without credentials, query, or fragment (HTTP is limited to loopback development)",
+        ));
+    }
+    Ok(parsed)
 }
 
 pub(super) fn scopes(values: &[String]) -> Result<(), ApiError> {
@@ -403,17 +465,34 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        app_id, obo_endpoint_id, obo_endpoints, obo_metadata, obo_request_metadata, redirect_uri,
-        webhook_url,
+        app_id, base_url, local_app_id, obo_endpoint_id, obo_endpoints, obo_metadata,
+        obo_request_metadata, qualify_app_id, redirect_uri, webhook_url,
     };
     use crate::features::applications::model::ApplicationOboEndpoint;
 
     #[test]
     fn application_identifiers_match_database_constraints() {
-        assert!(app_id("good_app-1").is_ok());
-        assert!(app_id("1bad").is_err());
-        assert!(app_id(&format!("a{}", "b".repeat(79))).is_ok());
-        assert!(app_id(&format!("a{}", "b".repeat(80))).is_err());
+        assert!(local_app_id("good_app-1").is_ok());
+        assert!(local_app_id("1bad").is_err());
+        assert!(local_app_id(&format!("a{}", "b".repeat(79))).is_ok());
+        assert!(local_app_id(&format!("a{}", "b".repeat(80))).is_err());
+        assert!(app_id("good_org>good_app-1").is_ok());
+        assert!(app_id("good_app-1").is_err());
+        assert!(app_id("good_org>bad>app").is_err());
+        assert_eq!(
+            qualify_app_id("tos", "briefcase").ok().as_deref(),
+            Some("tos>briefcase")
+        );
+    }
+
+    #[test]
+    fn application_base_urls_are_backend_locations_not_request_urls() {
+        assert!(base_url("https://briefcase.example/api").is_ok());
+        assert!(base_url("http://localhost:3000/api").is_ok());
+        assert!(base_url("http://briefcase.example/api").is_err());
+        assert!(base_url("HTTPS://briefcase.example/api").is_err());
+        assert!(base_url("https://briefcase.example/api?tenant=tos").is_err());
+        assert!(base_url("https://user:secret@briefcase.example/api").is_err());
     }
 
     #[test]

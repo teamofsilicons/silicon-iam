@@ -20,6 +20,7 @@ use crate::{
     application::ports::{DeliveryError, EmailOtp},
     domain::{
         auth::{CarbonId, OTP_COOLDOWN_SECONDS},
+        directory::ApplicationId,
         organization::Capability,
     },
     error::AppError,
@@ -1581,23 +1582,11 @@ fn validate_invitation(input: &mut CarbonInviteCreate) -> Result<(), AppError> {
         500,
         |override_value| override_value.silicon_membership_id,
     )?;
-    if let Some(app_id) = input.redirect_app_id.as_deref()
-        && (app_id.len() > 63
-            || app_id.len() < 3
-            || !app_id.bytes().enumerate().all(|(index, byte)| {
-                if index == 0 {
-                    byte.is_ascii_lowercase()
-                } else {
-                    byte.is_ascii_lowercase()
-                        || byte.is_ascii_digit()
-                        || matches!(byte, b'_' | b'-')
-                }
-            }))
-    {
-        return Err(validation::field(
-            "redirect_app_id",
-            "has an invalid format",
-        ));
+    if let Some(app_id) = input.redirect_app_id.as_mut() {
+        *app_id = app_id
+            .parse::<ApplicationId>()
+            .map_err(|_| validation::field("redirect_app_id", "has an invalid format"))?
+            .to_string();
     }
     Ok(())
 }
@@ -1924,6 +1913,18 @@ mod tests {
         assert_eq!(email, "invitee@example.com");
         assert!(validate_invitation_email(" invitee@example.com").is_err());
         assert!(validate_invitation_email("not-an-email").is_err());
+    }
+
+    #[test]
+    fn invitation_redirects_use_qualified_application_ids() {
+        assert_eq!(
+            "Team>Billing_App"
+                .parse::<ApplicationId>()
+                .map(|app_id| app_id.to_string()),
+            Ok("team>billing_app".to_owned())
+        );
+        assert!("billing_app".parse::<ApplicationId>().is_err());
+        assert!("team>1billing".parse::<ApplicationId>().is_err());
     }
 
     #[test]

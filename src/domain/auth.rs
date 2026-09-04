@@ -147,6 +147,10 @@ mod tests {
     fn carbon_id_rejects_unicode_and_symbols() {
         assert_eq!(CarbonId::from_str("sakét"), Err(CarbonIdError::Characters));
         assert_eq!(CarbonId::from_str("saket!"), Err(CarbonIdError::Characters));
+        assert_eq!(
+            CarbonId::from_str("saket>admin"),
+            Err(CarbonIdError::Characters)
+        );
         assert_eq!(CarbonId::from_str(" saket"), Err(CarbonIdError::Characters));
     }
 

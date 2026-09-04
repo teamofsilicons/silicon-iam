@@ -1269,12 +1269,13 @@ mod tests {
                 transaction_timestamp() + interval '2 days'
             );
             INSERT INTO iam.applications (
-                id, app_id, organization_id, created_by_carbon_id, review_status
+                id, app_id, organization_id, created_by_carbon_id, review_status, base_url
             ) VALUES
-              ('{full_application_id}', 'projection-full', '{organization_id}',
-               '{actor_id}', 'verified'),
-              ('{profile_application_id}', 'projection-profile', '{organization_id}',
-               '{actor_id}', 'verified');
+              ('{full_application_id}', 'projection-org>projection-full', '{organization_id}',
+               '{actor_id}', 'verified', 'https://full.example.test/api'),
+              ('{profile_application_id}', 'projection-org>projection-profile',
+               '{organization_id}', '{actor_id}', 'verified',
+               'https://profile.example.test/api');
             INSERT INTO iam.application_requested_scopes (application_id, scope) VALUES
               ('{full_application_id}', 'profile'),
               ('{full_application_id}', 'organizations.read'),

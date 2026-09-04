@@ -279,6 +279,7 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
         .merge(crate::features::organizations::router())
         .merge(crate::features::applications::router())
         .merge(crate::features::sso::router())
+        .merge(crate::features::testing_environments::data_plane_router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             crate::features::testing_environments::select_plane,
@@ -374,11 +375,15 @@ async fn health() -> Json<HealthResponse> {
 async fn readiness(
     axum::extract::State(state): axum::extract::State<ApiState>,
 ) -> Result<Json<HealthResponse>, AppError> {
-    if postgres::ready(&state.pool).await {
-        Ok(Json(HealthResponse { ok: true }))
-    } else {
-        Err(AppError::ServiceUnavailable)
+    if !postgres::ready(&state.pool).await {
+        return Err(AppError::ServiceUnavailable);
     }
+    if let Some(testing) = state.testing.as_ref()
+        && !postgres::ready_testing(&testing.pool).await
+    {
+        return Err(AppError::ServiceUnavailable);
+    }
+    Ok(Json(HealthResponse { ok: true }))
 }
 
 async fn version() -> Json<VersionResponse> {

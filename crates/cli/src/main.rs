@@ -45,7 +45,7 @@ async fn run(cli: Cli) -> error::Result<()> {
         cli.global.profile,
         cli.global.url,
         cli.global.org,
-        cli.global.environment,
+        cli.global.test,
         cli.global.step_up,
     )?;
     commands::dispatch(&context, cli.command).await

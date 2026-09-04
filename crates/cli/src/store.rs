@@ -14,6 +14,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::error::{CliError, Result};
 
@@ -40,18 +41,79 @@ pub struct Profile {
     /// Organization assumed when a command does not name one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org: Option<String>,
-    /// Testing environment entered by default, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment: Option<String>,
 }
 
 /// Tokens, kept apart from the settings so the secret file can be locked down
 /// on its own and pointed at in a bug report without it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Credentials {
-    /// Stored sessions, keyed by profile.
+    /// Production sessions, keyed by profile.
     #[serde(default)]
     pub sessions: BTreeMap<String, Session>,
+    /// Testing-environment sessions, partitioned by profile and environment.
+    #[serde(default)]
+    pub test_sessions: BTreeMap<String, BTreeMap<Uuid, Session>>,
+    /// Testing root keys, partitioned by profile and addressed by public UUID.
+    #[serde(default)]
+    pub testing_environment_keys: BTreeMap<String, BTreeMap<Uuid, String>>,
+}
+
+impl Credentials {
+    /// Finds the session for exactly one production or testing scope.
+    pub fn session(&self, profile: &str, environment_id: Option<Uuid>) -> Option<&Session> {
+        match environment_id {
+            Some(id) => self.test_sessions.get(profile)?.get(&id),
+            None => self.sessions.get(profile),
+        }
+    }
+
+    /// Replaces the session for exactly one production or testing scope.
+    pub fn set_session(&mut self, profile: &str, environment_id: Option<Uuid>, session: Session) {
+        match environment_id {
+            Some(id) => {
+                self.test_sessions
+                    .entry(profile.to_owned())
+                    .or_default()
+                    .insert(id, session);
+            }
+            None => {
+                self.sessions.insert(profile.to_owned(), session);
+            }
+        }
+    }
+
+    /// Removes the session for exactly one production or testing scope.
+    pub fn remove_session(&mut self, profile: &str, environment_id: Option<Uuid>) -> bool {
+        match environment_id {
+            Some(id) => self
+                .test_sessions
+                .get_mut(profile)
+                .and_then(|sessions| sessions.remove(&id))
+                .is_some(),
+            None => self.sessions.remove(profile).is_some(),
+        }
+    }
+
+    /// Finds the secret root key behind a public environment id.
+    pub fn testing_environment_key(&self, profile: &str, environment_id: Uuid) -> Option<&str> {
+        self.testing_environment_keys
+            .get(profile)?
+            .get(&environment_id)
+            .map(String::as_str)
+    }
+
+    /// Stores or replaces the root key behind a public environment id.
+    pub fn set_testing_environment_key(
+        &mut self,
+        profile: &str,
+        environment_id: Uuid,
+        key: String,
+    ) {
+        self.testing_environment_keys
+            .entry(profile.to_owned())
+            .or_default()
+            .insert(environment_id, key);
+    }
 }
 
 /// One signed-in session.
@@ -64,7 +126,7 @@ pub struct Session {
     /// When the access token stops being accepted.
     #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
-    /// Who this session belongs to, for `siam whoami` without a round trip.
+    /// Who this session belongs to, for `iam whoami` without a round trip.
     pub carbon_id: String,
 }
 
@@ -192,8 +254,9 @@ fn restrict(_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use time::{Duration, OffsetDateTime};
+    use uuid::Uuid;
 
-    use super::Session;
+    use super::{Credentials, Session};
 
     fn session(expires_in: Duration) -> Session {
         Session {
@@ -211,5 +274,51 @@ mod tests {
         // about to be sent.
         assert!(session(Duration::seconds(30)).needs_refresh());
         assert!(session(Duration::seconds(-1)).needs_refresh());
+    }
+
+    #[test]
+    fn production_and_each_test_environment_have_independent_sessions() {
+        let first_id = Uuid::from_u128(1);
+        let second_id = Uuid::from_u128(2);
+        let mut credentials = Credentials::default();
+        credentials.set_session("default", None, session(Duration::minutes(5)));
+        let mut first = session(Duration::minutes(6));
+        first.carbon_id = "first-test".to_owned();
+        credentials.set_session("default", Some(first_id), first);
+        let mut second = session(Duration::minutes(7));
+        second.carbon_id = "second-test".to_owned();
+        credentials.set_session("default", Some(second_id), second);
+
+        assert_eq!(
+            credentials
+                .session("default", None)
+                .map(|value| value.carbon_id.as_str()),
+            Some("founder")
+        );
+        assert_eq!(
+            credentials
+                .session("default", Some(first_id))
+                .map(|value| value.carbon_id.as_str()),
+            Some("first-test")
+        );
+        assert_eq!(
+            credentials
+                .session("default", Some(second_id))
+                .map(|value| value.carbon_id.as_str()),
+            Some("second-test")
+        );
+    }
+
+    #[test]
+    fn environment_keys_are_looked_up_by_public_id_and_profile() {
+        let id = Uuid::from_u128(7);
+        let mut credentials = Credentials::default();
+        credentials.set_testing_environment_key("work", id, "a".repeat(32));
+
+        assert_eq!(
+            credentials.testing_environment_key("work", id),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(credentials.testing_environment_key("other", id), None);
     }
 }

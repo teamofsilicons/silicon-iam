@@ -13,6 +13,9 @@ pub(crate) mod security;
 mod validation;
 mod webhooks;
 
+pub(crate) use applications::load_detail;
+pub(crate) use model::ApplicationDetail;
+
 #[cfg(test)]
 mod live_tests;
 
@@ -38,6 +41,10 @@ pub fn router() -> Router<ApiState> {
         )
         .route("/api/v1/oauth/introspect", post(oauth::introspect))
         .route("/api/v1/oauth/revoke", post(oauth::revoke))
+        .route(
+            "/api/v1/application-directory/{app_id}",
+            get(applications::discover),
+        )
         .route("/api/v1/obo-access/exchanges", post(obo::exchange))
         .route("/api/v1/obo-access/verify", post(obo::verify))
         .route(
@@ -55,6 +62,10 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/api/v1/applications/{app_id}/client-secret-rotations",
             post(applications::rotate_client_secret),
+        )
+        .route(
+            "/api/v1/applications/{app_id}/webhook-secret-rotations",
+            post(webhooks::rotate_secret),
         )
         .route(
             "/api/v1/applications/{app_id}/webhook",

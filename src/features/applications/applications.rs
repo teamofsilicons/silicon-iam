@@ -11,7 +11,7 @@ use axum::{
 use secrecy::ExposeSecret as _;
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
-use sqlx::{Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -34,11 +34,13 @@ use super::{
     idempotency::{self, Claim},
     model::{
         AppPath, ApplicationAdminDecision, ApplicationCreate, ApplicationCreated,
-        ApplicationDetail, ApplicationOboEndpoint, ApplicationPage, ApplicationPatch,
-        ApplicationSecretRotated, ApplicationView, PageInfo, PageQuery, PublicActor,
+        ApplicationDetail, ApplicationDirectoryEntry, ApplicationOboEndpoint, ApplicationPage,
+        ApplicationPatch, ApplicationSecretRotated, ApplicationView, PageInfo, PageQuery,
+        PublicActor,
     },
     security::{
-        Bearer, expected_version, require_carbon, require_platform_capability, require_step_up,
+        ApplicationClient, Bearer, expected_version, require_carbon, require_platform_capability,
+        require_step_up,
     },
     validation,
 };
@@ -154,7 +156,7 @@ pub(super) async fn list(
         SELECT
             application.id, application.app_id, application.organization_id,
             organization.org_id, application.created_by_carbon_id,
-            application.app_name, application.app_logo_uri,
+            application.app_name, application.app_logo_uri, application.base_url,
             application.review_status, application.version,
             application.created_at, application.updated_at
         FROM iam.applications AS application
@@ -217,9 +219,11 @@ pub(super) async fn create(
 ) -> Result<Response, ApiError> {
     let carbon_id = require_carbon(&access)?;
     validation::application_create(&input)?;
+    let qualified_app_id = validation::qualify_app_id(&input.org_id, &input.app_id)?;
     let canonical = serde_json::to_vec(&json!({
         "app_id": input.app_id,
         "org_id": input.org_id,
+        "base_url": input.base_url,
         "app_name": input.app_name,
         "app_logo_uri": input.app_logo_uri,
         "webhook_url": input.webhook_url,
@@ -257,6 +261,8 @@ pub(super) async fn create(
     let Claim::Acquired(idempotency_id) = claim else {
         return Err(ApiError::internal("application_idempotency_state"));
     };
+
+    ensure_application_id_available_for_testing(&state.pool, &qualified_app_id).await?;
 
     let application_id = Uuid::now_v7();
     let webhook_endpoint_id = Uuid::now_v7();
@@ -297,6 +303,12 @@ pub(super) async fn create(
         )
         .map_err(|_| ApiError::internal("webhook_secret_encrypt"))?;
     let webhook_digest = Sha256::digest(input.webhook_url.as_bytes());
+    // A testing environment has no platform-operator review authority of its
+    // own. Keeping its endpoint pending would make the otherwise complete
+    // replica unable to emit a webhook at all, so test-plane endpoints become
+    // usable in the same transaction that creates them. Production retains
+    // the operator-review lifecycle.
+    let activate_webhook_immediately = crate::infrastructure::testing_plane::is_active();
 
     sqlx::query(
         r"
@@ -312,16 +324,17 @@ pub(super) async fn create(
         r"
         INSERT INTO iam.applications (
             id, app_id, organization_id, created_by_carbon_id,
-            app_name, app_logo_uri
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+            app_name, app_logo_uri, base_url, review_status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'verified')
         ",
     )
     .bind(application_id)
-    .bind(&input.app_id)
+    .bind(&qualified_app_id)
     .bind(organization_id)
     .bind(carbon_id)
     .bind(&input.app_name)
     .bind(&input.app_logo_uri)
+    .bind(&input.base_url)
     .execute(&mut *transaction)
     .await
     .map_err(map_application_write)?;
@@ -361,8 +374,12 @@ pub(super) async fn create(
         r"
         INSERT INTO iam.application_webhook_endpoints (
             id, application_id, url_ciphertext, url_nonce,
-            encryption_key_version, url_digest
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+            encryption_key_version, url_digest, status, activated_at
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6,
+            CASE WHEN $7 THEN 'active' ELSE 'pending_review' END,
+            CASE WHEN $7 THEN transaction_timestamp() END
+        )
         ",
     )
     .bind(webhook_endpoint_id)
@@ -371,6 +388,7 @@ pub(super) async fn create(
     .bind(encrypted_webhook.nonce.as_slice())
     .bind(encrypted_webhook.key_version)
     .bind(webhook_digest.as_slice())
+    .bind(activate_webhook_immediately)
     .execute(&mut *transaction)
     .await
     .map_err(map_application_write)?;
@@ -423,8 +441,9 @@ pub(super) async fn create(
             aggregate_version: 1,
             before: None,
             after: Some(json!({
-                "app_id": input.app_id,
-                "review_status": "under_review",
+                "app_id": qualified_app_id,
+                "base_url": input.base_url,
+                "review_status": "verified",
             })),
             metadata: json!({
                 "application_id": application_id,
@@ -456,6 +475,26 @@ pub(super) async fn create(
     ))
 }
 
+pub(super) async fn ensure_application_id_available_for_testing(
+    production_pool: &PgPool,
+    qualified_app_id: &str,
+) -> Result<(), ApiError> {
+    if !crate::infrastructure::testing_plane::is_active() {
+        return Ok(());
+    }
+    let reserved = sqlx::query_scalar::<_, bool>(
+        "SELECT iam_private.production_application_id_is_reserved($1)",
+    )
+    .bind(qualified_app_id)
+    .fetch_one(production_pool)
+    .await
+    .map_err(|_| ApiError::internal("production_application_id_reservation"))?;
+    if reserved {
+        return Err(ApiError::conflict("application_id_reserved_in_production"));
+    }
+    Ok(())
+}
+
 pub(super) async fn get(
     State(state): State<ApiState>,
     Bearer(access): Bearer,
@@ -474,6 +513,49 @@ pub(super) async fn get(
         .await
         .map_err(|_| ApiError::internal("application_get_commit"))?;
     json_with_etag(StatusCode::OK, &detail, detail.version)
+}
+
+/// Resolves one configured backend location for an authenticated Application.
+///
+/// Application credentials establish the caller, but deliberately do not
+/// constrain the target to the caller's organization: qualified identifiers
+/// are global and the directory exists specifically for cross-Application
+/// discovery. Only a currently usable target is visible.
+pub(super) async fn discover(
+    State(state): State<ApiState>,
+    client: ApplicationClient,
+    Path(path): Path<AppPath>,
+) -> Result<Json<ApplicationDirectoryEntry>, ApiError> {
+    validation::app_id(&path.app_id)?;
+    let mut transaction = context::begin(
+        state.db(),
+        DatabaseContext::application(client.application_id, client.application_id),
+    )
+    .await
+    .map_err(|_| ApiError::internal("application_directory_context"))?;
+    let entry = sqlx::query_as::<_, ApplicationDirectoryEntry>(
+        r"
+        SELECT application.app_id, application.base_url
+        FROM iam.applications AS application
+        JOIN iam.principals AS principal
+          ON principal.id = application.id
+         AND principal.kind = 'application'
+         AND principal.status = 'active'
+        WHERE application.app_id = $1
+          AND application.review_status = 'verified'
+          AND application.deleted_at IS NULL
+        ",
+    )
+    .bind(&path.app_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_directory_read"))?
+    .ok_or_else(ApiError::not_found)?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("application_directory_commit"))?;
+    Ok(Json(entry))
 }
 
 pub(super) async fn rotate_client_secret(
@@ -679,13 +761,14 @@ pub(super) async fn patch(
     if before.version != version {
         return Err(ApiError::precondition_failed());
     }
-    if input.app_name.is_some() || input.app_logo_uri.is_some() {
+    if input.base_url.is_some() || input.app_name.is_some() || input.app_logo_uri.is_some() {
         sqlx::query(
             r"
             UPDATE iam.applications
             SET app_name = CASE WHEN $2 THEN $3 ELSE app_name END,
-                app_logo_uri = CASE WHEN $4 THEN $5 ELSE app_logo_uri END
-            WHERE id = $1 AND version = $6
+                app_logo_uri = CASE WHEN $4 THEN $5 ELSE app_logo_uri END,
+                base_url = COALESCE($6, base_url)
+            WHERE id = $1 AND version = $7
             ",
         )
         .bind(before.id)
@@ -693,6 +776,7 @@ pub(super) async fn patch(
         .bind(input.app_name.clone().flatten())
         .bind(input.app_logo_uri.is_some())
         .bind(input.app_logo_uri.clone().flatten())
+        .bind(&input.base_url)
         .bind(version)
         .execute(&mut *transaction)
         .await
@@ -701,11 +785,12 @@ pub(super) async fn patch(
     if let Some(endpoints) = &input.obo_endpoints {
         replace_obo_endpoints(&mut transaction, before.id, endpoints).await?;
     }
-    let updated_version = if input.app_name.is_some() || input.app_logo_uri.is_some() {
-        version + 1
-    } else {
-        bump_application(&mut transaction, before.id).await?
-    };
+    let updated_version =
+        if input.base_url.is_some() || input.app_name.is_some() || input.app_logo_uri.is_some() {
+            version + 1
+        } else {
+            bump_application(&mut transaction, before.id).await?
+        };
     let response = load_detail(&mut transaction, &state, before.id, false).await?;
     events::record(
         &mut transaction,
@@ -723,11 +808,13 @@ pub(super) async fn patch(
             before: Some(json!({
                 "app_name": before.app_name,
                 "app_logo_uri": before.app_logo_uri,
+                "base_url": before.base_url,
                 "review_status": before.review_status,
             })),
             after: Some(json!({
                 "app_name": response.app_name,
                 "app_logo_uri": response.app_logo,
+                "base_url": response.base_url,
                 "review_status": response.status,
             })),
             metadata: json!({ "pending_configuration_review": true }),
@@ -768,7 +855,7 @@ pub(super) async fn admin_list(
         r"
         SELECT application.id, application.app_id, application.organization_id,
                organization.org_id, application.created_by_carbon_id,
-               application.app_name, application.app_logo_uri,
+               application.app_name, application.app_logo_uri, application.base_url,
                application.review_status, application.version,
                application.created_at, application.updated_at
         FROM iam.applications AS application
@@ -1060,7 +1147,7 @@ async fn resolve_admin_app_for_claim(
         r"
         SELECT application.id, application.app_id, application.organization_id,
                organization.org_id, application.created_by_carbon_id,
-               application.app_name, application.app_logo_uri,
+               application.app_name, application.app_logo_uri, application.base_url,
                application.review_status, application.version,
                application.created_at, application.updated_at
         FROM iam.applications AS application
@@ -1109,7 +1196,7 @@ async fn resolve_app(
             r"
             SELECT application.id, application.app_id, application.organization_id,
                    organization.org_id, application.created_by_carbon_id,
-                   application.app_name, application.app_logo_uri,
+                   application.app_name, application.app_logo_uri, application.base_url,
                    application.review_status, application.version,
                    application.created_at, application.updated_at
             FROM iam.applications AS application
@@ -1137,7 +1224,7 @@ async fn resolve_app(
             r"
             SELECT application.id, application.app_id, application.organization_id,
                    organization.org_id, application.created_by_carbon_id,
-                   application.app_name, application.app_logo_uri,
+                   application.app_name, application.app_logo_uri, application.base_url,
                    application.review_status, application.version,
                    application.created_at, application.updated_at
             FROM iam.applications AS application
@@ -1179,7 +1266,7 @@ async fn resolve_app(
     Ok(app)
 }
 
-pub(super) async fn load_detail(
+pub(crate) async fn load_detail(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     application_id: Uuid,
@@ -1189,7 +1276,7 @@ pub(super) async fn load_detail(
         r"
         SELECT application.id, application.app_id, application.organization_id,
                organization.org_id, application.created_by_carbon_id,
-               application.app_name, application.app_logo_uri,
+               application.app_name, application.app_logo_uri, application.base_url,
                application.review_status, application.version,
                application.created_at, application.updated_at
         FROM iam.applications AS application
@@ -1283,6 +1370,7 @@ pub(super) async fn load_detail(
         },
         app_name: application.app_name,
         app_logo: application.app_logo_uri,
+        base_url: application.base_url,
         requested_scopes,
         approved_scopes,
         obo_endpoints,
@@ -1749,6 +1837,7 @@ fn review_decision_name(decision: &str) -> &'static str {
 
 fn input_as_json(input: &ApplicationPatch) -> serde_json::Value {
     json!({
+        "base_url": input.base_url,
         "app_name": input.app_name,
         "app_logo_uri": input.app_logo_uri,
         "obo_endpoints": input.obo_endpoints,
@@ -1817,7 +1906,7 @@ fn map_obo_endpoint_write(error: &sqlx::Error) -> ApiError {
     ApiError::internal("application_obo_endpoint_write")
 }
 
-fn secret_prefix(secret: &str) -> String {
+pub(super) fn secret_prefix(secret: &str) -> String {
     secret.chars().take(12).collect()
 }
 
@@ -1842,7 +1931,7 @@ fn created_secret_response(
     response
 }
 
-fn secret_json_with_etag<T: serde::Serialize>(
+pub(super) fn secret_json_with_etag<T: serde::Serialize>(
     status: StatusCode,
     body: &T,
     version: i64,

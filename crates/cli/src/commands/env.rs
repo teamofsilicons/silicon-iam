@@ -5,7 +5,7 @@ use silicon_iam_client::models;
 use crate::{
     cli::EnvCommand,
     context::Context,
-    error::{CliError, Result},
+    error::Result,
     output::{Format, Table, json, or_dash, timestamp, timestamp_or_dash},
 };
 
@@ -22,6 +22,7 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
     // The two key-authorized commands work without a signed-in session, which
     // is the point of an environment key.
     if let EnvCommand::Current = command {
+        context.require_test()?;
         let described = context.anonymous().environments().current().await?;
         return match context.format {
             Format::Json => json(&described),
@@ -42,12 +43,7 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
         environment_id: None,
     } = command
     {
-        if context.environment().is_none() {
-            return Err(CliError::Usage(
-                "give an environment id, or pass --environment to clean the one you are in"
-                    .to_owned(),
-            ));
-        }
+        context.require_test()?;
         let cleaned = context
             .anonymous()
             .environments()
@@ -96,14 +92,15 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
                     &context.mutation(),
                 )
                 .await?;
+            context.remember_testing_environment(created.id, created.key.clone())?;
             match context.format {
                 Format::Json => json(&created),
                 Format::Text => {
                     println!("Created {} ({}).", created.name, created.id);
                     println!("Key: {}", created.key);
                     println!(
-                        "Use it with --environment, or store it: siam config set environment {}",
-                        created.key
+                        "This device stored the key. Enter it with: iam --test {} <command>",
+                        created.id
                     );
                     Ok(())
                 }
@@ -142,7 +139,7 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
                     println!("Retired {}.", retired.name);
                     if let Some(purge_after) = retired.purge_after {
                         println!(
-                            "Recoverable with `siam env restore {}` until {}.",
+                            "Recoverable with `iam env restore {}` until {}.",
                             retired.id,
                             timestamp(purge_after)
                         );
@@ -160,6 +157,7 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
         }
         EnvCommand::Key { environment_id } => {
             let key = client.environments().key(org, environment_id).await?;
+            context.remember_testing_environment(environment_id, key.key.clone())?;
             match context.format {
                 Format::Json => json(&key),
                 Format::Text => {
@@ -173,6 +171,7 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
                 .environments()
                 .rotate_key(org, environment_id, &context.mutation())
                 .await?;
+            context.remember_testing_environment(environment_id, rotated.key.clone())?;
             match context.format {
                 Format::Json => json(&rotated),
                 Format::Text => {

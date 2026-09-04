@@ -6,8 +6,10 @@
 
 <h2>Verifying a delivery</h2>
 
-<pre><code>let mut keyring = WebhookSecretKeyring::new(7, WebhookSecret::new(secret)?)?;
-let verified = WebhookVerifier::new(keyring).verify(headers, body)?;
+<pre><code>use silicon_iam_client::{WebhookSecret, WebhookSecretKeyring, WebhookVerifier};
+
+let keyring = WebhookSecretKeyring::new(7, WebhookSecret::new(secret)?)?;
+let verified = WebhookVerifier::new(keyring).verify(&amp;headers, &amp;body)?;
 
 // In ONE database transaction: insert this ID into a unique
 // deduplication table, and apply the event's local side effect.
@@ -36,9 +38,18 @@ let event = verified.event();</code></pre>
 <h2>Secret versions</h2>
 
 <p>
-  The <code>whs_</code> secret is returned exactly once, when the Application is registered.
-  Replacing the webhook URL does <strong>not</strong> rotate it and does not return it again: IAM
-  rebinds the same secret under an incremented version.
+  The initial <code>whs_</code> secret is returned when the Application is registered. Explicit
+  <code>rotate_webhook_secret</code> returns one successor under a new version and immediately uses
+  it for new deliveries. It requires the current Application version and a verified-channel
+  step-up assertion for <code>application.webhook_secret.rotate</code>.
+</p>
+
+<p>
+  Replacing the webhook URL normally does <strong>not</strong> rotate the key: IAM rebinds the same
+  secret under an incremented version. The exception is an imported test Application still using
+  an inherited production key. Its first test URL replacement returns a fresh test-only
+  <code>webhook_signing_secret</code> and <code>secret_replay_expires_at</code>; those optional fields
+  are absent from ordinary replacement responses.
 </p>
 
 <p>
@@ -51,6 +62,12 @@ let event = verified.event();</code></pre>
 keyring.rebind_version(7, 8)?;</code></pre>
 
 <p>
+  An explicit secret rotation returns different key material. Install that with
+  <code>keyring.insert(new_version, WebhookSecret::new(new_secret)?)</code> and retain the prior
+  entry until its complete retry window has elapsed.
+</p>
+
+<p>
   Deliveries carry <code>X-Silicon-IAM-Key-Version</code>, so the verifier selects by version
   rather than trying each secret in turn. Without the rebind, in-flight v7 retries fail
   verification and dead-letter — a self-inflicted outage that looks like an IAM problem.
@@ -61,6 +78,38 @@ keyring.rebind_version(7, 8)?;</code></pre>
 <p>
   Delivery is <strong>at least once</strong>. A duplicate is normal, not exceptional, and arrival
   order is not guaranteed.
+</p>
+
+<h2>Testing-environment deliveries</h2>
+
+<p>
+  A test delivery is not shaped like a production event. Its exact signed body has one top-level
+  <code>test</code> object containing <code>testing_key</code>, <code>metadata</code>, and
+  <code>data</code>. Verify the signature over those outer bytes first; then deduplicate on
+  <code>test.metadata.event_id</code> and order on
+  <code>test.metadata.aggregate.version</code>.
+</p>
+
+<pre><code>let verified = verifier.verify(&amp;headers, &amp;body)?;
+if verified.is_testing() {
+    // Constant-time comparison. The received key is never exposed by the SDK.
+    verified.verify_testing_environment(&expected_environment_key)?;
+}
+
+// event() is normalized to WebhookEvent for both wire shapes.
+let event = verified.event();</code></pre>
+
+<div class="banner banner-danger">
+  <div>
+    <strong><code>testing_key</code> is live root authority.</strong>
+    Compare it with the expected environment key without timing leakage, route the event to the
+    isolated test run, and redact it. Never log it or persist it with the event payload.
+  </div>
+</div>
+
+<p>
+  The complete setup, import, login, negative-boundary assertions, and cleanup sequence is in
+  <a href="/docs/client/testing-environments">Testing environments</a>.
 </p>
 
 <table>
@@ -78,23 +127,12 @@ keyring.rebind_version(7, 8)?;</code></pre>
   retrying endpoint, and a retrying endpoint becomes a dead-lettered one.
 </p>
 
-<h2>Event catalogs</h2>
-
-<table>
-  <thead><tr><th>Constant</th><th>Contents</th></tr></thead>
-  <tbody>
-    <tr><td><code>webhook::APPLICATION_EVENT_TYPES</code></td>
-      <td>The events actually delivered to Applications.</td></tr>
-    <tr><td><code>webhook::SILICON_FULL_EVENT_TYPES</code></td>
-      <td>The complete 38-event Silicon catalog. Reference data only — the
-        <code>whs_</code> Application verifier does not accept these.</td></tr>
-  </tbody>
-</table>
+<h2>Event types</h2>
 
 <p>
-  Match on <code>EventType</code> rather than on the string. It is
-  <code>#[non_exhaustive]</code>, so a new event type added to the contract will not break your
-  build, and your wildcard arm will keep doing something sensible with it.
+  The authenticated event name is available as <code>verified.event().event_type</code>. Treat it
+  as a versioned public vocabulary and keep an unknown-type branch: adding a new event must not
+  make your receiver reject an otherwise valid delivery or skip the quick <code>2xx</code> response.
 </p>
 
 <h2>Recovering missed deliveries</h2>

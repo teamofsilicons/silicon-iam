@@ -229,6 +229,12 @@ policies that table already has. It forces row-level security, because this
 schema resolves handles, contacts and credentials through `SECURITY DEFINER`
 functions that would otherwise see every environment at once.
 
+When a testing database is configured, `/readyz` verifies that it is reachable
+and that both its base and testing-overlay migration ledgers exactly match the
+embedded checksums. A stale or partially migrated testing plane therefore
+makes the API unready instead of failing only when the first test request
+arrives. The worker performs the same startup check.
+
 Requests choose their plane with a header:
 
 ```sh
@@ -236,12 +242,13 @@ curl -H "X-Testing-Environment-Key: <32 alphanumeric characters>" \
   https://backend.iam.teamofsilicons.com/api/v1/organizations
 ```
 
-Environments deliver no email, SMS or webhook, and their verification steps
-accept the fixed code `000000`. The worker touches the testing database for one
-purpose only -- erasing an environment whose recovery window has closed -- which
-is what keeps an environment from ever reaching a real recipient. Environments
-idle for `IAM_TESTING_IDLE_DAYS` are retired automatically, stay recoverable for
-`IAM_TESTING_RECOVERY_DAYS`, and are then destroyed.
+Environments deliver no email or SMS, and their verification steps accept the
+fixed code `000000`. Test webhooks are delivered in an explicit `test` envelope
+that carries the environment key and nests the ordinary metadata and data.
+Receivers must verify the signature over the exact outer bytes and redact that
+root key. The worker also erases an environment whose recovery window has
+closed. Environments idle for `IAM_TESTING_IDLE_DAYS` are retired automatically,
+stay recoverable for `IAM_TESTING_RECOVERY_DAYS`, and are then destroyed.
 
 `docs/API_DOCS.md` documents the lifecycle and authority model in full.
 
@@ -256,10 +263,13 @@ caller action in the contract. Its wire types are generated from
 them and fails on a diff, so they cannot drift from the service. It is stateless
 by design -- no disk, no cache, no credential refresh behind the caller's back.
 
-`crates/cli` is `silicon-iam-cli`, installing the `siam` binary. It is a shell
+`crates/cli` is `silicon-iam-cli`, installing the `iam` binary. It is a shell
 over the client and has no capability the client lacks; what it adds is the
 state the client refuses to hold: a profile, a service URL, and a session under
-`~/.silicon-iam/` that it renews when it is close to expiring.
+`~/.silicon-iam/` that it renews when it is close to expiring. Use
+`iam --test <environment-uuid> <command>` to run the same command in a test
+plane; the CLI resolves the UUID through an owner-only stored root key and
+keeps every environment's session separate from production.
 
 ```sh
 cargo run -p silicon-iam-cli -- --url http://127.0.0.1:8080 login --email you@example.com
@@ -417,7 +427,7 @@ else is grouped by what it is.
 | `migrations/` | Forward-only SQL migrations applied by `iam-migrate` |
 | `migrations/testing/` | The per-environment scoping overlay, applied only to a testing database |
 | `crates/client/` | `silicon-iam-client`, the Rust client for the API (Apache-2.0) |
-| `crates/cli/` | `silicon-iam-cli`, the `siam` command-line client built on it (Apache-2.0) |
+| `crates/cli/` | `silicon-iam-cli`, the `iam` command-line client built on it (Apache-2.0) |
 | `docs/` | The whole documentation surface: `openapi.yaml`, `API_DOCS.md`, and the `api/` and `client/` manuals embedded at compile time |
 | `deploy/` | Runtime database roles, reviewed grants, and cloud provisioning |
 | `scripts/` | The local bootstrap and the CI boundary checks |

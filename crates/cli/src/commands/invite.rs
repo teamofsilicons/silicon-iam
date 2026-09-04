@@ -96,7 +96,7 @@ pub async fn run(context: &Context, command: InviteCommand) -> Result<()> {
             match context.format {
                 Format::Json => json(&dispatched),
                 Format::Text => {
-                    println!("Sent. Accept with `siam invite accept --code <code>`.");
+                    println!("Sent. Accept with `iam invite accept --code <code>`.");
                     Ok(())
                 }
             }

@@ -166,7 +166,7 @@ async fn report_short_lived_token(
 ///
 /// Local only: it does not end the session on the service, because a person
 /// clearing a laptop should not silently sign out their other devices. Use
-/// `siam session revoke` for that.
+/// `iam session revoke` for that.
 ///
 /// # Errors
 ///
@@ -198,8 +198,8 @@ pub async fn whoami(context: &Context) -> Result<()> {
             table.row(["timezone", &me.timezone]);
             table.row(["profile", &context.profile_name]);
             table.row(["service", context.anonymous().base_url().as_str()]);
-            if let Some(environment) = context.environment() {
-                table.row(["environment", &format!("{}…", &environment[..8])]);
+            if let Some(environment_id) = context.testing_environment_id() {
+                table.row(["test_environment", &environment_id.to_string()]);
             }
             table.print();
             Ok(())
@@ -268,7 +268,7 @@ pub async fn signup(context: &Context, args: SignupArgs) -> Result<()> {
         Format::Json => json(&created),
         Format::Text => {
             println!(
-                "Created {}. Run `siam login --carbon-id {}` to sign in.",
+                "Created {}. Run `iam login --carbon-id {}` to sign in.",
                 created.carbon_id, created.carbon_id
             );
             Ok(())
@@ -284,7 +284,7 @@ fn collect_code(echoed: Option<String>, prompt_text: &str) -> Result<String> {
 }
 
 /// Reads one line from the terminal.
-fn prompt(label: &str) -> Result<String> {
+pub(crate) fn prompt(label: &str) -> Result<String> {
     print!("{label}");
     std::io::stdout().flush()?;
     let mut line = String::new();

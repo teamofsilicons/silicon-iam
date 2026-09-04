@@ -862,7 +862,8 @@ async fn validate_resource_binding(
                 }),
             });
         }
-        StepUpAction::ApplicationClientSecretRotate => {
+        StepUpAction::ApplicationClientSecretRotate
+        | StepUpAction::ApplicationWebhookSecretRotate => {
             let owned_application =
                 sqlx::query_scalar::<_, Uuid>(APPLICATION_RESOURCE_OWNERSHIP_QUERY)
                     .bind(resource_id)
@@ -1013,6 +1014,7 @@ fn parse_action(value: &str) -> Result<StepUpAction, AppError> {
         "account.session_revoke" => Ok(StepUpAction::AccountSessionRevoke),
         "account.sessions_revoke_all" => Ok(StepUpAction::AccountSessionsRevokeAll),
         "application.client_secret.rotate" => Ok(StepUpAction::ApplicationClientSecretRotate),
+        "application.webhook_secret.rotate" => Ok(StepUpAction::ApplicationWebhookSecretRotate),
         "organization.transfer_ownership" => Ok(StepUpAction::OrganizationTransferOwnership),
         "organization.authorization_change" => Ok(StepUpAction::OrganizationAuthorizationChange),
         "organization.sso_change" => Ok(StepUpAction::OrganizationSsoChange),
@@ -1060,6 +1062,10 @@ mod tests {
             Ok(StepUpAction::ApplicationClientSecretRotate)
         ));
         assert!(matches!(
+            parse_action("application.webhook_secret.rotate"),
+            Ok(StepUpAction::ApplicationWebhookSecretRotate)
+        ));
+        assert!(matches!(
             parse_action("organization.silicon_webhook.redirect"),
             Ok(StepUpAction::OrganizationSiliconWebhookRedirect)
         ));
@@ -1096,7 +1102,7 @@ mod tests {
     }
 
     #[test]
-    fn client_secret_rotation_step_up_is_bound_to_a_managed_live_application() {
+    fn application_secret_rotation_step_up_is_bound_to_a_managed_live_application() {
         assert!(APPLICATION_RESOURCE_OWNERSHIP_QUERY.contains("application.id = $1"));
         assert!(
             APPLICATION_RESOURCE_OWNERSHIP_QUERY
@@ -1118,5 +1124,8 @@ mod tests {
             "../../../migrations/0037_application_credential_and_redirect_lifecycle.sql"
         );
         assert!(application_migration.contains("'application.client_secret.rotate'"));
+        let webhook_rotation_migration =
+            include_str!("../../../migrations/0058_qualified_application_directory.sql");
+        assert!(webhook_rotation_migration.contains("'application.webhook_secret.rotate'"));
     }
 }

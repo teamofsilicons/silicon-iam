@@ -4,18 +4,21 @@ use std::collections::BTreeSet;
 
 use futures::{StreamExt as _, stream};
 use serde_json::Value;
-use sqlx::{Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
     error::AppError, infrastructure::postgres::events::uses_captured_application_webhook_projection,
 };
 
-use super::{WorkerContext, delivery_claim_limit, retry_delay_seconds};
+use super::{
+    WorkerContext, begin_processing_transaction, delivery_claim_limit, retry_delay_seconds,
+};
 
 #[derive(sqlx::FromRow)]
 struct ClaimedEvent {
     id: Uuid,
+    testing_environment_id: Option<Uuid>,
     organization_id: Option<Uuid>,
     aggregate_type: String,
     aggregate_id: Uuid,
@@ -38,6 +41,18 @@ struct SiliconRecipient {
 }
 
 pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppError> {
+    process_pool(context, &context.pool).await
+}
+
+/// Expands events produced by all live testing environments.
+pub(super) async fn process_testing_batch(context: &WorkerContext) -> Result<(), AppError> {
+    let Some(pool) = context.testing_pool.as_ref() else {
+        return Ok(());
+    };
+    process_pool(context, pool).await
+}
+
+async fn process_pool(context: &WorkerContext, pool: &PgPool) -> Result<(), AppError> {
     let claim_limit = delivery_claim_limit(context)?;
     let lease_seconds =
         i64::try_from(context.settings.worker.lease_duration.as_secs()).map_err(|_| {
@@ -72,6 +87,8 @@ pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppErro
         WHERE event.id = candidates.id
         RETURNING
             event.id,
+            (to_jsonb(event) ->> 'testing_environment_id')::uuid
+                AS testing_environment_id,
             event.organization_id,
             event.aggregate_type,
             event.aggregate_id,
@@ -84,11 +101,11 @@ pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppErro
     .bind(claim_limit)
     .bind(&context.instance_id)
     .bind(lease_seconds)
-    .fetch_all(&context.pool)
+    .fetch_all(pool)
     .await?;
 
     let results = stream::iter(events)
-        .map(|event| async move { process_event(context, &event).await })
+        .map(|event| async move { process_event(context, pool, &event).await })
         .buffer_unordered(context.settings.worker.delivery_concurrency.get())
         .collect::<Vec<_>>()
         .await;
@@ -98,19 +115,27 @@ pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppErro
     Ok(())
 }
 
-async fn process_event(context: &WorkerContext, event: &ClaimedEvent) -> Result<(), AppError> {
-    if let Err(error) = expand_event(context, event).await {
+async fn process_event(
+    context: &WorkerContext,
+    pool: &PgPool,
+    event: &ClaimedEvent,
+) -> Result<(), AppError> {
+    if let Err(error) = expand_event(context, pool, event).await {
         let code = match error {
             AppError::Internal { category } => category,
             _ => "outbox_expansion",
         };
-        mark_failure(context, event, code).await?;
+        mark_failure(context, pool, event, code).await?;
     }
     Ok(())
 }
 
-async fn expand_event(context: &WorkerContext, event: &ClaimedEvent) -> Result<(), AppError> {
-    let mut transaction = context.pool.begin().await?;
+async fn expand_event(
+    context: &WorkerContext,
+    pool: &PgPool,
+    event: &ClaimedEvent,
+) -> Result<(), AppError> {
+    let mut transaction = begin_processing_transaction(pool, event.testing_environment_id).await?;
     let owns_lease = sqlx::query_scalar::<_, bool>(
         r"
         SELECT EXISTS (
@@ -403,6 +428,7 @@ async fn insert_silicon_recipient(
 
 async fn mark_failure(
     context: &WorkerContext,
+    pool: &PgPool,
     event: &ClaimedEvent,
     error_code: &'static str,
 ) -> Result<(), sqlx::Error> {
@@ -412,6 +438,7 @@ async fn mark_failure(
         context.settings.worker.max_retry_delay,
         event.id,
     );
+    let mut transaction = begin_processing_transaction(pool, event.testing_environment_id).await?;
     sqlx::query(
         r"
         UPDATE iam.outbox_events
@@ -434,8 +461,9 @@ async fn mark_failure(
     .bind(dead_letter)
     .bind(delay)
     .bind(error_code)
-    .execute(&context.pool)
+    .execute(&mut *transaction)
     .await?;
+    transaction.commit().await?;
     Ok(())
 }
 
@@ -466,6 +494,7 @@ mod tests {
     fn event() -> ClaimedEvent {
         ClaimedEvent {
             id: Uuid::from_u128(1),
+            testing_environment_id: None,
             organization_id: Some(Uuid::from_u128(2)),
             aggregate_type: "organization_membership".to_owned(),
             aggregate_id: Uuid::from_u128(3),

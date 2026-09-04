@@ -1,0 +1,177 @@
+<p class="lede">
+  The Rust client uses one switch for an entire isolated IAM world:
+  <code>Client::with_environment</code>. Every ordinary API group then keeps the same methods and
+  paths while the client adds the environment root key to each request.
+</p>
+
+<h2>Create on production, execute in the test plane</h2>
+
+<pre><code>use silicon_iam_client::{Client, EnvironmentKey, Mutation, models};
+
+// `production` carries the creator's production bearer.
+let created = production.environments().create(
+    "acme",
+    &amp;models::TestingEnvironmentCreate {
+        name: "checkout-e2e".to_owned(),
+        description: Some("CI application proof".to_owned()),
+    },
+    &amp;Mutation::new(),
+).await?;
+
+// Store created.id as normal metadata. Put created.key in a secret store.
+let sandbox = Client::new("https://backend.iam.teamofsilicons.com")?
+    .with_environment(EnvironmentKey::new(created.key)?);</code></pre>
+
+<p>
+  <code>EnvironmentKey</code> accepts only the exact 32-character alphanumeric wire form and
+  redacts itself from <code>Debug</code>. The SDK is stateless, so retaining the public UUID-to-key
+  mapping is your program's responsibility. Do not use the UUID as a credential and do not expose
+  the key as a selector.
+</p>
+
+<div class="banner banner-info">
+  <div>
+    <strong>Plane selection and actor authentication are independent.</strong>
+    <code>sandbox</code> above is anonymous. Use it for signup and login, then attach the test
+    bearer with <code>with_credential</code>. For Application operations, attach that
+    environment's Application Basic credential instead.
+  </div>
+</div>
+
+<h2>Bootstrap the empty environment</h2>
+
+<p>
+  Run the normal signup sequence through <code>sandbox.signup()</code>. Email and SMS are not sent;
+  pass <code>000000</code> to both verification calls. Complete the Carbon and run the normal
+  login sequence through <code>sandbox.auth()</code>, again using <code>000000</code>. Keep the
+  returned access and refresh tokens under the environment UUID, never in your production token
+  slot.
+</p>
+
+<p>
+  From there, attach the access token and create organizations, tags, Silicons, invitations, and
+  governance state with the same client methods used in production. Expiry, failed-attempt
+  cooldowns, idempotency, ETags, step-up, and authorization are still real; only delivery and the
+  fixed verification code differ.
+</p>
+
+<h2>Create a test-only Application</h2>
+
+<pre><code>use silicon_iam_client::{Credential, Mutation, models};
+
+let carbon = sandbox.with_credential(Credential::bearer(test_access_token));
+let created_app = carbon.applications().create(
+    &amp;models::ApplicationCreate {
+        app_id: "checkout".to_owned(),
+        org_id: "acme".to_owned(),
+        app_name: Some("Checkout".to_owned()),
+        app_logo: None,
+        webhook_url: "https://hooks.example.test/iam".to_owned(),
+        base_url: "http://127.0.0.1:4100".to_owned(),
+        obo_endpoints: None,
+    },
+    &amp;Mutation::new(),
+).await?;
+
+assert_eq!(created_app.application.app_id, "acme&gt;checkout");
+// Store created_app.app_secret and created_app.webhook_signing_secret now.</code></pre>
+
+<p>
+  The create input uses a local handle; every returned and later Application ID is canonical
+  <code>{org_id}&gt;{handle}</code>. A test-only creation cannot claim a canonical ID that already
+  exists in production.
+</p>
+
+<h2>Import a production Application</h2>
+
+<pre><code>let imported = carbon.applications()
+    .import_from_production("google&gt;drive", &amp;Mutation::new())
+    .await?;
+
+assert!(imported.webhook_secret_inherited);
+store_test_secret(imported.app_secret);
+// No production signing secret exists anywhere in this response.</code></pre>
+
+<p>
+  The import method fails locally when the client has no environment key. On success IAM copies
+  the production canonical ID, base URL, webhook URL, and OBO registry. It creates the test
+  organization with the requesting test Carbon as owner when necessary and returns a fresh
+  test-only client secret. Its no-store response can be recovered for ten minutes only by
+  repeating the exact request with the same <code>Mutation</code>.
+</p>
+
+<p>
+  The production webhook secret is inherited but not revealed. To point the import at a dedicated
+  test receiver, call <code>replace_webhook</code>. On the first such replacement, the returned
+  <code>ApplicationWebhook</code> carries <code>webhook_signing_secret</code> and
+  <code>secret_replay_expires_at</code>; store them immediately. They are absent on ordinary
+  replacements. Use <code>rotate_webhook_secret</code> for an explicit later rotation.
+</p>
+
+<h2>Discover a base URL</h2>
+
+<pre><code>let app = sandbox.with_credential(Credential::application(
+    "acme&gt;checkout",
+    test_app_secret,
+));
+
+let drive = app.applications()
+    .discover_base_url("google&gt;drive")
+    .await?;
+assert_eq!(drive.app_id, "google&gt;drive");</code></pre>
+
+<p>
+  Any Application may discover any verified target, even across organizations. With an
+  environment key on the client, requester and target both resolve only there. IAM will not use a
+  production credential or fall through to a production target. OBO discovery remains a separate,
+  same-organization operation.
+</p>
+
+<h2>Receive a test webhook</h2>
+
+<pre><code>{
+  "test": {
+    "testing_key": "…",
+    "metadata": {
+      "spec_version": "1.0",
+      "event_id": "…",
+      "event_type": "organization.membership.created.v1",
+      "occurred_at": "…",
+      "organization_id": "…",
+      "aggregate": { "type": "membership", "id": "…", "version": 1 }
+    },
+    "data": {}
+  }
+}</code></pre>
+
+<p>
+  Verify the signature over the exact raw outer bytes first. Then detect <code>test</code>, compare
+  <code>testing_key</code> to the expected secret without timing leakage, route to that isolated
+  run, deduplicate on <code>metadata.event_id</code>, and order on
+  <code>metadata.aggregate.version</code>. Redact the key before logging and do not persist it in
+  the event table.
+</p>
+
+<pre><code>let verified = webhook_verifier.verify(&amp;headers, &amp;body)?;
+verified.verify_testing_environment(&environment_key)?;
+
+// The SDK removes the root key and normalizes metadata/data after verification.
+let event_id = verified.event_id();
+let event = verified.event();</code></pre>
+
+<h2>Proof checklist</h2>
+
+<ol>
+  <li>Assert the environment begins empty.</li>
+  <li>Complete both-contact signup and login with <code>000000</code>.</li>
+  <li>Create or import the Application and persist every one-time test secret.</li>
+  <li>Complete the short-lived-token login and introspect it in the same plane.</li>
+  <li>Prove production credentials fail inside the environment and test credentials fail without it.</li>
+  <li>Verify and deduplicate a wrapped webhook; run OBO exchange/verification when applicable.</li>
+  <li>Call <code>clean_current</code> with the key when the run finishes, or retire it from production.</li>
+</ol>
+
+<p>
+  Never construct a second set of test endpoint paths. If a test can pass only through a mock-only
+  route, it is not proving the production integration.
+</p>

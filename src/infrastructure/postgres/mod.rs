@@ -21,8 +21,11 @@ pub mod tokens;
 
 #[cfg(test)]
 mod key_rotation_tests;
+#[cfg(test)]
+mod readiness_tests;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+static TESTING_MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/testing");
 
 /// Creates and verifies a bounded PostgreSQL pool.
 ///
@@ -234,6 +237,19 @@ pub async fn ready(pool: &PgPool) -> bool {
     schema_is_current(pool).await.unwrap_or(false)
 }
 
+/// Confirms the shared testing database is reachable and has both migration
+/// sets at their embedded checksums.
+pub async fn ready_testing(pool: &PgPool) -> bool {
+    if sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(pool)
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    testing_schema_is_current(pool).await.unwrap_or(false)
+}
+
 async fn schema_is_current(pool: &PgPool) -> Result<bool, sqlx::Error> {
     let applied = sqlx::query_as::<_, (i64, Vec<u8>, bool)>(
         "SELECT version, checksum, success FROM _sqlx_migrations ORDER BY version",
@@ -246,6 +262,26 @@ async fn schema_is_current(pool: &PgPool) -> Result<bool, sqlx::Error> {
     Ok(applied
         .iter()
         .zip(MIGRATOR.iter())
+        .all(|((version, checksum, success), migration)| {
+            *success
+                && *version == migration.version
+                && checksum.as_slice() == migration.checksum.as_ref()
+        }))
+}
+
+async fn testing_schema_is_current(pool: &PgPool) -> Result<bool, sqlx::Error> {
+    let applied = sqlx::query_as::<_, (i64, Vec<u8>, bool)>(
+        "SELECT version, checksum, success FROM _sqlx_migrations ORDER BY version",
+    )
+    .fetch_all(pool)
+    .await?;
+    let expected = MIGRATOR.iter().chain(TESTING_MIGRATOR.iter());
+    if applied.len() != expected.clone().count() {
+        return Ok(false);
+    }
+    Ok(applied
+        .iter()
+        .zip(expected)
         .all(|((version, checksum, success), migration)| {
             *success
                 && *version == migration.version

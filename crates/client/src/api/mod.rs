@@ -1,6 +1,6 @@
 //! The caller-facing surface, grouped the way the contract groups it.
 //!
-//! Each group is reached from the [`Client`](crate::Client) -- `client.tags()`,
+//! Each group is reached from the [`Client`] -- `client.tags()`,
 //! `client.silicons()` -- and borrows it, so obtaining one costs nothing and a
 //! client can be shared freely.
 //!
@@ -95,7 +95,7 @@ impl Client {
         silicons::Silicons(self)
     }
 
-    /// Applications, their secrets, redirect URIs, and webhooks.
+    /// Applications, their public base URLs, credentials, OBO surface, and webhooks.
     #[must_use]
     pub const fn applications(&self) -> applications::Applications<'_> {
         applications::Applications(self)
