@@ -1,6 +1,6 @@
 [package]
 name = "silicon-iam-client"
-version = "0.2.0"
+version = "1.0.0"
 description = "Client for the Silicon IAM API: identity, organization governance, application login, and delegated access."
 keywords = ["iam", "identity", "authentication", "authorization", "client"]
 categories = ["api-bindings", "authentication"]
