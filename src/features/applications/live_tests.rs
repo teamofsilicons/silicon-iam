@@ -6,10 +6,16 @@
 #![allow(clippy::too_many_lines)]
 
 use anyhow::{Context as _, ensure};
+use axum::{body::to_bytes, http::StatusCode, response::IntoResponse as _};
+use serde_json::Value;
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
 use testcontainers_modules::postgres::Postgres;
 use uuid::Uuid;
+
+use crate::infrastructure::testing_plane::{self, SelectedEnvironment};
+
+use super::applications::ensure_application_id_available_for_testing;
 
 const CARBON_ID: Uuid = Uuid::from_u128(1);
 const ADMIN_CARBON_ID: Uuid = Uuid::from_u128(2);
@@ -39,6 +45,9 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     crate::infrastructure::postgres::migrate(&pool).await?;
     seed_protocol_rows(&pool).await?;
 
+    direct_test_creation_rejects_a_production_application_id(&pool).await?;
+    qualified_application_directory_and_webhook_rotation_are_consistent(&pool).await?;
+    pending_webhook_application_is_importable(&pool).await?;
     authorized_application_organization_projection_is_exact(&pool).await?;
     application_lifecycle_and_manual_replay_are_atomic(&pool).await?;
     application_deletion_revokes_all_client_authority(&pool).await?;
@@ -54,6 +63,214 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     organization_management_authority_tracks_current_roles(&pool).await?;
     application_list_authority_lock_blocks_concurrent_demotion(&pool).await?;
     application_tenancy_and_creator_are_immutable(&pool).await?;
+    Ok(())
+}
+
+async fn direct_test_creation_rejects_a_production_application_id(
+    production_pool: &PgPool,
+) -> anyhow::Result<()> {
+    ensure!(
+        ensure_application_id_available_for_testing(production_pool, "test_org>app-alpha")
+            .await
+            .is_ok(),
+        "the production create path must not reject its own identifiers"
+    );
+
+    let Err(rejection) = testing_plane::scope(
+        SelectedEnvironment {
+            id: Uuid::from_u128(0x501),
+            organization_id: ORGANIZATION_ID,
+        },
+        ensure_application_id_available_for_testing(production_pool, "test_org>app-alpha"),
+    )
+    .await
+    else {
+        anyhow::bail!("a direct test create must not shadow a production Application id");
+    };
+    let rejection = rejection.into_response();
+    ensure!(
+        rejection.status() == StatusCode::CONFLICT,
+        "a reserved production Application id must return HTTP 409"
+    );
+    let body = to_bytes(rejection.into_body(), 16_384).await?;
+    let body = serde_json::from_slice::<Value>(&body)?;
+    ensure!(
+        body.pointer("/error/code").and_then(Value::as_str)
+            == Some("application_id_reserved_in_production"),
+        "the production reservation rejection must have a stable error code"
+    );
+    Ok(())
+}
+
+async fn qualified_application_directory_and_webhook_rotation_are_consistent(
+    pool: &PgPool,
+) -> anyhow::Result<()> {
+    let (app_id, base_url) = sqlx::query_as::<_, (String, String)>(
+        "SELECT app_id, base_url FROM iam.applications WHERE id = $1",
+    )
+    .bind(APP_A_ID)
+    .fetch_one(pool)
+    .await?;
+    ensure!(
+        app_id == "test_org>app-alpha" && base_url == "https://alpha.example.test/api",
+        "Application directory fields were not stored in their canonical form"
+    );
+
+    let pending_endpoint_id = Uuid::from_u128(0x143);
+    let pending_key_id = Uuid::from_u128(0x144);
+    let active_successor_key_id = Uuid::from_u128(0x145);
+    let pending_successor_key_id = Uuid::from_u128(0x146);
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.application_webhook_endpoints (
+            id, application_id, url_ciphertext, url_nonce,
+            encryption_key_version, url_digest
+        ) VALUES ($1, $2, decode(repeat('51', 17), 'hex'),
+                  decode(repeat('52', 12), 'hex'), 1,
+                  decode(repeat('53', 32), 'hex'))
+        ",
+    )
+    .bind(pending_endpoint_id)
+    .bind(APP_A_ID)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.application_webhook_signing_keys (
+            id, application_id, endpoint_id, secret_version, key_prefix,
+            secret_ciphertext, secret_nonce, encryption_key_version
+        ) VALUES ($1, $2, $3, 2, 'whs_pending1',
+                  decode(repeat('54', 17), 'hex'),
+                  decode(repeat('55', 12), 'hex'), 1)
+        ",
+    )
+    .bind(pending_key_id)
+    .bind(APP_A_ID)
+    .bind(pending_endpoint_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        UPDATE iam.application_webhook_signing_keys
+        SET status = 'retiring', retires_at = transaction_timestamp() + interval '10 minutes'
+        WHERE id IN ('00000000-0000-0000-0000-000000000142', $1)
+        ",
+    )
+    .bind(pending_key_id)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.application_webhook_signing_keys (
+            id, application_id, endpoint_id, secret_version, key_prefix,
+            secret_ciphertext, secret_nonce, encryption_key_version
+        ) VALUES
+        (
+            $1, $3, '00000000-0000-0000-0000-000000000141', 3,
+            'whs_successr', decode(repeat('46', 17), 'hex'),
+            decode(repeat('47', 12), 'hex'), 1
+        ),
+        (
+            $2, $3, $4, 3,
+            'whs_successr', decode(repeat('48', 17), 'hex'),
+            decode(repeat('49', 12), 'hex'), 1
+        )
+        ",
+    )
+    .bind(active_successor_key_id)
+    .bind(pending_successor_key_id)
+    .bind(APP_A_ID)
+    .bind(pending_endpoint_id)
+    .execute(&mut *transaction)
+    .await?;
+    let version_three_count = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM iam.application_webhook_signing_keys WHERE application_id = $1 AND secret_version = 3",
+    )
+    .bind(APP_A_ID)
+    .fetch_one(&mut *transaction)
+    .await?;
+    ensure!(
+        version_three_count == 2,
+        "one logical rotation version was not shared by active and pending endpoints"
+    );
+    let recipients = sqlx::query_as::<_, (Uuid, Uuid)>(
+        r"
+        SELECT endpoint_id, signing_key_id
+        FROM iam_private.list_worker_application_webhook_recipients(
+            NULL, NULL, $1, transaction_timestamp()
+        )
+        ",
+    )
+    .bind(APP_A_ID)
+    .fetch_all(&mut *transaction)
+    .await?;
+    ensure!(
+        recipients.len() == 1 && recipients[0].1 == active_successor_key_id,
+        "a rotation did not route new webhook events only to the active successor key"
+    );
+    let legacy_recipient_count = sqlx::query_scalar::<_, i64>(
+        r"
+        SELECT count(*)
+        FROM iam_private.list_worker_application_webhook_recipients_legacy(
+            NULL, NULL, $1, transaction_timestamp()
+        )
+        ",
+    )
+    .bind(APP_A_ID)
+    .fetch_one(&mut *transaction)
+    .await?;
+    ensure!(
+        legacy_recipient_count == 2,
+        "the retiring key was not preserved for already-bound deliveries"
+    );
+    transaction.rollback().await?;
+    Ok(())
+}
+
+async fn pending_webhook_application_is_importable(pool: &PgPool) -> anyhow::Result<()> {
+    let endpoint_id = Uuid::from_u128(0x151);
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.application_webhook_endpoints (
+            id, application_id, url_ciphertext, url_nonce,
+            encryption_key_version, url_digest
+        ) VALUES ($1, $2, decode(repeat('61', 17), 'hex'),
+                  decode(repeat('62', 12), 'hex'), 1,
+                  decode(repeat('63', 32), 'hex'))
+        ",
+    )
+    .bind(endpoint_id)
+    .bind(APP_B_ID)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.application_webhook_signing_keys (
+            id, application_id, endpoint_id, secret_version, key_prefix,
+            secret_ciphertext, secret_nonce, encryption_key_version
+        ) VALUES ($1, $2, $3, 1, 'whs_pending2',
+                  decode(repeat('64', 17), 'hex'),
+                  decode(repeat('65', 12), 'hex'), 1)
+        ",
+    )
+    .bind(Uuid::from_u128(0x152))
+    .bind(APP_B_ID)
+    .bind(endpoint_id)
+    .execute(&mut *transaction)
+    .await?;
+    let imported_endpoint = sqlx::query_scalar::<_, Uuid>(
+        "SELECT source_webhook_endpoint_id FROM iam_private.get_testing_application_import($1)",
+    )
+    .bind("test_org>app-beta")
+    .fetch_optional(&mut *transaction)
+    .await?;
+    ensure!(
+        imported_endpoint == Some(endpoint_id),
+        "a verified production Application with only its initial pending webhook was not importable"
+    );
+    transaction.rollback().await?;
     Ok(())
 }
 
@@ -104,8 +321,9 @@ async fn authorized_application_organization_projection_is_exact(
     sqlx::query(
         r"
         INSERT INTO iam.applications (
-            id, app_id, organization_id, created_by_carbon_id, review_status
-        ) VALUES ($1, 'app-gamma', $2, $3, 'verified')
+            id, app_id, organization_id, created_by_carbon_id, review_status, base_url
+        ) VALUES ($1, 'other_org>app-gamma', $2, $3, 'verified',
+                  'https://gamma.example.test/api')
         ",
     )
     .bind(other_application_id)
@@ -1326,14 +1544,16 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             '00000000-0000-0000-0000-000000000031'
         );
         INSERT INTO iam.applications (
-            id, app_id, organization_id, created_by_carbon_id, review_status
+            id, app_id, organization_id, created_by_carbon_id, review_status, base_url
         ) VALUES
-          ('00000000-0000-0000-0000-000000000011', 'app-alpha',
+          ('00000000-0000-0000-0000-000000000011', 'test_org>app-alpha',
            '00000000-0000-0000-0000-000000000021',
-           '00000000-0000-0000-0000-000000000001', 'verified'),
-          ('00000000-0000-0000-0000-000000000012', 'app-beta',
+           '00000000-0000-0000-0000-000000000001', 'verified',
+           'https://alpha.example.test/api'),
+          ('00000000-0000-0000-0000-000000000012', 'test_org>app-beta',
            '00000000-0000-0000-0000-000000000021',
-           '00000000-0000-0000-0000-000000000001', 'verified');
+           '00000000-0000-0000-0000-000000000001', 'verified',
+           'https://beta.example.test/api');
         INSERT INTO iam.application_secrets (
             id, application_id, secret_version, secret_prefix, secret_digest,
             pepper_key_version, created_by_carbon_id
@@ -1452,7 +1672,7 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             decode(repeat('10', 32), 'hex'), 1, 'oat_abcdefgh',
             '00000000-0000-0000-0000-000000000041',
             '00000000-0000-0000-0000-000000000001', 'carbon',
-            '00000000-0000-0000-0000-000000000011', 'app-alpha',
+            '00000000-0000-0000-0000-000000000011', 'test_org>app-alpha',
             '00000000-0000-0000-0000-000000000011', 1, 1,
             transaction_timestamp() + interval '15 minutes'
         );
@@ -1467,7 +1687,7 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             decode(repeat('12', 32), 'hex'), 1, 'oat_ijklmnop',
             '00000000-0000-0000-0000-000000000041',
             '00000000-0000-0000-0000-000000000001', 'carbon',
-            '00000000-0000-0000-0000-000000000011', 'app-alpha',
+            '00000000-0000-0000-0000-000000000011', 'test_org>app-alpha',
             '00000000-0000-0000-0000-000000000011',
             '00000000-0000-0000-0000-000000000021',
             '00000000-0000-0000-0000-000000000031', 1, 1, 1,
@@ -1483,7 +1703,7 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             decode(repeat('14', 32), 'hex'), 1, 'oat_qrstuvwx',
             '00000000-0000-0000-0000-000000000041',
             '00000000-0000-0000-0000-000000000001', 'carbon',
-            '00000000-0000-0000-0000-000000000012', 'app-beta',
+            '00000000-0000-0000-0000-000000000012', 'test_org>app-beta',
             '00000000-0000-0000-0000-000000000012', 1, 1,
             transaction_timestamp() + interval '15 minutes'
         );

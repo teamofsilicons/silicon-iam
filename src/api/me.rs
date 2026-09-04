@@ -1071,12 +1071,14 @@ mod tests {
               ('{full_silicon_membership_id}', '{organization_id}', '{full_silicon_id}',
                'silicon', 'member', 'Full subscriber');
             INSERT INTO iam.applications (
-                id, app_id, organization_id, created_by_carbon_id, review_status
+                id, app_id, organization_id, created_by_carbon_id, review_status, base_url
             ) VALUES
-              ('{retained_application_id}', 'projection-retained', '{organization_id}',
-               '{carbon_id}', 'verified'),
-              ('{before_only_application_id}', 'projection-before', '{organization_id}',
-               '{carbon_id}', 'verified');
+              ('{retained_application_id}', 'projection-org>projection-retained',
+               '{organization_id}', '{carbon_id}', 'verified',
+               'https://retained.example.test/api'),
+              ('{before_only_application_id}', 'projection-org>projection-before',
+               '{organization_id}', '{carbon_id}', 'verified',
+               'https://before.example.test/api');
             INSERT INTO iam.application_requested_scopes (application_id, scope) VALUES
               ('{retained_application_id}', 'profile'),
               ('{retained_application_id}', 'email'),

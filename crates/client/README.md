@@ -9,7 +9,7 @@ so they cannot drift from the service.
 
 ```toml
 [dependencies]
-silicon-iam-client = "0.1"
+silicon-iam-client = "0.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -153,10 +153,83 @@ A Silicon has no browser, and a Carbon that already holds a session should not
 have to start another one — either asks for the token directly with
 `client.auth().short_lived_token(app_id, &Mutation::new())`.
 
+## Applications, discovery, and secret rotation
+
+Application creation takes a local handle and an owning organization. IAM
+returns the canonical public identifier `{org_id}>{handle}`; use that canonical
+value for every later login, credential, path, discovery, and OBO call. The
+required `base_url` is an absolute application-backend URL. It is not a login
+redirect and IAM does not call it automatically.
+
+An Application authenticating with `Credential::application` can discover any
+verified Application's base URL, even across organizations:
+
+```rust
+# use silicon_iam_client::{Client, Credential};
+# async fn discover(base: &str, caller_secret: &str) -> silicon_iam_client::Result<()> {
+let caller = Client::new(base)?.with_credential(Credential::application(
+    "acme>checkout",
+    caller_secret,
+));
+let billing = caller
+    .applications()
+    .discover_base_url("other>billing")
+    .await?;
+println!("{}", billing.base_url);
+# Ok(())
+# }
+```
+
+Client and webhook signing credentials rotate independently. Both operations
+take the current Application `version`, an idempotency key, and a
+verified-channel step-up assertion. Both return their raw successor only in a
+ten-minute replayable, `no-store` response:
+
+```rust
+# use silicon_iam_client::{Client, Mutation};
+# async fn rotate(client: &Client, step_up: &str) -> silicon_iam_client::Result<()> {
+let app = client.applications().get("acme>checkout").await?;
+let mutation = Mutation::new().step_up(step_up);
+let rotated = client
+    .applications()
+    .rotate_webhook_secret(&app.app_id, app.version, &mutation)
+    .await?;
+// Persist rotated.webhook_signing_secret before leaving this response path.
+# Ok(())
+# }
+```
+
+The webhook rotation assertion uses action
+`application.webhook_secret.rotate`; client-secret rotation uses
+`application.client_secret.rotate`. A webhook URL change is a separate
+operation and does not rotate a test-owned or production signing secret.
+
 ## Testing environments
 
 An environment is the same API against a separate database, starting empty.
-Move a client onto one and every other method works unchanged:
+The lifecycle is controlled from production. A successful creation returns the
+public UUID and the 32-character root key:
+
+```rust
+# use silicon_iam_client::{Client, Mutation, models};
+# async fn create(production: &Client) -> silicon_iam_client::Result<()> {
+let created = production.environments().create(
+    "acme",
+    &models::TestingEnvironmentCreate {
+        name: "checkout-e2e".to_owned(),
+        description: Some("CI proof run".to_owned()),
+    },
+    &Mutation::new(),
+).await?;
+
+// Store created.id as the safe selector and created.key in a secret store.
+# let _ = created;
+# Ok(())
+# }
+```
+
+Move a client onto that environment and every ordinary method uses the same
+route against isolated test data:
 
 ```rust
 # use silicon_iam_client::{Client, EnvironmentKey};
@@ -168,10 +241,97 @@ let organizations = sandbox.organizations().list(&Default::default()).await?;
 # }
 ```
 
-Environments deliver no email, SMS or webhooks, and their verification steps
-accept the fixed code `000000`. Credentials do not cross the boundary in either
-direction: a production token is refused inside an environment, and an
-environment's token is refused outside it.
+The root key selects the database plane; it does not replace endpoint
+authentication. A protected call still needs the bearer or Application Basic
+credential issued inside that environment. Email and SMS delivery are
+suppressed, and signup, login, invitation and step-up verification accept the
+fixed code `000000`.
+
+Credentials do not cross the boundary in either direction: production access
+and refresh tokens, short-lived tokens, STKs, Application secrets, sessions,
+and OBO proofs are refused in a test environment, and test credentials are
+refused in production. IAM does not currently expose a caller API-key
+credential; a future API-key surface must retain this same plane binding. Keep
+one credential store per environment or key it by the environment UUID.
+
+### Create or import a test Application
+
+Creating a new test Application uses the ordinary method on the planed client:
+
+```rust
+# use silicon_iam_client::{Client, Mutation, models};
+# async fn create_app(sandbox: &Client) -> silicon_iam_client::Result<()> {
+let created = sandbox.applications().create(
+    &models::ApplicationCreate {
+        app_id: "checkout".to_owned(),
+        org_id: "acme".to_owned(),
+        app_name: Some("Checkout".to_owned()),
+        app_logo: None,
+        webhook_url: "https://hooks.example.test/iam".to_owned(),
+        base_url: "http://127.0.0.1:4100".to_owned(),
+        obo_endpoints: None,
+    },
+    &Mutation::new(),
+).await?;
+assert_eq!(created.application.app_id, "acme>checkout");
+# Ok(())
+# }
+```
+
+The local handle is qualified with the owning organization. A newly created
+test application cannot claim a canonical ID that already exists in
+production.
+
+Import copies a production Application into the selected environment. It can
+also create the corresponding test organization and make the authenticated
+test Carbon its owner. The response returns a fresh test-only Application
+secret, but only confirms that the production webhook secret was inherited;
+it never reveals that secret:
+
+```rust
+# use silicon_iam_client::{Client, Mutation};
+# async fn import(sandbox: &Client) -> silicon_iam_client::Result<()> {
+let imported = sandbox
+    .applications()
+    .import_from_production("google>drive", &Mutation::new())
+    .await?;
+assert!(imported.webhook_secret_inherited);
+// Persist imported.app_secret now. The replay window is ten minutes.
+# Ok(())
+# }
+```
+
+`import_from_production` refuses locally when the client has no environment
+key, before any request is sent.
+
+### Discover a base URL in the correct plane
+
+Any authenticated Application may discover any other verified Application,
+including one outside its organization. Build the caller with its own Basic
+credential. For a test lookup, keep the environment key on the same client so
+both caller and target resolve in that environment:
+
+```rust
+# use silicon_iam_client::{Client, Credential, EnvironmentKey};
+# async fn discover(base: &str, key: &str, secret: &str) -> silicon_iam_client::Result<()> {
+let caller = Client::new(base)?
+    .with_environment(EnvironmentKey::new(key)?)
+    .with_credential(Credential::application("acme>checkout", secret));
+let target = caller
+    .applications()
+    .discover_base_url("google>drive")
+    .await?;
+println!("{}", target.base_url);
+# Ok(())
+# }
+```
+
+Test webhook delivery is real. Its signed JSON body is wrapped as
+`{"test": {"testing_key": "…", "metadata": {…}, "data": {…}}}` rather
+than using the production top-level `metadata` and `data`. Treat
+`testing_key` as the root credential it is: never log it, persist it with an
+event record, or forward it beyond the dedicated test receiver. Verify the
+signature over the exact body bytes before reading the envelope.
 
 ## Errors
 

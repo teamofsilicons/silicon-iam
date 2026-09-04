@@ -34,6 +34,7 @@ pub(super) struct AppPath {
 pub(super) struct ApplicationCreate {
     pub(super) app_id: String,
     pub(super) org_id: String,
+    pub(super) base_url: String,
     pub(super) app_name: Option<String>,
     #[serde(rename = "app_logo")]
     pub(super) app_logo_uri: Option<String>,
@@ -45,6 +46,7 @@ pub(super) struct ApplicationCreate {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ApplicationPatch {
+    pub(super) base_url: Option<String>,
     #[allow(clippy::option_option)]
     pub(super) app_name: Option<Option<String>>,
     #[serde(rename = "app_logo")]
@@ -60,6 +62,21 @@ pub(super) struct ApplicationSecretRotated {
     pub(super) app_secret_version: i64,
     pub(super) application_version: i64,
     pub(super) secret_replay_expires_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct WebhookSecretRotated {
+    pub(super) app_id: String,
+    pub(super) webhook_signing_secret: String,
+    pub(super) webhook_secret_version: i64,
+    pub(super) application_version: i64,
+    pub(super) secret_replay_expires_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Serialize, sqlx::FromRow)]
+pub(super) struct ApplicationDirectoryEntry {
+    pub(super) app_id: String,
+    pub(super) base_url: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]
@@ -98,6 +115,7 @@ pub(super) struct ApplicationView {
     pub(super) created_by_carbon_id: Uuid,
     pub(super) app_name: Option<String>,
     pub(super) app_logo_uri: Option<String>,
+    pub(super) base_url: String,
     pub(super) review_status: String,
     pub(super) version: i64,
     pub(super) created_at: OffsetDateTime,
@@ -105,13 +123,14 @@ pub(super) struct ApplicationView {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub(super) struct ApplicationDetail {
+pub(crate) struct ApplicationDetail {
     pub(super) id: Uuid,
     pub(super) app_id: String,
     pub(super) org_id: String,
     pub(super) created_by: PublicActor,
     pub(super) app_name: Option<String>,
     pub(super) app_logo: Option<String>,
+    pub(super) base_url: String,
     pub(super) requested_scopes: Vec<String>,
     pub(super) approved_scopes: Vec<String>,
     pub(super) obo_endpoints: Vec<ApplicationOboEndpoint>,
@@ -152,6 +171,10 @@ pub(super) struct WebhookView {
     pub(super) status: String,
     pub(super) secret_version: i64,
     pub(super) version: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) webhook_signing_secret: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) secret_replay_expires_at: Option<OffsetDateTime>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -420,21 +443,74 @@ mod tests {
 
     #[test]
     fn webhook_projection_distinguishes_initial_pending_from_active() {
+        let value = serde_json::to_value(WebhookView {
+            active_url: None,
+            pending_url: Some("https://example.test/hook".to_owned()),
+            status: "pending_review".to_owned(),
+            secret_version: 1,
+            version: 1,
+            webhook_signing_secret: None,
+            secret_replay_expires_at: None,
+        })
+        .unwrap_or(Value::Null);
         assert_required(
-            serde_json::to_value(WebhookView {
-                active_url: None,
-                pending_url: Some("https://example.test/hook".to_owned()),
-                status: "pending_review".to_owned(),
-                secret_version: 1,
-                version: 1,
-            })
-            .unwrap_or(Value::Null),
+            value.clone(),
             &[
                 "active_url",
                 "pending_url",
                 "status",
                 "secret_version",
                 "version",
+            ],
+        );
+        let Value::Object(object) = value else {
+            panic!("webhook projection must serialize as an object");
+        };
+        assert!(!object.contains_key("webhook_signing_secret"));
+        assert!(!object.contains_key("secret_replay_expires_at"));
+    }
+
+    #[test]
+    fn application_directory_discloses_only_the_qualified_id_and_base_url() {
+        let value = serde_json::to_value(ApplicationDirectoryEntry {
+            app_id: "tos>briefcase".to_owned(),
+            base_url: "https://briefcase.example/api".to_owned(),
+        })
+        .unwrap_or(Value::Null);
+        let Value::Object(object) = value else {
+            panic!("directory entry must serialize as an object");
+        };
+        assert_eq!(object.len(), 2);
+        assert_eq!(
+            object.get("app_id").and_then(Value::as_str),
+            Some("tos>briefcase")
+        );
+        assert_eq!(
+            object.get("base_url").and_then(Value::as_str),
+            Some("https://briefcase.example/api")
+        );
+        assert!(!object.contains_key("app_secret"));
+        assert!(!object.contains_key("webhook_signing_secret"));
+    }
+
+    #[test]
+    fn webhook_rotation_projects_the_new_secret_and_versions() {
+        let value = serde_json::to_value(WebhookSecretRotated {
+            app_id: "tos>briefcase".to_owned(),
+            webhook_signing_secret: format!("whs_{}", "A".repeat(43)),
+            webhook_secret_version: 2,
+            application_version: 7,
+            secret_replay_expires_at: datetime!(2026-01-01 0:10 UTC),
+        })
+        .unwrap_or(Value::Null);
+        assert_required(
+            value,
+            &[
+                "app_id",
+                "webhook_signing_secret",
+                "webhook_secret_version",
+                "application_version",
+                "secret_replay_expires_at",
             ],
         );
     }
@@ -444,7 +520,7 @@ mod tests {
         let value = serde_json::to_value(LoginEventView {
             id: Uuid::nil(),
             actor: actor(),
-            app_id: Some("example-app".to_owned()),
+            app_id: Some("example>app".to_owned()),
             org_id: None,
             event_type: "oauth_token_exchange".to_owned(),
             success: true,

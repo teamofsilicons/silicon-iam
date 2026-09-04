@@ -6,6 +6,7 @@
 //! token that is about to expire.
 
 use silicon_iam_client::{Client, Credential, EnvironmentKey, Mutation};
+use uuid::Uuid;
 
 use crate::{
     error::{CliError, Result},
@@ -30,7 +31,7 @@ pub struct Context {
     /// Step-up assertion supplied for this invocation, if any.
     pub step_up: Option<String>,
     organization: Option<String>,
-    environment: Option<String>,
+    testing_environment_id: Option<Uuid>,
     client: Client,
 }
 
@@ -46,7 +47,7 @@ impl Context {
         profile: Option<String>,
         url: Option<String>,
         organization: Option<String>,
-        environment: Option<String>,
+        testing_environment_id: Option<Uuid>,
         step_up: Option<String>,
     ) -> Result<Self> {
         let config = store::load_config()?;
@@ -66,17 +67,19 @@ impl Context {
             stored.url = url;
         }
 
-        let environment = environment
-            .or_else(|| std::env::var("SILICON_IAM_ENVIRONMENT").ok())
-            .or_else(|| stored.environment.clone());
         let organization = organization
             .or_else(|| std::env::var("SILICON_IAM_ORG").ok())
             .or_else(|| stored.org.clone());
 
         let mut builder =
-            Client::builder(&stored.url)?.user_agent(concat!("siam/", env!("CARGO_PKG_VERSION")));
-        if let Some(key) = &environment {
-            builder = builder.environment(EnvironmentKey::new(key.clone())?);
+            Client::builder(&stored.url)?.user_agent(concat!("iam/", env!("CARGO_PKG_VERSION")));
+        if let Some(environment_id) = testing_environment_id {
+            let credentials = store::load_credentials()?;
+            let Some(key) = credentials.testing_environment_key(&profile_name, environment_id)
+            else {
+                return Err(CliError::UnknownTestingEnvironment(environment_id));
+            };
+            builder = builder.environment(EnvironmentKey::new(key.to_owned())?);
         }
 
         Ok(Self {
@@ -85,7 +88,7 @@ impl Context {
             profile: stored,
             step_up,
             organization,
-            environment,
+            testing_environment_id,
             client: builder.build()?,
         })
     }
@@ -98,8 +101,18 @@ impl Context {
 
     /// The testing environment this invocation is inside, if any.
     #[must_use]
-    pub fn environment(&self) -> Option<&str> {
-        self.environment.as_deref()
+    pub const fn testing_environment_id(&self) -> Option<Uuid> {
+        self.testing_environment_id
+    }
+
+    /// Ensures a test-only operation cannot accidentally run in production.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliError::TestEnvironmentRequired`] outside `--test`.
+    pub fn require_test(&self) -> Result<Uuid> {
+        self.testing_environment_id
+            .ok_or(CliError::TestEnvironmentRequired)
     }
 
     /// A client carrying the stored session, renewing it first if it is close
@@ -132,8 +145,7 @@ impl Context {
     /// Returns [`CliError::NotSignedIn`] when there is none.
     pub fn session(&self) -> Result<Session> {
         store::load_credentials()?
-            .sessions
-            .get(&self.profile_name)
+            .session(&self.profile_name, self.testing_environment_id)
             .cloned()
             .ok_or(CliError::NotSignedIn)
     }
@@ -145,9 +157,7 @@ impl Context {
     /// Returns an error when the credential file cannot be written.
     pub fn remember(&self, session: Session) -> Result<()> {
         let mut credentials = store::load_credentials()?;
-        credentials
-            .sessions
-            .insert(self.profile_name.clone(), session);
+        credentials.set_session(&self.profile_name, self.testing_environment_id, session);
         store::save_credentials(&credentials)
     }
 
@@ -158,9 +168,20 @@ impl Context {
     /// Returns an error when the credential file cannot be written.
     pub fn forget(&self) -> Result<bool> {
         let mut credentials = store::load_credentials()?;
-        let existed = credentials.sessions.remove(&self.profile_name).is_some();
+        let existed = credentials.remove_session(&self.profile_name, self.testing_environment_id);
         store::save_credentials(&credentials)?;
         Ok(existed)
+    }
+
+    /// Securely remembers the key behind an environment's public id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the owner-only credential file cannot be saved.
+    pub fn remember_testing_environment(&self, environment_id: Uuid, key: String) -> Result<()> {
+        let mut credentials = store::load_credentials()?;
+        credentials.set_testing_environment_key(&self.profile_name, environment_id, key);
+        store::save_credentials(&credentials)
     }
 
     /// The organization a command should act on.
@@ -204,5 +225,41 @@ impl Context {
         let renewed = crate::commands::auth::session_from(&tokens, &session.carbon_id);
         self.remember(renewed.clone())?;
         Ok(renewed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use super::{Context, DEFAULT_PROFILE, DEFAULT_URL};
+    use crate::{error::CliError, output::Format, store::Profile};
+
+    fn context(testing_environment_id: Option<Uuid>) -> Context {
+        let Ok(client) = silicon_iam_client::Client::new(DEFAULT_URL) else {
+            panic!("the default URL must build");
+        };
+        Context {
+            format: Format::Text,
+            profile_name: DEFAULT_PROFILE.to_owned(),
+            profile: Profile {
+                url: DEFAULT_URL.to_owned(),
+                org: None,
+            },
+            step_up: None,
+            organization: None,
+            testing_environment_id,
+            client,
+        }
+    }
+
+    #[test]
+    fn test_only_actions_fail_clearly_without_test_context() {
+        assert!(matches!(
+            context(None).require_test(),
+            Err(CliError::TestEnvironmentRequired)
+        ));
+        let id = Uuid::from_u128(17);
+        assert_eq!(context(Some(id)).require_test().ok(), Some(id));
     }
 }

@@ -2751,8 +2751,12 @@ name = "silicon-iam-cli"
 version = "0.2.0"
 dependencies = [
  "clap",
+ "hex",
+ "hmac 0.12.1",
+ "http",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "silicon-iam-client",
  "thiserror",
  "time",
@@ -2765,10 +2769,14 @@ dependencies = [
 name = "silicon-iam-client"
 version = "0.2.0"
 dependencies = [
+ "hmac 0.12.1",
+ "http",
  "reqwest",
  "secrecy",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "subtle",
  "thiserror",
  "time",
  "tokio",

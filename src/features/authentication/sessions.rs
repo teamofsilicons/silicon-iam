@@ -1612,10 +1612,12 @@ mod tests {
             r"
             INSERT INTO iam.applications (
                 id, app_id, organization_id, created_by_carbon_id,
-                app_name, review_status
+                app_name, review_status, base_url
             ) VALUES
-                ($1, 'logout-app-a', $4, $3, 'Logout App A', 'verified'),
-                ($2, 'logout-app-b', $4, $3, 'Logout App B', 'verified')
+                ($1, 'logout-org>logout-app-a', $4, $3, 'Logout App A', 'verified',
+                 'https://logout-a.example.test/api'),
+                ($2, 'logout-org>logout-app-b', $4, $3, 'Logout App B', 'verified',
+                 'https://logout-b.example.test/api')
             ",
         )
         .bind(app_a)
@@ -1751,11 +1753,11 @@ mod tests {
                 subject_auth_epoch, client_auth_epoch, created_at, expires_at
             ) VALUES
                 ($1, 'application_access', $7, 1,
-                    'oat_AAAAAAAA', $5, $6, 'carbon', $3, 'logout-app-a', $3,
+                    'oat_AAAAAAAA', $5, $6, 'carbon', $3, 'logout-org>logout-app-a', $3,
                     1, 1, transaction_timestamp(),
                     transaction_timestamp() + interval '30 minutes'),
                 ($2, 'application_access', decode(repeat('b2', 32), 'hex'), 1,
-                    'oat_BBBBBBBB', $5, $6, 'carbon', $4, 'logout-app-b', $4,
+                    'oat_BBBBBBBB', $5, $6, 'carbon', $4, 'logout-org>logout-app-b', $4,
                     1, 1, transaction_timestamp() - interval '1 hour',
                     transaction_timestamp() - interval '30 minutes')
             ",

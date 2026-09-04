@@ -113,7 +113,7 @@ const API_SECTIONS: &[Section] = &[
     Section {
         slug: "applications",
         title: "Applications",
-        summary: "Registering an application, OAuth login, credentials, and redirect URIs.",
+        summary: "Canonical IDs, base URL discovery, application login, and secret rotation.",
         body: include_str!("../../docs/api/applications.html"),
     },
     Section {
@@ -127,6 +127,12 @@ const API_SECTIONS: &[Section] = &[
         title: "On-behalf-of",
         summary: "Request-bound delegation between applications in one organization.",
         body: include_str!("../../docs/api/obo.html"),
+    },
+    Section {
+        slug: "testing-environments",
+        title: "Testing environments",
+        summary: "Isolated test planes, Application import, test webhooks, and an end-to-end proof.",
+        body: include_str!("../../docs/api/testing-environments.html"),
     },
     Section {
         slug: "errors",
@@ -173,6 +179,12 @@ const CLIENT_SECTIONS: &[Section] = &[
         title: "Receiving webhooks",
         summary: "Signature verification, secret keyrings, and deduplication.",
         body: include_str!("../../docs/client/webhooks.html"),
+    },
+    Section {
+        slug: "testing-environments",
+        title: "Testing environments",
+        summary: "Build an isolated Application proof with the same Rust client and API surface.",
+        body: include_str!("../../docs/client/testing-environments.html"),
     },
     Section {
         slug: "errors",

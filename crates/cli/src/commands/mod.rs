@@ -71,9 +71,9 @@ fn print_commands() {
     }
 
     let command = crate::cli::Cli::command();
-    println!("siam <command> [options]\n");
+    println!("iam <command> [options]\n");
     walk(&command, "");
-    println!("\nRun `siam <command> --help` for the options each one takes.");
+    println!("\nRun `iam <command> --help` for the options each one takes.");
 }
 
 #[cfg(test)]
@@ -123,7 +123,7 @@ mod tests {
                 }
                 assert!(
                     sub.get_about().is_some(),
-                    "{} has no description, so `siam commands` would list it blank",
+                    "{} has no description, so `iam commands` would list it blank",
                     sub.get_name()
                 );
                 walk(sub);

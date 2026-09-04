@@ -945,37 +945,61 @@ authenticate after it commits.
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
 | GET/POST | `/api/v1/applications` | List apps in organizations the Carbon owns/administers, or submit registration |
+| GET | `/api/v1/application-directory/{app_id}` | Application-authenticated, cross-organization base-URL discovery |
 | GET/PATCH | `/api/v1/applications/{app_id}` | Read/update |
 | POST | `.../client-secret-rotations` | Rotate and reveal a new client secret once |
+| POST | `.../webhook-secret-rotations` | Rotate and reveal a new webhook signing secret once |
 | GET/PUT | `.../webhook` | Inspect active endpoint or propose replacement |
 | GET | `.../webhook/dead-letters` | List dead-letter deliveries |
 | POST | `.../webhook/dead-letters/replays` | Replay one or an ordered batch of dead letters |
 | GET | `.../login-history` | App-specific authorization/login history |
 
-Registration requires an immutable app ID and `org_id`, one HTTPS webhook URL,
-and may include the Application's callable OBO endpoint registry. IAM rechecks
-current organization owner/admin authority before claiming or replaying the
-request. It returns a `verified` Application plus one-time Application and
-webhook signing secrets. Application representations expose `org_id` and the
-Carbon `created_by`; they never model that Carbon as the owner. There is no
-review to wait behind: an Application can sign users in, introspect tokens and
-issue OBO proofs from the moment it exists.
+Registration requires a local Application handle, `org_id`, one HTTPS webhook
+URL, and the Application backend's `base_url`; it may also include the callable
+OBO endpoint registry. IAM turns the local handle into the only public
+identifier, `{org_id}>{handle}`. For example, creating `drive` in `google`
+returns `google>drive`; that canonical value is used for authentication, login,
+path parameters, discovery, and OBO. The base URL must be absolute, contain no
+userinfo, query, or fragment, and use HTTPS except for literal loopback HTTP in
+local development.
+
+IAM rechecks current organization owner/admin authority before claiming or
+replaying the request. It returns a `verified` Application plus one-time
+Application and webhook signing secrets. Application representations expose
+`org_id`, `base_url`, and the Carbon `created_by`; they never model that Carbon
+as the owner. There is no review to wait behind: an Application can sign users
+in, introspect tokens and issue OBO proofs from the moment it exists.
+
+`GET /api/v1/application-directory/{app_id}` is deliberately broader than OBO
+discovery. It authenticates the requesting Application with HTTP Basic and
+returns only `{app_id, base_url}` for any verified target Application, even one
+owned by another organization. The target `app_id` comes from the path; IAM
+never trusts a caller identity in the body or query. In a testing environment,
+the environment header, requesting credential, and target must all resolve in
+that environment, so the lookup cannot fall through to production.
 
 There are no redirect URIs to register. A login names the one it wants in the
 query string, and IAM appends the short-lived token to it.
 
 An Application holds the whole scope catalogue: a login carries all of it, so
 there is nothing to request and nothing to approve. An Application webhook
-replacement
-keeps the previous endpoint active until review; v1 exposes exactly one active
-destination. During initial registration there is truthfully no active
-destination: `active_url` is `null`, `pending_url` contains the submitted URL,
-and webhook status is `pending_review`. A later replacement uses
+replacement in production keeps the previous endpoint active until review; v1
+exposes exactly one active destination. During initial production registration
+there is truthfully no active destination: `active_url` is `null`,
+`pending_url` contains the submitted URL, and webhook status is
+`pending_review`. A later production replacement uses
 `replacement_under_review` while preserving the existing `active_url`.
+Testing environments have no platform-reviewer control plane, so creation and
+replacement activate their endpoint immediately and return an `active`
+projection. This makes a fresh test Application able to receive its first
+webhook and makes a newly returned test-only signing secret usable at once.
 The webhook representation's `version` is the application aggregate version,
 not an endpoint-row version; it is identical to the response `ETag` and is the
 value required by `If-Match`. Replacement reuses the application's existing
-encrypted webhook signing secret and does not return secret material.
+encrypted webhook signing secret and normally does not return secret material.
+The one exception is an imported test Application still using an inherited
+production secret: its first test URL replacement generates and returns a new
+test-only signing secret and its short replay deadline.
 
 Initial application and webhook secrets are versioned credentials. Permanent
 deletion is available only through the backend-admin decision workflow. It
@@ -989,6 +1013,15 @@ retires every prior usable client secret, creates exactly one active successor,
 increments the Application version, and returns the raw secret only in a
 `no-store` response. An exact replay may recover that response for ten minutes;
 the secret never appears in ordinary reads, audit diffs, or webhooks.
+
+Webhook-secret rotation is a separate operation with the same concurrency,
+idempotency, authorization, no-store, and ten-minute secret-replay guarantees.
+Its step-up action is `application.webhook_secret.rotate`, bound to the internal
+Application UUID. The response carries the new `webhook_signing_secret`, its
+`webhook_secret_version`, and the incremented `application_version`. New
+deliveries use the successor immediately. Consumers retain prior key versions
+long enough to verify already in-flight signed bodies. Changing a webhook URL
+does not itself rotate a production or already test-owned signing secret.
 
 ### Platform application review
 
@@ -1404,22 +1437,23 @@ database and starting with nothing in it -- no organizations, no applications,
 no Carbons, no Silicons. It is a change of database rather than a second
 implementation, so anything the product can do, an environment can do.
 
-Every route outside this section accepts the header:
+Every planed route accepts the header:
 
 ```
 X-Testing-Environment-Key: <32 alphanumeric characters>
 ```
 
 Supplying it executes that request inside the named environment. Omitting it
-executes against production. The routes below manage environments themselves,
-always operate on production, and therefore never accept the header.
+executes against production. The organization-prefixed lifecycle routes below
+manage environments themselves, always operate on production, and therefore
+never accept the header. The singular `/api/v1/testing-environment...` routes
+are test-only and require it.
 
-Two properties follow from an environment being isolated rather than simulated.
-It delivers nothing -- no email, no SMS, no webhook -- because its contacts are
-invented and sending real messages to invented addresses is at best noise. Its
-verification steps therefore accept the fixed code `000000` wherever a
-delivered OTP would be expected: signup, login, step-up, and invitation
-acceptance.
+Email and SMS delivery is suppressed because test contacts are invented. The
+fixed code `000000` succeeds wherever a delivered OTP would be expected:
+signup, login, step-up, and invitation acceptance. Webhooks are delivered so an
+integration can prove its receiver, but their payload is visibly and
+structurally test-only as described below.
 
 An environment shares its database with every other environment, and every row
 in it carries the environment that owns it. Isolation is enforced by row-level
@@ -1440,6 +1474,7 @@ the same Carbon handle or the same email address without seeing each other.
 | POST | `.../testing-environments/{environment_id}/restorations` | Revive a retired environment |
 | GET | `/api/v1/testing-environment` | Describe the environment the presented key opens |
 | POST | `/api/v1/testing-environment/cleanings` | Erase all data, authorized by the key alone |
+| POST | `/api/v1/testing-environment/applications/imports` | Import a production Application; requires the key and a test Carbon bearer |
 
 Any active member may create an environment, Carbon or Silicon, and becomes its
 creator. The creator keeps administrative authority for as long as their
@@ -1454,6 +1489,102 @@ retrievable afterwards from its own route, which is restricted to
 administrators and audited on every read. It is deliberately absent from the
 list and read projections so the calls an operator makes routinely carry no
 credential.
+
+The key selects a database plane; it does not replace route authentication. A
+request to a Carbon route still needs a Carbon bearer issued in that same
+environment, and an Application route still needs that environment's
+Application credential. Production and test access tokens, refresh tokens,
+short-lived tokens, STKs, Application secrets, sessions, and OBO proofs are
+cryptographically or durably bound to their plane. Production rejects test
+credentials and a test environment rejects production credentials. IAM does
+not currently expose a caller API-key credential; any future API-key surface
+must preserve this invariant. Never implement a fallback lookup across that
+boundary.
+
+### Applications inside an environment
+
+There are two explicit ways to obtain an Application:
+
+1. Call ordinary `POST /api/v1/applications` with the environment key and a
+   test Carbon owner/admin bearer. This creates test-owned configuration through
+   the same code path as production. Its canonical ID must not already exist in
+   production.
+2. Call `POST /api/v1/testing-environment/applications/imports` with body
+   `{ "app_id": "google>drive" }`, the environment key, an idempotency key,
+   and a bearer for a Carbon created inside the environment. Import preserves
+   the production canonical ID, base URL, webhook URL, and OBO registry. If
+   `google` does not yet exist in the environment, IAM creates it and makes the
+   requesting test Carbon its owner. An imported Application cannot be placed
+   under any other organization.
+
+Import returns a new test-only `app_secret`, never the production Application
+secret. It inherits the production webhook signing secret so an existing test
+receiver can verify it, but the response exposes only
+`webhook_secret_inherited: true`, never that signing secret or its value. The
+secret-bearing import response is no-store and replayable under the exact same
+idempotency key for ten minutes.
+
+An imported Application that reconfigures its webhook URL is moved off the
+inherited production signing key onto a newly generated test signing key. The
+webhook replacement response includes that new `webhook_signing_secret` and
+`secret_replay_expires_at` only in this transition. Ordinary production and
+already test-owned replacements continue to reuse their existing signing key.
+
+Base-URL discovery uses the same endpoint in both planes. A test Application
+authenticates with its test-only Basic credential and presents the environment
+key; IAM returns the target's test-plane `base_url`. A missing target is not
+looked up in production.
+
+### Test webhook envelope
+
+Production continues to deliver the ordinary top-level event shape. A test
+delivery instead signs and sends this exact outer structure:
+
+```json
+{
+  "test": {
+    "testing_key": "<32-character environment key>",
+    "metadata": {
+      "spec_version": "1.0",
+      "event_id": "<uuid>",
+      "event_type": "organization.membership.created.v1",
+      "occurred_at": "2026-09-04T08:00:00Z",
+      "organization_id": "<uuid>",
+      "aggregate": { "type": "membership", "id": "<uuid>", "version": 1 }
+    },
+    "data": {}
+  }
+}
+```
+
+Verify `X-Silicon-IAM-Signature` over the exact outer body bytes before parsing
+it. Then route by the test envelope, deduplicate on
+`test.metadata.event_id`, and order on `test.metadata.aggregate.version`.
+`testing_key` is live root authority: use it only to associate the delivery
+with an isolated run, compare it without timing leakage, redact it from all
+logs and traces, and never persist it beside event data.
+
+### Minimal end-to-end API proof
+
+1. Authenticate in production and create an environment. Store its UUID as
+   ordinary metadata and its returned key as a secret.
+2. Add `X-Testing-Environment-Key` to the normal signup routes, use `000000`
+   for both verifications, create a test Carbon, and log that Carbon in. Store
+   those tokens under the environment UUID, separate from production.
+3. Create a test organization and Application through the normal routes, or
+   import a production Application through the test-only import route. Persist
+   the returned test-only Application secret during its ten-minute replay
+   window.
+4. Drive the ordinary login URL/API with the environment key, exchange the
+   short-lived token using the test Application credential, and introspect the
+   result in the same environment. Each attempt with a production credential
+   should fail; include those negative assertions in the proof.
+5. Trigger a directory mutation, verify and deduplicate the wrapped test
+   webhook, then exercise OBO discovery/exchange/verification if the
+   Application exposes OBO endpoints.
+6. Clean with `POST /api/v1/testing-environment/cleanings` to retain the same
+   environment/key, or retire it from the production control plane. A retired
+   environment stays recoverable until `purge_after`.
 
 Deletion is reversible. A retired environment keeps its record and its data
 until `purge_after`, and a restore before that deadline brings it back intact.

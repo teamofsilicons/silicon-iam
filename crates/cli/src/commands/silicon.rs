@@ -130,7 +130,7 @@ pub async fn run(context: &Context, command: SiliconCommand) -> Result<()> {
                 Format::Json => json(&request),
                 Format::Text => {
                     println!("Requested. Approve it, then run:");
-                    println!("  siam silicon rotate-complete {silicon_id} {}", request.id);
+                    println!("  iam silicon rotate-complete {silicon_id} {}", request.id);
                     Ok(())
                 }
             }

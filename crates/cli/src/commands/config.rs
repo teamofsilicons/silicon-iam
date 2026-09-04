@@ -34,7 +34,7 @@ fn show(context: &Context) -> Result<()> {
             "profile": context.profile_name,
             "url": context.profile.url,
             "org": context.profile.org,
-            "environment": context.environment().map(|_| "set"),
+            "test_environment": context.testing_environment_id(),
             "signed_in_as": signed_in.map(|session| session.carbon_id),
             "store": store::home()?.display().to_string(),
         })),
@@ -43,14 +43,11 @@ fn show(context: &Context) -> Result<()> {
             table.row(["profile", &context.profile_name]);
             table.row(["url", &context.profile.url]);
             table.row(["org", &or_dash(context.profile.org.as_deref())]);
-            // The key itself is never printed; whether one is in effect is.
             table.row([
-                "environment",
-                if context.environment().is_some() {
-                    "set"
-                } else {
-                    "-"
-                },
+                "test_environment",
+                &context
+                    .testing_environment_id()
+                    .map_or_else(|| "-".to_owned(), |id| id.to_string()),
             ]);
             table.row([
                 "signed_in_as",
@@ -105,10 +102,9 @@ fn set(context: &Context, key: &str, value: String) -> Result<()> {
     match key {
         "url" => profile.url = value,
         "org" => profile.org = Some(value),
-        "environment" => profile.environment = Some(value),
         other => {
             return Err(CliError::Usage(format!(
-                "unknown setting `{other}`; expected url, org or environment"
+                "unknown setting `{other}`; expected url or org"
             )));
         }
     }
@@ -130,10 +126,9 @@ fn unset(context: &Context, key: &str) -> Result<()> {
     };
     match key {
         "org" => profile.org = None,
-        "environment" => profile.environment = None,
         other => {
             return Err(CliError::Usage(format!(
-                "unknown setting `{other}`; expected org or environment"
+                "unknown setting `{other}`; expected org"
             )));
         }
     }

@@ -521,6 +521,8 @@ fn header_seconds(response: &reqwest::Response, name: &str) -> Option<Duration> 
 mod tests {
     use reqwest::StatusCode;
 
+    use crate::{Credential, EnvironmentKey};
+
     use super::{Client, decode_envelope, offered_versions};
 
     #[test]
@@ -578,6 +580,49 @@ mod tests {
     fn a_non_http_base_url_is_refused() {
         assert!(Client::new("ftp://example.test").is_err());
         assert!(Client::new("not a url").is_err());
+    }
+
+    #[test]
+    fn test_selection_and_application_auth_are_independent_headers() {
+        let Ok(environment) = EnvironmentKey::new("a".repeat(32)) else {
+            panic!("the fixed-size test key must be accepted");
+        };
+        let Ok(client) = Client::builder("https://example.test").and_then(|builder| {
+            builder
+                .credential(Credential::application("acme>caller", "ask_secret"))
+                .environment(environment)
+                .build()
+        }) else {
+            panic!("a valid client must build");
+        };
+        let Ok(request) = client.route(
+            reqwest::Method::GET,
+            &["application-directory", "other>target"],
+        ) else {
+            panic!("the discovery request must build");
+        };
+        let Ok(built) = request.build() else {
+            panic!("the request must finalize");
+        };
+
+        assert_eq!(
+            built
+                .headers()
+                .get("x-testing-environment-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert!(
+            built
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("Basic "))
+        );
+        assert_eq!(
+            built.url().as_str(),
+            "https://example.test/api/v1/application-directory/other%3Etarget"
+        );
     }
 
     #[test]

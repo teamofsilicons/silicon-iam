@@ -9,17 +9,31 @@ pub enum CliError {
     #[error(transparent)]
     Client(#[from] ClientError),
 
+    /// A captured webhook failed local cryptographic or envelope validation.
+    #[error("webhook verification failed: {0}")]
+    Webhook(#[from] silicon_iam_client::WebhookError),
+
     /// Stored settings or credentials could not be used.
     #[error("{0}")]
     Config(String),
 
     /// The command needs a signed-in session and there is none.
-    #[error("not signed in; run `siam login` first")]
+    #[error("not signed in; run `iam login` first")]
     NotSignedIn,
 
     /// The command needs an organization and none was given or configured.
-    #[error("no organization given; pass --org or run `siam config set org <handle>`")]
+    #[error("no organization given; pass --org or run `iam config set org <handle>`")]
     NoOrganization,
+
+    /// A command exists only inside a testing environment.
+    #[error(
+        "this action is only possible in a testing environment; rerun with `--test <environment-id>`"
+    )]
+    TestEnvironmentRequired,
+
+    /// A public testing-environment id has no locally stored root key.
+    #[error("testing environment {0} is not registered on this profile")]
+    UnknownTestingEnvironment(uuid::Uuid),
 
     /// The arguments were valid to clap but wrong in combination.
     #[error("{0}")]
@@ -44,16 +58,26 @@ impl CliError {
         match self {
             Self::NotSignedIn => 3,
             Self::Client(ClientError::Transport(_)) => 5,
-            Self::Client(_) => 4,
+            Self::Client(_) | Self::Webhook(_) => 4,
             // Everything else is the invocation's own fault: bad arguments,
             // a missing organization, an unreadable store.
-            Self::Usage(_) | Self::NoOrganization | Self::Config(_) | Self::Io(_) => 2,
+            Self::Usage(_)
+            | Self::NoOrganization
+            | Self::TestEnvironmentRequired
+            | Self::UnknownTestingEnvironment(_)
+            | Self::Config(_)
+            | Self::Io(_) => 2,
         }
     }
 
     /// A hint worth printing under the message, when there is an obvious one.
     #[must_use]
     pub fn hint(&self) -> Option<String> {
+        if let Self::UnknownTestingEnvironment(id) = self {
+            return Some(format!(
+                "Run `iam env key {id}` outside a test environment to authorize this device."
+            ));
+        }
         let Self::Client(error) = self else {
             return None;
         };
@@ -62,7 +86,7 @@ impl CliError {
         }
         let api = error.api()?;
         if api.is_unauthenticated() {
-            return Some("Run `siam login` to sign in again.".to_owned());
+            return Some("Run `iam login` to sign in again.".to_owned());
         }
         if api.requires_step_up() {
             return Some(
@@ -109,7 +133,7 @@ mod tests {
         assert!(
             CliError::Client(api(401, "unauthenticated"))
                 .hint()
-                .is_some_and(|hint| hint.contains("siam login"))
+                .is_some_and(|hint| hint.contains("iam login"))
         );
         assert!(
             CliError::Client(api(428, "step_up_required"))

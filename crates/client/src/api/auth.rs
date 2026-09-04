@@ -117,7 +117,7 @@ impl Auth<'_> {
 
     /// Completes a step-up challenge, yielding a short-lived assertion.
     ///
-    /// Pass the token to [`Mutation::step_up`](crate::Mutation::step_up) on the
+    /// Pass the token to [`Mutation::step_up`] on the
     /// call that needs it.
     ///
     /// # Errors

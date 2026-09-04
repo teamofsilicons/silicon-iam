@@ -124,8 +124,10 @@
 //! # }
 //! ```
 //!
-//! Environments deliver no email, SMS or webhooks, and their verification
-//! steps accept the fixed code `000000`.
+//! Environments deliver no email or SMS, and their verification steps accept
+//! the fixed code `000000`. Webhooks are delivered inside an explicit `test`
+//! envelope that includes the environment key and nests event metadata/data;
+//! receivers must verify the exact outer bytes and redact that root key.
 //!
 //! # Errors
 //!
@@ -151,11 +153,15 @@ pub mod error;
 pub mod models;
 mod models_manual;
 pub mod request;
+pub mod webhook;
 
 pub use client::{API_VERSION, Client, ClientBuilder};
 pub use credentials::{Credential, EnvironmentKey};
 pub use error::{ApiError, Error, Result};
 pub use request::{IdempotencyKey, Mutation, Paging};
+pub use webhook::{
+    VerifiedWebhook, WebhookError, WebhookSecret, WebhookSecretKeyring, WebhookVerifier,
+};
 
 impl Error {
     /// Whether repeating the identical request could plausibly succeed.

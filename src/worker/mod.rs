@@ -8,7 +8,7 @@ mod webhook;
 
 use std::sync::{Arc, atomic::AtomicUsize};
 
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use tokio::{
     sync::Mutex,
     task::{JoinError, JoinSet},
@@ -27,10 +27,9 @@ pub(super) struct WorkerContext {
     pool: PgPool,
     /// Shared testing database, present only where the feature is deployed.
     ///
-    /// The worker reaches it for exactly one purpose: erasing an environment
-    /// whose recovery window has closed. No delivery, outbox or retention
-    /// stage runs against it, which is what keeps a testing environment from
-    /// ever sending a real message or a real webhook.
+    /// Outbox expansion and webhook delivery run here as well as final
+    /// environment erasure. Notification delivery deliberately does not: test
+    /// verification is local and must never contact a real email/SMS provider.
     testing_pool: Option<PgPool>,
     settings: Arc<WorkerProcessSettings>,
     encryption: Arc<EncryptionService>,
@@ -66,7 +65,15 @@ pub async fn run(settings: WorkerProcessSettings) -> anyhow::Result<()> {
     }
     postgres::register_runtime_encryption_key_versions(&pool, &settings.encryption_keys).await?;
     let testing_pool = match settings.testing.as_ref() {
-        Some(testing) => Some(postgres::connect(&testing.database, "iam-worker-testing").await?),
+        Some(testing) => {
+            let pool = postgres::connect(&testing.database, "iam-worker-testing").await?;
+            if !postgres::ready_testing(&pool).await {
+                anyhow::bail!("testing database migrations are not current");
+            }
+            postgres::register_runtime_encryption_key_versions(&pool, &settings.encryption_keys)
+                .await?;
+            Some(pool)
+        }
         None => None,
     };
     let encryption = EncryptionService::from_settings(&settings.encryption_keys)?;
@@ -193,10 +200,18 @@ async fn run_maintenance(context: &WorkerContext) {
 }
 
 async fn run_once(context: &WorkerContext) {
-    let (notification_result, outbox_result, webhook_result) = tokio::join!(
+    let (
+        notification_result,
+        outbox_result,
+        webhook_result,
+        testing_outbox_result,
+        testing_webhook_result,
+    ) = tokio::join!(
         notification::process_batch(context),
         outbox::process_batch(context),
         webhook::process_batch(context),
+        outbox::process_testing_batch(context),
+        webhook::process_testing_batch(context),
     );
     if let Err(error) = outbox_result {
         error!(error = %error, worker.stage = "outbox_expansion", "worker stage failed");
@@ -207,6 +222,32 @@ async fn run_once(context: &WorkerContext) {
     if let Err(error) = webhook_result {
         error!(error = %error, worker.stage = "webhook_delivery", "worker stage failed");
     }
+    if let Err(error) = testing_outbox_result {
+        error!(error = %error, worker.stage = "testing_outbox_expansion", "worker stage failed");
+    }
+    if let Err(error) = testing_webhook_result {
+        error!(error = %error, worker.stage = "testing_webhook_delivery", "worker stage failed");
+    }
+}
+
+/// Opens one worker transaction and, for testing data, pins every row-security
+/// read and every defaulted insert to the delivery's environment.
+///
+/// Claims intentionally run without this setting so one bounded query can
+/// select work across environments. Once a row is claimed, all follow-up work
+/// is scoped before any dependent row is read or inserted.
+async fn begin_processing_transaction(
+    pool: &PgPool,
+    testing_environment_id: Option<Uuid>,
+) -> Result<Transaction<'_, Postgres>, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    if let Some(testing_environment_id) = testing_environment_id {
+        sqlx::query("SELECT set_config('iam.testing_environment_id', $1, true)")
+            .bind(testing_environment_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+    }
+    Ok(transaction)
 }
 
 pub(super) fn retry_delay_seconds(attempt: u32, maximum: std::time::Duration, id: Uuid) -> i64 {

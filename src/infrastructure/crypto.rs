@@ -873,6 +873,66 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn opaque_credentials_are_bound_to_exactly_one_data_plane() {
+        use crate::infrastructure::testing_plane::{SelectedEnvironment, scope};
+
+        let service = service();
+        let credential = SecretString::from("same-opaque-credential".to_owned());
+        let Ok(production) = service.digest_secret(DigestPurpose::ApplicationSecret, &credential)
+        else {
+            panic!("the configured test keyring must produce a digest");
+        };
+        let first_environment = SelectedEnvironment {
+            id: Uuid::from_u128(101),
+            organization_id: Uuid::from_u128(201),
+        };
+        let second_environment = SelectedEnvironment {
+            id: Uuid::from_u128(102),
+            organization_id: Uuid::from_u128(201),
+        };
+        let Ok(first) = scope(first_environment, async {
+            service.digest_secret(DigestPurpose::ApplicationSecret, &credential)
+        })
+        .await
+        else {
+            panic!("the first environment must produce a digest");
+        };
+        let Ok(second) = scope(second_environment, async {
+            service.digest_secret(DigestPurpose::ApplicationSecret, &credential)
+        })
+        .await
+        else {
+            panic!("the second environment must produce a digest");
+        };
+
+        assert_ne!(production, first);
+        assert_ne!(first, second);
+        assert_eq!(
+            service.verify_secret(DigestPurpose::ApplicationSecret, &credential, production),
+            Ok(true)
+        );
+        assert_eq!(
+            service.verify_secret(DigestPurpose::ApplicationSecret, &credential, first),
+            Ok(false)
+        );
+        scope(first_environment, async {
+            assert_eq!(
+                service.verify_secret(DigestPurpose::ApplicationSecret, &credential, first),
+                Ok(true)
+            );
+            assert_eq!(
+                service.verify_secret(DigestPurpose::ApplicationSecret, &credential, production),
+                Ok(false)
+            );
+            assert_eq!(
+                service.verify_secret(DigestPurpose::ApplicationSecret, &credential, second),
+                Ok(false)
+            );
+        })
+        .await;
+    }
+
     #[test]
     fn encryption_is_row_bound_and_randomized() {
         let service = service();

@@ -18,8 +18,12 @@ use uuid::Uuid;
 
 pub use super::models_manual::*;
 
-/// Contract alias for `AppId`.
+/// Canonical organization-qualified Application id, `{org_id}>{handle}`.
 pub type AppId = String;
+
+/// Local handle supplied at creation; the public id becomes
+/// `{org_id}>{handle}`.
+pub type ApplicationHandle = String;
 
 /// New immutable Carbon ID; zero is not admitted.
 pub type CarbonId = String;
@@ -705,6 +709,9 @@ pub enum StepUpAction {
     /// `application.client_secret.rotate`
     #[serde(rename = "application.client_secret.rotate")]
     ApplicationClientSecretRotate,
+    /// `application.webhook_secret.rotate`
+    #[serde(rename = "application.webhook_secret.rotate")]
+    ApplicationWebhookSecretRotate,
     /// `silicon.rotate_token`
     #[serde(rename = "silicon.rotate_token")]
     SiliconRotateToken,
@@ -909,6 +916,8 @@ pub struct Application {
     /// The contract's `app_logo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_logo: Option<String>,
+    /// The contract's `base_url`.
+    pub base_url: String,
     /// The contract's `requested_scopes`.
     pub requested_scopes: Vec<String>,
     /// The contract's `approved_scopes`.
@@ -931,12 +940,21 @@ pub struct Application {
     pub updated_at: OffsetDateTime,
 }
 
+/// Contract type `ApplicationBaseUrl`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApplicationBaseUrl {
+    /// The contract's `app_id`.
+    pub app_id: AppId,
+    /// The contract's `base_url`.
+    pub base_url: String,
+}
+
 /// Requires the authenticated Carbon to be a current active owner/admin of
 /// org_id.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApplicationCreate {
     /// The contract's `app_id`.
-    pub app_id: AppId,
+    pub app_id: ApplicationHandle,
     /// The contract's `org_id`.
     pub org_id: OrgId,
     /// The contract's `app_name`.
@@ -947,6 +965,10 @@ pub struct ApplicationCreate {
     pub app_logo: Option<String>,
     /// The contract's `webhook_url`.
     pub webhook_url: String,
+    /// Absolute Application backend URL with no credentials, query or
+    /// fragment. HTTPS is required except for literal loopback HTTP in local
+    /// development.
+    pub base_url: String,
     /// The contract's `obo_endpoints`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obo_endpoints: Option<Vec<ApplicationOboEndpoint>>,
@@ -1003,6 +1025,10 @@ pub struct ApplicationPatch {
     /// The contract's `app_logo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_logo: Option<String>,
+    /// Absolute backend base URL; HTTPS except for literal loopback
+    /// development.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
     /// Full replacement. An empty array retires every active endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obo_endpoints: Option<Vec<ApplicationOboEndpoint>>,
@@ -1050,18 +1076,46 @@ pub struct ApplicationWebhook {
     pub status: ApplicationWebhookStatus,
     /// The contract's `secret_version`.
     pub secret_version: i64,
+    /// Present only when a webhook URL replacement moves an imported test
+    /// Application off its inherited production key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_signing_secret: Option<String>,
+    /// Present exactly when webhook_signing_secret is present.
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub secret_replay_expires_at: Option<OffsetDateTime>,
     /// Application aggregate version; identical to the response ETag and the
     /// value required by If-Match for replacement.
     pub version: i64,
 }
 
-/// Replaces only the reviewed destination candidate; it reuses the existing
-/// encrypted application webhook signing secret and never returns that
-/// secret.
+/// Replaces only the reviewed destination candidate. It normally reuses the
+/// existing encrypted signing secret. An imported test Application still on
+/// its inherited production key instead receives a newly generated test-only
+/// secret in the response.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApplicationWebhookReplace {
     /// The contract's `url`.
     pub url: String,
+}
+
+/// Contract type `ApplicationWebhookSecretRotated`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApplicationWebhookSecretRotated {
+    /// The contract's `app_id`.
+    pub app_id: AppId,
+    /// The contract's `webhook_signing_secret`.
+    pub webhook_signing_secret: String,
+    /// The contract's `webhook_secret_version`.
+    pub webhook_secret_version: i64,
+    /// The contract's `application_version`.
+    pub application_version: i64,
+    /// The contract's `secret_replay_expires_at`.
+    #[serde(with = "time::serde::rfc3339")]
+    pub secret_replay_expires_at: OffsetDateTime,
 }
 
 /// Contract type `ApprovalDecision`.
@@ -1184,7 +1238,8 @@ pub struct CarbonInviteCreate {
     /// At most one override per active Silicon membership.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub silicon_trust_overrides: Option<Vec<InvitationSiliconTrustOverride>>,
-    /// The contract's `redirect_app_id`.
+    /// Canonical organization-qualified Application id when the invitation
+    /// should continue into an Application login.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redirect_app_id: Option<String>,
 }
@@ -2456,6 +2511,30 @@ pub struct TestResult {
     pub checked_at: OffsetDateTime,
 }
 
+/// Contract type `TestingApplicationImport`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TestingApplicationImport {
+    /// Canonical production Application id to copy.
+    pub app_id: AppId,
+}
+
+/// Contract type `TestingApplicationImported`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TestingApplicationImported {
+    /// The contract's `application`.
+    pub application: Application,
+    /// Fresh credential valid only inside this testing environment.
+    pub app_secret: String,
+    /// The contract's `app_secret_version`.
+    pub app_secret_version: i64,
+    /// Confirms that the production signing secret was inherited but not
+    /// disclosed.
+    pub webhook_secret_inherited: bool,
+    /// The contract's `secret_replay_expires_at`.
+    #[serde(with = "time::serde::rfc3339")]
+    pub secret_replay_expires_at: OffsetDateTime,
+}
+
 /// Contract type `TestingEnvironment`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TestingEnvironment {
@@ -2618,6 +2697,15 @@ pub struct TestingEnvironmentWithKey {
     pub updated_at: OffsetDateTime,
     /// The contract's `key`.
     pub key: TestingEnvironmentKeyValue,
+}
+
+/// Explicit test-plane envelope. The signature covers these exact outer
+/// bytes. testing_key is the environment root credential and must never be
+/// logged or persisted with the event.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TestingWebhookEvent {
+    /// The contract's `test`.
+    pub test: serde_json::Value,
 }
 
 /// Contract type `TokenIntrospection`.

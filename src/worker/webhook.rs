@@ -3,9 +3,10 @@
 use std::{borrow::Cow, time::Instant};
 
 use futures::{StreamExt as _, stream};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret as _, SecretString};
 use serde::Serialize;
 use serde_json::Value;
+use sqlx::{PgPool, Postgres, Transaction};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use url::Url;
 use uuid::Uuid;
@@ -19,11 +20,14 @@ use crate::{
     },
 };
 
-use super::{WorkerContext, delivery_claim_limit, retry_delay_seconds};
+use super::{
+    WorkerContext, begin_processing_transaction, delivery_claim_limit, retry_delay_seconds,
+};
 
 #[derive(sqlx::FromRow)]
 struct ClaimedDelivery {
     delivery_id: Uuid,
+    testing_environment_id: Option<Uuid>,
     cycle_attempt_count: i32,
     outbox_event_id: Uuid,
     recipient_kind: String,
@@ -73,6 +77,14 @@ struct ApplicationEventProjection {
     encryption_key_version: i16,
 }
 
+#[derive(sqlx::FromRow)]
+struct TestingEnvironmentKeyMaterial {
+    organization_id: Uuid,
+    key_ciphertext: Vec<u8>,
+    key_nonce: Vec<u8>,
+    key_encryption_key_version: i16,
+}
+
 #[derive(Serialize)]
 struct EventEnvelope<'a> {
     spec_version: &'static str,
@@ -82,6 +94,28 @@ struct EventEnvelope<'a> {
     organization_id: Option<Uuid>,
     aggregate: AggregateEnvelope<'a>,
     data: &'a Value,
+}
+
+#[derive(Serialize)]
+struct TestEventEnvelope<'a> {
+    test: TestEvent<'a>,
+}
+
+#[derive(Serialize)]
+struct TestEvent<'a> {
+    testing_key: &'a str,
+    metadata: EventMetadata<'a>,
+    data: &'a Value,
+}
+
+#[derive(Serialize)]
+struct EventMetadata<'a> {
+    spec_version: &'static str,
+    event_id: Uuid,
+    event_type: &'a str,
+    occurred_at: &'a str,
+    organization_id: Option<Uuid>,
+    aggregate: AggregateEnvelope<'a>,
 }
 
 #[derive(Serialize)]
@@ -122,6 +156,22 @@ impl TryFrom<&str> for RecipientType {
     reason = "the lease-safe claim query and its typed projection are one auditable operation"
 )]
 pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppError> {
+    process_pool(context, &context.pool).await
+}
+
+/// Delivers webhooks produced inside all live testing environments.
+pub(super) async fn process_testing_batch(context: &WorkerContext) -> Result<(), AppError> {
+    let Some(pool) = context.testing_pool.as_ref() else {
+        return Ok(());
+    };
+    process_pool(context, pool).await
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the lease-safe claim and its complete typed projection remain one auditable query"
+)]
+async fn process_pool(context: &WorkerContext, pool: &PgPool) -> Result<(), AppError> {
     let _outbound_stage = context.outbound_stage_lock.lock().await;
     let claim_limit = delivery_claim_limit(context)?;
     let lease_seconds =
@@ -188,6 +238,8 @@ pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppErro
         )
         SELECT
             claimed.id AS delivery_id,
+            (to_jsonb(event) ->> 'testing_environment_id')::uuid
+                AS testing_environment_id,
             claimed.cycle_attempt_count,
             claimed.outbox_event_id,
             recipient.recipient_kind,
@@ -214,11 +266,11 @@ pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppErro
     .bind(claim_limit)
     .bind(&context.instance_id)
     .bind(lease_seconds)
-    .fetch_all(&context.pool)
+    .fetch_all(pool)
     .await?;
 
     let results = stream::iter(deliveries)
-        .map(|delivery| async move { process_delivery(context, &delivery).await })
+        .map(|delivery| async move { process_delivery(context, pool, &delivery).await })
         .buffer_unordered(context.settings.worker.delivery_concurrency.get())
         .collect::<Vec<_>>()
         .await;
@@ -228,24 +280,54 @@ pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppErro
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one delivery keeps its scoped reads, test envelope, attempt and terminal state contiguous"
+)]
 async fn process_delivery(
     context: &WorkerContext,
+    pool: &PgPool,
     delivery: &ClaimedDelivery,
 ) -> Result<(), AppError> {
-    let material = match load_material(context, delivery).await {
+    let mut transaction = begin_processing_transaction(pool, delivery.testing_environment_id)
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "webhook_delivery_context",
+        })?;
+    let material = match load_material(context, &mut transaction, delivery).await {
         Ok(material) => material,
         Err(error) => {
-            finish_failure(context, delivery, error.code(), error.retryable(), None).await?;
+            transaction.rollback().await?;
+            finish_failure(
+                context,
+                pool,
+                delivery,
+                error.code(),
+                error.retryable(),
+                None,
+            )
+            .await?;
             return Ok(());
         }
     };
-    let data = match load_event_data(context, delivery, material.application_id).await {
-        Ok(data) => data,
-        Err(error) => {
-            finish_failure(context, delivery, error.code(), error.retryable(), None).await?;
-            return Ok(());
-        }
-    };
+    let data =
+        match load_event_data(context, &mut transaction, delivery, material.application_id).await {
+            Ok(data) => data,
+            Err(error) => {
+                transaction.rollback().await?;
+                finish_failure(
+                    context,
+                    pool,
+                    delivery,
+                    error.code(),
+                    error.retryable(),
+                    None,
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+    transaction.commit().await?;
     let occurred_at = delivery
         .created_at
         .format(&Rfc3339)
@@ -253,24 +335,33 @@ async fn process_delivery(
             category: "webhook_event_timestamp",
         })?;
     let wire_event_type = wire_event_type(&delivery.event_type, delivery.schema_version)?;
-    let body = serde_json::to_vec(&EventEnvelope {
-        spec_version: "1.0",
-        event_id: delivery.outbox_event_id,
-        event_type: wire_event_type.as_ref(),
-        occurred_at: &occurred_at,
-        organization_id: delivery.organization_id,
-        aggregate: AggregateEnvelope {
-            aggregate_type: &delivery.aggregate_type,
-            id: delivery.aggregate_id,
-            version: delivery.aggregate_version,
+    let testing_key = match delivery.testing_environment_id {
+        Some(environment_id) => match load_testing_key(context, environment_id).await {
+            Ok(key) => Some(key),
+            Err(error) => {
+                finish_failure(
+                    context,
+                    pool,
+                    delivery,
+                    error.code(),
+                    error.retryable(),
+                    None,
+                )
+                .await?;
+                return Ok(());
+            }
         },
-        data: &data,
-    })
-    .map_err(|_| AppError::Internal {
-        category: "webhook_event_serialization",
-    })?;
+        None => None,
+    };
+    let body = serialize_event(
+        delivery,
+        wire_event_type.as_ref(),
+        &occurred_at,
+        &data,
+        testing_key.as_ref(),
+    )?;
     let timestamp = OffsetDateTime::now_utc().unix_timestamp();
-    let Some(attempt_id) = begin_attempt(context, delivery).await? else {
+    let Some(attempt_id) = begin_attempt(context, pool, delivery).await? else {
         return Ok(());
     };
     let started = Instant::now();
@@ -287,7 +378,7 @@ async fn process_delivery(
     let duration_ms = i32::try_from(started.elapsed().as_millis()).unwrap_or(i32::MAX);
     match result {
         Ok(receipt) => {
-            finish_success(context, delivery, attempt_id, duration_ms, receipt).await?;
+            finish_success(context, pool, delivery, attempt_id, duration_ms, receipt).await?;
         }
         Err(error) => {
             let http_status = error
@@ -297,9 +388,19 @@ async fn process_delivery(
                 .map_err(|_| AppError::Internal {
                     category: "webhook_http_status",
                 })?;
-            finish_attempt_error(context, attempt_id, duration_ms, http_status, error).await?;
+            finish_attempt_error(
+                context,
+                pool,
+                delivery,
+                attempt_id,
+                duration_ms,
+                http_status,
+                error,
+            )
+            .await?;
             finish_failure(
                 context,
+                pool,
                 delivery,
                 error.code(),
                 error.retryable(),
@@ -313,16 +414,22 @@ async fn process_delivery(
 
 async fn load_material(
     context: &WorkerContext,
+    transaction: &mut Transaction<'_, Postgres>,
     delivery: &ClaimedDelivery,
 ) -> Result<DeliveryMaterial, WebhookError> {
     match RecipientType::try_from(delivery.recipient_kind.as_str())? {
-        RecipientType::Application => load_application_material(context, delivery).await,
-        RecipientType::SiliconWebhook => load_silicon_material(context, delivery).await,
+        RecipientType::Application => {
+            load_application_material(context, transaction, delivery).await
+        }
+        RecipientType::SiliconWebhook => {
+            load_silicon_material(context, transaction, delivery).await
+        }
     }
 }
 
 async fn load_application_material(
     context: &WorkerContext,
+    transaction: &mut Transaction<'_, Postgres>,
     delivery: &ClaimedDelivery,
 ) -> Result<DeliveryMaterial, WebhookError> {
     let endpoint_id = delivery
@@ -337,7 +444,7 @@ async fn load_application_material(
     )
     .bind(endpoint_id)
     .bind(signing_key_id)
-    .fetch_optional(&context.pool)
+    .fetch_optional(&mut **transaction)
     .await
     .map_err(|_| WebhookError::Unavailable)?
     .ok_or(WebhookError::DestinationRejected)?;
@@ -373,6 +480,7 @@ async fn load_application_material(
 
 async fn load_silicon_material(
     context: &WorkerContext,
+    transaction: &mut Transaction<'_, Postgres>,
     delivery: &ClaimedDelivery,
 ) -> Result<DeliveryMaterial, WebhookError> {
     let endpoint_id = delivery
@@ -389,7 +497,7 @@ async fn load_silicon_material(
     )
     .bind(endpoint_id)
     .bind(signing_key_id)
-    .fetch_optional(&context.pool)
+    .fetch_optional(&mut **transaction)
     .await
     .map_err(|_| WebhookError::Unavailable)?
     .ok_or(WebhookError::DestinationRejected)?;
@@ -425,6 +533,7 @@ async fn load_silicon_material(
 
 async fn load_event_data(
     context: &WorkerContext,
+    transaction: &mut Transaction<'_, Postgres>,
     delivery: &ClaimedDelivery,
     application_id: Option<Uuid>,
 ) -> Result<Value, WebhookError> {
@@ -446,7 +555,7 @@ async fn load_event_data(
     )
     .bind(delivery.outbox_event_id)
     .bind(application_id)
-    .fetch_optional(&context.pool)
+    .fetch_optional(&mut **transaction)
     .await
     .map_err(|_| WebhookError::Unavailable)?
     .ok_or(WebhookError::Unavailable)?;
@@ -471,6 +580,97 @@ async fn load_event_data(
         return Err(WebhookError::DestinationRejected);
     }
     Ok(payload)
+}
+
+/// Serializes the stable production envelope or its test-only wrapper.
+///
+/// Production remains byte-for-shape compatible. Testing keeps the data and
+/// all delivery metadata inside one conspicuous `test` object, together with
+/// the current environment key that tells a shared webhook receiver which
+/// disposable environment produced the event.
+fn serialize_event(
+    delivery: &ClaimedDelivery,
+    event_type: &str,
+    occurred_at: &str,
+    data: &Value,
+    testing_key: Option<&SecretString>,
+) -> Result<Vec<u8>, AppError> {
+    let result = if let Some(testing_key) = testing_key {
+        serde_json::to_vec(&TestEventEnvelope {
+            test: TestEvent {
+                testing_key: testing_key.expose_secret(),
+                metadata: EventMetadata {
+                    spec_version: "1.0",
+                    event_id: delivery.outbox_event_id,
+                    event_type,
+                    occurred_at,
+                    organization_id: delivery.organization_id,
+                    aggregate: AggregateEnvelope {
+                        aggregate_type: &delivery.aggregate_type,
+                        id: delivery.aggregate_id,
+                        version: delivery.aggregate_version,
+                    },
+                },
+                data,
+            },
+        })
+    } else {
+        serde_json::to_vec(&EventEnvelope {
+            spec_version: "1.0",
+            event_id: delivery.outbox_event_id,
+            event_type,
+            occurred_at,
+            organization_id: delivery.organization_id,
+            aggregate: AggregateEnvelope {
+                aggregate_type: &delivery.aggregate_type,
+                id: delivery.aggregate_id,
+                version: delivery.aggregate_version,
+            },
+            data,
+        })
+    };
+    result.map_err(|_| AppError::Internal {
+        category: "webhook_event_serialization",
+    })
+}
+
+/// Reads and decrypts the current environment key from the production control
+/// plane. Deleted environments intentionally disappear from this function,
+/// preventing queued data-plane work from escaping after retirement.
+async fn load_testing_key(
+    context: &WorkerContext,
+    testing_environment_id: Uuid,
+) -> Result<SecretString, WebhookError> {
+    let material = sqlx::query_as::<_, TestingEnvironmentKeyMaterial>(
+        "SELECT * FROM iam_private.get_worker_testing_environment_webhook_key($1)",
+    )
+    .bind(testing_environment_id)
+    .fetch_optional(&context.pool)
+    .await
+    .map_err(|_| WebhookError::Unavailable)?
+    .ok_or(WebhookError::DestinationRejected)?;
+    let plaintext = context
+        .encryption
+        .decrypt(
+            EncryptionContext::tenant(
+                ProtectedField::TestingEnvironmentKey,
+                material.organization_id,
+                testing_environment_id,
+            ),
+            &encrypted_value(
+                material.key_encryption_key_version,
+                material.key_nonce,
+                material.key_ciphertext,
+            )?,
+        )
+        .map_err(|_| WebhookError::Unavailable)?;
+    let key = std::str::from_utf8(&plaintext).map_err(|_| WebhookError::SigningFailed)?;
+    if key.len() != crate::infrastructure::crypto::TESTING_ENVIRONMENT_KEY_LENGTH
+        || !key.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return Err(WebhookError::SigningFailed);
+    }
+    Ok(SecretString::from(key.to_owned()))
 }
 
 fn wire_event_type(event_type: &str, schema_version: i16) -> Result<Cow<'_, str>, AppError> {
@@ -545,6 +745,7 @@ fn encrypted_value(
 
 async fn begin_attempt(
     context: &WorkerContext,
+    pool: &PgPool,
     delivery: &ClaimedDelivery,
 ) -> Result<Option<Uuid>, AppError> {
     let lease_seconds =
@@ -554,7 +755,8 @@ async fn begin_attempt(
             }
         })?;
     let attempt_id = Uuid::now_v7();
-    let mut transaction = context.pool.begin().await?;
+    let mut transaction =
+        begin_processing_transaction(pool, delivery.testing_environment_id).await?;
     let attempt_number = sqlx::query_scalar::<_, i32>(
         r"
         UPDATE iam.webhook_deliveries
@@ -595,12 +797,14 @@ async fn begin_attempt(
 
 async fn finish_success(
     context: &WorkerContext,
+    pool: &PgPool,
     delivery: &ClaimedDelivery,
     attempt_id: Uuid,
     duration_ms: i32,
     receipt: WebhookReceipt,
 ) -> Result<(), AppError> {
-    let mut transaction = context.pool.begin().await?;
+    let mut transaction =
+        begin_processing_transaction(pool, delivery.testing_environment_id).await?;
     sqlx::query(
         r"
         UPDATE iam.webhook_delivery_attempts
@@ -654,12 +858,16 @@ async fn finish_success(
 }
 
 async fn finish_attempt_error(
-    context: &WorkerContext,
+    _context: &WorkerContext,
+    pool: &PgPool,
+    delivery: &ClaimedDelivery,
     attempt_id: Uuid,
     duration_ms: i32,
     http_status: Option<i16>,
     error: WebhookError,
 ) -> Result<(), AppError> {
+    let mut transaction =
+        begin_processing_transaction(pool, delivery.testing_environment_id).await?;
     sqlx::query(
         r"
         UPDATE iam.webhook_delivery_attempts
@@ -674,13 +882,15 @@ async fn finish_attempt_error(
     .bind(duration_ms)
     .bind(http_status)
     .bind(error.code())
-    .execute(&context.pool)
+    .execute(&mut *transaction)
     .await?;
+    transaction.commit().await?;
     Ok(())
 }
 
 async fn finish_failure(
     context: &WorkerContext,
+    pool: &PgPool,
     delivery: &ClaimedDelivery,
     error_code: &'static str,
     retryable: bool,
@@ -694,6 +904,8 @@ async fn finish_failure(
         context.settings.worker.max_retry_delay,
         delivery.delivery_id,
     );
+    let mut transaction =
+        begin_processing_transaction(pool, delivery.testing_environment_id).await?;
     sqlx::query(
         r"
         UPDATE iam.webhook_deliveries
@@ -718,14 +930,42 @@ async fn finish_failure(
     .bind(delay)
     .bind(http_status)
     .bind(error_code)
-    .execute(&context.pool)
+    .execute(&mut *transaction)
     .await?;
+    transaction.commit().await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RecipientType, wire_event_type};
+    use secrecy::SecretString;
+    use serde_json::{Value, json};
+    use time::OffsetDateTime;
+    use uuid::Uuid;
+
+    use super::{ClaimedDelivery, RecipientType, serialize_event, wire_event_type};
+
+    fn delivery(testing_environment_id: Option<Uuid>) -> ClaimedDelivery {
+        ClaimedDelivery {
+            delivery_id: Uuid::from_u128(1),
+            testing_environment_id,
+            cycle_attempt_count: 1,
+            outbox_event_id: Uuid::from_u128(2),
+            recipient_kind: "application".to_owned(),
+            application_webhook_endpoint_id: Some(Uuid::from_u128(3)),
+            silicon_webhook_endpoint_id: None,
+            signing_key_id: Some(Uuid::from_u128(4)),
+            silicon_webhook_signing_key_id: None,
+            organization_id: Some(Uuid::from_u128(5)),
+            aggregate_type: "carbon".to_owned(),
+            aggregate_id: Uuid::from_u128(6),
+            aggregate_version: 7,
+            event_type: "carbon.updated.v1".to_owned(),
+            schema_version: 1,
+            payload: json!({ "carbon_id": Uuid::from_u128(6) }),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
 
     #[test]
     fn wire_event_names_have_exactly_one_matching_schema_suffix() {
@@ -755,6 +995,57 @@ mod tests {
         );
         assert!(RecipientType::try_from("silicon_hook").is_err());
         assert!(RecipientType::try_from("unknown").is_err());
+    }
+
+    #[test]
+    fn production_and_test_webhook_envelopes_are_unambiguous() {
+        let data = json!({ "changed_fields": ["name"] });
+        let production = serialize_event(
+            &delivery(None),
+            "carbon.updated.v1",
+            "1970-01-01T00:00:00Z",
+            &data,
+            None,
+        )
+        .and_then(|body| {
+            serde_json::from_slice::<Value>(&body).map_err(|_| crate::error::AppError::Internal {
+                category: "test_webhook_decode",
+            })
+        });
+        let Ok(production) = production else {
+            panic!("the production envelope must serialize");
+        };
+        assert_eq!(production.get("data"), Some(&data));
+        assert!(production.get("test").is_none());
+
+        let testing_key = SecretString::from("A".repeat(32));
+        let test = serialize_event(
+            &delivery(Some(Uuid::from_u128(9))),
+            "carbon.updated.v1",
+            "1970-01-01T00:00:00Z",
+            &data,
+            Some(&testing_key),
+        )
+        .and_then(|body| {
+            serde_json::from_slice::<Value>(&body).map_err(|_| crate::error::AppError::Internal {
+                category: "test_webhook_decode",
+            })
+        });
+        let Ok(test) = test else {
+            panic!("the test envelope must serialize");
+        };
+        assert_eq!(test.as_object().map(serde_json::Map::len), Some(1));
+        assert_eq!(
+            test.pointer("/test/testing_key"),
+            Some(&json!("A".repeat(32)))
+        );
+        assert_eq!(test.pointer("/test/data"), Some(&data));
+        assert_eq!(
+            test.pointer("/test/metadata/event_type"),
+            Some(&json!("carbon.updated.v1"))
+        );
+        assert!(test.get("data").is_none());
+        assert!(test.get("metadata").is_none());
     }
 
     #[test]

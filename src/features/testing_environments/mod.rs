@@ -12,6 +12,7 @@
 //! cannot create or destroy environments.
 
 mod handlers;
+mod imports;
 mod key;
 mod model;
 mod support;
@@ -63,4 +64,12 @@ pub fn router() -> Router<ApiState> {
             "/api/v1/testing-environment/cleanings",
             post(handlers::clean_current_environment),
         )
+}
+
+/// Builds routes that exist only inside an already-selected testing plane.
+pub fn data_plane_router() -> Router<ApiState> {
+    Router::new().route(
+        "/api/v1/testing-environment/applications/imports",
+        post(imports::import_application),
+    )
 }

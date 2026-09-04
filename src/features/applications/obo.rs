@@ -1437,7 +1437,7 @@ mod tests {
         };
         let client = ApplicationClient {
             application_id: Uuid::from_u128(1),
-            app_id: "files".to_owned(),
+            app_id: "tos>files".to_owned(),
             organization_id: Uuid::from_u128(2),
             auth_epoch: 1,
             authenticated_secret: SecretString::from("ask_test_secret"),

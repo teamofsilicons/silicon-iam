@@ -8,9 +8,11 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse as _, Response},
 };
+use secrecy::ExposeSecret as _;
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use sqlx::{FromRow, Postgres, Transaction};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
@@ -18,13 +20,14 @@ use crate::{
     domain::actor::{ActorRef, ActorType},
     features::webhook_replay::{self, DeadLetterRecord},
     infrastructure::{
-        crypto::{EncryptedValue, EncryptionContext, ProtectedField},
+        crypto::{EncryptedValue, EncryptionContext, ProtectedField, SecretKind},
         postgres::{
             context::{self, DatabaseContext},
             events::{
                 self as postgres_events, AggregateVersion, AuditRecord,
                 uses_captured_application_webhook_projection,
             },
+            step_up::RequiredAssurance,
         },
     },
 };
@@ -32,7 +35,7 @@ use crate::{
 use super::{
     applications::{
         bump_application, json_with_etag, json_with_etag_replayed, resolve_readable_app,
-        resolve_technical_app,
+        resolve_technical_app, secret_json_with_etag, secret_prefix,
     },
     cursor,
     error::ApiError,
@@ -41,11 +44,13 @@ use super::{
     model::{
         AppPath, DeadLetterPageQuery, LoginEventPage, LoginEventView, PageInfo, PageQuery,
         WebhookDeadLetterPage, WebhookDeadLetterView, WebhookEndpointView, WebhookReplace,
-        WebhookReplayRequest, WebhookReplayResponse, WebhookView,
+        WebhookReplayRequest, WebhookReplayResponse, WebhookSecretRotated, WebhookView,
     },
-    security::{Bearer, expected_version, require_carbon},
+    security::{Bearer, expected_version, require_carbon, require_step_up},
     validation,
 };
+
+const WEBHOOK_SECRET_ROTATION_STEP_UP_ACTION: &str = "application.webhook_secret.rotate";
 
 #[derive(FromRow)]
 struct EncryptedEndpointRow {
@@ -130,7 +135,7 @@ pub(super) async fn replace(
             .map_err(|_| ApiError::internal("webhook_replace_replay"))?;
         let status = StatusCode::from_u16(replay.status)
             .map_err(|_| ApiError::internal("webhook_replace_replay_status"))?;
-        return json_with_etag_replayed(status, &replay.response, replay.response.version);
+        return webhook_response(status, &replay.response, true);
     }
     transaction
         .commit()
@@ -145,6 +150,11 @@ pub(super) async fn replace(
         .map_err(|_| ApiError::internal("webhook_replace_context"))?;
     let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
     let caller_scope = format!("carbon:{carbon_id}:application:{}", app.id);
+    // An imported production signing key is deliberately hidden from a test
+    // environment. Its first replacement therefore mints a test-owned key and
+    // returns that new secret. Mark the idempotency record secret-bearing up
+    // front so a retry is encrypted and receives the same no-store response.
+    let contains_secret = current_signing_secret_is_inherited(&mut transaction, app.id).await?;
     let claim = idempotency::claim::<WebhookView>(
         &mut transaction,
         &state.crypto,
@@ -152,7 +162,7 @@ pub(super) async fn replace(
         &caller_scope,
         "PUT /api/v1/applications/{app_id}/webhook",
         canonical,
-        false,
+        contains_secret,
     )
     .await?;
     if let Claim::Replay { status, response } = claim {
@@ -162,7 +172,7 @@ pub(super) async fn replace(
             .map_err(|_| ApiError::internal("webhook_replace_replay"))?;
         let status = StatusCode::from_u16(status)
             .map_err(|_| ApiError::internal("webhook_replace_replay_status"))?;
-        return json_with_etag_replayed(status, &response, response.version);
+        return webhook_response(status, &response, true);
     }
     let Claim::Acquired(idempotency_id) = claim else {
         return Err(ApiError::internal("webhook_replace_idempotency"));
@@ -172,34 +182,38 @@ pub(super) async fn replace(
     if app.version != expected {
         return Err(ApiError::precondition_failed());
     }
-    let old_key = sqlx::query_as::<_, EncryptedSigningKeyRow>(
-        r"
-        SELECT signing.id, signing.secret_ciphertext,
-               signing.secret_nonce, signing.encryption_key_version
-        FROM iam.application_webhook_signing_keys AS signing
-        JOIN iam.application_webhook_endpoints AS endpoint
-          ON endpoint.id = signing.endpoint_id
-        WHERE signing.application_id = $1
-          AND signing.status IN ('active', 'retiring')
-          AND endpoint.status IN ('active', 'pending_review')
-        ORDER BY (endpoint.status = 'active') DESC, signing.created_at DESC
-        LIMIT 1
-        ",
-    )
-    .bind(app.id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("webhook_signing_key_read"))?
-    .ok_or_else(|| ApiError::internal("webhook_signing_key_missing"))?;
-    let secret = decrypt_signing_secret(&state, app.id, &old_key)?;
+    let old_key = replacement_signing_key(&mut transaction, app.id).await?;
+    let inherited_secret = signing_secret_is_inherited(&mut transaction, old_key.id).await?;
+    // There is deliberately no production platform reviewer inside an
+    // isolated testing plane. A replacement there must become the sole active
+    // endpoint immediately or the newly returned test-only signing secret can
+    // never be exercised. Production keeps its pending-review behavior.
+    let activate_immediately = crate::infrastructure::testing_plane::is_active();
+    let generated_secret = if inherited_secret {
+        Some(
+            state
+                .crypto
+                .generate_secret(SecretKind::WebhookSigningSecret)
+                .map_err(|_| ApiError::internal("webhook_secret_generate"))?,
+        )
+    } else {
+        None
+    };
+    let secret = if let Some(secret) = generated_secret.as_ref() {
+        zeroize::Zeroizing::new(secret.expose_secret().as_bytes().to_vec())
+    } else {
+        decrypt_signing_secret(&state, app.id, &old_key)?
+    };
     sqlx::query(
         r"
         UPDATE iam.application_webhook_endpoints
         SET status = 'retired', retired_at = transaction_timestamp()
-        WHERE application_id = $1 AND status = 'pending_review'
+        WHERE application_id = $1
+          AND (status = 'pending_review' OR ($2 AND status = 'active'))
         ",
     )
     .bind(app.id)
+    .bind(activate_immediately)
     .execute(&mut *transaction)
     .await
     .map_err(|_| ApiError::internal("webhook_pending_retire"))?;
@@ -228,8 +242,12 @@ pub(super) async fn replace(
         r"
         INSERT INTO iam.application_webhook_endpoints (
             id, application_id, url_ciphertext, url_nonce,
-            encryption_key_version, url_digest
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+            encryption_key_version, url_digest, status, activated_at
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6,
+            CASE WHEN $7 THEN 'active' ELSE 'pending_review' END,
+            CASE WHEN $7 THEN transaction_timestamp() END
+        )
         ",
     )
     .bind(endpoint_id)
@@ -238,6 +256,7 @@ pub(super) async fn replace(
     .bind(encrypted_url.nonce.as_slice())
     .bind(encrypted_url.key_version)
     .bind(Sha256::digest(input.url.as_bytes()).as_slice())
+    .bind(activate_immediately)
     .execute(&mut *transaction)
     .await
     .map_err(map_webhook_write)?;
@@ -253,7 +272,10 @@ pub(super) async fn replace(
     .bind(app.id)
     .bind(endpoint_id)
     .bind(signing_secret_version)
-    .bind("whs_migrated")
+    .bind(generated_secret.as_ref().map_or_else(
+        || "whs_migrated".to_owned(),
+        |secret| secret_prefix(secret.expose_secret()),
+    ))
     .bind(encrypted_secret.ciphertext)
     .bind(encrypted_secret.nonce.as_slice())
     .bind(encrypted_secret.key_version)
@@ -261,7 +283,18 @@ pub(super) async fn replace(
     .await
     .map_err(|_| ApiError::internal("webhook_signing_key_rebind"))?;
     let version = bump_application(&mut transaction, app.id).await?;
-    let response = load_webhook(&mut transaction, &state, app.id, version).await?;
+    let mut response = load_webhook(&mut transaction, &state, app.id, version).await?;
+    if let Some(secret) = generated_secret {
+        response.webhook_signing_secret = Some(secret.expose_secret().to_owned());
+        response.secret_replay_expires_at = Some(
+            sqlx::query_scalar::<_, OffsetDateTime>(
+                "SELECT transaction_timestamp() + interval '10 minutes'",
+            )
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(|_| ApiError::internal("webhook_secret_replay_expiry"))?,
+        );
+    }
     events::record(
         &mut transaction,
         Mutation {
@@ -269,16 +302,31 @@ pub(super) async fn replace(
             authentication_session_id: Some(access.authentication_session_id),
             organization_id: app.organization_id,
             application_id: app.id,
-            action: "application.webhook.propose",
+            action: if activate_immediately {
+                "application.webhook.replace"
+            } else {
+                "application.webhook.propose"
+            },
             target_type: "application_webhook",
             target_id: Some(endpoint_id),
             aggregate_type: "application",
             aggregate_id: app.id,
             aggregate_version: version,
             before: None,
-            after: Some(json!({ "endpoint_id": endpoint_id, "status": "pending_review" })),
-            metadata: json!({ "dns_validated_at_submission": true }),
-            event_type: "application.webhook_proposed",
+            after: Some(json!({
+                "endpoint_id": endpoint_id,
+                "status": if activate_immediately { "active" } else { "pending_review" },
+            })),
+            metadata: json!({
+                "dns_validated_at_submission": true,
+                "signing_secret_rotated": inherited_secret,
+                "testing_plane_immediate_activation": activate_immediately,
+            }),
+            event_type: if activate_immediately {
+                "application.webhook_replaced"
+            } else {
+                "application.webhook_proposed"
+            },
         },
     )
     .await?;
@@ -286,16 +334,213 @@ pub(super) async fn replace(
         &mut transaction,
         &state.crypto,
         idempotency_id,
-        202,
+        if activate_immediately { 200 } else { 202 },
         &response,
-        false,
+        inherited_secret,
     )
     .await?;
     transaction
         .commit()
         .await
         .map_err(|_| ApiError::internal("webhook_replace_commit"))?;
-    json_with_etag(StatusCode::ACCEPTED, &response, response.version)
+    webhook_response(
+        if activate_immediately {
+            StatusCode::OK
+        } else {
+            StatusCode::ACCEPTED
+        },
+        &response,
+        false,
+    )
+}
+
+pub(super) async fn rotate_secret(
+    State(state): State<ApiState>,
+    Bearer(access): Bearer,
+    Path(path): Path<AppPath>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let carbon_id = require_carbon(&access)?;
+    validation::app_id(&path.app_id)?;
+    let canonical = b"{}";
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
+        .await
+        .map_err(|_| ApiError::internal("webhook_secret_rotation_context"))?;
+    let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
+    let caller_scope = format!("carbon:{carbon_id}:application:{}", app.id);
+    let claim = idempotency::claim::<WebhookSecretRotated>(
+        &mut transaction,
+        &state.crypto,
+        &headers,
+        &caller_scope,
+        "POST /api/v1/applications/{app_id}/webhook-secret-rotations",
+        canonical,
+        true,
+    )
+    .await?;
+    if let Claim::Replay { status, response } = claim {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("webhook_secret_rotation_replay_commit"))?;
+        let status = StatusCode::from_u16(status)
+            .map_err(|_| ApiError::internal("webhook_secret_rotation_replay_status"))?;
+        return secret_json_with_etag(status, &response, response.application_version, true);
+    }
+    let Claim::Acquired(idempotency_id) = claim else {
+        return Err(ApiError::internal("webhook_secret_rotation_idempotency"));
+    };
+    let expected = expected_version(&headers)?;
+    let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, true).await?;
+    if app.version != expected {
+        return Err(ApiError::precondition_failed());
+    }
+    require_step_up(
+        &mut transaction,
+        &state.crypto,
+        &headers,
+        &access,
+        WEBHOOK_SECRET_ROTATION_STEP_UP_ACTION,
+        app.id,
+        RequiredAssurance::VerifiedChannel,
+    )
+    .await?;
+
+    let endpoint_ids = sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT id
+        FROM iam.application_webhook_endpoints
+        WHERE application_id = $1
+          AND status IN ('active', 'pending_review')
+        ORDER BY (status = 'active') DESC, created_at DESC, id DESC
+        FOR UPDATE
+        ",
+    )
+    .bind(app.id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("webhook_secret_rotation_endpoints"))?;
+    if endpoint_ids.is_empty() {
+        return Err(ApiError::conflict("application_webhook_not_configured"));
+    }
+
+    let first_secret_version = next_signing_secret_version(&mut transaction, app.id).await?;
+    let secret = state
+        .crypto
+        .generate_secret(SecretKind::WebhookSigningSecret)
+        .map_err(|_| ApiError::internal("webhook_secret_rotation_generate"))?;
+    sqlx::query(
+        r"
+        UPDATE iam.application_webhook_signing_keys
+        SET status = 'retiring',
+            retires_at = transaction_timestamp() + interval '10 minutes'
+        WHERE application_id = $1
+          AND endpoint_id = ANY($2::uuid[])
+          AND status = 'active'
+        ",
+    )
+    .bind(app.id)
+    .bind(&endpoint_ids)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("webhook_secret_rotation_retire"))?;
+
+    let mut new_key_ids = Vec::with_capacity(endpoint_ids.len());
+    for endpoint_id in &endpoint_ids {
+        let signing_key_id = Uuid::now_v7();
+        let encrypted_secret = state
+            .crypto
+            .encrypt(
+                EncryptionContext::tenant(
+                    ProtectedField::ApplicationWebhookSigningSecret,
+                    app.id,
+                    signing_key_id,
+                ),
+                secret.expose_secret().as_bytes(),
+            )
+            .map_err(|_| ApiError::internal("webhook_secret_rotation_encrypt"))?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.application_webhook_signing_keys (
+                id, application_id, endpoint_id, secret_version, key_prefix,
+                secret_ciphertext, secret_nonce, encryption_key_version
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ",
+        )
+        .bind(signing_key_id)
+        .bind(app.id)
+        .bind(endpoint_id)
+        .bind(first_secret_version)
+        .bind(secret_prefix(secret.expose_secret()))
+        .bind(encrypted_secret.ciphertext)
+        .bind(encrypted_secret.nonce.as_slice())
+        .bind(encrypted_secret.key_version)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiError::internal("webhook_secret_rotation_insert"))?;
+        new_key_ids.push(signing_key_id);
+    }
+    let webhook_secret_version = first_secret_version;
+    let application_version = bump_application(&mut transaction, app.id).await?;
+    let secret_replay_expires_at = sqlx::query_scalar::<_, OffsetDateTime>(
+        "SELECT transaction_timestamp() + interval '10 minutes'",
+    )
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("webhook_secret_rotation_replay_expiry"))?;
+    let response = WebhookSecretRotated {
+        app_id: app.app_id,
+        webhook_signing_secret: secret.expose_secret().to_owned(),
+        webhook_secret_version,
+        application_version,
+        secret_replay_expires_at,
+    };
+    events::record(
+        &mut transaction,
+        Mutation {
+            actor_id: Some(carbon_id),
+            authentication_session_id: Some(access.authentication_session_id),
+            organization_id: app.organization_id,
+            application_id: app.id,
+            action: "application.webhook_secret.rotate",
+            target_type: "application_webhook_signing_key",
+            target_id: new_key_ids.first().copied(),
+            aggregate_type: "application",
+            aggregate_id: app.id,
+            aggregate_version: application_version,
+            before: None,
+            after: Some(json!({
+                "secret_version": webhook_secret_version,
+                "status": "active",
+            })),
+            metadata: json!({
+                "secret_version": webhook_secret_version,
+                "endpoint_ids": endpoint_ids,
+                "signing_key_ids": new_key_ids,
+            }),
+            event_type: "application.webhook_secret_rotated",
+        },
+    )
+    .await?;
+    idempotency::complete(
+        &mut transaction,
+        &state.crypto,
+        idempotency_id,
+        200,
+        &response,
+        true,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("webhook_secret_rotation_commit"))?;
+    secret_json_with_etag(
+        StatusCode::OK,
+        &response,
+        response.application_version,
+        false,
+    )
 }
 
 pub(super) async fn list_dead_letters(
@@ -1050,7 +1295,122 @@ fn webhook_projection(
         status: status.to_owned(),
         secret_version,
         version: application_version,
+        webhook_signing_secret: None,
+        secret_replay_expires_at: None,
     })
+}
+
+fn webhook_response(
+    status: StatusCode,
+    response: &WebhookView,
+    replayed: bool,
+) -> Result<Response, ApiError> {
+    if response.webhook_signing_secret.is_some() {
+        return secret_json_with_etag(status, response, response.version, replayed);
+    }
+    if replayed {
+        return json_with_etag_replayed(status, response, response.version);
+    }
+    json_with_etag(status, response, response.version)
+}
+
+async fn current_signing_secret_is_inherited(
+    transaction: &mut Transaction<'_, Postgres>,
+    application_id: Uuid,
+) -> Result<bool, ApiError> {
+    if !crate::infrastructure::testing_plane::is_active() {
+        return Ok(false);
+    }
+    sqlx::query_scalar(
+        r"
+        SELECT COALESCE((
+            SELECT signing.test_inherited_from_production
+            FROM iam.application_webhook_signing_keys AS signing
+            JOIN iam.application_webhook_endpoints AS endpoint
+              ON endpoint.id = signing.endpoint_id
+            WHERE signing.application_id = $1
+              AND signing.status IN ('active', 'retiring')
+              AND endpoint.status IN ('active', 'pending_review')
+            ORDER BY
+                signing.test_inherited_from_production ASC,
+                (endpoint.status = 'active') DESC,
+                signing.created_at DESC
+            LIMIT 1
+        ), false)
+        ",
+    )
+    .bind(application_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("webhook_inherited_secret_read"))
+}
+
+async fn replacement_signing_key(
+    transaction: &mut Transaction<'_, Postgres>,
+    application_id: Uuid,
+) -> Result<EncryptedSigningKeyRow, ApiError> {
+    let row = if crate::infrastructure::testing_plane::is_active() {
+        sqlx::query_as::<_, EncryptedSigningKeyRow>(
+            r"
+            SELECT signing.id, signing.secret_ciphertext,
+                   signing.secret_nonce, signing.encryption_key_version
+            FROM iam.application_webhook_signing_keys AS signing
+            JOIN iam.application_webhook_endpoints AS endpoint
+              ON endpoint.id = signing.endpoint_id
+            WHERE signing.application_id = $1
+              AND signing.status IN ('active', 'retiring')
+              AND endpoint.status IN ('active', 'pending_review')
+            ORDER BY
+                signing.test_inherited_from_production ASC,
+                (endpoint.status = 'active') DESC,
+                signing.created_at DESC
+            LIMIT 1
+            ",
+        )
+        .bind(application_id)
+        .fetch_optional(&mut **transaction)
+        .await
+    } else {
+        sqlx::query_as::<_, EncryptedSigningKeyRow>(
+            r"
+            SELECT signing.id, signing.secret_ciphertext,
+                   signing.secret_nonce, signing.encryption_key_version
+            FROM iam.application_webhook_signing_keys AS signing
+            JOIN iam.application_webhook_endpoints AS endpoint
+              ON endpoint.id = signing.endpoint_id
+            WHERE signing.application_id = $1
+              AND signing.status IN ('active', 'retiring')
+              AND endpoint.status IN ('active', 'pending_review')
+            ORDER BY (endpoint.status = 'active') DESC, signing.created_at DESC
+            LIMIT 1
+            ",
+        )
+        .bind(application_id)
+        .fetch_optional(&mut **transaction)
+        .await
+    };
+    row.map_err(|_| ApiError::internal("webhook_signing_key_read"))?
+        .ok_or_else(|| ApiError::internal("webhook_signing_key_missing"))
+}
+
+async fn signing_secret_is_inherited(
+    transaction: &mut Transaction<'_, Postgres>,
+    signing_key_id: Uuid,
+) -> Result<bool, ApiError> {
+    if !crate::infrastructure::testing_plane::is_active() {
+        return Ok(false);
+    }
+    sqlx::query_scalar(
+        r"
+        SELECT test_inherited_from_production
+        FROM iam.application_webhook_signing_keys
+        WHERE id = $1
+        ",
+    )
+    .bind(signing_key_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("webhook_inherited_secret_read"))
 }
 
 fn decrypt_endpoint(
@@ -1132,7 +1492,10 @@ fn map_webhook_write(error: sqlx::Error) -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{WebhookEndpointView, webhook_projection};
+    use axum::http::{StatusCode, header};
+    use time::macros::datetime;
+
+    use super::{WebhookEndpointView, WebhookView, webhook_projection, webhook_response};
 
     fn endpoint(url: &str, status: &str) -> WebhookEndpointView {
         WebhookEndpointView {
@@ -1179,5 +1542,45 @@ mod tests {
         assert_eq!(disabled_projection.status, "disabled");
         assert_eq!(disabled_projection.secret_version, 2);
         assert_eq!(disabled_projection.version, 8);
+    }
+
+    #[test]
+    fn inherited_key_replacement_response_is_non_cacheable_and_replay_marked() {
+        let projection = WebhookView {
+            active_url: Some("https://active.example.test/webhook".to_owned()),
+            pending_url: Some("https://replacement.example.test/webhook".to_owned()),
+            status: "replacement_under_review".to_owned(),
+            secret_version: 2,
+            version: 7,
+            webhook_signing_secret: Some(format!("whs_{}", "A".repeat(43))),
+            secret_replay_expires_at: Some(datetime!(2026-01-01 0:10 UTC)),
+        };
+
+        let response = match webhook_response(StatusCode::ACCEPTED, &projection, true) {
+            Ok(response) => response,
+            Err(error) => panic!("secret-bearing webhook response must encode: {error:?}"),
+        };
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("idempotency-replayed")
+                .and_then(|value| value.to_str().ok()),
+            Some("true")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ETAG)
+                .and_then(|value| value.to_str().ok()),
+            Some("\"7\"")
+        );
     }
 }

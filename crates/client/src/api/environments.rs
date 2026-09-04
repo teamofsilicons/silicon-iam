@@ -2,7 +2,7 @@
 //!
 //! An environment is this same API against a separate database, starting
 //! empty. Manage them here, then move a client onto one with
-//! [`Client::with_environment`](crate::Client::with_environment) and use every
+//! [`Client::with_environment`] and use every
 //! other method exactly as you would against production.
 //!
 //! Two of these routes are authorized by the environment key alone rather than

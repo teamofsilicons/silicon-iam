@@ -4,6 +4,12 @@
   carry, no state to round-trip, and no consent screen to wait on.
 </p>
 
+<p>
+  Use the canonical organization-qualified Application ID everywhere in this flow, for example
+  <code>acme&gt;checkout</code>. The local handle supplied during registration is not independently
+  addressable.
+</p>
+
 <div class="banner banner-info">
   <div>
     <strong>You never receive anyone's credentials.</strong>
@@ -88,7 +94,7 @@ let tokens = application
 
 <pre><code>let issued = signed_in
     .auth()
-    .short_lived_token("your-app", &amp;Mutation::new())
+    .short_lived_token("acme&gt;your-app", &amp;Mutation::new())
     .await?;
 
 println!("{} expires in {}s", issued.slt, issued.expires_in);</code></pre>
