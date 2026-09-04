@@ -32,7 +32,7 @@ the JSON contract and are not described in `openapi.yaml`:
 belong in a feature router and in `openapi.yaml`, as they always have.
 
 Applications integrating in Rust should use the official SDK rather than this
-document. It implements the version handshake, PKCE, proof signing, signature
+document. It implements the version handshake, proof signing, signature
 verification and the retry policy, and fails closed where this contract expects
 a client to. See `/docs/client/`.
 
@@ -105,7 +105,7 @@ excluded from logs, traces, metrics, error details, audit diffs, and webhooks.
 | Email/phone OTP | 10 minutes; after 10 failed attempts, a reusable challenge cools down for 1 minute before a fresh 10-attempt window |
 | IAM/OAuth access token | 30 minutes |
 | Carbon/Silicon/OAuth refresh-session family | 900 days absolute |
-| OAuth authorization code | 2 minutes, single use |
+| Short-lived login token | 2 minutes, single use |
 | Step-up token | 5 minutes, action/resource bound |
 | Carbon invitation | 48 hours |
 | WorkOS setup link | 5 minutes (`expires_in: 300`) |
@@ -186,9 +186,10 @@ All JSON API errors use:
 }
 ```
 
-OAuth redirect errors are returned to the exact registered redirect URI using
-OAuth protocol query fields and the unchanged `state`; JSON errors before a
-redirect URI is trusted use the envelope above.
+A login that fails before a short-lived token is minted answers with the JSON
+envelope above rather than redirecting: there is nothing to deliver, and the
+redirect URI came from the caller rather than from a registration, so it is not
+a trusted place to report an error to.
 
 The HTML surfaces answer with HTML rather than this envelope. They are merged
 outside the JSON router's error normalisation, so an unknown documentation
@@ -951,25 +952,21 @@ authenticate after it commits.
 | POST | `.../webhook/dead-letters/replays` | Replay one or an ordered batch of dead letters |
 | GET | `.../login-history` | App-specific authorization/login history |
 
-Registration requires an immutable app ID and `org_id`, exactly one redirect
-URI, one HTTPS webhook URL, requested scopes, and may include the Application's
-callable OBO endpoint registry. IAM rechecks current organization owner/admin
-authority before claiming or replaying the request. It returns an
-`under_review` Application plus one-time Application and webhook signing
-secrets. Application representations expose `org_id` and the Carbon
-`created_by`; they never model that Carbon as the owner. The Application cannot
-authorize users, introspect tokens, or issue OBO proofs until verified.
-`notify_users` defaults to `true`.
+Registration requires an immutable app ID and `org_id`, one HTTPS webhook URL,
+and may include the Application's callable OBO endpoint registry. IAM rechecks
+current organization owner/admin authority before claiming or replaying the
+request. It returns a `verified` Application plus one-time Application and
+webhook signing secrets. Application representations expose `org_id` and the
+Carbon `created_by`; they never model that Carbon as the owner. There is no
+review to wait behind: an Application can sign users in, introspect tokens and
+issue OBO proofs from the moment it exists.
 
-Requested scopes and approved scopes are separate. Scope changes remain
-pending and do not replace the active reviewed configuration until a platform
-administrator approves them. Adding a redirect URI immediately retires every
-previous current URI, retains those rows as versioned history, and creates the
-new URI as `pending_review`; no retired URI remains usable while review is
-pending. A current organization owner/admin can inspect the paginated history,
-including each URI's status and lifecycle timestamps, and explicitly retire a
-URI. Explicit retirement is idempotent, versioned, and audited. An Application
-webhook replacement also
+There are no redirect URIs to register. A login names the one it wants in the
+query string, and IAM appends the short-lived token to it.
+
+An Application holds the whole scope catalogue: a login carries all of it, so
+there is nothing to request and nothing to approve. An Application webhook
+replacement
 keeps the previous endpoint active until review; v1 exposes exactly one active
 destination. During initial registration there is truthfully no active
 destination: `active_url` is `null`, `pending_url` contains the submitted URL,
@@ -979,8 +976,6 @@ The webhook representation's `version` is the application aggregate version,
 not an endpoint-row version; it is identical to the response `ETag` and is the
 value required by `If-Match`. Replacement reuses the application's existing
 encrypted webhook signing secret and does not return secret material.
-`notify_users` is absent from every organization-management response and
-mutation and is configurable only by platform administrators.
 
 Initial application and webhook secrets are versioned credentials. Permanent
 deletion is available only through the backend-admin decision workflow. It
@@ -1000,12 +995,12 @@ the secret never appears in ordinary reads, audit diffs, or webhooks.
 `GET /api/v1/admin/applications` lists the inventory and pending review queue.
 `POST /api/v1/admin/applications/{app_id}/decisions` supports:
 
-- approve or reject initial registration
 - suspend or reactivate
-- approve or reject pending scopes, redirect URIs, or webhook replacement
-- set the approved scope list
-- set backend-only `notify_users`
+- approve or reject a pending webhook replacement
 - permanently soft-delete an application and revoke all application authority
+
+Applications arrive verified, so there is no initial registration to admit.
+What remains is control over one that is already in use.
 
 Review requires a current platform administrator, step-up, idempotency key, and
 ETag. Suspension immediately revokes active application authority. Every

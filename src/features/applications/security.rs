@@ -171,6 +171,32 @@ impl FromRequestParts<ApiState> for BrowserSession {
     }
 }
 
+/// A browser session when there is one, and nothing when there is not.
+///
+/// The login route has somewhere useful to send an unauthenticated visitor --
+/// the authentication frontend -- so it needs the absence of a session as a
+/// value rather than as a rejection.
+#[derive(Clone, Debug)]
+pub(super) struct MaybeBrowserSession(pub(super) Option<BrowserSession>);
+
+impl FromRequestParts<ApiState> for MaybeBrowserSession {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &ApiState,
+    ) -> Result<Self, Self::Rejection> {
+        match BrowserSession::from_request_parts(parts, state).await {
+            Ok(session) => Ok(Self(Some(session))),
+            // Only the absence of a usable session becomes `None`. A failure
+            // that is not about authentication still fails the request, so a
+            // database outage cannot quietly look like a signed-out visitor.
+            Err(error) if error.is_unauthenticated() => Ok(Self(None)),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 impl FromRequestParts<ApiState> for ApplicationClient {
     type Rejection = ApiError;
 

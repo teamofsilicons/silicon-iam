@@ -3383,7 +3383,7 @@ components:
       description: The client and server do not support a common public API version.
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
     Gone:
-      description: One-time challenge, authorization code, invitation, proof, or response window expired.
+      description: One-time challenge, short-lived login token, invitation, proof, or response window expired.
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
     PreconditionFailed:
       description: If-Match does not equal the current aggregate version.
@@ -3730,27 +3730,6 @@ components:
       properties:
         silicon_id: { $ref: '#/components/schemas/SiliconGlobalId' }
         silicon_token: { type: string, pattern: '^stk-[a-f0-9]{32}$' }
-    OAuthConsentDecision:
-      type: object
-      required: [authorization_transaction_id, decision]
-      additionalProperties: false
-      properties:
-        authorization_transaction_id: { type: string, format: uuid }
-        decision: { type: string, enum: [approve, deny] }
-    OAuthConsentFormDecision:
-      type: object
-      description: >-
-        The form encoding used by the IAM-rendered consent screen. A browser form
-        cannot set request headers, so the CSRF token and the idempotency key are
-        fields. They are lifted into the equivalent headers server-side and
-        validated by the same code as the JSON encoding.
-      required: [authorization_transaction_id, decision, csrf_token, idempotency_key]
-      additionalProperties: false
-      properties:
-        authorization_transaction_id: { type: string, format: uuid }
-        decision: { type: string, enum: [approve, deny] }
-        csrf_token: { type: string, minLength: 32, maxLength: 512 }
-        idempotency_key: { type: string, minLength: 16, maxLength: 255 }
     ShortLivedTokenRequest:
       type: object
       required: [app_id]

@@ -7,8 +7,9 @@
 <h2>Registration</h2>
 
 <p>
-  <code>POST /api/v1/applications</code> takes the application ID, the owning organization, at
-  least one redirect URI, a webhook URL, and the scopes it wants.
+  <code>POST /api/v1/applications</code> takes the application ID, the owning organization, and a
+  webhook URL. There are no redirect URIs to register and no scopes to request: a login names its
+  redirect URI in the query string and carries the whole catalogue.
 </p>
 
 <div class="banner banner-danger">
@@ -21,18 +22,17 @@
 </div>
 
 <p>
-  A new application lands in <code>under_review</code> and cannot complete an authorization until
-  Silicon approves it. Later changes that widen authority — a new redirect URI, a new scope, a new
-  webhook destination — are held as <code>has_pending_changes</code> and reviewed the same way, so
-  an approved application cannot quietly grow.
+  A new application is usable immediately: there is no review to wait behind. A change that widens
+  authority — a new webhook destination — is still held as <code>has_pending_changes</code> and
+  reviewed, so where an application delivers cannot quietly move.
 </p>
 
 <table>
   <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
   <tbody>
-    <tr><td><code>under_review</code></td><td>Registered; cannot authenticate anyone yet</td></tr>
-    <tr><td><code>verified</code></td><td>Live</td></tr>
-    <tr><td><code>rejected</code></td><td>Review declined</td></tr>
+    <tr><td><code>verified</code></td><td>Live. Where an application arrives.</td></tr>
+    <tr><td><code>under_review</code></td><td>Held by the platform pending a decision</td></tr>
+    <tr><td><code>rejected</code></td><td>Declined by the platform</td></tr>
     <tr><td><code>suspended</code></td><td>Access withdrawn; reinstatable</td></tr>
     <tr><td><code>deleted</code></td><td>Terminal. The ID is never reused.</td></tr>
   </tbody>
@@ -120,14 +120,6 @@ Idempotency-Key: &lt;key&gt;
 <p>
   Webhooks are a notification channel, not an authorization one. Never substitute a delivered
   event for an online check.
-</p>
-
-<h3>Consent</h3>
-
-<p>
-  Whether a user is prompted is a <strong>backend-only</strong> policy
-  (<code>notify_users</code>). It is set by Silicon during review, is never returned by the
-  organization-facing endpoints, and organization administrators cannot see or change it.
 </p>
 
 <h2>Credentials</h2>

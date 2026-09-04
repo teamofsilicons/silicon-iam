@@ -721,48 +721,15 @@ async fn change_admin_role(
     .await
     .map_err(support::transition_database)?
     .ok_or(AppError::NotFound)?;
-    // A new administrator starts with the whole catalogue except the authority
-    // to make or unmake other administrators: that one stays with the owner,
-    // and with whoever the owner grants it to explicitly. Promotion used to
-    // grant nothing at all, which left every fresh admin unable to act until
-    // someone set their capabilities by hand.
     if promote {
-        let defaults = sqlx::query_scalar::<_, String>(
-            r"
-            SELECT capability
-            FROM iam.organization_capability_catalog
-            WHERE allowed_for_carbon
-              AND capability NOT IN ('admins.create', 'admins.manage')
-            ORDER BY capability
-            ",
+        grant_default_administrator_capabilities(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            membership_id,
+            scope.access.membership_id,
+            "administrator promoted",
         )
-        .fetch_all(&mut *scope.transaction)
-        .await
-        .map_err(support::database)?;
-        for capability in &defaults {
-            sqlx::query(
-                r"
-                INSERT INTO iam.organization_capability_grants (
-                    id, organization_id, grantee_membership_id, capability,
-                    granted_by_membership_id, reason
-                )
-                SELECT $1, $2, $3, $4, $5, 'administrator promoted'
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM iam.organization_capability_grants
-                    WHERE organization_id = $2 AND grantee_membership_id = $3
-                      AND capability = $4 AND revoked_at IS NULL
-                )
-                ",
-            )
-            .bind(Uuid::now_v7())
-            .bind(scope.access.organization_id)
-            .bind(membership_id)
-            .bind(capability)
-            .bind(scope.access.membership_id)
-            .execute(&mut *scope.transaction)
-            .await
-            .map_err(support::database)?;
-        }
+        .await?;
     }
     let authorization = fetch_authorization(
         &mut scope.transaction,
@@ -1112,6 +1079,62 @@ async fn validate_active_silicon(
 ) -> Result<(), AppError> {
     if let Some(membership_id) = membership_id {
         validate_active_silicons(transaction, organization_id, &[membership_id]).await?;
+    }
+    Ok(())
+}
+
+/// Grants the capabilities an administrator holds by default.
+///
+/// UNDERSTANDING.md settles the set: an administrator holds every right except
+/// creating or removing other administrators. Those two stay with the owner,
+/// and with whoever the owner grants them to explicitly.
+///
+/// Anything already active is skipped, so applying this twice is harmless --
+/// which matters because both a promotion and an ownership transfer land here,
+/// and a transfer revokes the outgoing owner's grants on its way past.
+pub(super) async fn grant_default_administrator_capabilities(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    membership_id: Uuid,
+    granted_by_membership_id: Uuid,
+    reason: &'static str,
+) -> Result<(), AppError> {
+    let defaults = sqlx::query_scalar::<_, String>(
+        r"
+        SELECT capability
+        FROM iam.organization_capability_catalog
+        WHERE allowed_for_carbon
+          AND capability NOT IN ('admins.create', 'admins.manage')
+        ORDER BY capability
+        ",
+    )
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(support::database)?;
+    for capability in &defaults {
+        sqlx::query(
+            r"
+            INSERT INTO iam.organization_capability_grants (
+                id, organization_id, grantee_membership_id, capability,
+                granted_by_membership_id, reason
+            )
+            SELECT $1, $2, $3, $4, $5, $6
+            WHERE NOT EXISTS (
+                SELECT 1 FROM iam.organization_capability_grants
+                WHERE organization_id = $2 AND grantee_membership_id = $3
+                  AND capability = $4 AND revoked_at IS NULL
+            )
+            ",
+        )
+        .bind(Uuid::now_v7())
+        .bind(organization_id)
+        .bind(membership_id)
+        .bind(capability)
+        .bind(granted_by_membership_id)
+        .bind(reason)
+        .execute(&mut **transaction)
+        .await
+        .map_err(support::database)?;
     }
     Ok(())
 }

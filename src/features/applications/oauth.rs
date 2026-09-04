@@ -35,7 +35,7 @@ use super::{
         AppTokenForm, IntrospectionResponse, LoginQuery, LoginStatusQuery, PublicActor,
         ShortLivedTokenRequest, ShortLivedTokenResponse, TokenInput, TokenResponse,
     },
-    security::{ApplicationClient, Bearer, BrowserSession},
+    security::{ApplicationClient, Bearer, BrowserSession, MaybeBrowserSession},
     validation,
 };
 
@@ -370,10 +370,18 @@ enum RefreshExchange {
 /// webhook recipients still resolve.
 pub(super) async fn login(
     State(state): State<ApiState>,
-    session: BrowserSession,
+    MaybeBrowserSession(session): MaybeBrowserSession,
     Query(query): Query<LoginQuery>,
 ) -> Result<Response, ApiError> {
     validation::login(&query)?;
+    // "In iam if the user is already logged in, move on to the next step.
+    // Otherwise prompt the login." The prompt is a browser surface and lives
+    // in the authentication frontend, so an unauthenticated visitor is sent
+    // there with their request intact rather than being told, in JSON, that
+    // they are not signed in.
+    let Some(session) = session else {
+        return redirect_response(StatusCode::FOUND, &sign_in_location(&state, &query)?, false);
+    };
     let Some(app_id) = query.app_id.as_deref() else {
         return Ok(login_page(
             "Signed in",
@@ -679,6 +687,33 @@ pub(super) async fn issue_short_lived_token(
     Ok((StatusCode::CREATED, Json(response)).into_response())
 }
 
+/// Where to send somebody who has to sign in first.
+///
+/// The authentication frontend owns the prompt, and `<auth_base_url>/login` is
+/// the address UNDERSTANDING.md gives for it. The original request is carried
+/// across unchanged so the frontend can finish the login it was asked for.
+fn sign_in_location(state: &ApiState, query: &LoginQuery) -> Result<String, ApiError> {
+    let mut location = state
+        .settings
+        .server
+        .auth_base_url
+        .join("login")
+        .map_err(|_| ApiError::internal("login_sign_in_url"))?;
+    {
+        let mut pairs = location.query_pairs_mut();
+        if let Some(app_id) = &query.app_id {
+            pairs.append_pair("app_id", app_id);
+        }
+        if let Some(redirect_uri) = &query.redirect_uri {
+            pairs.append_pair("redirect_uri", redirect_uri);
+        }
+        if let Some(org_id) = &query.org_id {
+            pairs.append_pair("org_id", org_id);
+        }
+    }
+    Ok(location.to_string())
+}
+
 /// Reports what became of a token that was shown rather than delivered.
 ///
 /// The page that shows a token cannot run a script -- there is no `script-src`
@@ -693,10 +728,17 @@ pub(super) async fn login_status(
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(session.carbon_id))
         .await
         .map_err(|_| ApiError::internal("login_status_context"))?;
-    let status = sqlx::query_scalar::<_, String>(
+    // Three outcomes, not two: spent, still live, or actually expired. The
+    // page's own refresh fires just after the token's lifetime, so the normal
+    // arrival here is settled -- but somebody who opens this URL early should
+    // not be told a working token is dead.
+    let outcome = sqlx::query_as::<_, (bool, bool)>(
         r"
-        SELECT request.status
+        SELECT code.consumed_at IS NOT NULL AS spent,
+               code.expires_at > transaction_timestamp() AS live
         FROM iam.oauth_authorization_requests AS request
+        JOIN iam.oauth_authorization_codes AS code
+          ON code.authorization_request_id = request.id
         WHERE request.id = $1
           AND request.subject_principal_id = $2
         ",
@@ -711,24 +753,32 @@ pub(super) async fn login_status(
         .commit()
         .await
         .map_err(|_| ApiError::internal("login_status_commit"))?;
-    Ok(if status == "consumed" {
-        login_page(
+    let (spent, live) = outcome;
+    Ok(match (spent, live) {
+        (true, _) => login_page(
             "Authenticated",
             "Authenticated successfully.",
             "The application exchanged your token and signed you in.",
             "",
             "You can close this page.",
             None,
-        )
-    } else {
-        login_page(
+        ),
+        (false, true) => login_page(
+            "Waiting",
+            "Still waiting.",
+            "This token has not been used yet, and has not run out.",
+            "",
+            "Leave this page open; it will say whether the login completed.",
+            Some(query.request),
+        ),
+        (false, false) => login_page(
             "Token expired",
             "Token expired.",
             "This token was not used before it ran out, so it is no longer valid.",
             "",
             "Start the login again to get a new one.",
             None,
-        )
+        ),
     })
 }
 
