@@ -486,7 +486,7 @@ For verification step that sends otp to the email and phone number, just enterin
 
 Any action that can be performed in actual IAm should be producable at the test enviroment layer as well. So the test enviorment doesen't actually reproduce the api's but the same api's just for a different database. 
 
-Access tokens, refresh tokens, short-lived tokens, STKs, app secrets, sessions, OBO proofs, and API keys must contain or resolve to an test enviroment. Production must reject test credentials and vice versa.
+Access tokens, refresh tokens, short-lived tokens, STKs, app secrets, sessions, OBO proofs must contain or resolve to an test enviroment. Production must reject test credentials and vice versa.
 
 ### Apps in a test enviorment
 
