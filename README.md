@@ -276,7 +276,9 @@ cargo run -p silicon-iam-cli -- --url http://127.0.0.1:8080 login --email you@ex
 cargo run -p silicon-iam-cli -- commands   # every command, at every depth
 ```
 
-Each crate's README documents its own use.
+The consumer guides live with the rest of the integration documentation:
+[`docs/client/README.md`](docs/client/README.md) covers the Rust client and
+[`docs/cli/README.md`](docs/cli/README.md) covers the `iam` command.
 
 The two published crates are licensed Apache-2.0 and carry their own `LICENSE`;
 the server in this repository stays under the proprietary licence at the root.
@@ -428,7 +430,7 @@ else is grouped by what it is.
 | `migrations/testing/` | The per-environment scoping overlay, applied only to a testing database |
 | `crates/client/` | `silicon-iam-client`, the Rust client for the API (Apache-2.0) |
 | `crates/cli/` | `silicon-iam-cli`, the `iam` command-line client built on it (Apache-2.0) |
-| `docs/` | The whole documentation surface: `openapi.yaml`, `API_DOCS.md`, and the `api/` and `client/` manuals embedded at compile time |
+| `docs/` | The whole consumer documentation surface: its index, `openapi.yaml`, `API_DOCS.md`, CLI and Rust-client guides, and the `api/` and `client/` manuals embedded at compile time |
 | `deploy/` | Runtime database roles, reviewed grants, and cloud provisioning |
 | `scripts/` | The local bootstrap and the CI boundary checks |
 | `Cargo.toml`, `Dockerfile`, `compose.yaml` | Build and local composition |
