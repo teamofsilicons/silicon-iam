@@ -236,7 +236,7 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 
 | Command | Required input | Authority and important constraints |
 | --- | --- | --- |
-| `iam login` | For a new session, exactly one of `--email`, `--phone`, or `--carbon-id`; the code is prompted unless `--code` is given | Carbon login. With an existing session, no identity is needed. `--app-id` additionally mints an SLT; it never logs the Application in directly. |
+| `iam login` | Exactly one of `--email`, `--phone`, or `--carbon-id`, or `--app-id` to reuse a stored session; the code is prompted unless `--code` is given | Carbon login. `--app-id` without an identity reuses the existing session to mint an SLT; with an identity it first signs in. A bare `iam login` is incomplete even when signed in. It never logs the Application in directly. |
 | `iam silicon-login` | Silicon ID and STK at flags/prompts, or only `--app-id` with a stored Silicon session | `--app-id` mints an SLT; omit both credentials to reuse the current Silicon session. A canonical `handle:org` supplies the organization when none is selected. |
 | `iam logout` | None | Ends the current Carbon session remotely; Silicon logout is local. `--local-only` and `--all` conflict. `--all` uses step-up action `account.sessions_revoke_all` on the Carbon principal UUID, and affected sessions must satisfy the 12-hour rule. |
 | `iam whoami` | None | Requires an IAM session in the selected production or test plane. |

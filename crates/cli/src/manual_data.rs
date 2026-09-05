@@ -18,7 +18,7 @@ pub(super) static DOCUMENTS: &[Document] = &[
         topic: "cli",
         title: "Complete CLI guide and command reference",
         source: "docs/cli/README.md",
-        source_sha256: "19d9b58f995634d0f3c4dcb6db750c1565995951d46448cf80be7bcbe1ac64d5",
+        source_sha256: "d51cf8d1c6007b6c90982057aa52eec2d74c1e2664d4098f608be1bc111a3f4d",
         format: "markdown",
         aliases: &["commands"],
         content: include_str!("manual_assets/cli.md"),
