@@ -54,6 +54,35 @@ A short-lived token. Three steps, two of them yours.
 
 The short-lived token lives **two minutes** and is good for exactly one exchange. It is bound to the person, to your application, and to the session it was minted from. When the login names an organization, the exchanged token family is bound to that membership as well.
 
+### Example: Silicon Briefcase on an external domain
+
+External applications can use IAM login on their own domains. Assume Briefcase is registered under `tos` as `tos>briefcase` and implements `https://briefcase.teamofsilicons.com/auth/callback`. These are example registration and callback values, not a claim that this route is implemented in the deployed Briefcase.
+
+```
+app_id: tos>briefcase
+redirect_uri: https://briefcase.teamofsilicons.com/auth/callback
+
+Browser login URL:
+https://auth.iam.teamofsilicons.com/login?app_id=tos%3Ebriefcase&redirect_uri=https%3A%2F%2Fbriefcase.teamofsilicons.com%2Fauth%2Fcallback
+
+IAM returns the browser to:
+https://briefcase.teamofsilicons.com/auth/callback?slt=<SHORT_LIVED_TOKEN>
+```
+
+`app_id` identifies the registered application; use the full `tos>briefcase`, not just `briefcase`. `redirect_uri` is the application's callback, not its registered `base_url`, webhook URL, or an IAM endpoint. The callback may contain a path. Build query parameters with a URL library so `>` becomes `%3E` and the callback is correctly encoded.
+
+Briefcase's **server** reads `slt` and sends a form-encoded request to `https://backend.iam.teamofsilicons.com/api/v1/app-auth/tokens`, with HTTP Basic username `tos>briefcase`, password equal to its IAM app secret, and a fresh `Idempotency-Key` for the logical exchange:
+
+```
+Content-Type: application/x-www-form-urlencoded
+
+app_id=tos%3Ebriefcase&slt=<URL_ENCODED_SHORT_LIVED_TOKEN>
+```
+
+The SLT expires after two minutes and is single-use. Keep the app secret and returned tokens server-side; do not exchange the token through the IAM frontend gateway, collect IAM OTPs in Briefcase, or log callback query strings. Bind the callback to a login initiated by that browser, and remove the SLT from the browser URL after establishing the app's session.
+
+The example omits `org_id`, so login is unscoped. The `tos>` prefix identifies app ownership; it does not itself require the user to belong to `tos`. Append `&org_id=tos` when the session must be bound to the user's active `tos` membership, including organization-bound OBO use. This application-login flow is distinct from WorkOS organization SSO.
+
 ### When there is nobody to redirect
 
 A Silicon has no browser, and a Carbon that already holds a session should not have to start another one. Either can ask for the token directly:

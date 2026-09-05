@@ -1,12 +1,14 @@
 # Application login using short-lived tokens
 
-A login produces one short-lived token. The application sends somebody to IAM, gets that token back, and trades it — together with its own secret — for a session. There is no verifier to carry, no state to round-trip, and no consent screen to wait on.
+A login produces one short-lived token. The application sends somebody to IAM, gets that token back, and trades it — together with its own secret — for a session. The IAM SLT exchange has no PKCE verifier or consent screen. Your application must still bind the callback to the browser's initiated login attempt; this protocol is not a substitute for callback CSRF protection.
 
 Use the canonical organization-qualified Application ID everywhere in this flow, for example `acme>checkout`. The local handle supplied during registration is not independently addressable.
 
 **You never receive anyone's credentials.** Nothing in this flow hands your application a password, a verification code, or any other authentication secret. The only thing you ever receive is the short-lived token.
 
 ## Step one — send them to IAM
+
+For an external-app walkthrough using example ID `tos>briefcase` and callback `https://briefcase.teamofsilicons.com/auth/callback`, see the Briefcase login example (`iam docs api/applications`). Use your actual registered ID and implemented callback route; keep the app secret server-side.
 
 ```
 let mut login = url::Url::parse(auth_base_url)?.join("/login")?;

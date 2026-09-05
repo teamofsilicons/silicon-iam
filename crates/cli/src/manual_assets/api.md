@@ -16,6 +16,51 @@ Versioned JSON APIs are under `/api/v1`. The compatibility handshake is the
 unversioned `/api/version`; liveness and readiness remain at `/healthz` and
 `/readyz`.
 
+## Example: external application login
+
+Assume Silicon Briefcase is registered as `tos>briefcase` and implements the
+callback below. These are **example values**, not verification of the deployed
+Briefcase registration or callback route.
+
+```text
+app_id: tos>briefcase
+redirect_uri: https://briefcase.teamofsilicons.com/auth/callback
+```
+
+Send the browser to this URL (query values are percent-encoded):
+
+```text
+https://auth.iam.teamofsilicons.com/login?app_id=tos%3Ebriefcase&redirect_uri=https%3A%2F%2Fbriefcase.teamofsilicons.com%2Fauth%2Fcallback
+```
+
+After authentication, IAM redirects back to:
+
+```text
+https://briefcase.teamofsilicons.com/auth/callback?slt=<SHORT_LIVED_TOKEN>
+```
+
+Briefcase's **backend** exchanges the SLT at
+`https://backend.iam.teamofsilicons.com/api/v1/app-auth/tokens`, using HTTP Basic
+with username `tos>briefcase` and its app secret as the password. Include an
+`Idempotency-Key` and a form-encoded (`application/x-www-form-urlencoded`) body
+with `app_id` and `slt`. Reuse that key and body for retries of the same exchange.
+The SLT lasts two minutes and is single-use; the response supplies an access
+token and a rotating refresh token. Keep credentials and tokens server-side,
+bind the callback to the initiating browser's login attempt, avoid logging its
+query string, and redirect to a clean app URL afterward.
+
+`redirect_uri` is the app's implemented callback, **not** its backend `base_url`
+or webhook URL. The `tos>` prefix identifies the owning organization, not the
+user's required membership. Omit `org_id` for unscoped login, as above; append
+`&org_id=tos` to require active membership and bind the session to `tos`
+(needed for organization-bound OBO). Applications receive SLTs, never IAM OTPs.
+This is separate from WorkOS organization SSO.
+
+See the [full application login example](api/applications.html#briefcase-login-example)
+and [Rust client login guide](client/login.html) for implementation details.
+
+## API documentation surfaces
+
 The same origin also serves three HTML surfaces, which are deliberately outside
 the JSON contract and are not described in `openapi.yaml`:
 

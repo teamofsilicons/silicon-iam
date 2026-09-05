@@ -131,6 +131,58 @@ Content-Type: application/json
   login names an organization, the exchanged token family is bound to that membership as well.
 </p>
 
+<h3 id="briefcase-login-example">Example: Silicon Briefcase on an external domain</h3>
+
+<p>
+  External applications can use IAM login on their own domains. Assume Briefcase is registered
+  under <code>tos</code> as <code>tos&gt;briefcase</code> and implements
+  <code>https://briefcase.teamofsilicons.com/auth/callback</code>. These are example registration
+  and callback values, not a claim that this route is implemented in the deployed Briefcase.
+</p>
+
+<pre><code>app_id: tos&gt;briefcase
+redirect_uri: https://briefcase.teamofsilicons.com/auth/callback
+
+Browser login URL:
+https://auth.iam.teamofsilicons.com/login?app_id=tos%3Ebriefcase&amp;redirect_uri=https%3A%2F%2Fbriefcase.teamofsilicons.com%2Fauth%2Fcallback
+
+IAM returns the browser to:
+https://briefcase.teamofsilicons.com/auth/callback?slt=&lt;SHORT_LIVED_TOKEN&gt;</code></pre>
+
+<p>
+  <code>app_id</code> identifies the registered application; use the full <code>tos&gt;briefcase</code>,
+  not just <code>briefcase</code>. <code>redirect_uri</code> is the application's callback,
+  not its registered <code>base_url</code>, webhook URL, or an IAM endpoint. The callback may
+  contain a path. Build query parameters with a URL library so <code>&gt;</code> becomes
+  <code>%3E</code> and the callback is correctly encoded.
+</p>
+
+<p>
+  Briefcase's <strong>server</strong> reads <code>slt</code> and sends a form-encoded request to
+  <code>https://backend.iam.teamofsilicons.com/api/v1/app-auth/tokens</code>, with HTTP Basic
+  username <code>tos&gt;briefcase</code>, password equal to its IAM app secret, and a fresh
+  <code>Idempotency-Key</code> for the logical exchange:
+</p>
+
+<pre><code>Content-Type: application/x-www-form-urlencoded
+
+app_id=tos%3Ebriefcase&amp;slt=&lt;URL_ENCODED_SHORT_LIVED_TOKEN&gt;</code></pre>
+
+<p>
+  The SLT expires after two minutes and is single-use. Keep the app secret and returned tokens
+  server-side; do not exchange the token through the IAM frontend gateway, collect IAM OTPs
+  in Briefcase, or log callback query strings. Bind the callback to a login initiated by that
+  browser, and remove the SLT from the browser URL after establishing the app's session.
+</p>
+
+<p>
+  The example omits <code>org_id</code>, so login is unscoped. The <code>tos&gt;</code> prefix
+  identifies app ownership; it does not itself require the user to belong to <code>tos</code>.
+  Append <code>&amp;org_id=tos</code> when the session must be bound to the user's active
+  <code>tos</code> membership, including organization-bound OBO use. This application-login
+  flow is distinct from WorkOS organization SSO.
+</p>
+
 <h3>When there is nobody to redirect</h3>
 
 <p>

@@ -1,7 +1,8 @@
 <p class="lede">
   A login produces one short-lived token. The application sends somebody to IAM, gets that token
-  back, and trades it — together with its own secret — for a session. There is no verifier to
-  carry, no state to round-trip, and no consent screen to wait on.
+  back, and trades it — together with its own secret — for a session. The IAM SLT exchange
+  has no PKCE verifier or consent screen. Your application must still bind the callback to
+  the browser's initiated login attempt; this protocol is not a substitute for callback CSRF protection.
 </p>
 
 <p>
@@ -19,6 +20,13 @@
 </div>
 
 <h2>Step one — send them to IAM</h2>
+
+<p>
+  For an external-app walkthrough using example ID <code>tos&gt;briefcase</code> and callback
+  <code>https://briefcase.teamofsilicons.com/auth/callback</code>, see
+  <a href="/docs/api/applications#briefcase-login-example">the Briefcase login example</a>.
+  Use your actual registered ID and implemented callback route; keep the app secret server-side.
+</p>
 
 <pre><code>let mut login = url::Url::parse(auth_base_url)?.join("/login")?;
 login.query_pairs_mut()

@@ -10,6 +10,7 @@ into public contracts, runnable examples, and client guidance.
 | Need | Document |
 | --- | --- |
 | Understand HTTP behavior and security semantics | [`API_DOCS.md`](./API_DOCS.md) |
+| Add IAM login to an external app: Briefcase example | [`API_DOCS.md#example-external-application-login`](./API_DOCS.md#example-external-application-login) |
 | Generate a client or inspect the normative wire contract | [`openapi.yaml`](./openapi.yaml) |
 | Use the `iam` command-line client | [`cli/README.md`](./cli/README.md) |
 | Upgrade an existing CLI home or diagnose local logout | [`cli/storage.md`](./cli/storage.md) |
