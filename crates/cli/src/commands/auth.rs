@@ -462,6 +462,9 @@ const fn step_up_action(action: StepUpActionArg) -> models::StepUpAction {
         StepUpActionArg::ApplicationWebhookSecretRotate => {
             models::StepUpAction::ApplicationWebhookSecretRotate
         }
+        StepUpActionArg::ApplicationWebhookApprove => {
+            models::StepUpAction::ApplicationWebhookApprove
+        }
         StepUpActionArg::SiliconRotateToken => models::StepUpAction::SiliconRotateToken,
         StepUpActionArg::PlatformAdminSsoEntitlement => {
             models::StepUpAction::PlatformAdminSsoEntitlement

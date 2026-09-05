@@ -8,10 +8,10 @@ The package name uses a hyphen; Rust imports it with an underscore.
 
 ```
 [dependencies]
-silicon-iam-client = "1.2.0"
+silicon-iam-client = "1.2.1"
 ```
 
-View releases and dependency metadata on [the `silicon-iam-client` package page](https://crates.io/crates/silicon-iam-client). Version `1.2.0` speaks HTTP API major `v1` and requires Rust 1.98 or newer. The crate's SemVer and the HTTP API major are separate version lines: upgrading the crate does not select a different API major.
+View releases and dependency metadata on [the `silicon-iam-client` package page](https://crates.io/crates/silicon-iam-client). Version `1.2.1` speaks HTTP API major `v1` and requires Rust 1.98 or newer. The crate's SemVer and the HTTP API major are separate version lines: upgrading the crate does not select a different API major.
 
 ## Choose the credential for the route
 

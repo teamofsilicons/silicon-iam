@@ -277,6 +277,12 @@ impl Plan {
                     "applications",
                 );
             }
+            AppCommand::ApproveWebhook { app_id } => {
+                self.add(
+                    "Review the activated webhook configuration",
+                    &["app", "webhook", app_id],
+                );
+            }
             AppCommand::SetWebhook { app_id, .. }
             | AppCommand::RotateWebhookSecret { app_id, .. }
             | AppCommand::Replay { app_id, .. } => {
@@ -581,6 +587,12 @@ pub fn application_created(context: &Context, application: &models::Application)
         &["app", "webhook", &application.app_id],
     );
     if application.status == models::ApplicationStatus::Verified {
+        if context.testing_environment_id().is_none() {
+            plan.add(
+                "Learn how to approve this application's pending webhook",
+                &["app", "approve-webhook", &application.app_id, "--help"],
+            );
+        }
         plan.add(
             "Mint an SLT from this stored IAM session",
             &["login", "--app-id", &application.app_id],

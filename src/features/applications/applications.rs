@@ -37,8 +37,8 @@ use super::{
         PublicActor,
     },
     security::{
-        ApplicationClient, Bearer, expected_version, require_carbon, require_platform_capability,
-        require_step_up,
+        ApplicationClient, Bearer, expected_version, lock_step_up_actor, require_carbon,
+        require_platform_capability, require_step_up,
     },
     validation,
 };
@@ -571,6 +571,7 @@ pub(super) async fn rotate_client_secret(
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_secret_rotation_context"))?;
+    lock_step_up_actor(&mut transaction, carbon_id).await?;
     let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
     let caller_scope = format!("carbon:{carbon_id}:application:{}", app.id);
     let claim = idempotency::claim::<ApplicationSecretRotated>(
@@ -945,6 +946,7 @@ pub(super) async fn admin_decide(
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("admin_decision_context"))?;
+    lock_step_up_actor(&mut transaction, carbon_id).await?;
     if input.decision == "delete" {
         for capability in [
             "applications.review",
@@ -1165,6 +1167,29 @@ pub(super) async fn resolve_readable_app(
     for_update: bool,
 ) -> Result<ApplicationView, ApiError> {
     resolve_app(transaction, Some(carbon_id), app_id, "read", for_update).await
+}
+
+/// Resolves only the webhook review surface: organization managers and current
+/// platform application reviewers share this narrow authority. The privileged
+/// grant is locked by an owner-rights helper because runtime roles deliberately
+/// cannot update (or issue locking reads against) platform role grants.
+pub(super) async fn resolve_webhook_review_app(
+    transaction: &mut Transaction<'_, Postgres>,
+    carbon_id: Uuid,
+    app_id: &str,
+    for_update: bool,
+) -> Result<ApplicationView, ApiError> {
+    let platform_reviewer =
+        sqlx::query_scalar::<_, bool>("SELECT iam_private.lock_application_webhook_reviewer($1)")
+            .bind(carbon_id)
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(|_| ApiError::internal("application_webhook_reviewer_lock"))?;
+    if platform_reviewer {
+        resolve_admin_app(transaction, app_id, for_update).await
+    } else {
+        resolve_technical_app(transaction, carbon_id, app_id, for_update).await
+    }
 }
 
 async fn resolve_admin_app_for_claim(

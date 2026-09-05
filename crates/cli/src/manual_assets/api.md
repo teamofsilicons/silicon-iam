@@ -1021,6 +1021,7 @@ authenticate after it commits.
 | POST | `.../client-secret-rotations` | Rotate and reveal a new client secret once |
 | POST | `.../webhook-secret-rotations` | Install a caller-supplied successor webhook signing secret |
 | GET/PUT | `.../webhook` | Inspect active endpoint or propose replacement |
+| POST | `.../webhook/approvals` | Approve a verified Application's pending webhook with owning-org or platform review authority |
 | GET | `.../webhook/dead-letters` | List dead-letter deliveries |
 | POST | `.../webhook/dead-letters/replays` | Replay one or an ordered batch of dead letters |
 | GET | `.../login-history` | App-specific authorization/login history |
@@ -1073,12 +1074,16 @@ query string, and IAM appends the short-lived token to it.
 
 An Application holds the whole scope catalogue: a login carries all of it, so
 there is nothing to request and nothing to approve. An Application webhook
-replacement in production keeps the previous endpoint active until review; v1
+replacement in production keeps the previous endpoint active until approval; v1
 exposes exactly one active destination. During initial production registration
 there is truthfully no active destination: `active_url` is `null`,
 `pending_url` contains the submitted URL, and webhook status is
 `pending_review`. A later production replacement uses
 `replacement_under_review` while preserving the existing `active_url`.
+For an already verified Application, its current owning-org Carbon owner/admin
+or an IAM platform administrator with `applications.review` can approve either
+pending endpoint using the narrow webhook-approval operation below. The
+Application's creator is audit metadata, not a separate owner or authority.
 Testing environments have no platform-reviewer control plane, so creation and
 replacement activate their endpoint immediately and return an `active`
 projection. This makes a fresh test Application able to receive its first
@@ -1119,6 +1124,43 @@ with `409 application_webhook_unchanged`; supplying the exact current secret
 with the current endpoint is rejected by the same stable code. These no-op
 requests do not increment the Application version or emit audit/outbox events.
 
+### Approving a pending webhook
+
+`POST /api/v1/applications/{app_id}/webhook/approvals` activates the pending
+endpoint of an already `verified` Application and retires its former active
+endpoint if there is one. It changes neither Application status nor approved
+scopes. Current owning-organization Carbon owners/admins and IAM platform
+administrators with `applications.review` are eligible; past creator identity
+alone is not permission. A newly created verified Application can have its
+first webhook approved this way. A legacy Application itself still
+`under_review` requires a separate platform application decision.
+
+Send an IAM bearer, `Idempotency-Key`, the current Application `If-Match`, and
+`X-Step-Up-Token` for verified-channel action `application.webhook.approve`
+bound to the internal Application UUID. No request fields are needed: omit the
+body or send `{}`. Read the
+webhook first to obtain `application_id` and the current aggregate version;
+this read also permits platform administrators with `applications.review`.
+The UUID field is optional for old persisted idempotency responses, but current
+reads and new responses include it.
+
+```http
+POST /api/v1/applications/acme%3Ebilling/webhook/approvals
+Authorization: Bearer <current Carbon access token>
+Idempotency-Key: <one logical approval>
+If-Match: "<current Application version>"
+X-Step-Up-Token: <verified-channel assertion bound to Application UUID>
+```
+
+Success is `200` with the existing `ApplicationWebhook` shape and matching
+Application-version `ETag`; it does not return a signing secret. An absent
+pending endpoint or a non-verified Application is `409`, a stale version is
+`412`, and missing preconditions or step-up are rejected. Preserve the same
+key and original input after an uncertain outcome. Testing endpoints normally
+activate immediately and have nothing pending to approve.
+IAM revalidates public HTTPS/DNS safety at approval; an unsafe destination
+returns `422` without activating it.
+
 ### Platform application review
 
 `GET /api/v1/admin/applications` lists the inventory and pending review queue.
@@ -1128,8 +1170,11 @@ requests do not increment the Application version or emit audit/outbox events.
 - approve or reject a pending webhook replacement
 - permanently soft-delete an application and revoke all application authority
 
-Applications arrive verified, so there is no initial registration to admit.
-What remains is control over one that is already in use.
+New Applications arrive verified, so their pending first webhook does not mean
+their registration is awaiting admission. Platform review can still handle
+legacy `under_review` Applications and broader status/configuration decisions.
+The public webhook-approval route above is deliberately narrower and does not
+grant organization administrators any of those platform-only powers.
 
 Review requires a current platform administrator, step-up, idempotency key, and
 ETag. Suspension immediately revokes active application authority. Every

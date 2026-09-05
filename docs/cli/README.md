@@ -7,8 +7,8 @@ see [credential storage](storage.md).
 
 ## Current authorization without waiting for a webhook
 
-This contract is included in CLI/client **1.2.0** and requires the matching
-backend with base migration `0067` and testing overlay `9003`. Deploy those
+This contract was introduced in CLI/client **1.2.0**, remains in **1.2.1**, and
+requires the matching backend with base migration `0067` and testing overlay `9003`. Deploy those
 migrations, runtime grants and backend before publishing/adopting these packages.
 Publishing a crate does not deploy the API; verify the configured backend with
 `iam system version`. Historical 1.1.1 packages do not expose this contract.
@@ -42,21 +42,27 @@ retry it after an uncertain result.
 ## Installation
 
 ```sh
-cargo install silicon-iam-cli --version 1.2.0 --locked
+cargo install silicon-iam-cli --version 1.2.1 --locked
 ```
 
-Release `1.2.0` requires Rust 1.98 or newer, bundles
-`silicon-iam-client` 1.2.0, and speaks HTTP API major `v1`. The crate/CLI
+Release `1.2.1` requires Rust 1.98 or newer, bundles
+`silicon-iam-client` 1.2.1, and speaks HTTP API major `v1`. The crate/CLI
 SemVer and HTTP API major are separate version lines. Check the installed
 binary with `iam --version`, and inspect/negotiate with the configured service
 using `iam system version`.
 
-Published 1.2.0 is built from
-[`ec04ec9`](https://github.com/teamofsilicons/silicon-iam/tree/ec04ec92444e02c88a39c83a286dbf47b5ded458/crates/cli);
-use its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/ec04ec92444e02c88a39c83a286dbf47b5ded458/docs/cli/README.md)
+Release 1.2.1 is built from
+[`v1.2.1`](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.1/crates/cli);
+use its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.1/docs/cli/README.md)
 to audit that installed version. Later changes on `main` are unreleased until
 separately published. An automatic update may install a newer release on a
 later invocation; check `iam --version` again when collecting diagnostics.
+
+This patch adds `app approve-webhook`, fixes empty-tag confirmations, duplicate
+local-configuration update warnings and required login-input help, and adds
+phase-specific logout failure diagnostics. The webhook-approval command requires
+the matching backend deployment. See the [release notes](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.1/docs/README.md#cliclient-121) for scope and
+the remaining unconfirmed logout observation.
 
 **Upgrading an older installation:** an existing Unix IAM home with mode `0755`
 is refused even if `credentials.json` is `0600`. The home must be owned by the
@@ -77,7 +83,7 @@ registry or unavailable Cargo executable produces only a warning on stderr;
 maintenance never replaces the completed command's output or exit status.
 The process exits after any due maintenance finishes.
 
-In the unreleased source, a command that already failed to load or safely access
+Since 1.2.1, a command that already failed to load or safely access
 local configuration/state skips post-command maintenance, so the same local
 failure is not repeated as an update warning. Authentication and service errors
 still allow the normal due update check.
@@ -218,7 +224,7 @@ repository's `docs/` directory nor a documentation generator.
 
 ## Complete command reference
 
-This is the complete `1.2.0` command tree emitted by `iam commands`. Angle
+This is the complete `1.2.1` command tree emitted by `iam commands`. Angle
 brackets mark required values; square brackets mark optional values. A row for
 a noun such as `iam member` is a help namespace and requires one of the listed
 subcommands. Run `iam <command> --help` for every flag, accepted value, default,
@@ -361,7 +367,7 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | --- | --- | --- |
 | `iam app` | `<subcommand>` | Application namespace. Local IDs use `--org`; canonical IDs use `org>handle`. |
 | `iam app list` | None | Carbon session; intentionally lists Applications across every organization the Carbon can administer. `--org` does not filter this view; `--status` does. |
-| `iam app create` | `<app-id> --name <name> --webhook-url <https-url> --webhook-secret <secret> --base-url <origin>` | Active Carbon member of the owning org. The webhook secret is caller-chosen (32–512 visible ASCII); the generated client secret is returned once. Base URL is a pathless origin with no trailing slash. |
+| `iam app create` | `<app-id> --name <name> --webhook-url <https-url> --webhook-secret <secret> --base-url <origin>` | Current Carbon owner/admin of the owning org. The webhook secret is caller-chosen (32–512 visible ASCII); the generated client secret is returned once. Base URL is a pathless origin with no trailing slash. |
 | `iam app show` | `<app-id>` | Carbon Application administrator. |
 | `iam app update` | `<app-id>` plus at least one update or `--clear-*` flag | Carbon Application administrator; `--obo-endpoints` replaces the complete catalog. |
 | `iam app rotate-secret` | `<app-id>` | Step-up action `application.client_secret.rotate` on the Application UUID; returns the replacement client secret once. |
@@ -379,8 +385,9 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | `iam app obo verify` | `<audience-app-id> --method <method> --path <path>` plus proof and audience secret at flags or prompts | Audience Application consumes the proof once and verifies the exact method, registered path, and body bytes. `--body` conflicts with `--body-file`. |
 | `iam app verify-webhook` | `<body-file> --event-id <id> --timestamp <value> --key-version <version> --signature <v1=hex> --webhook-secret <secret>` | Fully local verification over exact raw bytes. Use `-` for stdin. A test-wrapped event requires the matching `--test`; production/test mismatches fail. |
 | `iam app import` | `<canonical-production-app-id>` and `--test <environment-uuid>` | Signed-in test Carbon. If the target org already exists there, the Carbon must be its owner/admin; otherwise import creates the org and ownership. Returns a fresh test-only client secret once. |
-| `iam app webhook` | `<app-id>` | Carbon Application administrator; reads the current endpoint. |
+| `iam app webhook` | `<app-id>` | Current owning-org Carbon owner/admin or IAM platform administrator with `applications.review`; reads the endpoint and internal Application UUID for step-up. |
 | `iam app set-webhook` | `<app-id> --webhook-url <https-url>` | Carbon Application administrator. The first replacement of an imported test webhook also requires a caller-chosen `--webhook-secret`; test endpoints activate immediately. |
+| `iam app approve-webhook` | `<app-id> --step-up <assertion>` | Current owning-org Carbon owner/admin or IAM platform administrator with `applications.review`. Step-up action `application.webhook.approve` on the internal Application UUID. Activates only a pending endpoint of an already verified app; no Application status or scope change. |
 | `iam app dead-letters` | `<app-id>` | Carbon Application administrator; optional paging. |
 | `iam app replay` | `<app-id>` and one or more `--delivery <uuid>` | Re-queues only the named dead letters. |
 | `iam app history` | `<app-id>` | Carbon Application administrator; paginated Application-login history. |
@@ -500,6 +507,32 @@ not even a trailing `/` — and no path, credentials, query, or fragment. HTTPS
 is required except for literal `localhost`, `127.0.0.1`, or `::1` development.
 `--webhook-url` is different: it is a complete HTTPS delivery endpoint, so it
 may contain a path and may end in `/`.
+
+### Approving a production webhook
+
+A new Application is already `verified`, but its first production webhook
+starts pending; later URL replacements leave the old URL active until approval.
+The current owning-org Carbon owner/admin or an IAM platform administrator
+with `applications.review` can approve that pending endpoint. Being the
+Application's creator alone does not grant authority.
+
+```sh
+APP_ID='acme>billing'
+APP_UUID=$(iam -o json app webhook "$APP_ID" | jq -r .application_id)
+TOKEN=$(iam -o json step-up application.webhook.approve "$APP_UUID" \
+    | jq -r .step_up_token)
+iam app approve-webhook "$APP_ID" --step-up "$TOKEN"
+```
+
+The assertion uses the internal UUID from `app webhook`, not the public
+`org>handle` ID. The CLI reads the current Application version and sends an
+idempotent approval with no request fields. Approval changes only the endpoint, not
+Application status or scopes. An Application itself still `under_review`
+must complete platform review separately. A missing pending endpoint or a
+non-verified Application returns a conflict; test endpoints normally activate
+immediately and need no approval.
+
+### Other organization and membership commands
 
 `iam org list --status active|removed` filters the signed-in Carbon's
 membership state. The `status` shown on each returned organization is still
@@ -903,6 +936,7 @@ one internal resource UUID. Every affected command names both values in its
 | `silicon set-webhook`, `delete-webhook`, `set-subscription`, `delete-subscription` | `organization.silicon_webhook.redirect` | target Silicon `membership_id` |
 | `app rotate-secret` | `application.client_secret.rotate` | Application `id` |
 | `app rotate-webhook-secret` | `application.webhook_secret.rotate` | Application `id` |
+| `app approve-webhook` | `application.webhook.approve` | Application `id` |
 | `sso disable` | `organization.sso_change` | organization `id` |
 | `session revoke` | `account.session_revoke` | session ID |
 | `logout --all` when other sessions are active | `account.sessions_revoke_all` | signed-in Carbon `principal_id` |
@@ -925,6 +959,8 @@ iam silicon set-webhook builder \
 Useful UUID sources are `iam -o json org show | jq -r .id`,
 `iam -o json member list`, `iam -o json silicon show <silicon>` (both
 `membership_id` and `principal_id`), `iam -o json app show <app> | jq -r .id`,
+`iam -o json app webhook <app> | jq -r .application_id` (also available to
+platform webhook reviewers),
 `iam -o json session list`, and `iam -o json carbon show | jq -r .principal_id`.
 
 If the code is not supplied, `iam step-up` prompts after sending it to the

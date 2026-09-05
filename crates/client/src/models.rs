@@ -702,8 +702,9 @@ pub enum SsoConfigurationStatus {
 /// to the target session UUID; account.sessions_revoke_all binds it to the
 /// current Carbon principal UUID. The Silicon-webhook redirect action binds
 /// it to the target Silicon membership UUID. The Application client-secret
-/// rotation action binds it to the internal Application UUID. Every action
-/// requires one non-null resource_id.
+/// rotation, webhook-secret rotation and webhook approval actions bind it to
+/// the internal Application UUID. Every action requires one non-null
+/// resource_id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepUpAction {
@@ -731,6 +732,9 @@ pub enum StepUpAction {
     /// `application.webhook_secret.rotate`
     #[serde(rename = "application.webhook_secret.rotate")]
     ApplicationWebhookSecretRotate,
+    /// `application.webhook.approve`
+    #[serde(rename = "application.webhook.approve")]
+    ApplicationWebhookApprove,
     /// `silicon.rotate_token`
     #[serde(rename = "silicon.rotate_token")]
     SiliconRotateToken,
@@ -1143,8 +1147,14 @@ pub struct ApplicationTokenRequest {
 /// Contract type `ApplicationWebhook`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApplicationWebhook {
-    /// Null until the application's initial destination passes platform
-    /// review.
+    /// Internal Application UUID for binding webhook-approval step-up.
+    /// Present on current reads and new mutation responses; optional for
+    /// compatibility with older persisted idempotency responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<Uuid>,
+    /// Null until the application's initial destination is approved; a
+    /// verified application's pending endpoint may be approved by its current
+    /// organization owner/admin or an IAM platform reviewer.
     pub active_url: Option<String>,
     /// The contract's `pending_url`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1164,7 +1174,7 @@ pub struct ApplicationWebhook {
     )]
     pub secret_replay_expires_at: Option<OffsetDateTime>,
     /// Application aggregate version; identical to the response ETag and the
-    /// value required by If-Match for replacement.
+    /// value required by If-Match for replacement or approval.
     pub version: i64,
 }
 

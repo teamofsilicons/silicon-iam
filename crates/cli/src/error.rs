@@ -326,12 +326,18 @@ impl CliError {
             }
             "application_webhook_not_active" => {
                 return Some(
-                    "The webhook destination is not active yet. Check its pending review state with `iam app webhook`."
+                    "The webhook destination is not active yet. Inspect it with `iam app webhook`, then see `iam app approve-webhook --help` for owner/admin approval requirements."
                         .to_owned(),
                 );
             }
             "application_unchanged" | "application_webhook_unchanged" => {
                 return Some("Supply a value that actually changes the Application.".to_owned());
+            }
+            "application_webhook_no_pending_endpoint" => {
+                return Some("There is no pending webhook to approve. Check `iam app webhook`; testing environments activate endpoints automatically.".to_owned());
+            }
+            "application_webhook_approval_state_conflict" => {
+                return Some("Webhook approval requires a verified application. Check `iam app show`; suspended or under-review applications need a separate IAM platform decision.".to_owned());
             }
             "job_role_unchanged" => {
                 return Some(

@@ -68,7 +68,7 @@ Login initiation answers `404` when no active Carbon owns the submitted identity
 
 ## Step-up
 
-Some actions need proof that the person at the keyboard is still the account holder. Step-up is a second factor over an already-authenticated session, and the resulting token is bound to **one action on one resource**: a token minted for `application.client_secret.rotate` or `application.webhook_secret.rotate` on application A is rejected for application B.
+Some actions need proof that the person at the keyboard is still the account holder. Step-up is a second factor over an already-authenticated session, and the resulting token is bound to **one action on one resource**: a token minted for `application.client_secret.rotate` or `application.webhook_secret.rotate` or `application.webhook.approve` on application A is rejected for application B.
 
 1. `POST /api/v1/step-up/challenges` with the action, the resource ID and a channel.
 
@@ -84,7 +84,7 @@ Actions that require it:
 
 - `organization.sso_change`, `organization.silicon_webhook.redirect`
 
-- `application.client_secret.rotate`, `application.webhook_secret.rotate`, `silicon.rotate_token`
+- `application.client_secret.rotate`, `application.webhook_secret.rotate`, `application.webhook.approve`, `silicon.rotate_token`
 
 - `platform_admin.application_review`, `platform_admin.sso_entitlement`
 

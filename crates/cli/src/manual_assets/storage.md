@@ -11,8 +11,8 @@ Do not delete `credentials.lock` or the `session-*.lock` files while CLI process
 ## Upgrading an existing IAM home
 
 On Unix, the IAM home must be owned by the current user with mode `0700`. Older
-CLI installations may have created it with mode `0755`; 1.2.0 intentionally
-rejects that directory even if its credential file is already `0600`. This
+CLI installations may have created it with mode `0755`; 1.2.0 and newer intentionally
+reject that directory even if its credential file is already `0600`. This
 requires a one-time permission repair, not a new login or deleting credentials.
 
 Before changing permissions, stop other CLI processes and inspect the exact
@@ -50,7 +50,7 @@ by a signal is not a successful removal. A retained session after such a failure
 is different from a session remaining after a confirmed successful removal.
 Do not silently retry and discard the first failure's evidence.
 
-The unreleased source adds phase-specific diagnostics: `Local credential
+Version 1.2.1 adds phase-specific diagnostics: `Local credential
 removal could not be confirmed.` identifies an unsuccessful local-removal
 attempt, while `IAM confirmed remote logout, but local credential removal could
 not be confirmed.` distinguishes a completed remote logout from a subsequent

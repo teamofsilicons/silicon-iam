@@ -3066,7 +3066,11 @@ paths:
     get:
       tags: [Applications, Webhooks]
       operationId: getApplicationWebhook
-      security: [{ iamBearer: [] }]
+      description: >-
+        Available to the owning organization's current Carbon owner/admin
+        or an IAM platform administrator with applications.review. Includes
+        the internal Application UUID used to bind webhook-approval step-up.
+      security: [{ iamBearer: [] }, { platformAdminBearer: [] }]
       parameters: [{ $ref: '#/components/parameters/AppIdPath' }]
       responses:
         '200':
@@ -3083,8 +3087,10 @@ paths:
       tags: [Applications, Webhooks]
       operationId: proposeApplicationWebhookReplacement
       description: >-
-        In production, validates and proposes a replacement for platform
-        review while the current endpoint remains active. In a testing
+        In production, validates and proposes a replacement for approval by
+        the owning organization's current owner/admin or an IAM platform
+        administrator with applications.review, while the current endpoint
+        remains active. In a testing
         environment, which deliberately has no platform reviewer, atomically
         retires the old endpoint and activates this replacement immediately.
         Repeating the active or pending URL without a replacement secret, or
@@ -3124,8 +3130,8 @@ paths:
               schema: { $ref: '#/components/schemas/ApplicationWebhook' }
         '202':
           description: >-
-            HTTPS destination passed SSRF validation and awaits platform
-            review. Normally the active destination and signing secret are
+            HTTPS destination passed SSRF validation and awaits webhook
+            approval. Normally the active destination and signing secret are
             unchanged. If the request supplies a replacement secret, IAM
             installs it for the pending endpoint and echoes it for v1
             compatibility. The body version and ETag are the same Application
@@ -3142,6 +3148,62 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApplicationWebhook' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/applications/{app_id}/webhook/approvals:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    post:
+      tags: [Applications, Webhooks]
+      operationId: approveApplicationWebhook
+      description: >-
+        Activates the pending webhook destination of an already verified
+        Application, retiring its previous active endpoint if present.
+        Authorized for the owning organization's current Carbon owner/admin
+        or an IAM platform administrator with applications.review. The
+        creator is audit metadata, not an independent source of authority.
+        Requires verified-channel step-up action application.webhook.approve
+        bound to the internal Application UUID, the current Application
+        If-Match version, and an Idempotency-Key. No request fields are needed;
+        omit the body or send an empty JSON object.
+        This narrow operation changes neither Application status nor scopes.
+        A newly registered verified Application's first pending webhook is
+        eligible; an Application itself still under_review requires platform
+        application review. Missing pending endpoints return 409
+        application_webhook_no_pending_endpoint; non-verified Applications
+        return 409 application_webhook_approval_state_conflict. Test endpoints
+        normally activate immediately and therefore have no pending endpoint
+        to approve. IAM revalidates the destination's public HTTPS/DNS safety
+        at approval; an unsafe destination returns 422 without activation.
+      x-required-step-up-assurance: verified_channel
+      security:
+        - { iamBearer: [], stepUpToken: [] }
+        - { platformAdminBearer: [], stepUpToken: [] }
+      parameters:
+        - { $ref: '#/components/parameters/AppIdPath' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '200':
+          description: Pending webhook activated. The body version and ETag are the same Application aggregate version; no secret is returned.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationWebhook' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -3951,8 +4013,9 @@ components:
         resource_id to the target session UUID; account.sessions_revoke_all
         binds it to the current Carbon principal UUID. The Silicon-webhook
         redirect action binds it to the target Silicon membership UUID. The
-        Application client-secret rotation action binds it to the internal
-        Application UUID. Every action requires one non-null resource_id.
+        Application client-secret rotation, webhook-secret rotation and
+        webhook approval actions bind it to the internal Application UUID.
+        Every action requires one non-null resource_id.
       enum:
         - account.session_revoke
         - account.sessions_revoke_all
@@ -3962,6 +4025,7 @@ components:
         - organization.silicon_webhook.redirect
         - application.client_secret.rotate
         - application.webhook_secret.rotate
+        - application.webhook.approve
         - silicon.rotate_token
         - platform_admin.sso_entitlement
         - platform_admin.application_review
@@ -5111,10 +5175,14 @@ components:
       type: object
       required: [active_url, status, secret_version, version]
       properties:
+        application_id:
+          type: [string, 'null']
+          format: uuid
+          description: Internal Application UUID for binding webhook-approval step-up. Present on current reads and new mutation responses; optional for compatibility with older persisted idempotency responses.
         active_url:
           type: [string, 'null']
           format: uri
-          description: Null until the application's initial destination passes platform review.
+          description: Null until the application's initial destination is approved; a verified application's pending endpoint may be approved by its current organization owner/admin or an IAM platform reviewer.
         pending_url: { type: [string, 'null'], format: uri }
         status: { type: string, enum: [pending_review, active, replacement_under_review, disabled] }
         secret_version: { type: integer, minimum: 1 }
@@ -5129,7 +5197,7 @@ components:
         version:
           type: integer
           minimum: 1
-          description: Application aggregate version; identical to the response ETag and the value required by If-Match for replacement.
+          description: Application aggregate version; identical to the response ETag and the value required by If-Match for replacement or approval.
     ApplicationWebhookReplace:
       type: object
       required: [url]

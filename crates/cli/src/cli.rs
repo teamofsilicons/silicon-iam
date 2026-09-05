@@ -337,6 +337,9 @@ pub enum StepUpActionArg {
     /// Rotate an Application webhook signing secret.
     #[value(name = "application.webhook_secret.rotate")]
     ApplicationWebhookSecretRotate,
+    /// Approve an Application's pending webhook destination.
+    #[value(name = "application.webhook.approve")]
+    ApplicationWebhookApprove,
     /// Rotate a Silicon credential.
     #[value(name = "silicon.rotate_token")]
     SiliconRotateToken,
@@ -1135,6 +1138,14 @@ pub enum AppCommand {
     },
     /// Show one application.
     Show {
+        /// Local handle, or canonical `org>handle`; local uses --org.
+        app_id: String,
+    },
+    /// Activate a verified application's pending webhook. Requires a direct
+    /// Carbon session as owning-org owner/admin or an IAM applications.review
+    /// reviewer, and --step-up for action `application.webhook.approve`,
+    /// resource = the internal Application UUID. Does not grant scopes.
+    ApproveWebhook {
         /// Local handle, or canonical `org>handle`; local uses --org.
         app_id: String,
     },

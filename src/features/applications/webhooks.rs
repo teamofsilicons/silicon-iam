@@ -36,7 +36,8 @@ use crate::{
 use super::{
     applications::{
         bump_application, json_with_etag, json_with_etag_replayed, resolve_readable_app,
-        resolve_technical_app, secret_json_with_etag, webhook_secret_fingerprint,
+        resolve_technical_app, resolve_webhook_review_app, secret_json_with_etag,
+        webhook_secret_fingerprint,
     },
     cursor,
     error::ApiError,
@@ -48,11 +49,13 @@ use super::{
         WebhookReplayRequest, WebhookReplayResponse, WebhookSecretRotate, WebhookSecretRotated,
         WebhookView,
     },
-    security::{Bearer, expected_version, require_carbon, require_step_up},
+    security::{Bearer, expected_version, lock_step_up_actor, require_carbon, require_step_up},
     validation,
 };
 
 const WEBHOOK_SECRET_ROTATION_STEP_UP_ACTION: &str = "application.webhook_secret.rotate";
+const WEBHOOK_APPROVAL_STEP_UP_ACTION: &str = "application.webhook.approve";
+const WEBHOOK_APPROVAL_ROUTE: &str = "POST /api/v1/applications/{app_id}/webhook/approvals";
 
 #[derive(FromRow)]
 struct EncryptedEndpointRow {
@@ -96,13 +99,220 @@ pub(super) async fn get(
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("webhook_get_context"))?;
-    let app = resolve_readable_app(&mut transaction, carbon_id, &path.app_id, false).await?;
+    let app = resolve_webhook_review_app(&mut transaction, carbon_id, &path.app_id, false).await?;
     let webhook = load_webhook(&mut transaction, &state, app.id, app.version).await?;
     transaction
         .commit()
         .await
         .map_err(|_| ApiError::internal("webhook_get_commit"))?;
     json_with_etag(StatusCode::OK, &webhook, webhook.version)
+}
+
+pub(super) async fn approve(
+    State(state): State<ApiState>,
+    Bearer(access): Bearer,
+    Path(path): Path<AppPath>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let carbon_id = require_carbon(&access)?;
+    validation::app_id(&path.app_id)?;
+    // There is no request body: the caller approves the pending endpoint of
+    // exactly the application aggregate named by If-Match. Bind that version
+    // into the idempotency digest so reusing a key for another pending
+    // replacement cannot replay approval of the previous destination.
+    let expected = expected_version(&headers)?;
+    let canonical = serde_json::to_vec(&json!({ "version": expected }))
+        .map_err(|_| ApiError::internal("webhook_approval_canonical"))?;
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
+        .await
+        .map_err(|_| ApiError::internal("webhook_approval_context"))?;
+    let app = resolve_webhook_review_app(&mut transaction, carbon_id, &path.app_id, false).await?;
+    let caller_scope = format!("carbon:{carbon_id}:application:{}", app.id);
+    // Recheck current authority before replay, but do not require the pending
+    // endpoint or an unused step-up assertion after a successful activation.
+    if let Some(replay) = idempotency::replay_if_present::<WebhookView>(
+        &mut transaction,
+        &state.crypto,
+        &headers,
+        &caller_scope,
+        WEBHOOK_APPROVAL_ROUTE,
+        &canonical,
+    )
+    .await?
+    {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("webhook_approval_replay_commit"))?;
+        let status = StatusCode::from_u16(replay.status)
+            .map_err(|_| ApiError::internal("webhook_approval_replay_status"))?;
+        return webhook_response(status, &replay.response, true);
+    }
+    if app.version != expected {
+        return Err(ApiError::precondition_failed());
+    }
+    require_approvable_application(&app.review_status)?;
+    let pending = pending_endpoint_for_approval(&mut transaction, app.id).await?;
+    let pending_id = pending.id;
+    let pending_url = decrypt_endpoint(&state, pending)?.url;
+    let parsed = validation::webhook_url(&pending_url)?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("webhook_approval_preflight_commit"))?;
+    // DNS can change while an endpoint waits for approval. Never hold a
+    // database write transaction over this external check; delivery-time DNS
+    // pinning remains the final SSRF boundary after activation.
+    crate::features::webhook_url::validate_resolved_target(&parsed)
+        .await
+        .map_err(|message| ApiError::validation("webhook_url", message))?;
+
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
+        .await
+        .map_err(|_| ApiError::internal("webhook_approval_context"))?;
+    lock_step_up_actor(&mut transaction, carbon_id).await?;
+    let app = resolve_webhook_review_app(&mut transaction, carbon_id, &path.app_id, false).await?;
+    let caller_scope = format!("carbon:{carbon_id}:application:{}", app.id);
+    let claim = idempotency::claim::<WebhookView>(
+        &mut transaction,
+        &state.crypto,
+        &headers,
+        &caller_scope,
+        WEBHOOK_APPROVAL_ROUTE,
+        &canonical,
+        false,
+    )
+    .await?;
+    if let Claim::Replay { status, response } = claim {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("webhook_approval_replay_commit"))?;
+        let status = StatusCode::from_u16(status)
+            .map_err(|_| ApiError::internal("webhook_approval_replay_status"))?;
+        return webhook_response(status, &response, true);
+    }
+    let Claim::Acquired(idempotency_id) = claim else {
+        return Err(ApiError::internal("webhook_approval_idempotency"));
+    };
+    let app = resolve_webhook_review_app(&mut transaction, carbon_id, &path.app_id, true).await?;
+    if app.version != expected {
+        return Err(ApiError::precondition_failed());
+    }
+    require_approvable_application(&app.review_status)?;
+    let pending = pending_endpoint_for_approval(&mut transaction, app.id).await?;
+    if pending.id != pending_id || decrypt_endpoint(&state, pending)?.url != pending_url {
+        return Err(ApiError::precondition_failed());
+    }
+    require_step_up(
+        &mut transaction,
+        &state.crypto,
+        &headers,
+        &access,
+        WEBHOOK_APPROVAL_STEP_UP_ACTION,
+        app.id,
+        RequiredAssurance::VerifiedChannel,
+    )
+    .await?;
+    sqlx::query(
+        r"
+        UPDATE iam.application_webhook_endpoints
+        SET status = 'retired', retired_at = transaction_timestamp()
+        WHERE application_id = $1 AND status IN ('active', 'pending_review') AND id <> $2
+        ",
+    )
+    .bind(app.id)
+    .bind(pending_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("webhook_approval_previous_retire"))?;
+    let activated = sqlx::query(
+        r"
+        UPDATE iam.application_webhook_endpoints
+        SET status = 'active', activated_at = transaction_timestamp()
+        WHERE application_id = $1 AND id = $2 AND status = 'pending_review'
+        ",
+    )
+    .bind(app.id)
+    .bind(pending_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("webhook_approval_activate"))?;
+    if activated.rows_affected() != 1 {
+        return Err(ApiError::conflict(
+            "application_webhook_no_pending_endpoint",
+        ));
+    }
+    let version = bump_application(&mut transaction, app.id).await?;
+    let response = load_webhook(&mut transaction, &state, app.id, version).await?;
+    events::record(
+        &mut transaction,
+        Mutation {
+            actor_id: Some(carbon_id),
+            authentication_session_id: Some(access.authentication_session_id),
+            organization_id: app.organization_id,
+            application_id: app.id,
+            action: "application.webhook.approve",
+            target_type: "application_webhook",
+            target_id: Some(pending_id),
+            aggregate_type: "application",
+            aggregate_id: app.id,
+            aggregate_version: version,
+            before: Some(json!({ "endpoint_id": pending_id, "status": "pending_review" })),
+            after: Some(json!({ "endpoint_id": pending_id, "status": "active" })),
+            metadata: json!({
+                "endpoint_id": pending_id,
+                "dns_validated_at_approval": true,
+            }),
+            event_type: "application.webhook_approved",
+        },
+    )
+    .await?;
+    idempotency::complete(
+        &mut transaction,
+        &state.crypto,
+        idempotency_id,
+        200,
+        &response,
+        false,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("webhook_approval_commit"))?;
+    webhook_response(StatusCode::OK, &response, false)
+}
+
+fn require_approvable_application(status: &str) -> Result<(), ApiError> {
+    if status == "verified" {
+        Ok(())
+    } else {
+        Err(ApiError::conflict(
+            "application_webhook_approval_state_conflict",
+        ))
+    }
+}
+
+async fn pending_endpoint_for_approval(
+    transaction: &mut Transaction<'_, Postgres>,
+    application_id: Uuid,
+) -> Result<EncryptedEndpointRow, ApiError> {
+    sqlx::query_as::<_, EncryptedEndpointRow>(
+        r"
+        SELECT id, application_id, url_ciphertext, url_nonce,
+               encryption_key_version, status
+        FROM iam.application_webhook_endpoints
+        WHERE application_id = $1 AND status = 'pending_review'
+        ORDER BY created_at DESC, id DESC LIMIT 1
+        FOR SHARE
+        ",
+    )
+    .bind(application_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("webhook_approval_pending_read"))?
+    .ok_or_else(|| ApiError::conflict("application_webhook_no_pending_endpoint"))
 }
 
 pub(super) async fn replace(
@@ -391,6 +601,7 @@ pub(super) async fn rotate_secret(
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("webhook_secret_rotation_context"))?;
+    lock_step_up_actor(&mut transaction, carbon_id).await?;
     let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
     let caller_scope = format!("carbon:{carbon_id}:application:{}", app.id);
     let claim = idempotency::claim::<WebhookSecretRotated>(
@@ -1282,14 +1493,16 @@ pub(super) async fn load_webhook(
     .fetch_one(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("webhook_secret_version_read"))?;
-    webhook_projection(
+    let mut webhook = webhook_projection(
         active.as_ref(),
         pending.as_ref(),
         disabled.as_ref(),
         retired.as_ref(),
         secret_version,
         application_version,
-    )
+    )?;
+    webhook.application_id = Some(application_id);
+    Ok(webhook)
 }
 
 fn webhook_projection(
@@ -1313,6 +1526,7 @@ fn webhook_projection(
         "active"
     };
     Ok(WebhookView {
+        application_id: None,
         active_url: active.map(|endpoint| endpoint.url.clone()),
         pending_url: pending.map(|endpoint| endpoint.url.clone()),
         status: status.to_owned(),
@@ -1539,6 +1753,7 @@ mod tests {
     #[test]
     fn inherited_key_replacement_response_is_non_cacheable_and_replay_marked() {
         let projection = WebhookView {
+            application_id: None,
             active_url: Some("https://active.example.test/webhook".to_owned()),
             pending_url: Some("https://replacement.example.test/webhook".to_owned()),
             status: "replacement_under_review".to_owned(),

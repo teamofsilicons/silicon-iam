@@ -59,6 +59,11 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
     if matches!(&command, AppCommand::Import { .. }) {
         context.require_test()?;
     }
+    if matches!(&command, AppCommand::ApproveWebhook { .. }) && context.step_up.is_none() {
+        return Err(CliError::Usage(
+            "--step-up is required: run `iam step-up application.webhook.approve <APPLICATION_UUID>` first, then pass the returned assertion to `iam app approve-webhook`.".to_owned(),
+        ));
+    }
 
     let client = context.authenticated().await?;
     match command {
@@ -230,6 +235,18 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             let webhook = client.applications().webhook(&app_id).await?;
             report_webhook(context, &webhook)
         }
+        AppCommand::ApproveWebhook { app_id } => {
+            let app_id = context.application_id(&app_id)?;
+            let current = client.applications().webhook(&app_id).await?;
+            let approved = client
+                .applications()
+                .approve_webhook(&app_id, current.version, &context.mutation())
+                .await?;
+            if context.format == Format::Text {
+                println!("Approved and activated the webhook endpoint.");
+            }
+            report_webhook(context, &approved)
+        }
         AppCommand::SetWebhook {
             app_id,
             webhook_url,
@@ -256,7 +273,7 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                         println!("Activated the test webhook endpoint.");
                     } else {
                         println!(
-                            "Proposed. The service verifies the endpoint before activating it."
+                            "Proposed. An owning-org owner/admin or IAM reviewer can activate it with `iam app approve-webhook` and a fresh approval step-up."
                         );
                     }
                     if proposed.webhook_signing_secret.is_some() {
@@ -893,6 +910,9 @@ fn report_webhook(context: &Context, webhook: &models::ApplicationWebhook) -> Re
         Format::Json => json(webhook),
         Format::Text => {
             let mut table = Table::new(["field", "value"]);
+            if let Some(application_id) = webhook.application_id {
+                table.row(["application_id", &application_id.to_string()]);
+            }
             table.row(["active_url", &or_dash(webhook.active_url.as_deref())]);
             table.row(["pending_url", &or_dash(webhook.pending_url.as_deref())]);
             table.row(["status", &label(&webhook.status)]);

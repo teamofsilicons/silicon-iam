@@ -540,6 +540,7 @@ DECLARE
         'list_profile_webhook_authorization_scopes',
         'list_removed_organizations_for_current_carbon',
         'lock_application_creation_organization',
+        'lock_application_webhook_reviewer',
         'lock_carbon_profile_silicon_routes',
         'lock_current_application_client',
         'lock_current_application_oauth_subject_authority',

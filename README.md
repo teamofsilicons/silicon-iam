@@ -24,11 +24,12 @@ PostgreSQL 16 or newer is the sole authoritative datastore.
 Start with the [integration documentation index](docs/README.md) for the API,
 Rust client, CLI, testing environments, and release provenance.
 
-Published CLI/client **1.2.0** comes from
-[`ec04ec9`](https://github.com/teamofsilicons/silicon-iam/tree/ec04ec92444e02c88a39c83a286dbf47b5ded458).
-Use its [version-pinned documentation](https://github.com/teamofsilicons/silicon-iam/tree/ec04ec92444e02c88a39c83a286dbf47b5ded458/docs)
-when auditing that release; later changes on `main` are not part of the published
-packages until separately released.
+CLI/client **1.2.1** release source is pinned by
+[`v1.2.1`](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.1).
+Use its [version-pinned documentation](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.1/docs)
+when auditing that release. The [release notes and provenance](docs/README.md#published-documentation)
+also preserve the original 1.2.0 contract release; later changes on `main` are
+not part of a published package until separately released.
 
 Upgrading an older CLI? Existing Unix IAM homes must be private (`0700`) and
 owned by the current user. See the [one-time permission repair](docs/cli/storage.md#upgrading-an-existing-iam-home)

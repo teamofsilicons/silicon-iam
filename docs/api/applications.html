@@ -60,8 +60,10 @@ Content-Type: application/json
 <p>
   A new application is usable immediately: there is no review to wait behind. In production, a
   change that widens authority — a new webhook destination — is still held as
-  <code>has_pending_changes</code> and reviewed, so where an application delivers cannot quietly
-  move. A testing environment activates its endpoint immediately because it has no platform
+  <code>has_pending_changes</code> until explicit webhook approval, so where an application
+  delivers cannot quietly move. The current owning organization's owner/admin or an IAM platform
+  reviewer can approve the endpoint of an already verified Application with verified-channel
+  step-up. A testing environment activates its endpoint immediately because it has no platform
   reviewer.
 </p>
 
@@ -253,14 +255,41 @@ Authorization: Basic base64(acme&gt;checkout:ask_…)</code></pre>
 
 <p>
   <code>PUT /api/v1/applications/{app_id}/webhook</code> <em>proposes</em> a replacement and
-  answers <code>202</code>: deliveries continue to the current URL until Silicon approves the new
-  one. The existing encrypted signing secret is normally reused, so no new secret is returned.
+  answers <code>202</code>: deliveries continue to the current URL until the owning organization's
+  current Carbon owner/admin or an IAM platform administrator with <code>applications.review</code>
+  approves the new one. The existing encrypted signing secret is normally reused, so no new secret is returned.
   Inside a testing environment there is no platform reviewer: the same route activates the new
   endpoint immediately and answers <code>200</code>. The sole key exception is an imported test
   Application still using an inherited production signing key: its first test URL replacement
   requires the caller to supply a new test-only <code>webhook_secret</code>. IAM switches to and
   echoes that supplied secret with <code>secret_replay_expires_at</code>; it never generates the
   webhook secret.
+</p>
+
+<h3>Approve the pending destination</h3>
+
+<p>
+  <code>POST /api/v1/applications/{app_id}/webhook/approvals</code> needs no request fields;
+  omit the body or send <code>{}</code>.
+  Send the current Application <code>If-Match</code>, an <code>Idempotency-Key</code>, and a
+  verified-channel step-up assertion for <code>application.webhook.approve</code> bound to the
+  internal Application UUID. The caller must currently be the owning organization's Carbon
+  owner/admin or an IAM platform administrator with <code>applications.review</code>; the
+  creator field is audit metadata, not an independent permission.
+  <code>GET /api/v1/applications/{app_id}/webhook</code> permits the same reviewers and
+  returns <code>application_id</code> for step-up and <code>version</code> for the precondition.
+  The UUID is optional for compatibility with older idempotency responses; fresh reads include it.
+</p>
+
+<p>
+  The Application must already be <code>verified</code>. This includes a new verified
+  Application's first pending webhook, where <code>active_url</code> is still null.
+  Approval activates that endpoint and retires any former active endpoint, returning
+  <code>200</code>, the webhook representation and its matching Application-version
+  <code>ETag</code>, without revealing a signing secret. It changes neither Application
+  status nor scopes; a legacy Application still <code>under_review</code> needs a separate
+  platform application decision. No pending endpoint or a non-verified Application is
+  <code>409</code>; a stale version is <code>412</code>.
 </p>
 
 <p>

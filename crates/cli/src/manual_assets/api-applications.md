@@ -28,7 +28,7 @@ Use public HTTPS application origins with hosted IAM. The public edge has been o
 
 **IAM generates only the client secret.** Your application supplies the webhook signing secret (32–512 non-whitespace ASCII characters), which IAM encrypts at rest. The v1 response echoes it for compatibility. The generated client secret is replayable for ten minutes with the same idempotency key and then unrecoverable.
 
-A new application is usable immediately: there is no review to wait behind. In production, a change that widens authority — a new webhook destination — is still held as `has_pending_changes` and reviewed, so where an application delivers cannot quietly move. A testing environment activates its endpoint immediately because it has no platform reviewer.
+A new application is usable immediately: there is no review to wait behind. In production, a change that widens authority — a new webhook destination — is still held as `has_pending_changes` until explicit webhook approval, so where an application delivers cannot quietly move. The current owning organization's owner/admin or an IAM platform reviewer can approve the endpoint of an already verified Application with verified-channel step-up. A testing environment activates its endpoint immediately because it has no platform reviewer.
 
 | Status | Meaning |
 | --- | --- |
@@ -109,7 +109,13 @@ There is nothing to register. A login names its `redirect_uri` in the query stri
 
 ## Webhook destination
 
-`PUT /api/v1/applications/{app_id}/webhook` *proposes* a replacement and answers `202`: deliveries continue to the current URL until Silicon approves the new one. The existing encrypted signing secret is normally reused, so no new secret is returned. Inside a testing environment there is no platform reviewer: the same route activates the new endpoint immediately and answers `200`. The sole key exception is an imported test Application still using an inherited production signing key: its first test URL replacement requires the caller to supply a new test-only `webhook_secret`. IAM switches to and echoes that supplied secret with `secret_replay_expires_at`; it never generates the webhook secret.
+`PUT /api/v1/applications/{app_id}/webhook` *proposes* a replacement and answers `202`: deliveries continue to the current URL until the owning organization's current Carbon owner/admin or an IAM platform administrator with `applications.review` approves the new one. The existing encrypted signing secret is normally reused, so no new secret is returned. Inside a testing environment there is no platform reviewer: the same route activates the new endpoint immediately and answers `200`. The sole key exception is an imported test Application still using an inherited production signing key: its first test URL replacement requires the caller to supply a new test-only `webhook_secret`. IAM switches to and echoes that supplied secret with `secret_replay_expires_at`; it never generates the webhook secret.
+
+### Approve the pending destination
+
+`POST /api/v1/applications/{app_id}/webhook/approvals` needs no request fields; omit the body or send `{}`. Send the current Application `If-Match`, an `Idempotency-Key`, and a verified-channel step-up assertion for `application.webhook.approve` bound to the internal Application UUID. The caller must currently be the owning organization's Carbon owner/admin or an IAM platform administrator with `applications.review`; the creator field is audit metadata, not an independent permission. `GET /api/v1/applications/{app_id}/webhook` permits the same reviewers and returns `application_id` for step-up and `version` for the precondition. The UUID is optional for compatibility with older idempotency responses; fresh reads include it.
+
+The Application must already be `verified`. This includes a new verified Application's first pending webhook, where `active_url` is still null. Approval activates that endpoint and retires any former active endpoint, returning `200`, the webhook representation and its matching Application-version `ETag`, without revealing a signing secret. It changes neither Application status nor scopes; a legacy Application still `under_review` needs a separate platform application decision. No pending endpoint or a non-verified Application is `409`; a stale version is `412`.
 
 Delivery, signature verification and dead-letter replay are covered under Webhooks (`iam docs api/webhooks`).
 

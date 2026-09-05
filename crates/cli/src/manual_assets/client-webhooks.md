@@ -32,6 +32,23 @@ What the verifier does before you see anything:
 
 `X-Silicon-IAM-Signature` must have the exact canonical form `v1=<64 lowercase hexadecimal characters>`. It is HMAC-SHA256 over `{timestamp}.{exact body bytes}`; the version prefix is part of the header format, not part of the digest.
 
+## Approve a pending destination
+
+Client 1.2.1 adds `applications().approve_webhook(app_id, version, &mutation)`. It activates a verified Application's pending first or replacement endpoint without changing Application status or scopes. The current owning organization's Carbon owner/admin or an IAM platform administrator with `applications.review` may call it. The creator field is audit metadata, not separate authority; legacy Applications still under platform review cannot use this route to become verified.
+
+```
+let app_id = "acme>checkout";
+let current = client.applications().webhook(app_id).await?;
+// Obtain verified-channel step-up for application.webhook.approve
+// on current.application_id, the internal UUID included in fresh reads.
+let mutation = Mutation::new().step_up(step_up);
+let webhook = client.applications()
+    .approve_webhook(app_id, current.version, &mutation)
+    .await?;
+```
+
+The SDK sends the current Application version, idempotency key and assertion, with an empty JSON object and no request fields. The result is `ApplicationWebhook` with its incremented Application version, not a secret response. No pending endpoint or a non-verified Application is a conflict; a stale version is a precondition failure. Test endpoints normally activate immediately and need no approval. The matching backend must be deployed before using this method.
+
 ## Secret versions
 
 The Application supplies its initial secret during registration. Explicit `rotate_webhook_secret` accepts a caller-chosen successor and immediately uses it for new deliveries. IAM never generates Application webhook secrets. Rotation requires the current Application version and a verified-channel step-up assertion for `application.webhook_secret.rotate`.

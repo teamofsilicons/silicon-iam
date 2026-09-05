@@ -10,11 +10,11 @@ provider callbacks, and browser navigations remain outside this crate.
 
 ```toml
 [dependencies]
-silicon-iam-client = "1.2.0"
+silicon-iam-client = "1.2.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-Release `1.2.0` speaks HTTP API major `v1` and requires Rust 1.98 or newer.
+Release `1.2.1` speaks HTTP API major `v1` and requires Rust 1.98 or newer.
 The crate SemVer and HTTP API major are separate: upgrading the crate within
 the 1.x line does not select a different wire major. `Client::new` and
 `ClientBuilder::build` perform no network handshake; call
@@ -25,13 +25,19 @@ the required `Vary` header. A `406` becomes `Error::ApiVersionUnsupported`;
 an inconsistent success becomes `Error::Decode`. Every request advertises
 `v1`.
 
-Published client 1.2.0 comes from
-[`ec04ec9`](https://github.com/teamofsilicons/silicon-iam/tree/ec04ec92444e02c88a39c83a286dbf47b5ded458/crates/client);
-its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/ec04ec92444e02c88a39c83a286dbf47b5ded458/docs/client/README.md)
+Client 1.2.1 comes from
+[`v1.2.1`](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.1/crates/client);
+its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.1/docs/client/README.md)
 describes that release. Later changes on `main` are not part of the published
 package until separately released. The dependency requirement above permits
 compatible newer releases; check your application's `Cargo.lock` for the exact
 version it builds, especially after dependency maintenance.
+
+The 1.2.1 client adds `applications().approve_webhook(...)` and the
+`application.webhook.approve` step-up action. Deploy the matching backend
+before using this new method. It also updates packaged documentation and
+release provenance. The accompanying CLI patch contains the behavior fixes
+listed in the [release notes](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.1/docs/README.md#cliclient-121).
 
 The service URL must use HTTPS, except for literal `localhost`, `127.0.0.1`,
 or `::1` during local development. The builder rejects missing hosts, embedded
@@ -268,7 +274,7 @@ refresh family and its related access authority. It does **not** revoke the
 parent IAM session, other devices, or unrelated Applications. Recover an
 uncertain request with
 `Mutation::with_key(IdempotencyKey::parse(saved_key)?)` and the exact same
-input. The 1.2.0 client does not expose the `Idempotency-Replayed` response
+input. The 1.2.1 client does not expose the `Idempotency-Replayed` response
 header.
 
 Tokens are opaque. Ask for their current state and optional exact organization
@@ -365,6 +371,45 @@ The webhook rotation assertion uses action
 `application.client_secret.rotate`. A webhook URL change is a separate
 operation and reuses a test-owned or production signing secret unless its
 request explicitly supplies a new one.
+
+### Approving a pending webhook
+
+Since 1.2.1, `applications().approve_webhook(app_id, version, &mutation)`
+activates a verified Application's pending first or replacement endpoint.
+The authenticated Carbon must currently be the owning organization's owner
+or admin, or an IAM platform administrator with `applications.review`.
+Creating the Application confers no separate authority. This operation changes
+neither Application status nor scopes, and cannot bypass platform review of
+an Application whose status is still `under_review`.
+
+Read `applications().webhook(app_id)` to obtain `application_id`, the internal
+UUID available to both organization managers and platform webhook reviewers.
+Obtain verified-channel step-up for
+`models::StepUpAction::ApplicationWebhookApprove` with that UUID as the
+resource. The optional field supports older idempotency responses; fresh
+reads on the matching backend include it. Use the assertion and current
+aggregate version:
+
+```rust
+# use silicon_iam_client::{Client, Mutation};
+# async fn approve(client: &Client, step_up: &str) -> silicon_iam_client::Result<()> {
+let app_id = "acme>checkout";
+let current = client.applications().webhook(app_id).await?;
+let mutation = Mutation::new().step_up(step_up);
+let webhook = client.applications()
+    .approve_webhook(app_id, current.version, &mutation)
+    .await?;
+assert!(webhook.active_url.is_some());
+# Ok(())
+# }
+```
+
+The SDK sends an empty JSON object and returns `models::ApplicationWebhook` with
+the new Application aggregate version; no signing secret is returned. Keep
+the same mutation key and input after an uncertain outcome. A stale version
+fails its precondition; no pending endpoint or a non-verified Application is
+a conflict. Test endpoints normally activate immediately, so they do not
+need approval.
 
 ## Organization listing and SSO
 

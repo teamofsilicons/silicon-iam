@@ -41,7 +41,40 @@ must be deployed and verified before publishing/adopting the client/CLI packages
 
 ## Published documentation
 
-### CLI/client 1.2.0 provenance
+### CLI/client 1.2.1
+
+Release **1.2.1** includes these CLI fixes:
+
+- Clearing all membership tags reports `Tags cleared.` instead of an empty list.
+- A local configuration or state-access failure no longer produces the same
+  error again during post-command automatic maintenance.
+- Logout diagnostics distinguish an unconfirmed local removal from a remote
+  logout that succeeded before local persistence failed.
+- `iam login` requires an identity or `--app-id` at argument parsing, with the
+  exact command help surfacing the missing input before accessing local state.
+- `iam app approve-webhook <app-id>` activates a verified Application's pending
+  endpoint with current owning-org owner/admin or platform review authority,
+  and verified-channel step-up bound to that Application.
+
+Client 1.2.1 adds `applications().approve_webhook(...)` and the
+`application.webhook.approve` step-up action, alongside updated packaged
+documentation and release provenance. Deploy the matching webhook-approval
+backend before using this new method or CLI command. HTTP API major remains
+`v1`, and the authorization/OBO contracts introduced in 1.2.0 still require the
+matching backend, migration `0067`, testing overlay `9003` and runtime grants.
+The isolated unsuccessful logout reported in the 1.2.0 audit remains
+unexplained; improved diagnostics are not a claim that its cause was fixed.
+
+- [Release source tagged `v1.2.1`](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.1)
+- [Version-pinned integration documentation](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.1/docs)
+- [CLI 1.2.1 source](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.1/crates/cli) and [manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.1/docs/cli/README.md)
+- [Client 1.2.1 source](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.1/crates/client) and [manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.1/docs/client/README.md)
+
+The tag identifies the packaged source revision; each crate's
+`.cargo_vcs_info.json` records its exact commit. Updating `main` does not modify
+an installed or published crate.
+
+### Original CLI/client 1.2.0 provenance
 
 The published `silicon-iam-cli` and `silicon-iam-client` **1.2.0** packages both
 record source commit `ec04ec92444e02c88a39c83a286dbf47b5ded458` in their packaged
@@ -54,9 +87,7 @@ of changes to GitHub's default branch:
 - [CLI 1.2.0 source](https://github.com/teamofsilicons/silicon-iam/tree/ec04ec92444e02c88a39c83a286dbf47b5ded458/crates/cli) and [CLI 1.2.0 manual](https://github.com/teamofsilicons/silicon-iam/blob/ec04ec92444e02c88a39c83a286dbf47b5ded458/docs/cli/README.md)
 - [Client 1.2.0 source](https://github.com/teamofsilicons/silicon-iam/tree/ec04ec92444e02c88a39c83a286dbf47b5ded458/crates/client) and [client 1.2.0 manual](https://github.com/teamofsilicons/silicon-iam/blob/ec04ec92444e02c88a39c83a286dbf47b5ded458/docs/client/README.md)
 
-Later source changes, including the empty-tag confirmation and duplicate
-local-configuration warning fixes, are **unreleased** relative to these 1.2.0
-packages. Updating `main` does not modify an installed or published crate.
+The CLI fixes listed for 1.2.1 are not included in these original 1.2.0 packages.
 
 Existing Unix homes created with mode `0755` require a one-time permission repair
 when upgrading. Verify the directory and its ownership before applying the

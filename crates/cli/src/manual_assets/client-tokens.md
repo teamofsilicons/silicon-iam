@@ -42,7 +42,7 @@ let replacement = application
     .await?;
 ```
 
-The service may return its stored result with `Idempotency-Replayed: true`. Version 1.2.0 returns the typed response body but does not expose that response header, so recovery must be keyed by the `Mutation` your application persisted rather than by an SDK replay flag.
+The service may return its stored result with `Idempotency-Replayed: true`. Version 1.2.1 returns the typed response body but does not expose that response header, so recovery must be keyed by the `Mutation` your application persisted rather than by an SDK replay flag.
 
 ## Introspection
 

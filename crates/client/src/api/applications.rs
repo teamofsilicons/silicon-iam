@@ -4,7 +4,8 @@ use crate::{Client, Error, Mutation, Paging, Result, models};
 
 /// Application management. Applications are organization-owned, and these
 /// routes need a direct Carbon token with owner or admin membership in the
-/// owning organization.
+/// owning organization. Webhook inspection and approval also allow IAM
+/// reviewers with the `applications.review` platform capability.
 pub struct Applications<'a>(pub(super) &'a Client);
 
 impl Applications<'_> {
@@ -28,7 +29,7 @@ impl Applications<'_> {
     /// Registers an immediately usable application.
     ///
     /// In production, only the submitted webhook destination remains pending
-    /// platform review. A testing environment activates it immediately because
+    /// approval by an owning-organization owner/admin or IAM reviewer. A testing environment activates it immediately because
     /// that isolated plane has no platform reviewer. The caller chooses the
     /// webhook signing secret; IAM generates only the returned client secret.
     ///
@@ -182,7 +183,8 @@ impl Applications<'_> {
 
     /// Replaces a webhook endpoint.
     ///
-    /// Production proposes it for platform review; a testing environment
+    /// Production proposes it for approval by an owning-organization
+    /// owner/admin or IAM reviewer; a testing environment
     /// activates it immediately because that isolated plane has no reviewer.
     ///
     /// The request may also install a caller-supplied secret. It is required
@@ -204,6 +206,36 @@ impl Applications<'_> {
                 &["applications", app_id, "webhook"],
                 version,
                 input,
+                mutation,
+            )
+            .await
+    }
+
+    /// Activates the pending webhook destination of a verified application.
+    ///
+    /// Requires a direct Carbon session with current owner/admin membership
+    /// in the owning organization, or the `applications.review` platform
+    /// capability. Supply a verified-channel step-up assertion for
+    /// `application.webhook.approve`, bound to the internal Application UUID.
+    /// `version` is the application aggregate version returned by [`Self::webhook`].
+    /// This changes only the endpoint, not application status or approved scopes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when permission or step-up is missing, the version is
+    /// stale, no endpoint is pending, the application is not verified, or the
+    /// destination fails public HTTPS/DNS validation.
+    pub async fn approve_webhook(
+        &self,
+        app_id: &str,
+        version: i64,
+        mutation: &Mutation,
+    ) -> Result<models::ApplicationWebhook> {
+        self.0
+            .post_versioned(
+                &["applications", app_id, "webhook", "approvals"],
+                version,
+                &serde_json::json!({}),
                 mutation,
             )
             .await

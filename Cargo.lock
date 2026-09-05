@@ -2769,7 +2769,7 @@ dependencies = [
 
 [[package]]
 name = "silicon-iam-cli"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "clap",
  "http",
@@ -2788,7 +2788,7 @@ dependencies = [
 
 [[package]]
 name = "silicon-iam-client"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "hmac 0.12.1",
  "http",

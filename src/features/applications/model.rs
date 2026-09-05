@@ -211,6 +211,8 @@ pub(super) struct WebhookEndpointView {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct WebhookView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) application_id: Option<Uuid>,
     pub(super) active_url: Option<String>,
     pub(super) pending_url: Option<String>,
     pub(super) status: String,
@@ -537,6 +539,7 @@ mod tests {
     #[test]
     fn webhook_projection_distinguishes_initial_pending_from_active() {
         let value = serde_json::to_value(WebhookView {
+            application_id: None,
             active_url: None,
             pending_url: Some("https://example.test/hook".to_owned()),
             status: "pending_review".to_owned(),
@@ -654,6 +657,7 @@ mod tests {
             obo_endpoints: Vec::new(),
             status: "verified".to_owned(),
             webhook: WebhookView {
+                application_id: None,
                 active_url: Some("https://briefcase.example/webhooks/iam".to_owned()),
                 pending_url: None,
                 status: "active".to_owned(),

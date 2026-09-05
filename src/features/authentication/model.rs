@@ -282,6 +282,8 @@ pub(super) enum StepUpAction {
     ApplicationClientSecretRotate,
     #[serde(rename = "application.webhook_secret.rotate")]
     ApplicationWebhookSecretRotate,
+    #[serde(rename = "application.webhook.approve")]
+    ApplicationWebhookApprove,
     #[serde(rename = "organization.transfer_ownership")]
     OrganizationTransferOwnership,
     #[serde(rename = "organization.authorization_change")]
@@ -305,6 +307,7 @@ impl StepUpAction {
             Self::AccountSessionsRevokeAll => "account.sessions_revoke_all",
             Self::ApplicationClientSecretRotate => "application.client_secret.rotate",
             Self::ApplicationWebhookSecretRotate => "application.webhook_secret.rotate",
+            Self::ApplicationWebhookApprove => "application.webhook.approve",
             Self::OrganizationTransferOwnership => "organization.transfer_ownership",
             Self::OrganizationAuthorizationChange => "organization.authorization_change",
             Self::OrganizationSsoChange => "organization.sso_change",

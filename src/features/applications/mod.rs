@@ -73,6 +73,10 @@ pub fn router() -> Router<ApiState> {
             get(webhooks::get).put(webhooks::replace),
         )
         .route(
+            "/api/v1/applications/{app_id}/webhook/approvals",
+            post(webhooks::approve),
+        )
+        .route(
             "/api/v1/applications/{app_id}/webhook/dead-letters",
             get(webhooks::list_dead_letters),
         )

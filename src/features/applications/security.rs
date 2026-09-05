@@ -385,6 +385,32 @@ pub(super) fn require_carbon(access: &AccessContext) -> Result<Uuid, ApiError> {
     Ok(access.subject.id)
 }
 
+/// Takes the actor lock before any application, manager, or reviewer locks.
+/// Step-up consumption later needs this same exclusive principal lock; using
+/// one order across privileged application mutations avoids shared-lock
+/// upgrades and application/principal inversions between concurrent routes.
+pub(super) async fn lock_step_up_actor(
+    transaction: &mut Transaction<'_, Postgres>,
+    carbon_id: Uuid,
+) -> Result<(), ApiError> {
+    let active_actor = sqlx::query_scalar::<_, Uuid>(
+        r"
+        SELECT id FROM iam.principals
+        WHERE id = $1 AND id = iam_private.current_principal_id()
+          AND kind = 'carbon' AND status = 'active'
+        FOR UPDATE
+        ",
+    )
+    .bind(carbon_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_step_up_actor_lock"))?;
+    if active_actor.is_none() {
+        return Err(ApiError::unauthenticated());
+    }
+    Ok(())
+}
+
 pub(super) async fn require_step_up(
     transaction: &mut Transaction<'_, Postgres>,
     crypto: &crate::infrastructure::crypto::CryptoService,

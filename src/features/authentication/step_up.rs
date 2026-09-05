@@ -77,6 +77,20 @@ const APPLICATION_RESOURCE_OWNERSHIP_QUERY: &str = r"
       AND application.deleted_at IS NULL
     FOR SHARE OF application
 ";
+const APPLICATION_WEBHOOK_APPROVAL_RESOURCE_QUERY: &str = r"
+    SELECT application.id
+    FROM iam.applications AS application
+    WHERE application.id = $1
+      AND application.deleted_at IS NULL
+      AND (
+          $3::boolean
+          OR iam_private.is_active_organization_owner_or_admin(
+              application.organization_id,
+              $2
+          )
+      )
+    FOR SHARE OF application
+";
 
 #[derive(FromRow)]
 struct ContactRow {
@@ -877,6 +891,30 @@ async fn validate_resource_binding(
                 return Err(AppError::NotFound);
             }
         }
+        StepUpAction::ApplicationWebhookApprove => {
+            let platform_reviewer = sqlx::query_scalar::<_, bool>(
+                "SELECT iam_private.lock_application_webhook_reviewer($1)",
+            )
+            .bind(principal_id)
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(|_| AppError::Internal {
+                category: "step_up_webhook_reviewer_validate",
+            })?;
+            let authorized_application =
+                sqlx::query_scalar::<_, Uuid>(APPLICATION_WEBHOOK_APPROVAL_RESOURCE_QUERY)
+                    .bind(resource_id)
+                    .bind(principal_id)
+                    .bind(platform_reviewer)
+                    .fetch_optional(&mut **transaction)
+                    .await
+                    .map_err(|_| AppError::Internal {
+                        category: "step_up_webhook_application_validate",
+                    })?;
+            if authorized_application.is_none() {
+                return Err(AppError::NotFound);
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -1015,6 +1053,7 @@ fn parse_action(value: &str) -> Result<StepUpAction, AppError> {
         "account.sessions_revoke_all" => Ok(StepUpAction::AccountSessionsRevokeAll),
         "application.client_secret.rotate" => Ok(StepUpAction::ApplicationClientSecretRotate),
         "application.webhook_secret.rotate" => Ok(StepUpAction::ApplicationWebhookSecretRotate),
+        "application.webhook.approve" => Ok(StepUpAction::ApplicationWebhookApprove),
         "organization.transfer_ownership" => Ok(StepUpAction::OrganizationTransferOwnership),
         "organization.authorization_change" => Ok(StepUpAction::OrganizationAuthorizationChange),
         "organization.sso_change" => Ok(StepUpAction::OrganizationSsoChange),

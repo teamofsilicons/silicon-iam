@@ -131,6 +131,8 @@ App creation can happen from the frontend by org_owner/org_admin of an organisat
 
 Applications are in the scope of organisations, and owned by organisations. Only org admins and org owner should be able to control their applications. 
 
+For an already verified Application, its owning organisation's current Carbon org_owner or org_admin can approve a pending webhook destination, including the first pending webhook after registration. IAM platform administrators with `applications.review` can also do this. The creator is only audit metadata, not a separate owner or source of authority. This is a narrow webhook approval: it does not approve the Application itself, change its status, or change its scopes. An Application still under platform review must complete that review separately. Approval requires the current Application version, an idempotency key, and verified-channel step-up for `application.webhook.approve` bound to the internal Application UUID. The old destination stays active until approval; testing environments continue activating endpoints immediately.
+
 	base_url is the base url of the application, and is configured, this is nowhere used by the application but can be requested via any other application (even outside the org) for the base_url just using the app_id which would give them this base_url, and when requesting for base_url it would also send it's app_id and app_secret so we know which app requested it. 
 
 The organization administers the Application, but anyone may use it. 
@@ -572,4 +574,4 @@ Write very good detailed instructions on how test enviorment works and how every
 
 # Later to do
 
-iam report `<report-message>`, this should send an report message to the user. 
+iam report `<report-message>`, this should send an report message to the user.
