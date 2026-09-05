@@ -230,7 +230,10 @@ async fn report_short_lived_token(context: &Context, client: &Client, app_id: &s
 /// cannot be written.
 pub async fn logout(context: &Context, args: LogoutArgs) -> Result<()> {
     if args.local_only {
-        return report_local_logout(context, context.forget()?);
+        let existed = context.forget().inspect_err(|_| {
+            eprintln!("Local credential removal could not be confirmed.");
+        })?;
+        return report_local_logout(context, existed);
     }
 
     // Keep one session-transition lock through refresh, logout reservation,
@@ -244,7 +247,9 @@ pub async fn logout(context: &Context, args: LogoutArgs) -> Result<()> {
                     .to_owned(),
             ));
         }
-        let existed = stored.forget()?;
+        let existed = stored.forget().inspect_err(|_| {
+            eprintln!("Local credential removal could not be confirmed.");
+        })?;
         return report_local_logout(context, existed);
     }
 
@@ -295,7 +300,11 @@ pub async fn logout(context: &Context, args: LogoutArgs) -> Result<()> {
         .auth()
         .logout(&models::LogoutRequest { mode: Some(mode) }, &mutation)
         .await?;
-    stored.forget()?;
+    stored.forget().inspect_err(|_| {
+        eprintln!(
+            "IAM confirmed remote logout, but local credential removal could not be confirmed."
+        );
+    })?;
 
     match context.format {
         Format::Json => json(&serde_json::json!({

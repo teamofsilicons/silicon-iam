@@ -51,6 +51,19 @@ SemVer and HTTP API major are separate version lines. Check the installed
 binary with `iam --version`, and inspect/negotiate with the configured service
 using `iam system version`.
 
+Published 1.2.0 is built from
+[`ec04ec9`](https://github.com/teamofsilicons/silicon-iam/tree/ec04ec92444e02c88a39c83a286dbf47b5ded458/crates/cli);
+use its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/ec04ec92444e02c88a39c83a286dbf47b5ded458/docs/cli/README.md)
+to audit that installed version. Later changes on `main` are unreleased until
+separately published. An automatic update may install a newer release on a
+later invocation; check `iam --version` again when collecting diagnostics.
+
+**Upgrading an older installation:** an existing Unix IAM home with mode `0755`
+is refused even if `credentials.json` is `0600`. The home must be owned by the
+current user and private (`0700`). Follow the
+[one-time permission repair](storage.md#upgrading-an-existing-iam-home) after
+verifying the exact directory and ownership; do not delete your sessions.
+
 Automatic updates are on by default and run only when the CLI is used. After a
 normal command has completed and printed its result, the CLI checks crates.io
 if no attempt is recorded or its last attempt was at least one hour ago. When a
@@ -63,6 +76,11 @@ A cross-process lock prevents concurrent checks and installations. An offline
 registry or unavailable Cargo executable produces only a warning on stderr;
 maintenance never replaces the completed command's output or exit status.
 The process exits after any due maintenance finishes.
+
+In the unreleased source, a command that already failed to load or safely access
+local configuration/state skips post-command maintenance, so the same local
+failure is not repeated as an update warning. Authentication and service errors
+still allow the normal due update check.
 
 ```sh
 iam config set auto-update off   # opt out persistently

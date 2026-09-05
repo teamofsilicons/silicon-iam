@@ -25,6 +25,14 @@ the required `Vary` header. A `406` becomes `Error::ApiVersionUnsupported`;
 an inconsistent success becomes `Error::Decode`. Every request advertises
 `v1`.
 
+Published client 1.2.0 comes from
+[`ec04ec9`](https://github.com/teamofsilicons/silicon-iam/tree/ec04ec92444e02c88a39c83a286dbf47b5ded458/crates/client);
+its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/ec04ec92444e02c88a39c83a286dbf47b5ded458/docs/client/README.md)
+describes that release. Later changes on `main` are not part of the published
+package until separately released. The dependency requirement above permits
+compatible newer releases; check your application's `Cargo.lock` for the exact
+version it builds, especially after dependency maintenance.
+
 The service URL must use HTTPS, except for literal `localhost`, `127.0.0.1`,
 or `::1` during local development. The builder rejects missing hosts, embedded
 credentials, port zero, queries, and fragments. Requests do not follow

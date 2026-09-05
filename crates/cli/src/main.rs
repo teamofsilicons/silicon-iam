@@ -25,10 +25,16 @@ async fn main() -> std::process::ExitCode {
         Ok(parsed) => parsed,
         Err(exit) => return exit,
     };
-    let maintain_after_command = updater::follows(&cli.command);
+    let mut maintain_after_command = updater::follows(&cli.command);
     let exit = match run(cli).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
+            // Maintenance uses the same local settings and store. If those
+            // already failed, report their recovery once without reopening
+            // them just to repeat the failure as an updater warning.
+            if matches!(error, error::CliError::Config(_)) {
+                maintain_after_command = false;
+            }
             let message = error.to_string();
             eprintln!("error: {message}");
             if let Some(hint) = error.hint() {
@@ -76,6 +82,12 @@ async fn run(cli: Cli) -> error::Result<()> {
         cli::Command::Commands => return experience::print_commands(cli.global.output),
         _ => {}
     }
+    let requested_profile = cli
+        .global
+        .profile
+        .clone()
+        .or_else(|| std::env::var("SILICON_IAM_PROFILE").ok());
+    let requested_environment = cli.global.test;
     let context = Context::new(
         cli.global.output,
         cli.global.profile,
@@ -84,7 +96,19 @@ async fn run(cli: Cli) -> error::Result<()> {
         cli.global.no_org,
         cli.global.test,
         cli.global.step_up,
-    )?;
+    )
+    .inspect_err(|_| {
+        // Stored defaults may be unreadable. Report only what is known from
+        // this invocation, never guessed settings or credential-bearing argv.
+        eprintln!(
+            "Context setup failed before the command ran: requested profile={}, environment={}",
+            requested_profile
+                .as_deref()
+                .unwrap_or("(configured/default; unresolved)"),
+            requested_environment
+                .map_or_else(|| "production".to_owned(), |id| format!("test {id}")),
+        );
+    })?;
     let guidance = guidance::Plan::capture(&context, &cli.command);
     match commands::dispatch(&context, cli.command).await {
         Ok(()) => {

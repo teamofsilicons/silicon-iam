@@ -12,6 +12,7 @@ into public contracts, runnable examples, and client guidance.
 | Understand HTTP behavior and security semantics | [`API_DOCS.md`](./API_DOCS.md) |
 | Generate a client or inspect the normative wire contract | [`openapi.yaml`](./openapi.yaml) |
 | Use the `iam` command-line client | [`cli/README.md`](./cli/README.md) |
+| Upgrade an existing CLI home or diagnose local logout | [`cli/storage.md`](./cli/storage.md) |
 | Integrate through the official Rust client | [`client/README.md`](./client/README.md) |
 | Browse the rendered API manual sources | [`api/`](./api/) |
 | Browse the rendered Rust-client manual sources | [`client/`](./client/) |
@@ -39,6 +40,30 @@ must be deployed and verified before publishing/adopting the client/CLI packages
 | Automatic crate updates | — | [`client/updates.html`](./client/updates.html) |
 
 ## Published documentation
+
+### CLI/client 1.2.0 provenance
+
+The published `silicon-iam-cli` and `silicon-iam-client` **1.2.0** packages both
+record source commit `ec04ec92444e02c88a39c83a286dbf47b5ded458` in their packaged
+`.cargo_vcs_info.json`. These permanent links identify that release independently
+of changes to GitHub's default branch:
+
+- [Complete release source](https://github.com/teamofsilicons/silicon-iam/tree/ec04ec92444e02c88a39c83a286dbf47b5ded458)
+- [Release tag `v1.2.0`](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.0), pointing to that same published-source commit
+- [Version-pinned integration documentation](https://github.com/teamofsilicons/silicon-iam/tree/ec04ec92444e02c88a39c83a286dbf47b5ded458/docs)
+- [CLI 1.2.0 source](https://github.com/teamofsilicons/silicon-iam/tree/ec04ec92444e02c88a39c83a286dbf47b5ded458/crates/cli) and [CLI 1.2.0 manual](https://github.com/teamofsilicons/silicon-iam/blob/ec04ec92444e02c88a39c83a286dbf47b5ded458/docs/cli/README.md)
+- [Client 1.2.0 source](https://github.com/teamofsilicons/silicon-iam/tree/ec04ec92444e02c88a39c83a286dbf47b5ded458/crates/client) and [client 1.2.0 manual](https://github.com/teamofsilicons/silicon-iam/blob/ec04ec92444e02c88a39c83a286dbf47b5ded458/docs/client/README.md)
+
+Later source changes, including the empty-tag confirmation and duplicate
+local-configuration warning fixes, are **unreleased** relative to these 1.2.0
+packages. Updating `main` does not modify an installed or published crate.
+
+Existing Unix homes created with mode `0755` require a one-time permission repair
+when upgrading. Verify the directory and its ownership before applying the
+[documented `0700` repair](cli/storage.md#upgrading-an-existing-iam-home); do not
+replace the home, erase credentials, or bypass the safety checks.
+
+### Running service
 
 The release image embeds the HTML manuals and OpenAPI document from this
 directory, so production documentation always matches the running binary:

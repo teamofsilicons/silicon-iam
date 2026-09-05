@@ -171,15 +171,19 @@ pub async fn run(context: &Context, command: ApprovalCommand) -> Result<()> {
             match context.format {
                 Format::Json => json(&updated),
                 Format::Text => {
-                    println!(
-                        "Tags are now {}.",
-                        updated
-                            .tags
-                            .iter()
-                            .map(|tag| tag.name.clone())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
+                    if updated.tags.is_empty() {
+                        println!("Tags cleared.");
+                    } else {
+                        println!(
+                            "Tags are now {}.",
+                            updated
+                                .tags
+                                .iter()
+                                .map(|tag| tag.name.clone())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                    }
                     Ok(())
                 }
             }
