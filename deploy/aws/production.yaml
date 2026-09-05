@@ -1,7 +1,16 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Silicon IAM backend on private EC2 and RDS behind the shared Team of Silicons ALB.
+Description: Silicon IAM backend with staged dedicated load balancer migration; see deploy/aws/EDGE.md.
 
 Parameters:
+  DedicatedTargetGroupArn:
+    Type: String
+    Default: ""
+    Description: Target group output of this service's dedicated edge stack.
+  UseSharedLoadBalancer:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Keep true during DNS migration; false removes only this service's shared ingress and routing.
   VpcId:
     Type: AWS::EC2::VPC::Id
   PrivateSubnetA:
@@ -34,18 +43,32 @@ Parameters:
     Default: db.t4g.micro
     AllowedValues: [db.t4g.micro, db.t4g.small]
 
+Rules:
+  RequireTrafficDestination:
+    Assertions:
+      - Assert: !Or
+          - !Equals [!Ref UseSharedLoadBalancer, "true"]
+          - !Not [!Equals [!Ref DedicatedTargetGroupArn, ""]]
+        AssertDescription: A dedicated target group is required before disabling shared routing.
+
+Conditions:
+  SharedLoadBalancer: !Equals [!Ref UseSharedLoadBalancer, "true"]
+  DedicatedLoadBalancer: !Not [!Equals [!Ref DedicatedTargetGroupArn, ""]]
+
 Resources:
   InstanceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Silicon IAM production instance; application ports are ALB-only
       VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 8080
-          ToPort: 8080
-          SourceSecurityGroupId: !Ref AlbSecurityGroupId
-          Description: Shared ALB to IAM API
+      SecurityGroupIngress: !If
+        - SharedLoadBalancer
+        - - IpProtocol: tcp
+            FromPort: 8080
+            ToPort: 8080
+            SourceSecurityGroupId: !Ref AlbSecurityGroupId
+            Description: Shared ALB to IAM API
+        - []
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -59,6 +82,7 @@ Resources:
 
   AlbToInstanceEgress:
     Type: AWS::EC2::SecurityGroupEgress
+    Condition: SharedLoadBalancer
     Properties:
       GroupId: !Ref AlbSecurityGroupId
       IpProtocol: tcp
@@ -250,6 +274,7 @@ Resources:
 
   ApiTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: SharedLoadBalancer
     Properties:
       Name: silicon-iam-prod-api
       VpcId: !Ref VpcId
@@ -276,6 +301,7 @@ Resources:
 
   ListenerCertificate:
     Type: AWS::ElasticLoadBalancingV2::ListenerCertificate
+    Condition: SharedLoadBalancer
     Properties:
       ListenerArn: !Ref HttpsListenerArn
       Certificates:
@@ -283,6 +309,7 @@ Resources:
 
   ApiListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: SharedLoadBalancer
     Properties:
       ListenerArn: !Ref HttpsListenerArn
       Priority: 20
@@ -584,8 +611,6 @@ Resources:
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
-    DependsOn:
-      - ApiListenerRule
     Properties:
       AutoScalingGroupName: silicon-iam-production
       MinSize: "1"
@@ -598,7 +623,8 @@ Resources:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
       TargetGroupARNs:
-        - !Ref ApiTargetGroup
+        - !If [SharedLoadBalancer, !Ref ApiTargetGroup, !Ref "AWS::NoValue"]
+        - !If [DedicatedLoadBalancer, !Ref DedicatedTargetGroupArn, !Ref "AWS::NoValue"]
       HealthCheckType: ELB
       HealthCheckGracePeriod: 1200
       NewInstancesProtectedFromScaleIn: false
@@ -622,4 +648,4 @@ Outputs:
   AutoScalingGroupName:
     Value: !Ref AutoScalingGroup
   ApiTargetGroupArn:
-    Value: !Ref ApiTargetGroup
+    Value: !If [DedicatedLoadBalancer, !Ref DedicatedTargetGroupArn, !Ref ApiTargetGroup]
