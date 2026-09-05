@@ -7,9 +7,10 @@ see [credential storage](storage.md).
 
 ## Current authorization without waiting for a webhook
 
-This contract was introduced in CLI/client **1.2.0**, remains in **1.2.1**, and
-requires the matching backend with base migration `0067` and testing overlay `9003`. Deploy those
-migrations, runtime grants and backend before publishing/adopting these packages.
+This contract was introduced in CLI/client **1.2.0**, remains in CLI **1.2.2**
+and client **1.2.1**, and requires the matching backend with base migration
+`0067` and testing overlay `9003`. Deploy those migrations, runtime grants and
+backend before publishing/adopting these packages.
 Publishing a crate does not deploy the API; verify the configured backend with
 `iam system version`. Historical 1.1.1 packages do not expose this contract.
 
@@ -42,27 +43,31 @@ retry it after an uncertain result.
 ## Installation
 
 ```sh
-cargo install silicon-iam-cli --version 1.2.1 --locked
+cargo install silicon-iam-cli --version 1.2.2 --locked
 ```
 
-Release `1.2.1` requires Rust 1.98 or newer, bundles
+Release `1.2.2` requires Rust 1.98 or newer, bundles
 `silicon-iam-client` 1.2.1, and speaks HTTP API major `v1`. The crate/CLI
 SemVer and HTTP API major are separate version lines. Check the installed
 binary with `iam --version`, and inspect/negotiate with the configured service
 using `iam system version`.
 
-Release 1.2.1 is built from
-[`v1.2.1`](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.1/crates/cli);
-use its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.1/docs/cli/README.md)
+Release 1.2.2 is built from
+[`v1.2.2`](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.2/crates/cli);
+use its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.2/docs/cli/README.md)
 to audit that installed version. Later changes on `main` are unreleased until
 separately published. An automatic update may install a newer release on a
 later invocation; check `iam --version` again when collecting diagnostics.
 
-This patch adds `app approve-webhook`, fixes empty-tag confirmations, duplicate
-local-configuration update warnings and required login-input help, and adds
-phase-specific logout failure diagnostics. The webhook-approval command requires
-the matching backend deployment. See the [release notes](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.1/docs/README.md#cliclient-121) for scope and
-the remaining unconfirmed logout observation.
+This patch adds [bounded Unix lock-open recovery](storage.md#version-122-bounded-unix-lock-open-recovery)
+without weakening local filesystem checks. It changes no API/client contract
+and requires no new database migration. The client remains 1.2.1.
+
+It retains the 1.2.1 `app approve-webhook` command, empty-tag confirmations,
+local-configuration warning fix, required login-input help and phase-specific
+logout failure diagnostics. Webhook approval still requires the matching
+backend deployment. See the [release notes](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.2/docs/README.md#published-documentation)
+for each release's scope and verification limits.
 
 **Upgrading an older installation:** an existing Unix IAM home with mode `0755`
 is refused even if `credentials.json` is `0600`. The home must be owned by the
@@ -224,7 +229,7 @@ repository's `docs/` directory nor a documentation generator.
 
 ## Complete command reference
 
-This is the complete `1.2.1` command tree emitted by `iam commands`. Angle
+This is the complete `1.2.2` command tree emitted by `iam commands`. Angle
 brackets mark required values; square brackets mark optional values. A row for
 a noun such as `iam member` is a help namespace and requires one of the listed
 subcommands. Run `iam <command> --help` for every flag, accepted value, default,

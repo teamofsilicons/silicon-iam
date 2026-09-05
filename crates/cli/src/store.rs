@@ -28,6 +28,9 @@ const CONFIG_FILE: &str = "config.json";
 const CREDENTIALS_FILE: &str = "credentials.json";
 const UPDATE_FILE: &str = "update.json";
 const STORE_LOCK: &str = "credentials.lock";
+// Six attempts, with 31 ms of scheduled backoff; never an unbounded retry.
+#[cfg(unix)]
+const LOCK_OPEN_RETRY_DELAYS_MS: [u64; 5] = [1, 2, 4, 8, 16];
 
 /// Settings that are not secret.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -563,27 +566,126 @@ impl StoreDirectory {
         Ok(())
     }
 
+    /// A create-or-open can transiently report ENOENT during concurrent first
+    /// use on macOS, even when the pinned directory and lock are still valid.
+    /// Retry only the lock open, never a credential read or a state mutation.
+    fn open_lock_file(&self, name: &str) -> Result<File> {
+        #[cfg(not(unix))]
+        {
+            let file = self.open_file(name, true, false).map_err(|error| {
+                state_error(&self.path.join(name), format!("cannot open lock: {error}"))
+            })?;
+            self.validate_lock_file(name, &file)?;
+            Ok(file)
+        }
+        #[cfg(unix)]
+        self.open_unix_lock_file(name)
+    }
+
+    #[cfg(unix)]
+    fn open_unix_lock_file(&self, name: &str) -> Result<File> {
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            match self.open_file(name, true, false) {
+                Ok(file) => {
+                    self.validate_lock_file(name, &file)?;
+                    return Ok(file);
+                }
+                Err(error) => {
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::Interrupted
+                    ) && let Some(delay) = LOCK_OPEN_RETRY_DELAYS_MS.get(attempts - 1)
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(*delay));
+                        self.validate_lock_directory()?;
+                        continue;
+                    }
+                    return Err(state_error(
+                        &self.path.join(name),
+                        format!("cannot open lock after {attempts} attempt(s): {error}"),
+                    ));
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn validate_lock_directory(&self) -> Result<()> {
+        use rustix::fs::{AtFlags, CWD, fstat, statat};
+        use std::os::unix::fs::MetadataExt as _;
+
+        let metadata = self
+            .file
+            .metadata()
+            .map_err(|error| state_error(&self.path, error))?;
+        if !metadata.is_dir()
+            || metadata.nlink() == 0
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err(state_error(
+                &self.path,
+                "cannot retry lock open: IAM home is no longer a live, owned, private directory",
+            ));
+        }
+        let pinned = fstat(&self.file).map_err(|error| state_error(&self.path, error))?;
+        let named = statat(CWD, &self.path, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|error| state_error(&self.path, error))?;
+        if pinned.st_dev != named.st_dev || pinned.st_ino != named.st_ino {
+            return Err(state_error(
+                &self.path,
+                "cannot retry lock open: IAM home was replaced or redirected",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_lock_file(&self, name: &str, file: &File) -> Result<()> {
+        self.validate_file(name, file)?;
+        #[cfg(unix)]
+        {
+            use rustix::fs::{AtFlags, fstat, statat};
+
+            let path = self.path.join(name);
+            let opened = fstat(file).map_err(|error| state_error(&path, error))?;
+            let named = statat(&self.file, name, AtFlags::SYMLINK_NOFOLLOW).map_err(|error| {
+                state_error(&path, format!("cannot verify lock identity: {error}"))
+            })?;
+            if opened.st_nlink != 1
+                || opened.st_dev != named.st_dev
+                || opened.st_ino != named.st_ino
+            {
+                return Err(state_error(
+                    &path,
+                    "lock file was removed or replaced; refusing to use a different lock identity",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn lock(&self, name: &str) -> Result<File> {
-        let file = self.open_file(name, true, false).map_err(|error| {
-            state_error(&self.path.join(name), format!("cannot open lock: {error}"))
-        })?;
-        self.validate_file(name, &file)?;
+        let file = self.open_lock_file(name)?;
         file.lock().map_err(|error| {
             state_error(
                 &self.path.join(name),
                 format!("cannot acquire lock: {error}"),
             )
         })?;
+        // A process waiting for a lock must not proceed on an unlinked inode.
+        self.validate_lock_file(name, &file)?;
         Ok(file)
     }
 
     fn try_lock(&self, name: &str) -> Result<Option<File>> {
-        let file = self
-            .open_file(name, true, false)
-            .map_err(|error| state_error(&self.path.join(name), error))?;
-        self.validate_file(name, &file)?;
+        let file = self.open_lock_file(name)?;
         match file.try_lock() {
-            Ok(()) => Ok(Some(file)),
+            Ok(()) => {
+                self.validate_lock_file(name, &file)?;
+                Ok(Some(file))
+            }
             Err(std::fs::TryLockError::WouldBlock) => Ok(None),
             Err(error) => Err(state_error(&self.path.join(name), error)),
         }

@@ -89,3 +89,59 @@ The 1.2.0 external audit recorded one unsuccessful concurrent logout without
 its exit code or stderr; seven instrumented reruns then passed 672 calls. Its
 cause remains unresolved. Those results do not establish a lost successful
 write or prove that every concurrency/host failure is fixed.
+
+## Version 1.2.2: bounded Unix lock-open recovery
+
+CLI **1.2.2** adds this hardening; it is **not included in published 1.2.1**.
+The investigation reproduced five unsuccessful commands across 480
+concurrent local logouts using the installed 1.2.1 CLI. No command falsely
+reported success, and no successful credential removal was observed lost.
+One baseline batch contained two failures; four instrumented batches contained
+three. A pass-through macOS syscall observer captured those three failures as
+`openat` returning `ENOENT` for a lock: the pinned directory was still owned,
+private and live, and an immediate subsequent lookup found the regular,
+single-linked `0600` lock file. That establishes the failed syscall and the
+CLI's fail-fast handling, not the underlying cause or a kernel/APFS defect.
+
+Version 1.2.2 retries **only opening a lock file**, and only after
+Unix `ENOENT` or `EINTR`. It permits at most six open attempts, with delays of
+1, 2, 4, 8 and 16 milliseconds: 31 milliseconds of scheduled backoff, not a
+wall-clock deadline. Each retry uses the same pinned directory descriptor and
+open flags. Before retrying, IAM verifies that the home remains live, owned
+by the current user, private, and the same directory identified by its path.
+
+Both blocking and nonblocking lock acquisition share this handling. Before
+and after acquiring a lock, IAM requires exactly one link and checks that the
+opened lock's device/inode identity still matches its name in the pinned
+directory. Unsafe paths, changed lock identities, other errors, and failures
+that exhaust the small retry budget still fail; there is no unlocked fallback.
+The retry does not repeat credential reads, JSON parsing, or state mutations.
+The lock-only single-link check does not reject an already-open JSON snapshot
+merely because a concurrent atomic replacement unlinked its old inode.
+
+### Pre-release local validation
+
+The fixed local candidate, before the release version bump, passed five
+unchanged runs of the supplied offline audit: **480/480 concurrent logout
+commands and all 80 check groups passed**.
+One run was uninstrumented and four used the pass-through syscall observer.
+No naturally occurring `ENOENT` was captured after the change, so these runs
+do not establish that a natural failure was recovered by a retry.
+
+Separate manual checks exercised the actual CLI with controlled faults:
+
+- Five injected `ENOENT` failures succeeded on open attempt six; one injected
+  `EINTR` succeeded on attempt two.
+- Persistent `ENOENT` failed with exit 2 after six opens; `EACCES` failed with
+  exit 2 after one open, without retry. Synthetic credentials stayed unchanged.
+- Hard-linked and FIFO lock files were rejected without changing credentials.
+- Replacing a lock while the CLI waited for it caused exit 2 after acquisition
+  of the old inode, without changing credentials or proceeding unlocked.
+- Replacing the IAM home after an injected failure was rejected before the
+  next open; original credentials stayed unchanged and the new home stayed empty.
+
+No new automated tests were added; the supplied audit was run unchanged.
+The installed 1.2.1 binary was left untouched during these checks; validation
+used the fixed local candidate. Upgrade to 1.2.2 to obtain this hardening.
+The original failures remain evidence; these checks do not identify their
+underlying platform cause or prove that every host failure is fixed.

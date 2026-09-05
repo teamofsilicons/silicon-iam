@@ -41,6 +41,26 @@ must be deployed and verified before publishing/adopting the client/CLI packages
 
 ## Published documentation
 
+### CLI 1.2.2; client remains 1.2.1
+
+CLI **1.2.2** adds bounded recovery when opening a Unix lock file transiently
+returns `ENOENT` or `EINTR`. It makes at most six open attempts with 31
+milliseconds of scheduled backoff, retains the pinned-directory/no-follow
+safety checks, and rejects removed or replaced lock identities. Persistent
+errors still fail; no command proceeds without acquiring its lock.
+
+The [storage guide](cli/storage.md#version-122-bounded-unix-lock-open-recovery)
+records the reproduced 1.2.1 failures, 480 successful concurrent logouts with
+the fix, controlled-fault checks, and the remaining uncertainty about the
+underlying platform cause. CLI 1.2.2 retains the commands and contracts of
+1.2.1. The Rust client remains **1.2.1**; this patch changes no API/client
+contract and needs no new database migration.
+
+- [CLI release source tagged `v1.2.2`](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.2)
+- [CLI 1.2.2 source](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.2/crates/cli) and [manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.2/docs/cli/README.md)
+- [Version-pinned 1.2.2 integration documentation](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.2/docs)
+- [Unchanged client 1.2.1 source](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.1/crates/client) and [manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.1/docs/client/README.md)
+
 ### CLI/client 1.2.1
 
 Release **1.2.1** includes these CLI fixes:
@@ -87,7 +107,8 @@ of changes to GitHub's default branch:
 - [CLI 1.2.0 source](https://github.com/teamofsilicons/silicon-iam/tree/ec04ec92444e02c88a39c83a286dbf47b5ded458/crates/cli) and [CLI 1.2.0 manual](https://github.com/teamofsilicons/silicon-iam/blob/ec04ec92444e02c88a39c83a286dbf47b5ded458/docs/cli/README.md)
 - [Client 1.2.0 source](https://github.com/teamofsilicons/silicon-iam/tree/ec04ec92444e02c88a39c83a286dbf47b5ded458/crates/client) and [client 1.2.0 manual](https://github.com/teamofsilicons/silicon-iam/blob/ec04ec92444e02c88a39c83a286dbf47b5ded458/docs/client/README.md)
 
-The CLI fixes listed for 1.2.1 are not included in these original 1.2.0 packages.
+The CLI fixes listed for 1.2.1 and 1.2.2 are not included in these original
+1.2.0 packages.
 
 Existing Unix homes created with mode `0755` require a one-time permission repair
 when upgrading. Verify the directory and its ownership before applying the
