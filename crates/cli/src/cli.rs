@@ -159,6 +159,12 @@ pub enum Command {
         .required(false)
         .multiple(false)
 ))]
+#[command(group(
+    clap::ArgGroup::new("login_source")
+        .args(["email", "phone", "carbon_id", "app_id"])
+        .required(true)
+        .multiple(true)
+))]
 pub struct LoginArgs {
     /// Email address to sign in with.
     #[arg(long)]
