@@ -529,6 +529,10 @@
           }
         ],
         "RedactedFields": [
+          { "SingleHeader": { "Name": "x-iam-obo-access-proof" } },
+          { "SingleHeader": { "Name": "x-step-up-token" } },
+          { "SingleHeader": { "Name": "x-csrf-token" } },
+          { "SingleHeader": { "Name": "x-silicon-iam-signature" } },
           {
             "QueryString": {}
           },
