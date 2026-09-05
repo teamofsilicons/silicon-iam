@@ -447,7 +447,7 @@ For the endpoints that gives me all the details by default it should send all bu
 
 We would have an IAm testing enviorments. A testing enviorment is sort of an exact replica of silicon-iam that is using a seperate database as it's provider instead of the main prod database. As soon as a testing enviorment is created it would have 0 orgs, 0 apps, 0 carbons, 0 silicons, basically it's like just starting up a fresh IAm session with a completely new db.
 
-There can be multiple testing enviorments per organisation, testing enviorments are owned by organisations but can be created by any silicon or any carbon in that organisation (the said creator would be attached as the testing enviorment creator) and can delete the testing enviorment, rotate the testing_env_key, basically have the admin level access to that testing enviorment, even org_admins and org_owners would have admin level; access to the said testing enviorment and can be delete, clean, etc the testing enviorment.
+There can be multiple testing enviorments per organisation, testing enviorments are owned by organisations but can be created by any silicon or any carbon in that organisation (the said creator would be attached as the testing enviorment creator) and can delete the testing enviorment, rotate the testing_env_key, basically have the admin level access to that testing enviorment, even org_admins and org_owners would have admin level; access to the said testing enviorment and can be delete, clean, etc the testing enviorment. 
 
 For each testing enviorment they would be sharing a shared test database (that's not the prod database, this is just responsible for storing all the test data). For this testing enviorment each entry would be associated with the testing env id. 
 
@@ -538,7 +538,7 @@ For both package and the cli write detailed docs on how to use the package and h
 
 Package and CLI must only expose the client side actions, and not the internal actions performed by the backend. For the CLI follow the standard command line grammar rules, and also include a -h command that shows all the possible commands.
 
-For both cli and client we would also package in an auto updater, the task of this auto updater is to compare the current version to the latest version in crates for them, and if there's a new verion auto update it to the said new version. By default auto update is on, users can specifically come and opt in to stop auto update. Which would stop auto updating the package.
+For both cli and client we would also package in an auto updater, the task of this auto updater is to compare the current version to the latest version in crates for them, and if there's a new verion auto update it to the said new version. By default auto update is on, users can specifically come and opt in to stop auto update. Which would stop auto updating the package. Auto updater check runs every single hour. Updates should be checked when the command is run and should happen every hour, so check for the last update check time and if it's past 1 hour old check for update and update after the command finishes running.
 
 In the CLI and the and the client both there must be silicon login commands and endpoints, this command would ask the silicon for the sid and the stk, an optional argument can be passed for the app-id, if the app-id is passed generate a short lived token that can be used by that application for further authenticating the said silicon. 
 
@@ -549,6 +549,15 @@ If the carbon/silicon is already logged in directly return the short lived token
 Testing enviorment in cli, for testing enviorment in cli i should just be able to `iam --test <test_id> <command>` infront of the same command and it should treat that as a test command. Same for test only commands even they would have the same style just without specifying --test for them would return this action is only possible for test enviorment.  
 
 
+### Cli experience
+
+Cli is an interface on it's own, it's an interface used by our fellow dear agents, and sometimes humans. What we would want this interface to serve as is it should give the correct information at correct time, and can write texts to explain what exactly is happening. 
+
+A few things that would be needed to ensure good cli experience: the cli alone should have enough information to use IAM correctly! Surfacing the right set of things when needed, giving suggestions at the correct times. Like for eg: when someone runs `iam app create` then show them the exact help for it, and when the app has been created, show them the other related commands that they might need to run after it. For each command a good description, the entire docs, etc. 
+
+So the overall cli experience needs to be super good. It needs to give the relevant informations, help should be detailed, and suggested commands, etc should also happen. 
+
+
 # Docs
 
 In the docs clearly mention while logging into any application we never ask for your authentication credentials. We only and only ask for the short live token. 
@@ -557,4 +566,10 @@ For the docs keep it as detailed and mention all the details, this is the only t
 
 Write detailed guides on how to initiate login, how to get the webhook, how to use the short lived token, etc. 
 
-Write very good detailed instructions on how test enviorment works and how every app is by default registered to be used as an testing client by other applications by this i don't mean they are in an enviorment they are configured by default, but anyone can configure if need be, and how the test key would actually operate, so entire e2e how to test for all 3 client, api, or cli. And also what to expect so how to build the applciation test proof.
+Write very good detailed instructions on how test enviorment works and how every app is by default registered to be used as an testing client by other applications by this i don't mean they are in an enviorment they are configured by default, but anyone can configure if need be, and how the test key would actually operate, so entire e2e how to test for all 3 client, api, or cli. And also what to expect so how to build the applciation test proof. 
+
+
+
+# Later to do
+
+iam report `<report-message>`, this should send an report message to the user. 

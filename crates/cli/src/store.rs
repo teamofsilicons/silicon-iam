@@ -8,20 +8,26 @@
 
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, File},
+    io::{Read as _, Write as _},
     path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::error::{CliError, Result};
 
+#[cfg(not(unix))]
+use std::fs::OpenOptions;
+
 const APP_DIRECTORY: &str = ".silicon-iam";
 const CONFIG_FILE: &str = "config.json";
 const CREDENTIALS_FILE: &str = "credentials.json";
 const UPDATE_FILE: &str = "update.json";
+const STORE_LOCK: &str = "credentials.lock";
 
 /// Settings that are not secret.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -50,10 +56,10 @@ impl Default for Config {
 /// Non-secret throttle state for the crates.io updater.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct UpdateState {
-    /// Compiled version for which the last successful check was made.
+    /// Compiled version for which the last check was attempted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked_version: Option<String>,
-    /// Time of the last successful check.
+    /// Time of the last check attempt, including a registry/install failure.
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub checked_at: Option<OffsetDateTime>,
 }
@@ -236,16 +242,58 @@ pub fn home() -> Result<PathBuf> {
 ///
 /// Returns an error when the file exists but cannot be read or parsed.
 pub fn load_config() -> Result<Config> {
-    read_json(&home()?.join(CONFIG_FILE))
+    StoreDirectory::open()?.read_json(CONFIG_FILE)
 }
 
-/// Writes the settings.
+/// Holds the shared read/modify/write lock for local state.
+///
+/// The lock file is permanent: unlinking it would let concurrent processes
+/// acquire locks on different inodes. Dropping this value releases the lock.
+pub struct LockedStore {
+    directory: StoreDirectory,
+    _lock: File,
+}
+
+/// Locks local state before reading a snapshot that will be modified.
 ///
 /// # Errors
 ///
-/// Returns an error when the directory or file cannot be written.
-pub fn save_config(config: &Config) -> Result<()> {
-    write_json(&home()?.join(CONFIG_FILE), config, false)
+/// Returns an error for unsafe paths or unreadable/unlockable local state.
+pub fn lock() -> Result<LockedStore> {
+    let directory = StoreDirectory::open()?;
+    let lock = directory.lock(STORE_LOCK)?;
+    Ok(LockedStore {
+        directory,
+        _lock: lock,
+    })
+}
+
+impl LockedStore {
+    /// Reads settings while excluding other state writers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the settings are unsafe, unreadable or invalid.
+    pub fn load_config(&self) -> Result<Config> {
+        self.directory.read_json(CONFIG_FILE)
+    }
+
+    /// Atomically replaces settings while retaining the state lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the settings cannot be safely persisted.
+    pub fn save_config(&self, config: &Config) -> Result<()> {
+        self.directory.write_json(CONFIG_FILE, config)
+    }
+
+    fn load_credentials(&self) -> Result<Credentials> {
+        self.directory.read_json(CREDENTIALS_FILE)
+    }
+
+    fn save_credentials(&self, credentials: &Credentials) -> Result<()> {
+        self.directory.write_json(CREDENTIALS_FILE, credentials)
+    }
 }
 
 /// Reads automatic-update throttle state, or an empty value.
@@ -254,7 +302,7 @@ pub fn save_config(config: &Config) -> Result<()> {
 ///
 /// Returns an error when the state exists but cannot be read or parsed.
 pub fn load_update_state() -> Result<UpdateState> {
-    read_json(&home()?.join(UPDATE_FILE))
+    StoreDirectory::open()?.read_json(UPDATE_FILE)
 }
 
 /// Stores automatic-update throttle state without any credentials.
@@ -263,7 +311,25 @@ pub fn load_update_state() -> Result<UpdateState> {
 ///
 /// Returns an error when the state cannot be written.
 pub fn save_update_state(state: &UpdateState) -> Result<()> {
-    write_json(&home()?.join(UPDATE_FILE), state, false)
+    let store = lock()?;
+    let previous: UpdateState = store.directory.read_json(UPDATE_FILE)?;
+    // A slower concurrent check must not move the last-attempt clock
+    // backwards. A future value, however, must be repairable after clock skew.
+    if previous.checked_at > state.checked_at
+        && previous.checked_at <= Some(OffsetDateTime::now_utc())
+    {
+        return Ok(());
+    }
+    store.directory.write_json(UPDATE_FILE, state)
+}
+
+/// Attempts to serialize an updater check and installation for this home.
+///
+/// # Errors
+///
+/// Returns an error for an unsafe home/lock path or an operating-system failure.
+pub fn try_lock_updater_check() -> Result<Option<File>> {
+    StoreDirectory::open()?.try_lock("updater-check.lock")
 }
 
 /// Reads stored sessions, or an empty set.
@@ -272,77 +338,326 @@ pub fn save_update_state(state: &UpdateState) -> Result<()> {
 ///
 /// Returns an error when the file exists but cannot be read or parsed.
 pub fn load_credentials() -> Result<Credentials> {
-    read_json(&home()?.join(CREDENTIALS_FILE))
+    StoreDirectory::open()?.read_json(CREDENTIALS_FILE)
 }
 
-/// Writes stored sessions with owner-only permissions.
+/// Serializes one profile/environment's complete session transitions.
+///
+/// Unlike the short state-file lock, this lock can span a network refresh or
+/// logout. Independent sessions continue working, and login/logout cannot race
+/// a refresh commit for the same session.
+pub struct LockedSession {
+    directory: StoreDirectory,
+    _lock: File,
+    profile: String,
+    environment_id: Option<Uuid>,
+}
+
+/// Acquires the session lock before re-reading its current credentials.
 ///
 /// # Errors
 ///
-/// Returns an error when the directory or file cannot be written.
-pub fn save_credentials(credentials: &Credentials) -> Result<()> {
-    write_json(&home()?.join(CREDENTIALS_FILE), credentials, true)
+/// Returns an error for an unsafe home, or an unsafe/unlockable lock file.
+pub fn lock_session(profile: &str, environment_id: Option<Uuid>) -> Result<LockedSession> {
+    let directory = StoreDirectory::open()?;
+    let mut digest = Sha256::new();
+    digest.update(profile.as_bytes());
+    digest.update([0]);
+    if let Some(id) = environment_id {
+        digest.update(id.as_bytes());
+    }
+    let name = format!("session-{:x}.lock", digest.finalize());
+    let lock = directory.lock(&name)?;
+    Ok(LockedSession {
+        directory,
+        _lock: lock,
+        profile: profile.to_owned(),
+        environment_id,
+    })
 }
 
-fn read_json<T: Default + serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-            CliError::Config(format!("{} is not readable: {error}", path.display()))
-        }),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
-        Err(error) => Err(CliError::Config(format!(
-            "cannot read {}: {error}",
-            path.display()
-        ))),
+impl LockedSession {
+    /// Reads the latest session after its transition lock has been acquired.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsafe or unreadable state, or when signed out.
+    pub fn session(&self) -> Result<Session> {
+        let credentials: Credentials = self.directory.read_json(CREDENTIALS_FILE)?;
+        credentials
+            .session(&self.profile, self.environment_id)
+            .cloned()
+            .ok_or(CliError::NotSignedIn)
+    }
+
+    /// Merges this session into the latest document, preserving other sessions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when state cannot be safely locked, read or persisted.
+    pub fn remember(&self, session: Session) -> Result<()> {
+        let _lock = self.directory.lock(STORE_LOCK)?;
+        let mut credentials: Credentials = self.directory.read_json(CREDENTIALS_FILE)?;
+        credentials.set_session(&self.profile, self.environment_id, session);
+        self.directory.write_json(CREDENTIALS_FILE, &credentials)
+    }
+
+    /// Removes only this session from the latest document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when state cannot be safely locked, read or persisted.
+    pub fn forget(&self) -> Result<bool> {
+        let _lock = self.directory.lock(STORE_LOCK)?;
+        let mut credentials: Credentials = self.directory.read_json(CREDENTIALS_FILE)?;
+        let existed = credentials.remove_session(&self.profile, self.environment_id);
+        self.directory.write_json(CREDENTIALS_FILE, &credentials)?;
+        Ok(existed)
     }
 }
 
-fn write_json<T: Serialize>(path: &Path, value: &T, private: bool) -> Result<()> {
-    let Some(directory) = path.parent() else {
-        return Err(CliError::Config(format!(
-            "{} has no parent directory",
-            path.display()
-        )));
-    };
-    fs::create_dir_all(directory).map_err(|error| {
-        CliError::Config(format!("cannot create {}: {error}", directory.display()))
-    })?;
-    let mut encoded = serde_json::to_vec_pretty(value)
-        .map_err(|error| CliError::Config(format!("cannot encode {}: {error}", path.display())))?;
-    encoded.push(b'\n');
-    fs::write(path, &encoded)
-        .map_err(|error| CliError::Config(format!("cannot write {}: {error}", path.display())))?;
-    if private {
-        restrict(path)?;
+/// Merges an environment key into the latest credential document.
+///
+/// # Errors
+///
+/// Returns an error when state cannot be safely locked, read or persisted.
+pub fn remember_testing_environment(
+    profile: &str,
+    environment_id: Uuid,
+    key: String,
+) -> Result<()> {
+    let store = lock()?;
+    let mut credentials = store.load_credentials()?;
+    credentials.set_testing_environment_key(profile, environment_id, key);
+    store.save_credentials(&credentials)
+}
+
+struct StoreDirectory {
+    path: PathBuf,
+    // Pin the verified directory so renaming its path cannot redirect writes.
+    #[cfg(unix)]
+    file: File,
+}
+
+impl StoreDirectory {
+    fn open() -> Result<Self> {
+        let path = home()?;
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&path)
+            .map_err(|error| state_error(&path, error))?;
+        #[cfg(unix)]
+        {
+            use rustix::fs::{Mode, OFlags, open};
+            use std::os::unix::fs::MetadataExt as _;
+
+            let file = File::from(
+                open(
+                    &path,
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(|error| state_error(&path, error))?,
+            );
+            let metadata = file.metadata().map_err(|error| state_error(&path, error))?;
+            if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o077 != 0
+            {
+                return Err(CliError::Config(format!(
+                    "{} must be owned by the current user and private (0700); use chmod 700 on your IAM home",
+                    path.display()
+                )));
+            }
+            Ok(Self { path, file })
+        }
+        #[cfg(not(unix))]
+        {
+            let metadata =
+                fs::symlink_metadata(&path).map_err(|error| state_error(&path, error))?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(state_error(
+                    &path,
+                    "the IAM home must be a real directory, not a link",
+                ));
+            }
+            Ok(Self { path })
+        }
     }
-    Ok(())
+
+    fn open_file(&self, name: &str, create: bool, exclusive: bool) -> std::io::Result<File> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{Mode, OFlags, openat};
+
+            let mut flags = OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
+            flags |= if create {
+                OFlags::RDWR | OFlags::CREATE
+            } else {
+                OFlags::RDONLY
+            };
+            if exclusive {
+                flags |= OFlags::EXCL;
+            }
+            Ok(File::from(openat(
+                &self.file,
+                name,
+                flags,
+                Mode::from_raw_mode(0o600),
+            )?))
+        }
+        #[cfg(not(unix))]
+        {
+            let path = self.path.join(name);
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(std::io::Error::other(
+                        "symbolic links are not allowed in IAM state",
+                    ));
+                }
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+                _ => {}
+            }
+            let mut options = OpenOptions::new();
+            options
+                .read(true)
+                .write(create)
+                .create(create)
+                .create_new(exclusive);
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt as _;
+                // Open the reparse point itself; never follow a swapped link.
+                options.custom_flags(0x0020_0000);
+            }
+            options.open(path)
+        }
+    }
+
+    fn validate_file(&self, name: &str, file: &File) -> Result<()> {
+        let path = self.path.join(name);
+        let metadata = file.metadata().map_err(|error| state_error(&path, error))?;
+        if !metadata.is_file() {
+            return Err(state_error(
+                &path,
+                "IAM state must be a regular file, not a link or device",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            if metadata.uid() != rustix::process::geteuid().as_raw()
+                || metadata.mode() & 0o022 != 0
+                || metadata.nlink() > 1
+            {
+                return Err(state_error(
+                    &path,
+                    "IAM state must be owned by the current user, not writable by others, and not hard-linked",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn lock(&self, name: &str) -> Result<File> {
+        let file = self.open_file(name, true, false).map_err(|error| {
+            state_error(&self.path.join(name), format!("cannot open lock: {error}"))
+        })?;
+        self.validate_file(name, &file)?;
+        file.lock().map_err(|error| {
+            state_error(
+                &self.path.join(name),
+                format!("cannot acquire lock: {error}"),
+            )
+        })?;
+        Ok(file)
+    }
+
+    fn try_lock(&self, name: &str) -> Result<Option<File>> {
+        let file = self
+            .open_file(name, true, false)
+            .map_err(|error| state_error(&self.path.join(name), error))?;
+        self.validate_file(name, &file)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(error) => Err(state_error(&self.path.join(name), error)),
+        }
+    }
+
+    fn read_json<T: Default + serde::de::DeserializeOwned>(&self, name: &str) -> Result<T> {
+        let mut file = match self.open_file(name, false, false) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(T::default()),
+            Err(error) => return Err(state_error(&self.path.join(name), error)),
+        };
+        self.validate_file(name, &file)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|error| state_error(&self.path.join(name), error))?;
+        serde_json::from_slice(&bytes).map_err(|error| state_error(&self.path.join(name), error))
+    }
+
+    fn write_json<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
+        // Explicitly reject an existing symlink instead of replacing it. All
+        // operations below are relative to the same private, pinned directory.
+        match self.open_file(name, false, false) {
+            Ok(file) => self.validate_file(name, &file)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(state_error(&self.path.join(name), error)),
+        }
+        let temporary = format!(".{name}.{}.tmp", Uuid::now_v7());
+        self.write_temporary(name, &temporary, value)
+    }
+
+    fn write_temporary<T: Serialize>(&self, name: &str, temporary: &str, value: &T) -> Result<()> {
+        let path = self.path.join(name);
+        let mut encoded =
+            serde_json::to_vec_pretty(value).map_err(|error| state_error(&path, error))?;
+        encoded.push(b'\n');
+        let mut file = self
+            .open_file(temporary, true, true)
+            .map_err(|error| state_error(&path, error))?;
+        // Only clean up after exclusive creation succeeded: a name collision
+        // must never remove a file that this operation did not create.
+        let result = (|| {
+            file.write_all(&encoded)
+                .map_err(|error| state_error(&path, error))?;
+            file.sync_all().map_err(|error| state_error(&path, error))?;
+            drop(file);
+            #[cfg(unix)]
+            {
+                rustix::fs::renameat(&self.file, temporary, &self.file, name)
+                    .map_err(|error| state_error(&path, error))?;
+                self.file
+                    .sync_all()
+                    .map_err(|error| state_error(&path, error))?;
+            }
+            #[cfg(not(unix))]
+            fs::rename(self.path.join(temporary), &path)
+                .map_err(|error| state_error(&path, error))?;
+            Ok(())
+        })();
+        if result.is_err() {
+            #[cfg(unix)]
+            let _ = rustix::fs::unlinkat(&self.file, temporary, rustix::fs::AtFlags::empty());
+            #[cfg(not(unix))]
+            let _ = fs::remove_file(self.path.join(temporary));
+        }
+        result
+    }
+}
+
+fn state_error(path: &Path, error: impl std::fmt::Display) -> CliError {
+    CliError::Config(format!("cannot access {}: {error}", path.display()))
 }
 
 const fn enabled() -> bool {
     true
-}
-
-/// Makes a file readable and writable by its owner only.
-///
-/// Applied on every write, not only at creation: a file whose permissions were
-/// widened after the fact is exactly the case worth catching.
-#[cfg(unix)]
-fn restrict(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|error| {
-        CliError::Config(format!(
-            "cannot restrict permissions on {}: {error}",
-            path.display()
-        ))
-    })
-}
-
-#[cfg(not(unix))]
-fn restrict(_path: &Path) -> Result<()> {
-    // Nothing portable to do here. The directory sits under the user's own
-    // profile, which is the platform's own boundary.
-    Ok(())
 }
 
 #[cfg(test)]

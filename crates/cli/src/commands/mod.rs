@@ -32,9 +32,9 @@ pub async fn dispatch(context: &Context, command: Command) -> Result<()> {
         Command::StepUp(args) => auth::step_up(context, args).await,
         Command::Signup(args) => auth::signup(context, args).await,
         Command::Carbon(command) => carbon::run(context, command).await,
-        Command::Commands => {
-            print_commands();
-            Ok(())
+        Command::Commands => crate::experience::print_commands(context.format),
+        Command::Docs { topic, search } => {
+            crate::manual::run(context.format, topic.as_deref(), search.as_deref())
         }
         Command::Org(command) => org::run(context, command).await,
         Command::Sso(command) => sso::run(context, command).await,
@@ -50,35 +50,6 @@ pub async fn dispatch(context: &Context, command: Command) -> Result<()> {
         Command::Config(command) => config::run(context, command),
         Command::System(command) => system::run(context, command).await,
     }
-}
-
-/// Prints every command, at every depth.
-///
-/// `--help` shows one level at a time, which is right when you know roughly
-/// where you are going. This is for when you do not.
-fn print_commands() {
-    use clap::CommandFactory as _;
-
-    fn walk(command: &clap::Command, prefix: &str) {
-        for sub in command.get_subcommands() {
-            if sub.get_name() == "help" {
-                continue;
-            }
-            let path = if prefix.is_empty() {
-                sub.get_name().to_owned()
-            } else {
-                format!("{prefix} {}", sub.get_name())
-            };
-            let about = sub.get_about().map(ToString::to_string).unwrap_or_default();
-            println!("  {path:<34} {about}");
-            walk(sub, &path);
-        }
-    }
-
-    let command = crate::cli::Cli::command();
-    println!("iam <command> [options]\n");
-    walk(&command, "");
-    println!("\nRun `iam <command> --help` for the options each one takes.");
 }
 
 #[cfg(test)]
@@ -97,17 +68,19 @@ mod tests {
         let groups: Vec<_> = command
             .get_subcommands()
             .filter(|sub| {
-                !matches!(
-                    sub.get_name(),
-                    "login"
-                        | "silicon-login"
-                        | "logout"
-                        | "whoami"
-                        | "step-up"
-                        | "signup"
-                        | "commands"
-                        | "help"
-                )
+                !sub.is_hide_set()
+                    && !matches!(
+                        sub.get_name(),
+                        "login"
+                            | "silicon-login"
+                            | "logout"
+                            | "whoami"
+                            | "step-up"
+                            | "signup"
+                            | "commands"
+                            | "docs"
+                            | "help"
+                    )
             })
             .collect();
         assert!(!groups.is_empty());

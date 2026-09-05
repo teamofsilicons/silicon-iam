@@ -95,6 +95,15 @@ pub async fn migrate_testing(pool: &PgPool) -> anyhow::Result<()> {
     let mut overlay = sqlx::migrate!("./migrations/testing");
     overlay.set_ignore_missing(true);
     overlay.run(pool).await?;
+    // Forward base migrations can introduce or replace privileged helpers.
+    // Reconcile ownership even when every overlay was already applied.
+    sqlx::query("SELECT iam_private.reconcile_testing_environment_security()")
+        .execute(pool)
+        .await?;
+    anyhow::ensure!(
+        testing_security_is_current(pool).await?,
+        "testing database security invariants are not satisfied"
+    );
     Ok(())
 }
 
@@ -248,6 +257,37 @@ pub async fn ready_testing(pool: &PgPool) -> bool {
         return false;
     }
     testing_schema_is_current(pool).await.unwrap_or(false)
+        && testing_security_is_current(pool).await.unwrap_or(false)
+        && testing_runtime_is_restricted(pool).await.unwrap_or(false)
+}
+
+async fn testing_security_is_current(pool: &PgPool) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar::<_, bool>(include_str!("testing_security.sql"))
+        .fetch_one(pool)
+        .await
+}
+
+async fn testing_runtime_is_restricted(pool: &PgPool) -> Result<bool, sqlx::Error> {
+    // Even perfect helper ownership cannot make a superuser runtime obey RLS.
+    // Unlike the migration audit, runtime readiness must reject that login.
+    sqlx::query_scalar::<_, bool>(
+        "SELECT NOT EXISTS (
+             SELECT 1 FROM pg_catalog.pg_roles AS runtime
+             WHERE runtime.rolname IN (current_user, session_user)
+               AND (runtime.rolsuper OR runtime.rolcreatedb OR runtime.rolcreaterole
+                    OR runtime.rolreplication OR runtime.rolbypassrls
+                    OR COALESCE(pg_catalog.pg_has_role(runtime.oid,
+                        pg_catalog.to_regrole('silicon_iam_testing_definer'), 'member'), false)
+                    OR NOT (
+                        COALESCE(pg_catalog.pg_has_role(runtime.oid,
+                            pg_catalog.to_regrole('silicon_iam_api'), 'member'), false)
+                        OR COALESCE(pg_catalog.pg_has_role(runtime.oid,
+                            pg_catalog.to_regrole('silicon_iam_worker'), 'member'), false)
+                    ))
+         )",
+    )
+    .fetch_one(pool)
+    .await
 }
 
 async fn schema_is_current(pool: &PgPool) -> Result<bool, sqlx::Error> {

@@ -1052,6 +1052,26 @@ pub(super) async fn introspect(
             .map_err(|_| ApiError::internal("oauth_introspection_org_commit"))?;
         return Ok(Json(inactive_introspection()));
     }
+    let authorization = if let (Some(organization_id), Some(membership_id)) =
+        (access.organization_id, access.membership_id)
+    {
+        let snapshot = super::authorization::load(
+            &mut transaction,
+            access.token_id,
+            access.subject.id,
+            organization_id,
+            membership_id,
+            &client,
+            None,
+        )
+        .await?;
+        if snapshot.is_none() {
+            return Ok(Json(inactive_introspection()));
+        }
+        snapshot
+    } else {
+        None
+    };
     transaction
         .commit()
         .await
@@ -1073,6 +1093,7 @@ pub(super) async fn introspect(
                 .membership_authz_epoch
                 .unwrap_or(metadata.subject_auth_epoch),
         ),
+        authorization,
     }))
 }
 
@@ -1203,6 +1224,7 @@ async fn introspect_refresh_token(
                 .membership_authz_epoch
                 .unwrap_or(authority.subject_auth_epoch),
         ),
+        authorization: None,
     }))
 }
 
@@ -2393,6 +2415,7 @@ fn inactive_introspection() -> IntrospectionResponse {
         issued_at: None,
         expires_at: None,
         authorization_epoch: None,
+        authorization: None,
     }
 }
 

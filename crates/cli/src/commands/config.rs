@@ -103,10 +103,11 @@ fn profiles(context: &Context) -> Result<()> {
 }
 
 fn set(context: &Context, key: &str, value: String) -> Result<()> {
-    let mut config = store::load_config()?;
+    let store = store::lock()?;
+    let mut config = store.load_config()?;
     if key == "auto-update" {
         config.auto_update = parse_switch(&value)?;
-        store::save_config(&config)?;
+        store.save_config(&config)?;
         let reported_value = serde_json::Value::Bool(config.auto_update);
         let message = if config.auto_update {
             "Automatic updates are on."
@@ -143,7 +144,7 @@ fn set(context: &Context, key: &str, value: String) -> Result<()> {
     if config.current_profile.is_none() {
         config.current_profile = Some(context.profile_name.clone());
     }
-    store::save_config(&config)?;
+    store.save_config(&config)?;
     let message = if let Some(environment_id) = context.testing_environment_id() {
         format!(
             "Set {key} on profile {} for testing environment {environment_id}.",
@@ -157,10 +158,11 @@ fn set(context: &Context, key: &str, value: String) -> Result<()> {
 }
 
 fn unset(context: &Context, key: &str) -> Result<()> {
-    let mut config = store::load_config()?;
+    let store = store::lock()?;
+    let mut config = store.load_config()?;
     if key == "auto-update" {
         config.auto_update = true;
-        store::save_config(&config)?;
+        store.save_config(&config)?;
         let reported_value = serde_json::Value::Bool(true);
         return report_setting(
             context,
@@ -188,7 +190,7 @@ fn unset(context: &Context, key: &str) -> Result<()> {
             )));
         }
     }
-    store::save_config(&config)?;
+    store.save_config(&config)?;
     let message = if let Some(environment_id) = context.testing_environment_id() {
         format!(
             "Cleared {key} on profile {} for testing environment {environment_id}.",
@@ -209,7 +211,8 @@ fn parse_switch(value: &str) -> Result<bool> {
 }
 
 fn use_profile(context: &Context, profile: &str) -> Result<()> {
-    let mut config = store::load_config()?;
+    let store = store::lock()?;
+    let mut config = store.load_config()?;
     config.current_profile = Some(profile.to_owned());
     config
         .profiles
@@ -218,7 +221,7 @@ fn use_profile(context: &Context, profile: &str) -> Result<()> {
             url: crate::context::DEFAULT_URL.to_owned(),
             ..Profile::default()
         });
-    store::save_config(&config)?;
+    store.save_config(&config)?;
     match context.format {
         Format::Json => json(&serde_json::json!({ "current_profile": profile })),
         Format::Text => {

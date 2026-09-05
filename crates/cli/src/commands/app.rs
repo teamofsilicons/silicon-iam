@@ -123,6 +123,7 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                     println!("Client secret: {}", created.app_secret);
                     println!("IAM stored the webhook signing secret you supplied.");
                     println!("The client secret is shown once. Store it now.");
+                    crate::guidance::application_created(context, &created.application);
                     Ok(())
                 }
             }
@@ -330,7 +331,11 @@ async fn discover(
     requester_app_id: &str,
     app_secret: Option<String>,
 ) -> Result<()> {
-    let secret = prompted(app_secret, "Requesting Application secret: ")?;
+    let secret = prompted(
+        app_secret,
+        "Requesting Application secret: ",
+        "--app-secret",
+    )?;
     let app_id = context.application_id(app_id)?;
     let requester_app_id = context.application_id(requester_app_id)?;
     let discovered = application_client(context, &requester_app_id, &secret)
@@ -354,8 +359,36 @@ fn nullable_patch<T>(value: Option<T>, clear: bool) -> Option<Option<T>> {
     if clear { Some(None) } else { value.map(Some) }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
     match command {
+        AppTokenCommand::Authorization {
+            app_id,
+            token,
+            org_context,
+            app_secret,
+        } => {
+            let app_id = context.application_id(&app_id)?;
+            let secret = prompted(app_secret, "Application secret: ", "--app-secret")?;
+            let token = prompted(token, "Application access token: ", "--token")?;
+            let authorization = application_client(context, &app_id, &secret)
+                .oauth()
+                .authorization(&token, org_context.as_deref())
+                .await?;
+            match context.format {
+                Format::Json => json(&authorization),
+                Format::Text => {
+                    if let Some(authorization) = &authorization {
+                        print_authorization(authorization);
+                    } else {
+                        println!(
+                            "No current organization authorization (inactive, mismatched, or unscoped token)."
+                        );
+                    }
+                    Ok(())
+                }
+            }
+        }
         AppTokenCommand::Exchange {
             app_id,
             slt,
@@ -363,8 +396,8 @@ async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
             idempotency_key,
         } => {
             let app_id = context.application_id(&app_id)?;
-            let secret = prompted(app_secret, "Application secret: ")?;
-            let slt = prompted(slt, "Short-lived token: ")?;
+            let secret = prompted(app_secret, "Application secret: ", "--app-secret")?;
+            let slt = prompted(slt, "Short-lived token: ", "--slt")?;
             let tokens = application_client(context, &app_id, &secret)
                 .oauth()
                 .login(&app_id, &slt, &mutation_with_optional_key(idempotency_key)?)
@@ -378,8 +411,12 @@ async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
             idempotency_key,
         } => {
             let app_id = context.application_id(&app_id)?;
-            let secret = prompted(app_secret, "Application secret: ")?;
-            let refresh_token = prompted(refresh_token, "Application refresh token: ")?;
+            let secret = prompted(app_secret, "Application secret: ", "--app-secret")?;
+            let refresh_token = prompted(
+                refresh_token,
+                "Application refresh token: ",
+                "--refresh-token",
+            )?;
             let tokens = application_client(context, &app_id, &secret)
                 .oauth()
                 .refresh(
@@ -398,8 +435,8 @@ async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
             app_secret,
         } => {
             let app_id = context.application_id(&app_id)?;
-            let secret = prompted(app_secret, "Application secret: ")?;
-            let token = prompted(token, "Token to introspect: ")?;
+            let secret = prompted(app_secret, "Application secret: ", "--app-secret")?;
+            let token = prompted(token, "Token to introspect: ", "--token")?;
             let inspected = application_client(context, &app_id, &secret)
                 .oauth()
                 .introspect(
@@ -420,8 +457,8 @@ async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
             idempotency_key,
         } => {
             let app_id = context.application_id(&app_id)?;
-            let secret = prompted(app_secret, "Application secret: ")?;
-            let token = prompted(token, "Token to revoke: ")?;
+            let secret = prompted(app_secret, "Application secret: ", "--app-secret")?;
+            let token = prompted(token, "Token to revoke: ", "--token")?;
             application_client(context, &app_id, &secret)
                 .oauth()
                 .revoke(
@@ -456,7 +493,11 @@ async fn obo(context: &Context, command: AppOboCommand) -> Result<()> {
         } => {
             let audience_app_id = context.application_id(&audience_app_id)?;
             let requester_app_id = context.application_id(&requester_app_id)?;
-            let secret = prompted(app_secret, "Requesting Application secret: ")?;
+            let secret = prompted(
+                app_secret,
+                "Requesting Application secret: ",
+                "--app-secret",
+            )?;
             let catalog = application_client(context, &requester_app_id, &secret)
                 .obo()
                 .endpoints(&audience_app_id)
@@ -477,8 +518,16 @@ async fn obo(context: &Context, command: AppOboCommand) -> Result<()> {
         } => {
             let audience_app_id = context.application_id(&audience_app_id)?;
             let requester_app_id = context.application_id(&requester_app_id)?;
-            let secret = prompted(app_secret, "Requesting Application secret: ")?;
-            let subject_token = prompted(subject_token, "Application access token: ")?;
+            let secret = prompted(
+                app_secret,
+                "Requesting Application secret: ",
+                "--app-secret",
+            )?;
+            let subject_token = prompted(
+                subject_token,
+                "Application access token: ",
+                "--subject-token",
+            )?;
             let client = application_client(context, &requester_app_id, &secret);
             let catalog = client.obo().endpoints(&audience_app_id).await?;
             let method = canonical_method(&method)?;
@@ -523,8 +572,8 @@ async fn obo(context: &Context, command: AppOboCommand) -> Result<()> {
             body,
         } => {
             let audience_app_id = context.application_id(&audience_app_id)?;
-            let secret = prompted(app_secret, "Audience Application secret: ")?;
-            let access_proof = prompted(access_proof, "OBO access proof: ")?;
+            let secret = prompted(app_secret, "Audience Application secret: ", "--app-secret")?;
+            let access_proof = prompted(access_proof, "OBO access proof: ", "--access-proof")?;
             let result = application_client(context, &audience_app_id, &secret)
                 .obo()
                 .verify(&models::OboVerifyRequest {
@@ -543,6 +592,7 @@ async fn obo(context: &Context, command: AppOboCommand) -> Result<()> {
                     println!("Actor: {}", result.actor.public_id);
                     println!("Endpoint: {}", result.endpoint.endpoint_id);
                     println!("Metadata: {}", result.metadata);
+                    print_authorization(&result.authorization);
                     Ok(())
                 }
             }
@@ -608,10 +658,18 @@ fn application_client(context: &Context, app_id: &str, secret: &str) -> Client {
         .with_credential(Credential::application(app_id, secret))
 }
 
-fn prompted(value: Option<String>, label: &str) -> Result<String> {
+fn prompted(value: Option<String>, label: &str, flag: &str) -> Result<String> {
     match value {
+        Some(value) if value.trim().is_empty() => {
+            Err(CliError::Usage(format!("{flag} cannot be empty")))
+        }
         Some(value) => Ok(value),
-        None => crate::commands::auth::prompt_secret(label),
+        None => crate::commands::auth::prompt_secret(
+            label,
+            &format!(
+                "Supply {flag} <value> for noninteractive use, or run this command in an interactive terminal to enter the secret without echoing it. Keep credentials out of shared command logs."
+            ),
+        ),
     }
 }
 
@@ -680,9 +738,54 @@ fn report_introspection(context: &Context, inspected: &models::TokenIntrospectio
                 ),
             ]);
             table.print();
+            if let Some(authorization) = &inspected.authorization {
+                print_authorization(authorization);
+            }
             Ok(())
         }
     }
+}
+
+fn print_authorization(authorization: &models::ApplicationAuthorization) {
+    println!(
+        "Authorization: {} in {}",
+        authorization.public_id, authorization.org_id
+    );
+    println!(
+        "Membership: {} (version {}, epoch {})",
+        authorization.membership_id,
+        authorization.membership_version,
+        authorization.authorization_epoch
+    );
+    println!("Audience: {}", authorization.audience);
+    println!(
+        "Testing environment: {}",
+        authorization
+            .testing_environment_id
+            .map_or_else(|| "production".to_owned(), |id| id.to_string())
+    );
+    println!(
+        "Role: {}",
+        authorization
+            .org_role
+            .as_ref()
+            .map_or_else(|| "undisclosed (requires roles.read)".to_owned(), label)
+    );
+    println!(
+        "Tags: {}",
+        authorization.tags.as_ref().map_or_else(
+            || "undisclosed (requires memberships.read)".to_owned(),
+            |tags| if tags.is_empty() {
+                "none".to_owned()
+            } else {
+                tags.iter()
+                    .map(|tag| format!("{} ({})", tag.name, tag.id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        )
+    );
+    println!("Disclosure scopes: {}", authorization.scopes.join(" "));
 }
 
 fn report_obo_catalog(context: &Context, catalog: &models::OboEndpointCatalog) -> Result<()> {

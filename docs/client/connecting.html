@@ -9,12 +9,12 @@
 <p>The package name uses a hyphen; Rust imports it with an underscore.</p>
 
 <pre><code>[dependencies]
-silicon-iam-client = "1.1.1"</code></pre>
+silicon-iam-client = "1.2.0"</code></pre>
 
 <p>
   View releases and dependency metadata on
   <a href="https://crates.io/crates/silicon-iam-client" rel="external noreferrer">the
-    <code>silicon-iam-client</code> package page</a>. Version <code>1.1.1</code> speaks HTTP API
+    <code>silicon-iam-client</code> package page</a>. Version <code>1.2.0</code> speaks HTTP API
   major <code>v1</code> and requires Rust 1.98 or newer. The crate's SemVer and the HTTP API major
   are separate version lines: upgrading the crate does not select a different API major.
 </p>
@@ -83,8 +83,9 @@ assert_eq!(negotiated.selected_api_version, silicon_iam_client::API_VERSION);</c
 
 <p>
   Supply the IAM service URL explicitly; the crate has no implicit default. HTTPS is required
-  except for literal <code>localhost</code>, <code>127.0.0.1</code>, and <code>::1</code> loopback
-  hosts used for local development. The builder rejects a missing host, embedded username or
+  except for <code>localhost</code> and literal loopback IP addresses (including
+  <code>127.0.0.1</code> and IPv6 <code>[::1]</code>) for a local IAM runtime.
+  The builder rejects a missing host, embedded username or
   password, port zero, query, or fragment. A missing trailing slash is normalized.
 </p>
 

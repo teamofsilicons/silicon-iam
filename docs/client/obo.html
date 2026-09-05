@@ -81,7 +81,22 @@ let proof = caller.obo()
 ).await?;
 
 // Only now execute the operation. `verified` identifies the actor,
-// issuer Application, endpoint and authenticated metadata.</code></pre>
+// issuer Application, endpoint and authenticated metadata.
+// `verified.authorization` is the current delegated membership binding.</code></pre>
+
+<p>
+  <code>verified.authorization</code> binds the represented actor to the current
+  membership ID/version, authorization epoch, organization, audience and testing
+  environment. Its role/tag disclosure is limited to the intersection of the
+  parent token's scopes and the recipient's currently approved scopes:
+  <code>roles.read</code> reveals <code>org_role</code> and
+  <code>memberships.read</code> reveals <code>tags</code>. Null means undisclosed,
+  not baseline member or empty tags. Apply your application's authorization
+  policy to this binding for this exact verified endpoint/request only. Never
+  fill undisclosed fields from a broader cached scope set, promote the actor
+  from an unbound cached role, or reuse a consumed proof's
+  binding on another request.
+</p>
 
 <div class="banner banner-danger">
   <div>

@@ -2,11 +2,8 @@
 
 use std::{
     path::PathBuf,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use reqwest::{Method, StatusCode, header::HeaderMap};
@@ -31,6 +28,7 @@ const SUPPORTED_VERSIONS_HEADER: &str = "silicon-iam-supported-api-versions";
 const SELECTED_VERSION_HEADER: &str = "silicon-iam-api-version";
 const ENVIRONMENT_KEY_HEADER: &str = "x-testing-environment-key";
 const MAX_RESPONSE_BODY_BYTES: usize = 4 * 1024 * 1024;
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_hours(1);
 
 /// A configured Silicon IAM client.
 ///
@@ -100,12 +98,15 @@ impl Client {
         self.environment.as_ref()
     }
 
-    /// The result of this client's one-time automatic update. Clones share the
-    /// same result; independently built clients do not.
+    /// The result of this client's latest automatic update. Clones share the
+    /// same last-check time and result; independently built clients do not.
     ///
-    /// The check begins immediately before the first IAM request. Updating a
-    /// lockfile cannot replace code in the running process, so [`UpdateStatus::Updated`]
-    /// means the next Cargo build will load the new release.
+    /// After an IAM request completes, the client checks and updates only if
+    /// it has never checked or its previous attempt was at least one hour ago.
+    /// No timer or idle background task runs. The request's original result is
+    /// preserved even if the update fails. Updating a lockfile cannot replace
+    /// code in the running process, so [`UpdateStatus::Updated`] means the next
+    /// Cargo build will load the new release.
     #[must_use]
     pub fn update_status(&self) -> UpdateStatus {
         self.updater.status()
@@ -353,38 +354,50 @@ impl Client {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<R> {
-        let body = self.send(request).await?;
-        if body.is_empty() {
-            return Err(Error::Decode(
-                "the service returned an empty body where a value was expected".to_owned(),
-            ));
+        let result = async {
+            let body = self.send(request).await?;
+            if body.is_empty() {
+                return Err(Error::Decode(
+                    "the service returned an empty body where a value was expected".to_owned(),
+                ));
+            }
+            serde_json::from_slice(&body)
+                .map_err(|error| Error::Decode(format!("unexpected response shape: {error}")))
         }
-        serde_json::from_slice(&body)
-            .map_err(|error| Error::Decode(format!("unexpected response shape: {error}")))
+        .await;
+        self.updater.run().await;
+        result
     }
 
     pub(crate) async fn send_empty(&self, request: reqwest::RequestBuilder) -> Result<()> {
-        self.send(request).await.map(|_| ())
+        let result = self.send(request).await.map(|_| ());
+        self.updater.run().await;
+        result
     }
 
     pub(crate) async fn send_negotiation(
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<models::ApiVersionNegotiation> {
-        let (headers, body) = self.send_response(request).await?;
-        if body.is_empty() {
-            return Err(Error::Decode(
-                "the version negotiation returned an empty body".to_owned(),
-            ));
+        let result = async {
+            let (headers, body) = self.send_response(request).await?;
+            if body.is_empty() {
+                return Err(Error::Decode(
+                    "the version negotiation returned an empty body".to_owned(),
+                ));
+            }
+            let negotiated = serde_json::from_slice::<models::ApiVersionNegotiation>(&body)
+                .map_err(|error| {
+                    Error::Decode(format!(
+                        "unexpected version-negotiation response shape: {error}"
+                    ))
+                })?;
+            validate_negotiation(&headers, &negotiated)?;
+            Ok(negotiated)
         }
-        let negotiated =
-            serde_json::from_slice::<models::ApiVersionNegotiation>(&body).map_err(|error| {
-                Error::Decode(format!(
-                    "unexpected version-negotiation response shape: {error}"
-                ))
-            })?;
-        validate_negotiation(&headers, &negotiated)?;
-        Ok(negotiated)
+        .await;
+        self.updater.run().await;
+        result
     }
 
     /// Sends one request and turns anything other than success into an error.
@@ -396,7 +409,6 @@ impl Client {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<(HeaderMap, Vec<u8>)> {
-        self.updater.run().await;
         let mut response = request.send().await.map_err(Error::Transport)?;
         let status = response.status();
         let retry_after = header_seconds(&response, "retry-after");
@@ -434,7 +446,7 @@ impl Client {
             )));
         }
 
-        let api = decode_envelope(status, &body);
+        let api = decode_envelope(status, &headers, &body)?;
         if status == StatusCode::TOO_MANY_REQUESTS {
             return Err(Error::RateLimited {
                 // A 429 without Retry-After should not become a busy loop.
@@ -572,11 +584,15 @@ impl ClientBuilder {
                     .to_owned(),
             ));
         }
-        if base_url.scheme() == "http"
-            && !matches!(base_url.host_str(), Some("localhost" | "127.0.0.1" | "::1"))
-        {
+        let is_loopback = match base_url.host() {
+            Some(url::Host::Domain("localhost")) => true,
+            Some(url::Host::Ipv4(address)) => address.is_loopback(),
+            Some(url::Host::Ipv6(address)) => address.is_loopback(),
+            _ => false,
+        };
+        if base_url.scheme() == "http" && !is_loopback {
             return Err(Error::Invalid(
-                "the base URL must use HTTPS; HTTP is limited to localhost, 127.0.0.1, or ::1"
+                "the base URL must use HTTPS; HTTP is limited to localhost or a loopback IP address"
                     .to_owned(),
             ));
         }
@@ -630,9 +646,12 @@ impl ClientBuilder {
 
     /// Enables or disables automatic client dependency updates.
     ///
-    /// Enabled by default. Before the first IAM request, the client checks
-    /// crates.io and advances the nearest Cargo project's lockfile when a
-    /// newer stable `silicon-iam-client` exists. Set this to `false`, or set
+    /// Enabled by default. After the first IAM request finishes, the client
+    /// checks crates.io and advances the nearest Cargo project's lockfile
+    /// when a newer stable `silicon-iam-client` exists. Later requests repeat
+    /// the check only if the previous attempt was at least one hour ago.
+    /// There is no idle timer or daemon, and updates never replace the IAM
+    /// request's result. Set this to `false`, or set
     /// `SILICON_IAM_CLIENT_AUTO_UPDATE=false`, to make no update request and
     /// invoke no Cargo process.
     #[must_use]
@@ -699,8 +718,35 @@ impl ClientBuilder {
 struct AutomaticUpdater {
     policy: UpdatePolicy,
     manifest: Option<PathBuf>,
-    started: AtomicBool,
-    status: Mutex<UpdateStatus>,
+    state: Mutex<AutomaticUpdateState>,
+}
+
+#[derive(Debug, Default)]
+struct AutomaticUpdateState {
+    running: bool,
+    checked_at: Option<Instant>,
+    status: UpdateStatus,
+}
+
+/// Releases the single-flight slot even if the requesting future is cancelled.
+struct AutomaticUpdateRun {
+    updater: Arc<AutomaticUpdater>,
+}
+
+impl AutomaticUpdateRun {
+    fn complete(self, status: UpdateStatus) {
+        if let Ok(mut state) = self.updater.state.lock() {
+            state.status = status;
+        }
+    }
+}
+
+impl Drop for AutomaticUpdateRun {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.updater.state.lock() {
+            state.running = false;
+        }
+    }
 }
 
 impl AutomaticUpdater {
@@ -708,31 +754,47 @@ impl AutomaticUpdater {
         Self {
             policy,
             manifest,
-            started: AtomicBool::new(false),
-            status: Mutex::new(UpdateStatus::NotChecked),
+            state: Mutex::new(AutomaticUpdateState::default()),
         }
     }
 
     fn status(&self) -> UpdateStatus {
-        self.status.lock().map_or_else(
+        self.state.lock().map_or_else(
             |_| UpdateStatus::Failed {
                 reason: "automatic update status lock was poisoned".to_owned(),
             },
-            |status| status.clone(),
+            |state| state.status.clone(),
         )
     }
 
     fn set_status(&self, next: UpdateStatus) {
-        if let Ok(mut status) = self.status.lock() {
-            *status = next;
+        if let Ok(mut state) = self.state.lock() {
+            state.status = next;
         }
     }
 
-    async fn run(&self) {
-        if self.started.swap(true, Ordering::AcqRel) {
-            return;
+    fn try_start(self: &Arc<Self>) -> Option<AutomaticUpdateRun> {
+        let mut state = self.state.lock().ok()?;
+        if state.running
+            || state
+                .checked_at
+                .is_some_and(|checked_at| checked_at.elapsed() < UPDATE_CHECK_INTERVAL)
+        {
+            return None;
         }
-        if self.policy == UpdatePolicy::Disabled {
+        state.running = true;
+        // Record the attempt before any await. A registry failure or cancelled
+        // request must not turn the next IAM call into an immediate retry.
+        state.checked_at = Some(Instant::now());
+        Some(AutomaticUpdateRun {
+            updater: Arc::clone(self),
+        })
+    }
+
+    async fn run(self: &Arc<Self>) {
+        if self.policy == UpdatePolicy::Disabled
+            || UpdatePolicy::from_environment() == UpdatePolicy::Disabled
+        {
             self.set_status(UpdateStatus::Disabled);
             return;
         }
@@ -741,6 +803,13 @@ impl AutomaticUpdater {
         if cfg!(test) {
             return;
         }
+        self.check_due().await;
+    }
+
+    async fn check_due(self: &Arc<Self>) {
+        let Some(run) = self.try_start() else {
+            return;
+        };
 
         let manifest = self
             .manifest
@@ -752,12 +821,20 @@ impl AutomaticUpdater {
                     .and_then(|directory| find_manifest(&directory))
             });
         let Some(manifest) = manifest else {
-            self.set_status(UpdateStatus::NoCargoProject);
+            run.complete(UpdateStatus::NoCargoProject);
             return;
         };
 
         let status = match check(CLIENT_CRATE, CLIENT_VERSION).await {
-            Ok(release) if release.update_available() => apply_client_release(&manifest, release),
+            Ok(release) if release.update_available() => {
+                // Keep the single-flight guard inside the blocking operation:
+                // cancelling the caller must not permit a second Cargo update.
+                let _ = tokio::task::spawn_blocking(move || {
+                    run.complete(apply_client_release(&manifest, release));
+                })
+                .await;
+                return;
+            }
             Ok(release) => UpdateStatus::Current {
                 version: release.current,
             },
@@ -765,7 +842,7 @@ impl AutomaticUpdater {
                 reason: error.to_string(),
             },
         };
-        self.set_status(status);
+        run.complete(status);
     }
 }
 
@@ -790,30 +867,29 @@ fn normalize_manifest(path: PathBuf) -> Option<PathBuf> {
     manifest.is_file().then_some(manifest)
 }
 
-/// Recovers the service's envelope, falling back to the bare status.
+/// Recovers the service's envelope without inventing IAM errors for a proxy.
 ///
 /// Every documented failure carries the envelope, but a proxy or a crash can
-/// still put something else on the wire, and a client that panicked or hid
-/// that would be worse than one that reports the status it saw.
-fn decode_envelope(status: StatusCode, body: &[u8]) -> ApiError {
+/// still put something else on the wire. Keep that failure distinct from an
+/// IAM authorization decision and never display or retain its raw body.
+fn decode_envelope(status: StatusCode, headers: &HeaderMap, body: &[u8]) -> Result<ApiError> {
+    let request_id = headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| uuid::Uuid::parse_str(value).ok())
+        .map(|value| value.to_string());
     match serde_json::from_slice::<Envelope>(body) {
-        Ok(envelope) => ApiError {
+        Ok(envelope) => Ok(ApiError {
             status: status.as_u16(),
             code: envelope.error.code,
             message: envelope.error.message,
             details: envelope.error.details,
-            request_id: envelope.error.request_id,
-        },
-        Err(_) => ApiError {
+            request_id: envelope.error.request_id.or(request_id),
+        }),
+        Err(_) => Err(Error::UnstructuredResponse {
             status: status.as_u16(),
-            code: "unrecognized_error".to_owned(),
-            message: status
-                .canonical_reason()
-                .unwrap_or("the service reported a failure")
-                .to_owned(),
-            details: None,
-            request_id: None,
-        },
+            request_id,
+        }),
     }
 }
 
@@ -861,7 +937,7 @@ mod tests {
 
     #[tokio::test]
     async fn disabling_updates_is_observable_and_does_no_work() {
-        let updater = AutomaticUpdater::new(UpdatePolicy::Disabled, None);
+        let updater = std::sync::Arc::new(AutomaticUpdater::new(UpdatePolicy::Disabled, None));
         updater.run().await;
         assert_eq!(updater.status(), UpdateStatus::Disabled);
     }
@@ -968,16 +1044,27 @@ mod tests {
 
     #[test]
     fn an_unparsable_error_body_still_reports_the_status() {
-        let error = decode_envelope(StatusCode::BAD_GATEWAY, b"<html>upstream died</html>");
-        assert_eq!(error.status, 502);
-        assert_eq!(error.code, "unrecognized_error");
-        assert!(error.is_retryable());
+        let error = decode_envelope(
+            StatusCode::BAD_GATEWAY,
+            &reqwest::header::HeaderMap::new(),
+            b"<html>upstream died</html>",
+        );
+        assert!(matches!(
+            error,
+            Err(crate::Error::UnstructuredResponse { status: 502, .. })
+        ));
     }
 
     #[test]
     fn the_envelope_is_preferred_when_present() {
         let body = br#"{"error":{"code":"etag_mismatch","message":"stale","request_id":"r1"}}"#;
-        let error = decode_envelope(StatusCode::PRECONDITION_FAILED, body);
+        let Ok(error) = decode_envelope(
+            StatusCode::PRECONDITION_FAILED,
+            &reqwest::header::HeaderMap::new(),
+            body,
+        ) else {
+            panic!("a structured IAM envelope must be recognized");
+        };
         assert!(error.is_version_conflict());
         assert_eq!(error.request_id.as_deref(), Some("r1"));
     }

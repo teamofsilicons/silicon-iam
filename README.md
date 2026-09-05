@@ -226,13 +226,20 @@ together by `iam-migrate` when `IAM_TESTING_MIGRATOR_DATABASE_URL` is set. The
 overlay is what makes one database safe to share: every tenant table gains a
 `testing_environment_id` defaulted from a transaction-local setting, and a
 restrictive row-security policy ANDs an environment predicate onto whatever
-policies that table already has. It forces row-level security, because this
-schema resolves handles, contacts and credentials through `SECURITY DEFINER`
-functions that would otherwise see every environment at once.
+policies that table already has. It forces row-level security and transfers
+every `SECURITY DEFINER` helper to `silicon_iam_testing_definer`, a non-login
+owner without elevated row-security privileges. `FORCE` alone cannot constrain
+a superuser migration owner. Helpers retain their intended identity/organization
+policy bypass only within the selected environment. Without an environment,
+API helper calls cannot see tenant rows; explicitly attested worker and
+migrator maintenance can still run across environments. No runtime login may
+be a member of the definer role.
 
 When a testing database is configured, `/readyz` verifies that it is reachable
 and that both its base and testing-overlay migration ledgers exactly match the
-embedded checksums. A stale or partially migrated testing plane therefore
+embedded checksums. It also audits the restricted helper owner, environment
+columns, forced row security, and definer policies. A stale, partially migrated,
+or unsafe testing plane therefore
 makes the API unready instead of failing only when the first test request
 arrives. The worker performs the same startup check.
 
@@ -264,18 +271,27 @@ caller action in the contract. Its wire types are generated from
 them and fails on a diff, so they cannot drift from the service. IAM runtime
 state stays with the caller -- no session store, response cache, or credential
 refresh behind its back. Its default-on updater may advance the consuming
-project's `Cargo.lock`; the next build loads that release, and applications can
-disable the behavior through the builder or environment.
+project's `Cargo.lock` after an IAM request completes, at most once per hour
+per client and its clones. There is no idle timer or daemon. The next build
+loads that release, and applications can disable the behavior through the
+builder or environment.
 
 `crates/cli` is `silicon-iam-cli`, installing the `iam` binary. It is a shell
 over the client and has no capability the client lacks; what it adds is the
 state the client refuses to hold: a profile, a service URL, and a session under
 `~/.silicon-iam/` that it renews when it is close to expiring. It also checks
-crates.io daily and updates its Cargo-installed binary by default; use
+crates.io after a command finishes if its persisted last attempt is at least
+one hour old, and updates its Cargo-installed binary for the next invocation
+by default. No idle daemon runs; use
 `iam config set auto-update off` to opt out. Use
 `iam --test <environment-uuid> <command>` to run the same command in a test
 plane; the CLI resolves the UUID through an owner-only stored root key and
 keeps every environment's session separate from production.
+
+CLI/client 1.2.0's authorization snapshots and OBO binding require the matching
+backend with base migration `0067`, testing overlay `9003` and runtime grants.
+Deploy and verify that backend before publishing/adopting these packages;
+source pushes and crate publication do not deploy the API.
 
 ```sh
 cargo run -p silicon-iam-cli -- --url http://127.0.0.1:8080 login --email you@example.com
@@ -414,7 +430,11 @@ Turning testing environments on outside that stack needs three things:
    it, exactly as for production; and
 3. `IAM_TESTING_MIGRATOR_DATABASE_URL` set for `iam-migrate`, which then brings
    that database up on the production schema plus the per-environment scoping
-   overlay in `migrations/testing/`.
+   overlay in `migrations/testing/`. The testing migrator needs authority to
+   create the restricted `silicon_iam_testing_definer` role and grant itself
+   membership; only migrators, never runtime roles, receive that membership.
+   It reconciles helper ownership after every migration run, so future helper
+   additions and replacements cannot silently restore elevated ownership.
 
 Apply the grants after migrating, on both databases. That ordering is not
 optional here: each release's migrations may add `SECURITY DEFINER` functions,

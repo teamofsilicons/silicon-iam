@@ -522,6 +522,7 @@ DECLARE
         'current_principal_id',
         'deactivate_silicon_webhook_for_removal',
         'describe_testing_environment',
+        'get_current_application_authorization',
         'get_organization_invitation_destination',
         'get_testing_application_import',
         'grant_application_scope_catalogue',

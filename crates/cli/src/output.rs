@@ -7,10 +7,10 @@ use crate::error::Result;
 /// How a command renders its result.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum Format {
-    /// Aligned columns for a person.
+    /// Readable results with contextual next-step guidance.
     #[default]
     Text,
-    /// The service's own JSON, for a script.
+    /// Structured JSON for scripts and agents; no next-step prose.
     Json,
 }
 

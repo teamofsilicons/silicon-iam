@@ -2,6 +2,7 @@
 #![allow(clippy::module_inception)]
 
 mod applications;
+mod authorization;
 mod cursor;
 mod error;
 mod events;

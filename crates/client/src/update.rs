@@ -3,6 +3,8 @@
 //! A compiled Rust library cannot replace the code already loaded into a
 //! running process. The automatic client updater therefore advances the
 //! consuming project's `Cargo.lock`; the next build uses the new version.
+//! Automatic checks are driven by completed IAM requests, at most once per
+//! hour per client and its clones. No idle background timer or daemon runs.
 
 use std::{
     ffi::OsString,
@@ -67,7 +69,7 @@ impl Release {
 /// What an automatic client update has done in this process.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum UpdateStatus {
-    /// No API request has caused the one-time update check yet.
+    /// No API request has completed an automatic update check yet.
     #[default]
     NotChecked,
     /// Automatic updates were explicitly disabled.
@@ -176,7 +178,7 @@ pub fn update_dependency(
         .current_dir(project)
         // A library must not inject Cargo progress into its host process's
         // stdout/stderr, and a registry outage must not retry for minutes
-        // ahead of the caller's actual IAM request.
+        // after the caller's actual IAM request has already finished.
         .env("CARGO_HTTP_TIMEOUT", "10")
         .env("CARGO_NET_RETRY", "0")
         .arg("update")
@@ -212,6 +214,10 @@ pub fn install_binary(package: &str, version: &Version) -> Result<(), UpdateErro
         .arg(format!("={version}"))
         .arg("--locked")
         .arg("--force")
+        // Maintenance cannot consume the caller's input or append Cargo output
+        // to an already-completed JSON command result.
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
         .status()?;
     if status.success() {
         Ok(())

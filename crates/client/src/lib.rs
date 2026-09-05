@@ -133,6 +133,9 @@
 //! reasonable but the outcome is genuinely unknown. [`Error::ResponseTooLarge`]
 //! rejects a body above the fixed 4 MiB memory-safety bound and is not
 //! retryable because a mutation may already have completed.
+//! [`Error::UnstructuredResponse`] preserves an HTTP failure status when no
+//! IAM envelope arrived, without retaining raw HTML or mistaking an edge
+//! response for an IAM permission decision. Investigate before retrying.
 //!
 //! # What is not here
 //!
@@ -173,6 +176,7 @@ impl Error {
             Self::Api(error) => error.is_retryable(),
             Self::RateLimited { .. } | Self::Transport(_) => true,
             Self::Decode(_)
+            | Self::UnstructuredResponse { .. }
             | Self::ResponseTooLarge { .. }
             | Self::ApiVersionUnsupported { .. }
             | Self::Invalid(_) => false,
@@ -191,7 +195,10 @@ impl Error {
     /// The correlation identifier to quote when reporting this failure.
     #[must_use]
     pub fn request_id(&self) -> Option<&str> {
-        self.api()?.request_id.as_deref()
+        match self {
+            Self::UnstructuredResponse { request_id, .. } => request_id.as_deref(),
+            _ => self.api()?.request_id.as_deref(),
+        }
     }
 }
 

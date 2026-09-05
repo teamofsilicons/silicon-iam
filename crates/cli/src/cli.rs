@@ -38,8 +38,8 @@ pub struct Cli {
 /// Options accepted by every command.
 #[derive(Debug, Args)]
 pub struct Global {
-    /// Service base URL. HTTPS is required except for localhost, 127.0.0.1, or
-    /// `::1`; credentials, port zero, query, and fragment are rejected.
+    /// Service base URL. HTTPS is required except for localhost or a loopback
+    /// IP address; credentials, port zero, query, and fragment are rejected.
     #[arg(long, global = true, env = "SILICON_IAM_URL")]
     pub url: Option<String>,
 
@@ -95,8 +95,16 @@ pub enum Command {
     /// Your Carbon profile and public Carbon lookup.
     #[command(subcommand)]
     Carbon(CarbonCommand),
-    /// Print every command this CLI accepts.
+    /// Print every command; --output json includes its usage, arguments and full help.
     Commands,
+    /// Read or search the bundled CLI, API and client documentation offline.
+    Docs {
+        /// Documentation topic from `iam docs`, such as cli, testing, applications or obo.
+        topic: Option<String>,
+        /// Find text across the bundled documentation, or within the selected topic.
+        #[arg(long, value_name = "TEXT")]
+        search: Option<String>,
+    },
 
     /// Organizations.
     #[command(subcommand)]
@@ -185,13 +193,13 @@ pub struct LogoutArgs {
 /// Arguments for signing a Silicon in.
 #[derive(Debug, Args)]
 pub struct SiliconLoginArgs {
-    /// Silicon ID, in `handle:org` form. Prompted for when omitted.
+    /// Silicon ID, in `handle:org` form. With only --app-id, reuse the stored Silicon session.
     #[arg(long = "sid")]
     pub sid: Option<String>,
     /// Silicon token. Prompted for when omitted, so it stays out of shell history.
     #[arg(long = "stk")]
     pub stk: Option<String>,
-    /// Application to sign in to. Prints a short-lived token for it.
+    /// Application to sign in to. Prints an SLT; omit --sid and --stk to reuse the stored Silicon session.
     #[arg(long = "app-id", value_name = "APP_ID")]
     pub app_id: Option<String>,
 }
@@ -205,8 +213,8 @@ pub struct SignupArgs {
     /// Phone number to verify, in E.164 form.
     #[arg(long)]
     pub phone: String,
-    /// The Carbon ID to claim.
-    #[arg(long)]
+    /// Carbon ID: 3-30 lowercase letters, digits 1-9, underscores or hyphens (no 0).
+    #[arg(long, value_parser = parse_carbon_id)]
     pub carbon_id: String,
     /// Display name. Defaults to the Carbon ID.
     #[arg(long)]
@@ -1111,7 +1119,8 @@ pub enum AppCommand {
         #[arg(long)]
         webhook_secret: String,
         /// Pathless public origin without a trailing slash, credentials,
-        /// query, or fragment. HTTPS except for localhost, 127.0.0.1, or `::1`.
+        /// query, or fragment. HTTP localhost/loopback IP is for a local IAM
+        /// runtime; the hosted edge may require a public HTTPS origin.
         #[arg(long)]
         base_url: String,
         /// JSON array of OBO endpoint definitions.
@@ -1153,7 +1162,8 @@ pub enum AppCommand {
         #[arg(long, conflicts_with = "logo")]
         clear_logo: bool,
         /// New pathless public origin without a trailing slash, credentials,
-        /// query, or fragment. HTTPS except for localhost, 127.0.0.1, or `::1`.
+        /// query, or fragment. HTTP localhost/loopback IP is for a local IAM
+        /// runtime; the hosted edge may require a public HTTPS origin.
         #[arg(long)]
         base_url: Option<String>,
         /// Complete replacement OBO endpoint array as JSON.
@@ -1269,6 +1279,27 @@ pub enum AppCommand {
 /// Application token commands.
 #[derive(Debug, Subcommand)]
 pub enum AppTokenCommand {
+    /// Fetch current organization authorization, including permitted role/tags.
+    ///
+    /// Use immediately after login or to rebuild an empty application cache.
+    /// Requires an organization-bound Application access token and its own
+    /// Application secret. Role requires roles.read; tags require memberships.read.
+    /// Undisclosed fields grant no authority. Inactive, mismatched, refresh and
+    /// unscoped tokens return no organization snapshot. No webhook or directory
+    /// edit is needed. The backend must support authorization snapshots.
+    Authorization {
+        /// Local handle, or canonical `org>handle`; local uses --org.
+        app_id: String,
+        /// Application access token. Prompted for when omitted.
+        #[arg(long)]
+        token: Option<String>,
+        /// Exact organization handle; a mismatch returns no authority.
+        #[arg(long)]
+        org_context: Option<String>,
+        /// Application secret. Prompted for when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+    },
     /// Exchange a single-use short-lived token for an Application session.
     Exchange {
         /// Local handle, or canonical `org>handle`; local uses --org.
@@ -1571,6 +1602,12 @@ pub struct PageArgs {
 }
 
 /// Validate and normalize the directory's comma-separated field selector.
+fn parse_carbon_id(value: &str) -> Result<String, String> {
+    silicon_iam_client::api::signup::validate_carbon_id(value)
+        .map_err(|error| error.to_string())?;
+    Ok(value.to_owned())
+}
+
 fn parse_directory_fields(value: &str) -> Result<String, String> {
     const ALLOWED: [&str; 6] = ["name", "id", "role", "org", "tags", "trust"];
 

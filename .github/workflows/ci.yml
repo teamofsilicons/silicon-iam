@@ -81,6 +81,9 @@ jobs:
       - name: Validate OpenAPI document
         run: ruby scripts/check-openapi-routes.rb
 
+      - name: Confirm bundled CLI documentation matches its sources
+        run: ruby scripts/generate-cli-docs.rb --check
+
       - name: Validate migration privilege boundaries
         run: ruby scripts/check-migration-security.rb
 

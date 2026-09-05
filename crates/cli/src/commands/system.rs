@@ -37,6 +37,8 @@ async fn update(context: &Context) -> Result<()> {
             }),
             crate::updater::Outcome::Skipped => serde_json::json!({
                 "updated": false,
+                "skipped": true,
+                "reason": "update_in_progress",
             }),
         }),
         Format::Text => {
@@ -47,7 +49,11 @@ async fn update(context: &Context) -> Result<()> {
                 crate::updater::Outcome::Updated { from, to } => {
                     println!("Updated iam from {from} to {to}. Run iam again to use it.");
                 }
-                crate::updater::Outcome::Skipped => {}
+                crate::updater::Outcome::Skipped => {
+                    println!(
+                        "Another updater is already checking or installing; no second update was started."
+                    );
+                }
             }
             Ok(())
         }

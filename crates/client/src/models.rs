@@ -86,6 +86,20 @@ pub enum ActorRefType {
 /// Closed vocabulary from the contract.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ApplicationAuthorizationActorType {
+    /// `carbon`
+    Carbon,
+    /// `silicon`
+    Silicon,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ApplicationStatus {
     /// `under_review`
     UnderReview,
@@ -945,6 +959,48 @@ pub struct Application {
     pub updated_at: OffsetDateTime,
 }
 
+/// Current active membership bound to the authenticated token or verified
+/// proof, audience, organization, principal and testing plane. Use on first
+/// login and cache misses; webhook snapshots are asynchronous updates, not
+/// prerequisites for initial access. org_role requires roles.read and tags
+/// requires memberships.read. Null means undisclosed, not member or empty
+/// tags. OBO disclosure uses the intersection of the parent token scopes and
+/// recipient application's currently approved scopes. The binding authorizes
+/// no action outside the verified proof's endpoint/request. Do not reuse it
+/// for a different principal, membership, epoch, audience, organization,
+/// environment or effective scope set. Never fill undisclosed fields from a
+/// broader cached token. Introspect current bearer tokens again before
+/// relying on cached authority; a consumed OBO proof is single-use.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApplicationAuthorization {
+    /// The contract's `principal_id`.
+    pub principal_id: Uuid,
+    /// The contract's `actor_type`.
+    pub actor_type: ApplicationAuthorizationActorType,
+    /// The contract's `public_id`.
+    pub public_id: String,
+    /// The contract's `organization_id`.
+    pub organization_id: Uuid,
+    /// The contract's `org_id`.
+    pub org_id: OrgId,
+    /// The contract's `membership_id`.
+    pub membership_id: Uuid,
+    /// The contract's `membership_version`.
+    pub membership_version: i64,
+    /// The contract's `authorization_epoch`.
+    pub authorization_epoch: i64,
+    /// The contract's `audience`.
+    pub audience: AppId,
+    /// The contract's `testing_environment_id`.
+    pub testing_environment_id: Option<Uuid>,
+    /// The contract's `scopes`.
+    pub scopes: Vec<String>,
+    /// The contract's `org_role`.
+    pub org_role: Option<String>,
+    /// The contract's `tags`.
+    pub tags: Option<Vec<AuthorizationTag>>,
+}
+
 /// Contract type `ApplicationBaseUrl`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApplicationBaseUrl {
@@ -1231,6 +1287,15 @@ pub struct AuthSession {
     /// exposes the generated code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_otp: Option<String>,
+}
+
+/// Contract type `AuthorizationTag`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AuthorizationTag {
+    /// The contract's `id`.
+    pub id: Uuid,
+    /// The contract's `name`.
+    pub name: String,
 }
 
 /// Contract type `Availability`.
@@ -1809,6 +1874,8 @@ pub struct OboAccessResult {
     pub audience: AppId,
     /// The contract's `actor`.
     pub actor: ActorRef,
+    /// The contract's `authorization`.
+    pub authorization: ApplicationAuthorization,
     /// The contract's `org_id`.
     pub org_id: OrgId,
     /// The contract's `endpoint`.
@@ -2817,7 +2884,10 @@ pub struct TestingWebhookEvent {
     pub test: serde_json::Value,
 }
 
-/// Contract type `TokenIntrospection`.
+/// Live token state. An active organization-bound access token also returns
+/// authorization, a synchronous bootstrap/resynchronization snapshot. No
+/// directory mutation or webhook delivery is required. Refresh tokens and
+/// unscoped access tokens do not carry organization authorization.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TokenIntrospection {
     /// The contract's `active`.
@@ -2855,6 +2925,9 @@ pub struct TokenIntrospection {
     /// The contract's `authorization_epoch`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization_epoch: Option<i64>,
+    /// The contract's `authorization`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<ApplicationAuthorization>,
 }
 
 /// Contract type `TokenIntrospectionRequest`.

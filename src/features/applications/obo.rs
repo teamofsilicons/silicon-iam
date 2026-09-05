@@ -511,7 +511,6 @@ pub(super) async fn verify(
          AND endpoint.path = proof.request_path
         WHERE proof.audience_application_id = $3
           AND proof.organization_id = $4
-        FOR UPDATE OF proof
         ",
     )
     .bind(versions)
@@ -565,6 +564,18 @@ pub(super) async fn verify(
     if !current.endpoint_active {
         return Err(ApiError::forbidden("obo_authority_revoked"));
     }
+    let authorization = super::authorization::load(
+        &mut transaction,
+        row.parent_access_token_id,
+        row.subject_principal_id,
+        row.organization_id,
+        row.membership_id,
+        &client,
+        Some(row.id),
+    )
+    .await?
+    .filter(|snapshot| snapshot.authorization_epoch == row.membership_authz_epoch)
+    .ok_or_else(|| ApiError::gone("obo_proof_revoked"))?;
     let consumed_at = sqlx::query_scalar::<_, OffsetDateTime>(
         r"
         WITH wall_clock AS MATERIALIZED (
@@ -590,6 +601,7 @@ pub(super) async fn verify(
         proof_id: row.id,
         issuer_app_id: row.issuer_app_id,
         audience: client.app_id.clone(),
+        authorization,
         actor: super::model::PublicActor {
             principal_id: row.subject_principal_id,
             actor_type: actor_type.as_str().to_owned(),
@@ -999,16 +1011,8 @@ async fn load_current_context(
                            AND token_scope.scope = 'obo.issue'
                      )
                ) AS parent_active,
-               EXISTS (
-                   SELECT 1
-                   FROM iam.application_obo_endpoints AS endpoint
-                   WHERE endpoint.organization_id = $2
-                     AND endpoint.application_id = $5
-                     AND endpoint.endpoint_id = $7
-                     AND endpoint.path = $10
-                     AND endpoint.version = $8
-                     AND endpoint.status = 'active'
-               ) AS endpoint_active
+               (endpoint.path = $10 AND endpoint.version = $8
+                AND endpoint.status = 'active') AS endpoint_active
         FROM wall_clock
         JOIN iam.organizations AS organization ON TRUE
         JOIN iam.organization_memberships AS membership
@@ -1050,6 +1054,10 @@ async fn load_current_context(
           ON audience.id = audience_application.id
          AND audience.kind = 'application'
          AND audience.status = 'active'
+        JOIN iam.application_obo_endpoints AS endpoint
+          ON endpoint.organization_id = organization.id
+         AND endpoint.application_id = audience_application.id
+         AND endpoint.endpoint_id = $7
         WHERE organization.id = $2
           AND organization.status = 'active'
           AND (

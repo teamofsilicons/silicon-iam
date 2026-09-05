@@ -102,6 +102,16 @@ Content-Type: application/json
 </p>
 
 <p>
+  The same production Application can be imported into several environments in
+  the same testing database. Organization and Application handle lookups are
+  environment-local, including privileged lookup helpers. An organization with
+  the same public handle in another environment does not block import or grant
+  access to its data. A <code>testing_import_organization_not_managed</code>
+  conflict refers only to an organization in the selected environment whose
+  owner/admin authority the requesting test Carbon does not hold.
+</p>
+
+<p>
   Replacing the webhook URL of an imported Application that still uses that inherited key requires
   a caller-supplied <code>webhook_secret</code>. That exceptional <code>PUT …/webhook</code> response
   echoes it as <code>webhook_signing_secret</code> for v1 compatibility and includes

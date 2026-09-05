@@ -112,6 +112,20 @@ X-OBO-Signature: HMAC-SHA256(
   proof does.
 </p>
 
+<h2>Current delegated authorization</h2>
+<p>
+  Successful verification returns <code>authorization</code> alongside the actor.
+  It is a live binding to principal, membership ID/version, authorization epoch,
+  organization, audience and testing environment, read before consuming the proof.
+  Role and tag disclosure requires <code>roles.read</code> and
+  <code>memberships.read</code>, respectively, in both the parent token and the
+  recipient's currently approved scopes. Null means undisclosed; never infer
+  administrator authority from a missing field or an unbound cached role.
+  This binding applies only to the verified endpoint and exact request. The
+  audience still applies its own resource policy; proof validity alone does not
+  grant blanket access to every resource.
+</p>
+
 <h2>Exposing endpoints</h2>
 
 <p>

@@ -81,7 +81,7 @@ impl Context {
 
         let mut builder = Client::builder(&stored.url)?
             .user_agent(concat!("iam/", env!("CARGO_PKG_VERSION")))
-            // The CLI updates its whole installed crate before dispatch. Its
+            // The CLI updates its whole installed crate after dispatch. Its
             // embedded client must not separately mutate this source tree.
             .auto_update(false);
         if let Some(environment_id) = testing_environment_id {
@@ -140,7 +140,7 @@ impl Context {
     pub async fn authenticated(&self) -> Result<Client> {
         let session = self.session()?;
         let session = if session.needs_refresh() {
-            self.renew(&session).await?
+            self.renew().await?
         } else {
             session
         };
@@ -154,12 +154,12 @@ impl Context {
     /// Once logout has been sent, its bearer may already be revoked. In that
     /// state the only valid follow-up is an exact idempotent replay, so an
     /// implicit refresh would destroy the ability to confirm the outcome.
-    pub async fn authenticated_for_logout(&self) -> Result<Client> {
-        let session = self.session()?;
+    pub async fn authenticated_for_logout(&self, stored: &store::LockedSession) -> Result<Client> {
+        let session = stored.session()?;
         let session = if session.pending_logout.is_some() {
             session
         } else if session.needs_refresh() {
-            self.renew(&session).await?
+            self.renew_locked(stored).await?
         } else {
             session
         };
@@ -186,9 +186,7 @@ impl Context {
     ///
     /// Returns an error when the credential file cannot be written.
     pub fn remember(&self, session: Session) -> Result<()> {
-        let mut credentials = store::load_credentials()?;
-        credentials.set_session(&self.profile_name, self.testing_environment_id, session);
-        store::save_credentials(&credentials)
+        self.lock_session()?.remember(session)
     }
 
     /// Forgets this profile's session.
@@ -197,10 +195,16 @@ impl Context {
     ///
     /// Returns an error when the credential file cannot be written.
     pub fn forget(&self) -> Result<bool> {
-        let mut credentials = store::load_credentials()?;
-        let existed = credentials.remove_session(&self.profile_name, self.testing_environment_id);
-        store::save_credentials(&credentials)?;
-        Ok(existed)
+        self.lock_session()?.forget()
+    }
+
+    /// Serializes login, refresh and logout for this exact stored session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the home or session lock is unsafe or unavailable.
+    pub fn lock_session(&self) -> Result<store::LockedSession> {
+        store::lock_session(&self.profile_name, self.testing_environment_id)
     }
 
     /// Securely remembers the key behind an environment's public id.
@@ -209,9 +213,7 @@ impl Context {
     ///
     /// Returns an error when the owner-only credential file cannot be saved.
     pub fn remember_testing_environment(&self, environment_id: Uuid, key: String) -> Result<()> {
-        let mut credentials = store::load_credentials()?;
-        credentials.set_testing_environment_key(&self.profile_name, environment_id, key);
-        store::save_credentials(&credentials)
+        store::remember_testing_environment(&self.profile_name, environment_id, key)
     }
 
     /// The organization a command should act on.
@@ -395,14 +397,31 @@ impl Context {
     }
 
     /// Exchanges the refresh token for a new session and stores it.
-    async fn renew(&self, session: &Session) -> Result<Session> {
+    async fn renew(&self) -> Result<Session> {
+        let stored = self.lock_session()?;
+        self.renew_locked(&stored).await
+    }
+
+    async fn renew_locked(&self, stored: &store::LockedSession) -> Result<Session> {
+        // Another process may have refreshed, logged in, or logged out while
+        // this invocation waited. Never rotate an earlier snapshot's token.
+        let session = stored.session()?;
+        if !session.needs_refresh() {
+            return Ok(session);
+        }
+        if session.pending_logout.is_some() {
+            return Err(CliError::Usage(
+                "a remote logout is pending; retry that logout before using this session"
+                    .to_owned(),
+            ));
+        }
         let key = if let Some(key) = session.pending_refresh_key.as_deref() {
             IdempotencyKey::parse(key.to_owned())?
         } else {
             let key = IdempotencyKey::generate();
             let mut pending = session.clone();
             pending.pending_refresh_key = Some(key.as_str().to_owned());
-            self.remember(pending)?;
+            stored.remember(pending)?;
             key
         };
         let tokens = self
@@ -410,8 +429,8 @@ impl Context {
             .auth()
             .refresh(&session.refresh_token, &Mutation::with_key(key))
             .await?;
-        let renewed = renewed_session(&tokens, session);
-        self.remember(renewed.clone())?;
+        let renewed = renewed_session(&tokens, &session);
+        stored.remember(renewed.clone())?;
         Ok(renewed)
     }
 }

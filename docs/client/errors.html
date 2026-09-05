@@ -1,5 +1,5 @@
 <p class="lede">
-  The client has seven error variants. Match the variant first, then match a service error's stable
+  Match the error variant first, then match a service error's stable
   <code>code</code>; never branch on human-readable prose.
 </p>
 
@@ -20,6 +20,11 @@
       expected contract, or negotiation invariants disagreed.</td><td>Do not blindly retry. Retain
       the mutation key and request ID,
       then investigate a client/service compatibility bug.</td></tr>
+    <tr><td><code>Error::UnstructuredResponse</code></td><td>An HTTP failure arrived without IAM's
+      error envelope, for example an edge-generated HTML <code>403</code>. This does not establish
+      an IAM authorization decision.</td><td>Check the service URL and edge/proxy logs using the
+      HTTP status and optional response request ID. Do not retry blindly or assume another login
+      will fix it.</td></tr>
     <tr><td><code>Error::ResponseTooLarge</code></td><td>A response body exceeded the fixed 4 MiB
       client bound, whether or not it declared a length first.</td><td>Do not blindly retry. Retain
       the mutation key and investigate the service or intermediary response.</td></tr>
@@ -67,6 +72,15 @@ match application
   rate-limit errors.
 </p>
 
+<p>
+  <code>Error::UnstructuredResponse</code> retains the observed HTTP <code>status</code> and a
+  well-formed UUID <code>X-Request-Id</code> when present; <code>Error::request_id()</code> exposes
+  that correlation hint, while <code>Error::api()</code> returns <code>None</code>. The client
+  does not retain or print HTML, other raw error bodies, or arbitrary response headers. A missing
+  request ID remains missing: neither a status nor a proxy-branded page identifies a particular
+  firewall rule or proves whether the backend processed the operation.
+</p>
+
 <h2>Retry and recovery</h2>
 
 <div class="banner banner-danger">
@@ -88,6 +102,8 @@ match application
     applied a successful mutation before the client failed to decode its body.</li>
   <li><code>Error::ResponseTooLarge</code> is also not retryable: IAM may have applied the mutation
     before the client rejected its response. Preserve the original key while investigating.</li>
+  <li><code>Error::UnstructuredResponse</code> is not classified as retryable. Preserve the original
+    mutation key and investigate the deployment boundary before deciding whether to retry.</li>
   <li>OBO proof verification accepts no idempotency key and is single-use. Never retry it after an
     ambiguous outcome.</li>
 </ul>

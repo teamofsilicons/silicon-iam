@@ -81,6 +81,49 @@ impl OAuth<'_> {
         self.0.send_json(built.form(request)).await
     }
 
+    /// Fetches the live authorization snapshot for an Application access token.
+    ///
+    /// Call immediately after login, or to rebuild an empty local projection.
+    /// No directory edit or webhook arrival is necessary. `None` means there
+    /// is no current organization authority (inactive, wrong application or
+    /// organization, refresh token, or unscoped session). Undisclosed roles or
+    /// tags remain `None`; never turn them into extra privileges.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when introspection fails or its response is malformed.
+    pub async fn authorization(
+        &self,
+        access_token: &str,
+        org_context: Option<&str>,
+    ) -> Result<Option<models::ApplicationAuthorization>> {
+        let inspected = self
+            .introspect(
+                &models::TokenIntrospectionRequest {
+                    token: access_token.to_owned(),
+                    token_type_hint: Some(
+                        models::TokenIntrospectionRequestTokenTypeHint::AccessToken,
+                    ),
+                },
+                org_context,
+            )
+            .await?;
+        if inspected.active
+            && access_token.starts_with("oat_")
+            && inspected.membership_id.is_some()
+            && inspected.authorization.is_none()
+        {
+            return Err(crate::Error::Decode(
+                "IAM returned an active organization-bound access token without its authorization snapshot; deploy an API version supporting authorization snapshots before using this method".to_owned(),
+            ));
+        }
+        Ok(if inspected.active {
+            inspected.authorization
+        } else {
+            None
+        })
+    }
+
     /// Revokes one access token, or the complete family of a refresh token.
     ///
     /// # Errors

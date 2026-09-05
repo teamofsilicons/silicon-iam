@@ -22,7 +22,7 @@ pub enum CliError {
     Config(String),
 
     /// The command needs a signed-in session and there is none.
-    #[error("not signed in; run `iam login` first")]
+    #[error("not signed in to IAM in this profile and environment")]
     NotSignedIn,
 
     /// The command needs an organization and none was given or configured.
@@ -66,12 +66,13 @@ impl CliError {
     ///
     /// Distinguished so a script can react without parsing messages: `2` is a
     /// usage mistake, `3` means authenticate, `4` means the service said no,
-    /// `5` means it could not be reached at all.
+    /// `5` means transport failed or no recognizable IAM error response arrived.
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::NotSignedIn => 3,
-            Self::Client(ClientError::Transport(_)) | Self::Update(_) => 5,
+            Self::Client(ClientError::Transport(_) | ClientError::UnstructuredResponse { .. })
+            | Self::Update(_) => 5,
             // Everything else is the invocation's own fault: bad arguments,
             // a missing organization, an unreadable store.
             Self::Client(ClientError::Invalid(_))
@@ -92,14 +93,20 @@ impl CliError {
     )]
     #[must_use]
     pub fn hint(&self) -> Option<String> {
+        if matches!(self, Self::NotSignedIn) {
+            return Some(
+                "Sign in with `iam login --carbon-id <carbon-id>` or `iam silicon-login --sid <handle:org>`. Keep the same --profile, --url and --test selection as this command. Application access tokens do not replace a direct IAM session."
+                    .to_owned(),
+            );
+        }
         if let Self::UnknownTestingEnvironment(id) = self {
             return Some(format!(
-                "Run `iam env key {id}` outside a test environment to authorize this device."
+                "Run `iam env key {id}` outside --test to authorize this device, keeping the same --profile and --url. This needs a direct IAM session with access to that environment."
             ));
         }
         if let Self::TestingEnvironmentUnavailable { environment_id, .. } = self {
             return Some(format!(
-                "Outside --test, run `iam env restore {environment_id}` if it was deleted, or `iam env key {environment_id}` to refresh this profile's stored key."
+                "Outside --test, run `iam env restore {environment_id}` if it was deleted, or `iam env key {environment_id}` to refresh this profile's stored key. Keep the same --profile and --url; do not create a replacement environment just to retry."
             ));
         }
         let Self::Client(error) = self else {
@@ -108,23 +115,36 @@ impl CliError {
         if let ClientError::RateLimited { retry_after, .. } = error {
             return Some(format!("Retry in {} seconds.", retry_after.as_secs()));
         }
+        if let ClientError::UnstructuredResponse { .. } = error {
+            return Some(
+                "Check the configured IAM URL and the deployment's edge/proxy logs. This response does not establish an IAM permission denial. Public IAM deployment requests should use public HTTPS application origins; loopback examples require --url pointing to your local IAM runtime. Preserve the original idempotency key if the mutation's outcome is uncertain."
+                    .to_owned(),
+            );
+        }
         let api = error.api()?;
         if api.code == "invalid_client" {
             return Some(
-                "Check the Application ID and secret; Application authentication does not use `iam login`."
+                "Check the quoted, qualified Application ID ('organization>application') and that Application's current --app-secret in the selected --test environment. A webhook signing secret is not an Application client secret. Application tokens come from exchanging an SLT, not from supplying Carbon or Silicon credentials."
+                    .to_owned(),
+            );
+        }
+        if api.requires_step_up() {
+            return Some(
+                "Create a fresh token with `iam step-up <action> <resource-uuid>`, then rerun the original command with --step-up <token> in the same profile and environment. That command's --help names the required action and resource; a token for another action or resource will not work."
                     .to_owned(),
             );
         }
         if api.is_unauthenticated() {
-            return Some("Run `iam login` to sign in again.".to_owned());
-        }
-        if api.requires_step_up() {
             return Some(
-                "This action needs step-up verification; re-run with --step-up.".to_owned(),
+                "For IAM account or management commands, run `iam login --carbon-id <carbon-id>` or `iam silicon-login --sid <handle:org>` again in the same --profile/--test scope. For app token/OBO commands, check the Application credential and token instead; a direct IAM login does not repair an Application secret."
+                    .to_owned(),
             );
         }
         if api.is_version_conflict() {
-            return Some("Someone changed this first. Read it again, then retry.".to_owned());
+            return Some(
+                "Read the resource again with its show command and review what changed before retrying. The CLI fetches the current version for a new mutation; it does not automatically overwrite a concurrent change."
+                    .to_owned(),
+            );
         }
         if api.is_idempotency_conflict() {
             return Some(
@@ -212,7 +232,7 @@ impl CliError {
             }
             "testing_application_already_exists" => {
                 return Some(
-                    "That Application is already imported in this testing environment. Use `iam app show`, or clean the environment before importing it again."
+                    "That Application is already imported in this testing environment. Use `iam app show <app-id>` with the same --org/--test selection to inspect or use it. Cleaning an environment deletes its data and is not needed to inspect an existing import."
                         .to_owned(),
                 );
             }
@@ -321,11 +341,14 @@ impl CliError {
             _ => {}
         }
         if api.is_forbidden() {
-            return Some("Your role in this organization does not allow it.".to_owned());
+            return Some(
+                "IAM refused this action. Check the command's required role or Application scopes and the selected organization. Management commands need a direct IAM session; an Application session is not management authority. A 403 alone does not identify which permission is missing."
+                    .to_owned(),
+            );
         }
         if api.is_not_found() {
             return Some(
-                "Check the identifier and the active --org/--test scope; testing environments have their own organizations."
+                "Check the exact identifier and active --org/--test scope; testing environments have separate resources. Run the matching list/show command in the same --profile and --url. IAM can also return 404 for a resource hidden from this caller, so this response does not prove it is absent."
                     .to_owned(),
             );
         }

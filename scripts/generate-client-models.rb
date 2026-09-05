@@ -187,7 +187,8 @@ class Generator
     types = Array(schema["type"])
     if types.include?("array")
       inner = field_type(schema["items"], owner, field)
-      return "Vec<#{inner}>"
+      array = "Vec<#{inner}>"
+      return types.include?("null") ? "Option<#{array}>" : array
     end
     if schema["enum"] && scalar?(schema) && !types.include?("null")
       return inline_enum(schema, owner, field)

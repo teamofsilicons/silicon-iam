@@ -38,6 +38,15 @@ Content-Type: application/json
   to it, append login tokens to it, or treat it as a redirect allowlist.
 </p>
 
+<p>
+  Use public HTTPS application origins with hosted IAM. The public edge has been observed
+  rejecting loopback <code>base_url</code> payloads with an unstructured HTTP <code>403</code>;
+  selecting a testing environment changes database isolation, not the ingress policy. The
+  loopback exception is usable against a local IAM runtime, selected explicitly by the client
+  service URL or CLI <code>--url http://127.0.0.1:8080</code>. The checked-in runtime's URL
+  validator accepting a value does not prove a hosted edge will accept it.
+</p>
+
 <div class="banner banner-danger">
   <div>
     <strong>IAM generates only the client secret.</strong>
@@ -150,7 +159,11 @@ Idempotency-Key: &lt;key&gt;
   Tokens are opaque and there is nothing to verify locally. When an application needs to know
   whether a token is good <strong>right now</strong> — after a revocation, or a membership change
   — it calls <code>POST /api/v1/oauth/introspect</code> with its Basic credentials. The response
-  reflects current revocation and membership state.
+  reflects current revocation and membership state. An active organization-bound
+  access token also returns <code>authorization</code>: a synchronous initial or
+  replacement snapshot of principal/public ID, organization, membership ID/version,
+  epoch, audience, and testing plane. Fetch this after first login or a local
+  projection cache loss; no directory mutation or webhook arrival is required.
 </p>
 
 <p>
@@ -164,6 +177,16 @@ Idempotency-Key: &lt;key&gt;
 <p>
   Webhooks are a notification channel, not an authorization one. Never substitute a delivered
   event for an online check.
+</p>
+
+<p>
+  In the snapshot, <code>org_role</code> requires <code>roles.read</code> and
+  <code>tags</code> requires <code>memberships.read</code>. Null means undisclosed,
+  not a default role or an empty tag list. Refresh tokens and unscoped access
+  tokens omit the snapshot. Application sessions remain excluded from first-party
+  directory management routes; use Basic-authenticated introspection instead.
+  After an IAM testing-environment clean, reimport/onboard and obtain fresh SLTs;
+  the snapshot does not resurrect old tokens or erased membership state.
 </p>
 
 <h3>Revocation</h3>

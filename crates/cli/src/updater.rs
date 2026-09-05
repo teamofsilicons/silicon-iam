@@ -1,4 +1,4 @@
-//! Automatic maintenance of the installed `iam` binary.
+//! Opportunistic maintenance after an `iam` command has finished.
 
 use time::{Duration, OffsetDateTime};
 
@@ -12,12 +12,12 @@ use crate::{
 
 pub const CLI_CRATE: &str = "silicon-iam-cli";
 pub const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
-const CHECK_INTERVAL: Duration = Duration::days(1);
+const CHECK_INTERVAL: Duration = Duration::hours(1);
 
 /// Result of checking or applying a CLI release.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Outcome {
-    /// Automatic maintenance is disabled or not due yet.
+    /// Maintenance is disabled, not due, or already running elsewhere.
     Skipped,
     /// This binary is already the newest stable release.
     Current {
@@ -26,52 +26,60 @@ pub enum Outcome {
     },
     /// Cargo replaced the installed binary for the next invocation.
     Updated {
-        /// Version executing this command.
+        /// Version that completed the command.
         from: Version,
         /// Version installed for the next command.
         to: Version,
     },
 }
 
-/// Runs the daily default-on update before a normal command.
+/// Whether normal command completion may trigger automatic maintenance.
+pub fn follows(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Docs { .. } | Command::Commands | Command::System(SystemCommand::Update)
+    ) && !matches!(
+        command,
+        Command::Config(ConfigCommand::Set { key, .. } | ConfigCommand::Unset { key })
+            if key == "auto-update"
+    )
+}
+
+/// Checks on use, at most hourly, only after the command result is reported.
 ///
-/// # Errors
-///
-/// Returns a non-fatal error when settings, crates.io, or Cargo cannot be used.
-pub async fn automatic(command: &Command) -> Result<Outcome> {
-    if command_controls_updater(command) {
-        return Ok(Outcome::Skipped);
-    }
+/// No background task or daemon is left running. Failure remains a warning:
+/// it must not replace the completed command's result or exit code.
+pub async fn automatic() -> Result<Outcome> {
     let config = store::load_config()?;
     if !environment_switch().unwrap_or(config.auto_update) {
         return Ok(Outcome::Skipped);
     }
-    let state = store::load_update_state()?;
-    if !check_is_due(&state, OffsetDateTime::now_utc()) {
-        return Ok(Outcome::Skipped);
-    }
-    update_now().await
+    update_if_due(false).await
 }
 
-/// Checks immediately, even when automatic maintenance is disabled or cached.
-///
-/// # Errors
-///
-/// Returns an error when crates.io or Cargo cannot be used, or state cannot be
-/// saved.
-pub async fn update_now() -> Result<Outcome> {
-    let release = check(CLI_CRATE, CLI_VERSION).await?;
-    let outcome = apply_release(&release)?;
-    let recorded_version = match &outcome {
-        Outcome::Updated { to, .. } => to.to_string(),
-        Outcome::Current { version } => version.to_string(),
-        Outcome::Skipped => CLI_VERSION.to_owned(),
+async fn update_if_due(force: bool) -> Result<Outcome> {
+    let Some(_check_lock) = store::try_lock_updater_check()? else {
+        return Ok(Outcome::Skipped);
     };
+    let state = store::load_update_state()?;
+    let now = OffsetDateTime::now_utc();
+    if !force && !check_is_due(&state, now) {
+        return Ok(Outcome::Skipped);
+    }
+    // Persist the attempt BEFORE the registry/Cargo work. Registry outages and
+    // failed installations must not retry on every subsequent command. The
+    // dedicated cross-process lock covers this reservation and installation.
     store::save_update_state(&UpdateState {
-        checked_version: Some(recorded_version),
-        checked_at: Some(OffsetDateTime::now_utc()),
+        checked_version: Some(CLI_VERSION.to_owned()),
+        checked_at: Some(now),
     })?;
-    Ok(outcome)
+    let release = check(CLI_CRATE, CLI_VERSION).await?;
+    apply_release(&release)
+}
+
+/// Checks and installs immediately for the explicit `iam system update` command.
+pub async fn update_now() -> Result<Outcome> {
+    update_if_due(true).await
 }
 
 fn apply_release(release: &Release) -> Result<Outcome> {
@@ -87,21 +95,10 @@ fn apply_release(release: &Release) -> Result<Outcome> {
     })
 }
 
-fn command_controls_updater(command: &Command) -> bool {
-    matches!(command, Command::System(SystemCommand::Update))
-        || matches!(
-            command,
-            Command::Config(ConfigCommand::Set { key, .. }) if key == "auto-update"
-        )
-}
-
 fn check_is_due(state: &UpdateState, now: OffsetDateTime) -> bool {
-    if state.checked_version.as_deref() != Some(CLI_VERSION) {
-        return true;
-    }
     state
         .checked_at
-        .is_none_or(|checked_at| now - checked_at >= CHECK_INTERVAL)
+        .is_none_or(|checked_at| checked_at > now || now - checked_at >= CHECK_INTERVAL)
 }
 
 fn environment_switch() -> Option<bool> {
@@ -122,7 +119,7 @@ mod tests {
     use super::{CHECK_INTERVAL, CLI_VERSION, check_is_due};
 
     #[test]
-    fn checks_immediately_then_at_most_daily() {
+    fn checks_immediately_then_at_most_hourly() {
         let now = OffsetDateTime::now_utc();
         assert!(check_is_due(&UpdateState::default(), now));
         let fresh = UpdateState {
@@ -134,11 +131,11 @@ mod tests {
     }
 
     #[test]
-    fn a_newly_installed_version_gets_its_own_check() {
+    fn installing_a_new_version_does_not_reset_the_hourly_throttle() {
         let state = UpdateState {
             checked_version: Some("0.0.1".to_owned()),
             checked_at: Some(OffsetDateTime::now_utc()),
         };
-        assert!(check_is_due(&state, OffsetDateTime::now_utc()));
+        assert!(!check_is_due(&state, OffsetDateTime::now_utc()));
     }
 }

@@ -1004,10 +1004,20 @@ pub(super) async fn clean_current_environment(
 /// The reverse order would leave orphaned data no one can reach.
 async fn erase(state: &ApiState, environment_id: Uuid) -> Result<CleaningResult, AppError> {
     let plane = support::plane(state)?;
+    // Lifecycle authorization was established in the control plane, so this
+    // separate testing connection does not inherit request-plane context.
+    // Select only that verified environment for the entire erasure transaction;
+    // restricted definer helpers deliberately see no unscoped API tenant rows.
+    let mut transaction = plane.pool.begin().await.map_err(support::database)?;
+    sqlx::query("SELECT set_config('iam.testing_environment_id', $1, true)")
+        .bind(environment_id.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(support::database)?;
     let erased_rows =
         sqlx::query_scalar::<_, i64>("SELECT iam_private.erase_testing_environment($1)")
             .bind(environment_id)
-            .fetch_one(&plane.pool)
+            .fetch_one(&mut *transaction)
             .await
             .map_err(|error| {
                 tracing::error!(
@@ -1019,6 +1029,7 @@ async fn erase(state: &ApiState, environment_id: Uuid) -> Result<CleaningResult,
                     category: "testing_environment_erase",
                 }
             })?;
+    transaction.commit().await.map_err(support::database)?;
     Ok(CleaningResult {
         environment_id,
         erased_rows,

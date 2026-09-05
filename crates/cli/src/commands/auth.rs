@@ -1,6 +1,6 @@
 //! Signing in, signing out, and creating an account.
 
-use std::io::Write as _;
+use std::io::{IsTerminal as _, Write as _};
 
 use silicon_iam_client::{Client, Credential, IdempotencyKey, Mutation, models};
 use time::OffsetDateTime;
@@ -75,7 +75,10 @@ pub async fn login(context: &Context, args: LoginArgs) -> Result<()> {
         // allowed it, which is how a local run avoids needing a real inbox.
         None => match challenge.local_otp.clone() {
             Some(code) => code,
-            None => prompt_secret("Verification code: ")?,
+            None => prompt_secret(
+                "IAM sign-in verification code (input hidden): ",
+                "Run this login command in an interactive terminal to enter the code sent to your verified contact, or supply --code when the code is already known. Application login uses an SLT, never an OTP.",
+            )?,
         },
     };
 
@@ -120,17 +123,38 @@ pub async fn login(context: &Context, args: LoginArgs) -> Result<()> {
 /// Returns an error when the credential is refused, or when the application is
 /// unknown.
 pub async fn silicon_login(context: &Context, args: SiliconLoginArgs) -> Result<()> {
+    if args.sid.is_none()
+        && args.stk.is_none()
+        && let Some(app_id) = args.app_id.as_deref()
+    {
+        if context.session()?.actor_type != SessionActor::Silicon {
+            return Err(CliError::Usage(
+                "the stored session is not a Silicon; use `iam login --app-id` for the current Carbon, or provide --sid and --stk to sign in as a Silicon".to_owned(),
+            ));
+        }
+        let authenticated = context.authenticated().await?;
+        return report_short_lived_token(context, &authenticated, app_id).await;
+    }
     let sid = match args.sid {
         Some(value) => value,
-        None => prompt("Silicon ID: ")?,
+        None => prompt(
+            "Silicon ID (handle:org): ",
+            "Supply --sid <handle:org> and --stk <token> for noninteractive Silicon sign-in. With an existing Silicon session, use only --app-id to mint an SLT without entering credentials again.",
+        )?,
     };
     let (sid, org) = context.silicon_identity(&sid)?;
     // Prompted rather than flagged by default so the token stays out of shell
     // history and out of the process table.
     let stk = match args.stk {
         Some(value) => value,
-        None => prompt_secret("Silicon token: ")?,
+        None => prompt_secret(
+            "Silicon token (input hidden): ",
+            "Supply --stk <token> for noninteractive Silicon sign-in, or run in an interactive terminal to keep the token out of shell history. With an existing Silicon session, use only --app-id to mint an SLT without entering credentials again.",
+        )?,
     };
+    if stk.trim().is_empty() {
+        return Err(CliError::Usage("--stk cannot be empty".to_owned()));
+    }
 
     let client = context.anonymous();
     let tokens = client
@@ -209,7 +233,10 @@ pub async fn logout(context: &Context, args: LogoutArgs) -> Result<()> {
         return report_local_logout(context, context.forget()?);
     }
 
-    let initial = context.session()?;
+    // Keep one session-transition lock through refresh, logout reservation,
+    // network replay and deletion. A concurrent login must not be erased.
+    let stored = context.lock_session()?;
+    let initial = stored.session()?;
     if initial.actor_type == SessionActor::Silicon {
         if args.all {
             return Err(CliError::Usage(
@@ -217,7 +244,7 @@ pub async fn logout(context: &Context, args: LogoutArgs) -> Result<()> {
                     .to_owned(),
             ));
         }
-        let existed = context.forget()?;
+        let existed = stored.forget()?;
         return report_local_logout(context, existed);
     }
 
@@ -240,8 +267,8 @@ pub async fn logout(context: &Context, args: LogoutArgs) -> Result<()> {
 
     // Refresh, when needed, before reserving the logout key. Once the key is
     // pending, the bearer must remain byte-for-byte stable for replay.
-    let client = context.authenticated_for_logout().await?;
-    let mut session = context.session()?;
+    let client = context.authenticated_for_logout(&stored).await?;
+    let mut session = stored.session()?;
     let pending = if let Some(pending) = session.pending_logout.clone() {
         pending
     } else {
@@ -251,7 +278,7 @@ pub async fn logout(context: &Context, args: LogoutArgs) -> Result<()> {
             idempotency_key: key.as_str().to_owned(),
         };
         session.pending_logout = Some(pending.clone());
-        context.remember(session)?;
+        stored.remember(session)?;
         pending
     };
 
@@ -268,7 +295,7 @@ pub async fn logout(context: &Context, args: LogoutArgs) -> Result<()> {
         .auth()
         .logout(&models::LogoutRequest { mode: Some(mode) }, &mutation)
         .await?;
-    context.forget()?;
+    stored.forget()?;
 
     match context.format {
         Format::Json => json(&serde_json::json!({
@@ -384,7 +411,10 @@ pub async fn step_up(context: &Context, args: StepUpArgs) -> Result<()> {
         .await?;
     let code = match args.code.or(challenge.local_otp) {
         Some(code) => code,
-        None => prompt_secret("Step-up verification code: ")?,
+        None => prompt_secret(
+            "Step-up verification code (input hidden): ",
+            "Run this step-up command in an interactive terminal to enter the code sent through the selected --channel, or supply --code when the code is already known.",
+        )?,
     };
     let token = client
         .auth()
@@ -453,7 +483,10 @@ pub async fn signup(context: &Context, args: SignupArgs) -> Result<()> {
             args.email
         )));
     }
-    let code = collect_code(dispatched.local_otp, "Email verification code: ")?;
+    let code = collect_code(
+        dispatched.local_otp,
+        "Signup 1/2: email verification code (input hidden): ",
+    )?;
     client
         .signup()
         .verify_email(session, &code, &context.mutation())
@@ -469,7 +502,10 @@ pub async fn signup(context: &Context, args: SignupArgs) -> Result<()> {
             args.phone
         )));
     }
-    let code = collect_code(dispatched.local_otp, "Phone verification code: ")?;
+    let code = collect_code(
+        dispatched.local_otp,
+        "Signup 2/2: phone verification code (input hidden): ",
+    )?;
     client
         .signup()
         .verify_phone(session, &code, &context.mutation())
@@ -493,10 +529,7 @@ pub async fn signup(context: &Context, args: SignupArgs) -> Result<()> {
     match context.format {
         Format::Json => json(&created),
         Format::Text => {
-            println!(
-                "Created {}. Run `iam login --carbon-id {}` to sign in.",
-                created.carbon_id, created.carbon_id
-            );
+            println!("Created {}.", created.carbon_id);
             Ok(())
         }
     }
@@ -505,20 +538,54 @@ pub async fn signup(context: &Context, args: SignupArgs) -> Result<()> {
 fn collect_code(echoed: Option<String>, prompt_text: &str) -> Result<String> {
     match echoed {
         Some(code) => Ok(code),
-        None => prompt_secret(prompt_text),
+        None => prompt_secret(
+            prompt_text,
+            "Run signup in an interactive terminal: both email and phone verification are required. Noninteractive signup works only when your local/testing IAM deployment explicitly returns verification codes; the CLI never guesses or bypasses them.",
+        ),
     }
 }
 
-/// Reads one line without echoing it to the terminal.
-pub(crate) fn prompt_secret(label: &str) -> Result<String> {
-    Ok(rpassword::prompt_password(label)?)
+/// Reads one nonempty secret from an interactive terminal without echoing it.
+///
+/// Never opens `/dev/tty` for a piped or agent invocation. Standard input may
+/// contain an explicitly supplied request body and must not become a credential.
+pub(crate) fn prompt_secret(label: &str, noninteractive_help: &str) -> Result<String> {
+    require_interactive(label, noninteractive_help)?;
+    let value = rpassword::prompt_password_with_config(
+        label,
+        rpassword::ConfigBuilder::new()
+            .output_writer(std::io::stderr())
+            .build(),
+    )?;
+    require_prompt_value(value, label)
 }
 
-/// Reads one line from the terminal.
-pub(crate) fn prompt(label: &str) -> Result<String> {
-    print!("{label}");
-    std::io::stdout().flush()?;
+/// Reads one nonempty line from an interactive terminal; prompts use stderr.
+pub(crate) fn prompt(label: &str, noninteractive_help: &str) -> Result<String> {
+    require_interactive(label, noninteractive_help)?;
+    eprint!("{label}");
+    std::io::stderr().flush()?;
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
-    Ok(line.trim().to_owned())
+    require_prompt_value(line.trim().to_owned(), label)
+}
+
+fn require_interactive(label: &str, noninteractive_help: &str) -> Result<()> {
+    if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+        return Ok(());
+    }
+    Err(CliError::Usage(format!(
+        "{} is required; interactive prompting needs terminal input and stderr. {noninteractive_help} Piped input was not read.",
+        label.trim().trim_end_matches(':')
+    )))
+}
+
+fn require_prompt_value(value: String, label: &str) -> Result<String> {
+    if value.trim().is_empty() {
+        return Err(CliError::Usage(format!(
+            "{} cannot be empty; no credential was submitted",
+            label.trim().trim_end_matches(':')
+        )));
+    }
+    Ok(value)
 }

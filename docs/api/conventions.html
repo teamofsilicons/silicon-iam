@@ -47,6 +47,15 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
 <h2>Idempotency</h2>
 
 <p>
+  IAM's own failures use a JSON error envelope with a stable <code>code</code> and an optional
+  request correlation ID. A public edge or reverse proxy can answer before that contract is
+  reached. An HTML <code>403</code> without an IAM envelope is not an IAM membership denial;
+  record the HTTP status and any request ID, then inspect deployment logs. Do not invent a
+  request ID or infer a particular firewall rule from that response alone. If a mutation's
+  outcome is uncertain, retain its original idempotency key.
+</p>
+
+<p>
   Every externally initiated mutation requires an <code>Idempotency-Key</code> of 16–255
   characters. The server scopes it to the authenticated caller, the route, and a digest of the
   request body.

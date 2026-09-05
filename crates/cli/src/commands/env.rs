@@ -115,10 +115,7 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
                 Format::Text => {
                     println!("Created {} ({}).", created.name, created.id);
                     println!("Key: {}", created.key);
-                    println!(
-                        "This device stored the key. Enter it with: iam --test {} <command>",
-                        created.id
-                    );
+                    crate::guidance::environment_created(context, created.id);
                     Ok(())
                 }
             }
@@ -159,12 +156,9 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
                 Format::Text => {
                     println!("Retired {}.", retired.name);
                     if let Some(purge_after) = retired.purge_after {
-                        println!(
-                            "Recoverable with `iam env restore {}` until {}.",
-                            retired.id,
-                            timestamp(purge_after)
-                        );
+                        println!("Recoverable until {}.", timestamp(purge_after));
                     }
+                    crate::guidance::environment_retired(context, retired.id);
                     Ok(())
                 }
             }

@@ -15,6 +15,24 @@ use uuid::Uuid;
 
 use crate::{Client, Mutation, Result, models};
 
+/// Validates a new Carbon ID before starting either verification ceremony.
+///
+/// # Errors
+///
+/// Returns an error unless the ID matches the creation contract's
+/// `^[a-z1-9_-]{3,30}$` syntax. In particular, digit zero is not allowed.
+pub fn validate_carbon_id(value: &str) -> Result<()> {
+    if (3..=30).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'1'..=b'9' | b'_' | b'-'))
+    {
+        Ok(())
+    } else {
+        Err(crate::Error::Invalid("Carbon ID must be 3-30 lowercase letters, digits 1-9, underscores or hyphens; digit 0 is not allowed".to_owned()))
+    }
+}
+
 /// The signup flow. None of these routes need a credential.
 pub struct Signup<'a>(pub(super) &'a Client);
 
@@ -144,6 +162,7 @@ impl Signup<'_> {
         profile: &models::CarbonSignupComplete,
         mutation: &Mutation,
     ) -> Result<models::CarbonSelf> {
+        validate_carbon_id(&profile.carbon_id)?;
         self.0
             .post(
                 &["signup", "sessions", &session.to_string(), "complete"],

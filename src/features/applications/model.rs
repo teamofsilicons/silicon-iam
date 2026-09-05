@@ -397,6 +397,31 @@ pub(super) struct IntrospectionResponse {
     pub(super) expires_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) authorization_epoch: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) authorization: Option<ApplicationAuthorization>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct AuthorizationTag {
+    pub(super) id: Uuid,
+    pub(super) name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct ApplicationAuthorization {
+    pub(super) principal_id: Uuid,
+    pub(super) actor_type: String,
+    pub(super) public_id: String,
+    pub(super) organization_id: Uuid,
+    pub(super) org_id: String,
+    pub(super) membership_id: Uuid,
+    pub(super) membership_version: i64,
+    pub(super) authorization_epoch: i64,
+    pub(super) audience: String,
+    pub(super) testing_environment_id: Option<Uuid>,
+    pub(super) scopes: Vec<String>,
+    pub(super) org_role: Option<String>,
+    pub(super) tags: Option<Vec<AuthorizationTag>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -453,6 +478,7 @@ pub(super) struct OboAccessResult {
     pub(super) issuer_app_id: String,
     pub(super) audience: String,
     pub(super) actor: PublicActor,
+    pub(super) authorization: ApplicationAuthorization,
     pub(super) org_id: String,
     pub(super) endpoint: OboEndpointReference,
     pub(super) metadata: serde_json::Value,

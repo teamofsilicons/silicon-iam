@@ -56,7 +56,7 @@ let replacement = application
 
 <p>
   The service may return its stored result with <code>Idempotency-Replayed: true</code>. Version
-  1.1.1 returns the typed response body but does not expose that response header, so recovery must
+  1.2.0 returns the typed response body but does not expose that response header, so recovery must
   be keyed by the <code>Mutation</code> your application persisted rather than by an SDK replay
   flag.
 </p>
@@ -89,6 +89,37 @@ if current.active {
   authorization; a webhook is a notification, not an authorization cache. Mint the SLT with
   <code>short_lived_token_in_organization</code> when the token must be active in an organization
   or used for OBO.
+</p>
+
+<h2>First login and rebuilding a missing authorization projection</h2>
+
+<p>
+  An active organization-bound access token now includes a typed
+  <code>authorization</code> snapshot in introspection. Fetch it immediately after
+  login and whenever your application has no local membership projection:
+</p>
+<pre><code>let authority = application.oauth()
+    .authorization(&amp;access_token, Some("acme"))
+    .await?;
+// None means no current organization authority; fail closed.
+// Do not replace missing role/tag disclosure with extra permissions.</code></pre>
+<p>
+  The snapshot binds principal ID, public ID, organization ID and handle,
+  membership ID/version, current authorization epoch, audience and testing
+  environment. <code>org_role</code> requires <code>roles.read</code>;
+  <code>tags</code> requires <code>memberships.read</code>. Null means undisclosed;
+  an empty tag array means the disclosed membership has no active tags.
+  No unrelated directory edit or webhook delivery is required. Refresh tokens
+  and unscoped access tokens do not carry organization authorization.
+</p>
+<p>
+  Keep webhook updates for asynchronous projection maintenance, but introspect
+  current access tokens before authorizing. Bind any cache to the full
+  environment/audience/organization/principal/membership/epoch/effective-scopes
+  tuple. Never fill undisclosed fields from a broader cached token. After an
+  IAM environment clean, reimport, onboard and log in again; old tokens cannot
+  reconstruct erased authority. Application bearer tokens do not gain access to
+  IAM's first-party member/directory management routes through this contract.
 </p>
 
 <h2>Revocation</h2>

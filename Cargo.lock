@@ -2769,13 +2769,15 @@ dependencies = [
 
 [[package]]
 name = "silicon-iam-cli"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "clap",
  "http",
  "rpassword",
+ "rustix",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "silicon-iam-client",
  "thiserror",
  "time",
@@ -2786,7 +2788,7 @@ dependencies = [
 
 [[package]]
 name = "silicon-iam-client"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "hmac 0.12.1",
  "http",

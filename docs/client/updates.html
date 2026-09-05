@@ -7,8 +7,10 @@
 <h2>What automatic means for a Rust library</h2>
 
 <p>
-  Code already compiled into a running process cannot be replaced safely. Immediately before the
-  first IAM request, the client checks crates.io. If a newer stable release exists, it finds the
+  Code already compiled into a running process cannot be replaced safely. After an IAM request
+  finishes and its response has been decoded, the client checks crates.io if it has never
+  attempted a check or its last attempt was at least one hour ago. No idle timer or daemon runs;
+  another completed request triggers the next due check. If a newer stable release exists, it finds the
   nearest <code>Cargo.toml</code> at or above the process working directory and runs the equivalent
   of:
 </p>
@@ -40,19 +42,31 @@
 <h2>Observe the result</h2>
 
 <p>
-  After the first IAM call, <code>client.update_status()</code> reports <code>Current</code>,
+  After an IAM call, <code>client.update_status()</code> reports the latest result: <code>Current</code>,
   <code>Updated</code>, <code>Disabled</code>, <code>NoCargoProject</code>, or <code>Failed</code>.
   A registry timeout, absent manifest, incompatible version constraint, or failed Cargo command
-  never changes the IAM request's result. The registry check has a three-second timeout and runs
-  once for one client instance and its clones; separately constructed clients have their own
-  updater state.
+  never changes the IAM request's result. The registry check has a three-second timeout.
+  One client and its clones share an in-memory last-attempt time with only one check running at a
+  time; concurrent requests do not wait for another request's check. The request performing due
+  maintenance waits for it before returning, without changing its IAM result. Failed or cancelled
+  attempts retain the hourly throttle. Cancellation releases the single-flight slot; a Cargo
+  operation already started retains the slot until it finishes on a blocking worker. Separately
+  constructed clients have independent schedules, and restarting the process resets that
+  in-memory state. There is no maintenance while the client is idle.
 </p>
 
 <div class="banner banner-info">
   <div>
     <strong>The CLI has its own updater.</strong>
-    The <code>iam</code> binary checks at most daily and can replace itself directly with
-    <code>cargo install</code>. Use <code>iam config set auto-update off</code> to opt out or
-    <code>iam system update</code> to force a check.
+    After a normal command completes and prints its result, the <code>iam</code> binary checks
+    its persisted last-attempt time and, when at least one hour has elapsed, can replace itself
+    with <code>cargo install</code> for the next invocation. The first use checks immediately
+    after completion. Failures also record an attempt, and a cross-process lock prevents
+    concurrent checks or installations. The command's output and exit status are preserved.
+    No idle daemon or timer runs. Use <code>iam config set auto-update off</code> to opt out,
+    or <code>SILICON_IAM_AUTO_UPDATE=false</code> for one invocation.
+    <code>iam system update</code> explicitly bypasses opt-out and the hourly throttle,
+    while retaining the concurrent-update lock. Help, command discovery and offline docs
+    never trigger automatic maintenance.
   </div>
 </div>

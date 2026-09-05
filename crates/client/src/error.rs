@@ -38,6 +38,23 @@ pub enum Error {
     #[error("the response could not be understood: {0}")]
     Decode(String),
 
+    /// An HTTP failure arrived without IAM's structured error envelope.
+    ///
+    /// This is not evidence that IAM rejected the caller's authority. An edge
+    /// proxy, gateway, or incompatible service may have generated the response.
+    /// Its raw body is deliberately not retained or displayed.
+    #[error(
+        "HTTP {status} response without a Silicon IAM error envelope; an intermediary or incompatible service may have answered (request ID: {})",
+        request_id.as_deref().unwrap_or("not provided")
+    )]
+    UnstructuredResponse {
+        /// HTTP status actually received.
+        status: u16,
+        /// A well-formed UUID from the response's `X-Request-Id`, if supplied.
+        /// This is a correlation hint, not proof the response came from IAM.
+        request_id: Option<String>,
+    },
+
     /// A response body exceeded the client's fixed memory-safety bound.
     #[error("the response body exceeded the {limit}-byte limit")]
     ResponseTooLarge {

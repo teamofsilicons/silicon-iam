@@ -112,8 +112,7 @@ fn redirect_uri_value(field: &'static str, value: &str) -> Result<(), ApiError> 
         || parsed.host_str().is_none()
         || !(value.starts_with("https://") || value.starts_with("http://"))
         || !matches!(parsed.scheme(), "https" | "http")
-        || (parsed.scheme() == "http"
-            && !matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "::1")))
+        || (parsed.scheme() == "http" && !is_loopback(&parsed))
         || parsed.as_str() != value
     {
         return Err(ApiError::validation(
@@ -179,8 +178,7 @@ pub(super) fn base_url(value: &str) -> Result<Url, ApiError> {
         || parsed.host_str().is_none()
         || !(value.starts_with("https://") || value.starts_with("http://"))
         || !matches!(parsed.scheme(), "https" | "http")
-        || (parsed.scheme() == "http"
-            && !matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "::1")))
+        || (parsed.scheme() == "http" && !is_loopback(&parsed))
     {
         return Err(ApiError::validation(
             "base_url",
@@ -188,6 +186,15 @@ pub(super) fn base_url(value: &str) -> Result<Url, ApiError> {
         ));
     }
     Ok(parsed)
+}
+
+fn is_loopback(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        _ => false,
+    }
 }
 
 pub(super) fn scopes(values: &[String]) -> Result<(), ApiError> {
