@@ -16,6 +16,13 @@
   login names its redirect URI in the query string and carries the whole catalogue.
 </p>
 
+<p>
+  The local application handle is <strong>1–80 characters</strong>: start with a lowercase
+  ASCII letter, then use lowercase letters, digits, underscores, or hyphens. For example,
+  <code>a</code> and <code>ab</code> are valid handles. This limit excludes the organization
+  prefix; organization handles remain 3–50 characters.
+</p>
+
 <pre><code>POST /api/v1/applications
 Authorization: Bearer &lt;Carbon access token&gt;
 Idempotency-Key: &lt;one logical creation&gt;

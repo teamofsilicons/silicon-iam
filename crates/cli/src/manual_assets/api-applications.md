@@ -6,6 +6,8 @@ An application is a registered confidential OAuth client. It is owned by an orga
 
 `POST /api/v1/applications` takes a local application handle, the owning organization, a webhook URL, a caller-chosen `webhook_secret`, and the backend `base_url`. IAM qualifies the handle with the organization: creating `drive` in `google` returns the canonical ID `google>drive`. Use that canonical ID for credentials, login, discovery, path parameters, and OBO. There are no redirect URIs to register and no login scopes to request: a login names its redirect URI in the query string and carries the whole catalogue.
 
+The local application handle is **1–80 characters**: start with a lowercase ASCII letter, then use lowercase letters, digits, underscores, or hyphens. For example, `a` and `ab` are valid handles. This limit excludes the organization prefix; organization handles remain 3–50 characters.
+
 ```
 POST /api/v1/applications
 Authorization: Bearer <Carbon access token>

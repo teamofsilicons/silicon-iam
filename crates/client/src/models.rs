@@ -18,11 +18,14 @@ use uuid::Uuid;
 
 pub use super::models_manual::*;
 
-/// Canonical organization-qualified Application id, `{org_id}>{handle}`.
+/// Canonical organization-qualified Application id, `{org_id}>{handle}`; the
+/// local handle is 1-80 characters and the organization handle remains 3-50
+/// characters.
 pub type AppId = String;
 
-/// Local handle supplied at creation; the public id becomes
-/// `{org_id}>{handle}`.
+/// Local handle of 1-80 lowercase ASCII characters, starting with a letter
+/// and containing only letters, digits, underscores or hyphens. Supplied at
+/// creation; the public id becomes `{org_id}>{handle}`.
 pub type ApplicationHandle = String;
 
 /// Caller-chosen Application webhook signing secret containing only

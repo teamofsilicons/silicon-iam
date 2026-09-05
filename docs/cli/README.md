@@ -506,6 +506,11 @@ quote a canonical ID in a shell because an unquoted `>` is output redirection.
 CLI options may appear before or after the positional Application ID, although
 the examples keep the ID first for readability.
 
+The local app handle accepts **1–80 characters**: a lowercase ASCII letter first,
+then lowercase letters, digits, underscores, or hyphens. For example, `a`, `ab`,
+and `billing` are valid. The organization prefix is not counted in that limit;
+organization handles still require 3–50 characters.
+
 `--base-url` is the Application backend **origin**, for example
 `https://billing.example.com`. It must contain no slash after the authority —
 not even a trailing `/` — and no path, credentials, query, or fragment. HTTPS

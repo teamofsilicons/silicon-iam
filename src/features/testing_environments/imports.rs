@@ -676,7 +676,7 @@ fn qualified_app_id(value: &str) -> Result<String, AppError> {
         && organization.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte)
         });
-    let valid_local = (3..=80).contains(&local.len())
+    let valid_local = (1..=80).contains(&local.len())
         && local.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
         && local.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte)

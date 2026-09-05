@@ -14,7 +14,7 @@ const MIN_WEBHOOK_SECRET_BYTES: usize = 32;
 const MAX_WEBHOOK_SECRET_BYTES: usize = 512;
 
 pub(super) fn local_app_id(value: &str) -> Result<(), ApiError> {
-    if !(3..=80).contains(&value.len())
+    if !(1..=80).contains(&value.len())
         || !value.bytes().enumerate().all(|(index, byte)| {
             (index != 0 && (byte.is_ascii_digit() || matches!(byte, b'_' | b'-')))
                 || byte.is_ascii_lowercase()
@@ -22,7 +22,7 @@ pub(super) fn local_app_id(value: &str) -> Result<(), ApiError> {
     {
         return Err(ApiError::validation(
             "app_id",
-            "must be 3-80 lowercase ASCII characters, start with a letter, and contain only letters, digits, '_' or '-'",
+            "must be 1-80 lowercase ASCII characters, start with a letter, and contain only letters, digits, '_' or '-'",
         ));
     }
     Ok(())
