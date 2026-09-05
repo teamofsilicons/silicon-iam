@@ -10,11 +10,11 @@ provider callbacks, and browser navigations remain outside this crate.
 
 ```toml
 [dependencies]
-silicon-iam-client = "1.1.0"
+silicon-iam-client = "1.1.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-Release `1.1.0` speaks HTTP API major `v1` and requires Rust 1.98 or newer.
+Release `1.1.1` speaks HTTP API major `v1` and requires Rust 1.98 or newer.
 The crate SemVer and HTTP API major are separate: upgrading the crate within
 the 1.x line does not select a different wire major. `Client::new` and
 `ClientBuilder::build` perform no network handshake; call
@@ -242,7 +242,7 @@ refresh family and its related access authority. It does **not** revoke the
 parent IAM session, other devices, or unrelated Applications. Recover an
 uncertain request with
 `Mutation::with_key(IdempotencyKey::parse(saved_key)?)` and the exact same
-input. The 1.1.0 client does not expose the `Idempotency-Replayed` response
+input. The 1.1.1 client does not expose the `Idempotency-Replayed` response
 header.
 
 Tokens are opaque. Ask for their current state and optional exact organization

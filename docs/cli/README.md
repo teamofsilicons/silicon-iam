@@ -3,11 +3,11 @@
 Silicon IAM from the command line. Installs a single binary, `iam`.
 
 ```sh
-cargo install silicon-iam-cli --version 1.1.0
+cargo install silicon-iam-cli --version 1.1.1 --locked
 ```
 
-Release `1.1.0` requires Rust 1.98 or newer, bundles
-`silicon-iam-client` 1.1.0, and speaks HTTP API major `v1`. The crate/CLI
+Release `1.1.1` requires Rust 1.98 or newer, bundles
+`silicon-iam-client` 1.1.1, and speaks HTTP API major `v1`. The crate/CLI
 SemVer and HTTP API major are separate version lines. Check the installed
 binary with `iam --version`, and inspect/negotiate with the configured service
 using `iam system version`.
@@ -68,7 +68,7 @@ iam tag delete --help  # one command's options
 
 ## Complete command reference
 
-This is the complete `1.1.0` command tree emitted by `iam commands`. Angle
+This is the complete `1.1.1` command tree emitted by `iam commands`. Angle
 brackets mark required values; square brackets mark optional values. A row for
 a noun such as `iam member` is a help namespace and requires one of the listed
 subcommands. Run `iam <command> --help` for every flag, accepted value, default,

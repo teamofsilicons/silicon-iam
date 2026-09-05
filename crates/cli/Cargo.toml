@@ -1,6 +1,6 @@
 [package]
 name = "silicon-iam-cli"
-version = "1.1.0"
+version = "1.1.1"
 description = "Command-line client for Silicon IAM, built on the silicon-iam-client crate."
 keywords = ["iam", "identity", "cli", "authentication", "authorization"]
 categories = ["command-line-utilities", "authentication"]
@@ -16,7 +16,7 @@ name = "iam"
 path = "src/main.rs"
 
 [dependencies]
-silicon-iam-client = { version = "1.1.0", path = "../client", features = ["cli-session"] }
+silicon-iam-client = { version = "1.1.1", path = "../client", features = ["cli-session"] }
 clap.workspace = true
 http.workspace = true
 rpassword.workspace = true
