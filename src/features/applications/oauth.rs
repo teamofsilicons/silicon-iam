@@ -46,6 +46,22 @@ const AUTHORIZATION_REQUEST_SECONDS: i64 = 600;
 /// after that so the status it reports is settled rather than racing expiry.
 const AUTHORIZATION_CODE_DISPLAY_SECONDS: i64 = 125;
 
+/// Consent belongs to one parent login. Another device must not replace the
+/// parent used by already-issued application refresh families.
+pub(super) const OAUTH_CONSENT_UPSERT_QUERY: &str = r"
+    INSERT INTO iam.oauth_consent_grants (
+        id, application_id, subject_principal_id, subject_kind,
+        organization_id, membership_id, parent_authentication_session_id
+    ) VALUES ($1, $2, $3, $4::iam.principal_kind, $5, $6, $7)
+    ON CONFLICT (
+        application_id, subject_principal_id, organization_id,
+        parent_authentication_session_id
+    ) DO UPDATE SET
+        status = 'active', membership_id = EXCLUDED.membership_id,
+        revoked_at = NULL
+    RETURNING id, version
+";
+
 const OAUTH_REFRESH_INSERT_QUERY: &str = r"
     INSERT INTO iam.refresh_tokens (
         id, family_id, parent_token_id, token_digest,
@@ -1910,30 +1926,17 @@ async fn approve_request(
 ) -> Result<SecretString, ApiError> {
     let scopes = authorization_request_scopes(transaction, request.id).await?;
     let grant_id = Uuid::now_v7();
-    let consent = sqlx::query_as::<_, (Uuid, i64)>(
-        r"
-        INSERT INTO iam.oauth_consent_grants (
-            id, application_id, subject_principal_id, subject_kind,
-            organization_id, membership_id, parent_authentication_session_id
-        ) VALUES ($1, $2, $3, $4::iam.principal_kind, $5, $6, $7)
-        ON CONFLICT (application_id, subject_principal_id, organization_id)
-            DO UPDATE SET
-                status = 'active', membership_id = EXCLUDED.membership_id,
-                parent_authentication_session_id = EXCLUDED.parent_authentication_session_id,
-                revoked_at = NULL
-        RETURNING id, version
-        ",
-    )
-    .bind(grant_id)
-    .bind(request.application_id)
-    .bind(request.subject_principal_id)
-    .bind(&request.subject_kind)
-    .bind(request.organization_id)
-    .bind(request.membership_id)
-    .bind(request.authentication_session_id)
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|_| ApiError::internal("oauth_consent_grant_upsert"))?;
+    let consent = sqlx::query_as::<_, (Uuid, i64)>(OAUTH_CONSENT_UPSERT_QUERY)
+        .bind(grant_id)
+        .bind(request.application_id)
+        .bind(request.subject_principal_id)
+        .bind(&request.subject_kind)
+        .bind(request.organization_id)
+        .bind(request.membership_id)
+        .bind(request.authentication_session_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|_| ApiError::internal("oauth_consent_grant_upsert"))?;
     sqlx::query("DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id = $1")
         .bind(consent.0)
         .execute(&mut **transaction)

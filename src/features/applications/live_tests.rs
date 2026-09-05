@@ -1,8 +1,9 @@
 //! Live PostgreSQL protocol-invariant coverage.
 //!
-//! The test is ignored in the default suite because it needs a local Docker
-//! daemon. It migrates PostgreSQL 16 and exercises the same conditional updates
-//! used by the HTTP handlers.
+//! The test is ignored in the default suite because it needs a disposable
+//! PostgreSQL database. Docker is the default; `IAM_TEST_DATABASE_URL` may name
+//! an explicitly prepared empty native test database. Production credentials
+//! must never be supplied. It exercises the same queries used by HTTP handlers.
 #![allow(clippy::too_many_lines)]
 
 use anyhow::{Context as _, ensure};
@@ -32,12 +33,24 @@ const PROOF_ID: Uuid = Uuid::from_u128(0x121);
 const APP_SECRET_ID: Uuid = Uuid::from_u128(0x131);
 
 #[tokio::test]
-#[ignore = "requires a local Docker daemon"]
+#[ignore = "requires Docker or an empty disposable database in IAM_TEST_DATABASE_URL"]
 async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyhow::Result<()> {
-    let container = Postgres::default().with_tag("16-alpine").start().await?;
-    let host = container.get_host().await?;
-    let port = container.get_host_port_ipv4(5432).await?;
-    let database_url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let native_url = std::env::var("IAM_TEST_DATABASE_URL").ok();
+    let container = if native_url.is_none() {
+        Some(Postgres::default().with_tag("16-alpine").start().await?)
+    } else {
+        None
+    };
+    let database_url = if let Some(url) = native_url {
+        url
+    } else {
+        let postgres = container
+            .as_ref()
+            .context("missing disposable PostgreSQL container")?;
+        let host = postgres.get_host().await?;
+        let port = postgres.get_host_port_ipv4(5432).await?;
+        format!("postgres://postgres:postgres@{host}:{port}/postgres")
+    };
     let pool = PgPoolOptions::new()
         .max_connections(8)
         .connect(&database_url)
@@ -45,6 +58,7 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     crate::infrastructure::postgres::migrate(&pool).await?;
     seed_protocol_rows(&pool).await?;
 
+    consent_preserves_each_parent_session(&pool).await?;
     direct_test_creation_rejects_a_production_application_id(&pool).await?;
     qualified_application_directory_and_webhook_rotation_are_consistent(&pool).await?;
     pending_webhook_application_is_importable(&pool).await?;
@@ -63,6 +77,107 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     organization_management_authority_tracks_current_roles(&pool).await?;
     application_list_authority_lock_blocks_concurrent_demotion(&pool).await?;
     application_tenancy_and_creator_are_immutable(&pool).await?;
+    Ok(())
+}
+
+async fn consent_preserves_each_parent_session(pool: &PgPool) -> anyhow::Result<()> {
+    let mut transaction = pool.begin().await?;
+    let first_parent = Uuid::from_u128(0x41);
+    let second_parent = Uuid::from_u128(0x42);
+    sqlx::query(
+        r"
+        INSERT INTO iam.authentication_sessions (
+            id, subject_principal_id, subject_kind, authentication_method,
+            assurance_level, subject_auth_epoch, idle_expires_at, absolute_expires_at
+        ) VALUES ($1, $2, 'carbon', 'email_otp', 1, 1,
+                  transaction_timestamp() + interval '1 day',
+                  transaction_timestamp() + interval '2 days')
+        ",
+    )
+    .bind(second_parent)
+    .bind(CARBON_ID)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query("SELECT set_config('iam.principal_id', $1, true), set_config('iam.application_id', $1, true)")
+        .bind(APP_A_ID.to_string()).execute(&mut *transaction).await?;
+
+    // Nullable organization scope and organization-bound grants both need
+    // session isolation. Repeated authorization in one parent remains stable.
+    for organization in [None, Some(ORGANIZATION_ID)] {
+        let membership = organization.map(|_| OWNER_MEMBERSHIP_ID);
+        let mut grants = Vec::new();
+        for parent in [first_parent, second_parent, first_parent] {
+            let (grant, _) =
+                sqlx::query_as::<_, (Uuid, i64)>(super::oauth::OAUTH_CONSENT_UPSERT_QUERY)
+                    .bind(Uuid::now_v7())
+                    .bind(APP_A_ID)
+                    .bind(CARBON_ID)
+                    .bind("carbon")
+                    .bind(organization)
+                    .bind(membership)
+                    .bind(parent)
+                    .fetch_one(&mut *transaction)
+                    .await?;
+            grants.push(grant);
+        }
+        ensure!(
+            grants[0] != grants[1],
+            "another login replaced the original consent"
+        );
+        ensure!(
+            grants[0] == grants[2],
+            "same-parent authorization duplicated consent"
+        );
+        if organization.is_none() {
+            ensure!(
+                grants[0] == CONSENT_ID,
+                "the migration replaced an existing consent id"
+            );
+        }
+
+        for (grant, parent) in [(grants[0], first_parent), (grants[1], second_parent)] {
+            let active = sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM iam_private.lock_current_application_oauth_subject_authority($1,$2,$3,$4,'carbon',$5,$6)",
+            ).bind(APP_A_ID).bind(grant).bind(parent).bind(CARBON_ID)
+                .bind(organization).bind(membership).fetch_one(&mut *transaction).await?;
+            ensure!(active == 1, "an independent parent lost refresh authority");
+        }
+        let mismatched = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM iam_private.lock_current_application_oauth_subject_authority($1,$2,$3,$4,'carbon',$5,$6)",
+        ).bind(APP_A_ID).bind(grants[0]).bind(second_parent).bind(CARBON_ID)
+            .bind(organization).bind(membership).fetch_one(&mut *transaction).await?;
+        ensure!(mismatched == 0, "consent accepted the wrong parent login");
+
+        sqlx::query("UPDATE iam.oauth_consent_grants SET status='revoked', revoked_at=transaction_timestamp() WHERE id=$1")
+            .bind(grants[1]).execute(&mut *transaction).await?;
+        let first_active = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM iam_private.lock_current_application_oauth_subject_authority($1,$2,$3,$4,'carbon',$5,$6)",
+        ).bind(APP_A_ID).bind(grants[0]).bind(first_parent).bind(CARBON_ID)
+            .bind(organization).bind(membership).fetch_one(&mut *transaction).await?;
+        ensure!(
+            first_active == 1,
+            "revoking another parent revoked the original grant"
+        );
+
+        sqlx::query("SAVEPOINT parent_change")
+            .execute(&mut *transaction)
+            .await?;
+        let change = sqlx::query(
+            "UPDATE iam.oauth_consent_grants SET parent_authentication_session_id=$1 WHERE id=$2",
+        )
+        .bind(second_parent)
+        .bind(grants[0])
+        .execute(&mut *transaction)
+        .await;
+        ensure!(
+            matches!(&change, Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("23514")),
+            "an existing consent parent was not rejected by the immutability guard"
+        );
+        sqlx::query("ROLLBACK TO SAVEPOINT parent_change")
+            .execute(&mut *transaction)
+            .await?;
+    }
+    transaction.rollback().await?;
     Ok(())
 }
 
