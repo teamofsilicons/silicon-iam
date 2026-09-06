@@ -10,11 +10,11 @@ provider callbacks, and browser navigations remain outside this crate.
 
 ```toml
 [dependencies]
-silicon-iam-client = "1.2.1"
+silicon-iam-client = "1.3.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-Release `1.2.1` speaks HTTP API major `v1` and requires Rust 1.98 or newer.
+Release `1.3.0` speaks HTTP API major `v1` and requires Rust 1.98 or newer.
 The crate SemVer and HTTP API major are separate: upgrading the crate within
 the 1.x line does not select a different wire major. `Client::new` and
 `ClientBuilder::build` perform no network handshake; call
@@ -25,19 +25,24 @@ the required `Vary` header. A `406` becomes `Error::ApiVersionUnsupported`;
 an inconsistent success becomes `Error::Decode`. Every request advertises
 `v1`.
 
-Client 1.2.1 comes from
-[`v1.2.1`](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.1/crates/client);
-its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.1/docs/client/README.md)
+Client 1.3.0 comes from
+[`v1.3.0`](https://github.com/teamofsilicons/silicon-iam/tree/v1.3.0/crates/client);
+its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.3.0/docs/client/README.md)
 describes that release. Later changes on `main` are not part of the published
 package until separately released. The dependency requirement above permits
 compatible newer releases; check your application's `Cargo.lock` for the exact
 version it builds, especially after dependency maintenance.
 
-The 1.2.1 client adds `applications().approve_webhook(...)` and the
-`application.webhook.approve` step-up action. Deploy the matching backend
-before using this new method. It also updates packaged documentation and
-release provenance. The accompanying CLI patch contains the behavior fixes
-listed in the [release notes](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.1/docs/README.md#cliclient-121).
+The 1.3.0 client adds `oauth().authorizations(access_token)`, which lists one
+authorization snapshot per organization an access token currently reaches: one
+for an organization-bound token, one per active membership for a token from an
+unscoped login, and an empty list when its subject holds no membership anywhere.
+`oauth().authorization(...)` is unchanged and still answers for a single
+organization. Deploy the matching backend, including migration `0071`, before
+using the new method; against an older API it returns `Error::Decode` rather
+than guessing. It retains the 1.2.1 `applications().approve_webhook(...)` method
+and the `application.webhook.approve` step-up action. The accompanying release
+notes are the [1.3.0 entry](https://github.com/teamofsilicons/silicon-iam/blob/v1.3.0/docs/README.md#cliclient-130).
 
 The service URL must use HTTPS, except for literal `localhost`, `127.0.0.1`,
 or `::1` during local development. The builder rejects missing hosts, embedded

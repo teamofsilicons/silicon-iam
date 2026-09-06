@@ -7,10 +7,10 @@ see [credential storage](storage.md).
 
 ## Current authorization without waiting for a webhook
 
-This contract was introduced in CLI/client **1.2.0**, remains in CLI **1.2.2**
-and client **1.2.1**, and requires the matching backend with base migration
-`0067` and testing overlay `9003`. Deploy those migrations, runtime grants and
-backend before publishing/adopting these packages.
+This contract was introduced in CLI/client **1.2.0** and remains in CLI and
+client **1.3.0**, which requires the matching backend with base migrations
+`0067` and `0071` and testing overlay `9003`. Deploy those migrations, runtime
+grants and backend before publishing/adopting these packages.
 Publishing a crate does not deploy the API; verify the configured backend with
 `iam system version`. Historical 1.1.1 packages do not expose this contract.
 
@@ -45,27 +45,32 @@ retry it after an uncertain result.
 ## Installation
 
 ```sh
-cargo install silicon-iam-cli --version 1.2.2 --locked
+cargo install silicon-iam-cli --version 1.3.0 --locked
 ```
 
-Release `1.2.2` requires Rust 1.98 or newer, bundles
-`silicon-iam-client` 1.2.1, and speaks HTTP API major `v1`. The crate/CLI
+Release `1.3.0` requires Rust 1.98 or newer, bundles
+`silicon-iam-client` 1.3.0, and speaks HTTP API major `v1`. The crate/CLI
 SemVer and HTTP API major are separate version lines. Check the installed
 binary with `iam --version`, and inspect/negotiate with the configured service
 using `iam system version`.
 
-Release 1.2.2 is built from
-[`v1.2.2`](https://github.com/teamofsilicons/silicon-iam/tree/v1.2.2/crates/cli);
-use its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.2/docs/cli/README.md)
+Release 1.3.0 is built from
+[`v1.3.0`](https://github.com/teamofsilicons/silicon-iam/tree/v1.3.0/crates/cli);
+use its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.3.0/docs/cli/README.md)
 to audit that installed version. Later changes on `main` are unreleased until
 separately published. An automatic update may install a newer release on a
 later invocation; check `iam --version` again when collecting diagnostics.
 
-This patch adds [bounded Unix lock-open recovery](storage.md#version-122-bounded-unix-lock-open-recovery)
-without weakening local filesystem checks. It changes no API/client contract
-and requires no new database migration. The client remains 1.2.1.
+This release adds `iam app token authorizations`, which lists one snapshot per
+organization an access token currently reaches: exactly one for an
+organization-bound token, one per active membership for an unscoped token, and
+none when its subject holds no membership anywhere. `iam app token
+authorization` is unchanged and still answers for a single organization, with
+`--org-context` selecting one for an unscoped token. It requires backend
+migration `0071`; the client moves to 1.3.0 with it.
 
-It retains the 1.2.1 `app approve-webhook` command, empty-tag confirmations,
+It retains the [bounded Unix lock-open recovery](storage.md#version-122-bounded-unix-lock-open-recovery)
+added in 1.2.2, and the 1.2.1 `app approve-webhook` command, empty-tag confirmations,
 local-configuration warning fix, required login-input help and phase-specific
 logout failure diagnostics. Webhook approval still requires the matching
 backend deployment. See the [release notes](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.2/docs/README.md#published-documentation)
@@ -231,7 +236,7 @@ repository's `docs/` directory nor a documentation generator.
 
 ## Complete command reference
 
-This is the complete `1.2.2` command tree emitted by `iam commands`. Angle
+This is the complete `1.3.0` command tree emitted by `iam commands`. Angle
 brackets mark required values; square brackets mark optional values. A row for
 a noun such as `iam member` is a help namespace and requires one of the listed
 subcommands. Run `iam <command> --help` for every flag, accepted value, default,

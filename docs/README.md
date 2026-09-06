@@ -42,6 +42,51 @@ must be deployed and verified before publishing/adopting the client/CLI packages
 
 ## Published documentation
 
+### CLI/client 1.3.0
+
+An unscoped Application login now reaches **every organization in which its
+subject holds an active membership**, resolved live from the membership rows on
+each request rather than pinned into the token. Joining an organization extends
+the login to it and leaving one withdraws it, with nothing reissued. A login
+that named an organization is unchanged: it stays bound to that one and pins the
+membership authorization epoch as before.
+
+Reaching every organization is not acting in all of them at once. Every request
+is still answered for exactly one. Introspection returns that organization's
+snapshot in `authorization` when the Application selects one with `X-Org-ID`,
+and the full list in the new `authorizations` field when it selects none.
+Delegated OBO resolves the calling Application's own organization, so a proof
+never leaves it. Role, tags, and authorization epoch belong to the organization
+they were disclosed for and must never be carried into a request naming another.
+
+Two behaviours change for existing integrations:
+
+- an unscoped access token sent with `X-Org-ID` used to read `active: false` and
+  now answers with authority for that organization, provided its subject is an
+  active member there;
+- OBO from an unscoped subject token used to fail `403 obo_organization_required`
+  and now succeeds, refusing with `403 obo_membership_required` only when the
+  subject is not an active member of the calling Application's organization.
+
+Applications that read only the existing `authorization` field are unaffected:
+they received no snapshot for an unscoped token before and still receive none.
+They opt in by reading `authorizations` or by sending `X-Org-ID`.
+
+Client 1.3.0 adds `oauth().authorizations(access_token)`, and CLI 1.3.0 adds
+`iam app token authorizations`, which lists one snapshot per organization the
+token currently reaches. `iam app token authorization` is unchanged and still
+answers for a single organization.
+
+This release requires the backend to have applied migration
+`0071_unscoped_application_logins_authorize_every_organization`. Deploy the
+backend before upgrading clients: `authorizations` returns a typed error against
+an older API rather than guessing.
+
+- [CLI/client release source tagged `v1.3.0`](https://github.com/teamofsilicons/silicon-iam/tree/v1.3.0)
+- [CLI 1.3.0 source](https://github.com/teamofsilicons/silicon-iam/tree/v1.3.0/crates/cli) and [manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.3.0/docs/cli/README.md)
+- [Client 1.3.0 source](https://github.com/teamofsilicons/silicon-iam/tree/v1.3.0/crates/client) and [manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.3.0/docs/client/README.md)
+- [Version-pinned 1.3.0 integration documentation](https://github.com/teamofsilicons/silicon-iam/tree/v1.3.0/docs)
+
 ### CLI 1.2.2; client remains 1.2.1
 
 CLI **1.2.2** adds bounded recovery when opening a Unix lock file transiently
