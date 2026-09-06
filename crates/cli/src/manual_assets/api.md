@@ -51,9 +51,10 @@ query string, and redirect to a clean app URL afterward.
 
 `redirect_uri` is the app's implemented callback, **not** its backend `base_url`
 or webhook URL. The `tos>` prefix identifies the owning organization, not the
-user's required membership. Omit `org_id` for unscoped login, as above; append
-`&org_id=tos` to require active membership and bind the session to `tos`
-(needed for organization-bound OBO). Applications receive SLTs, never IAM OTPs.
+user's required membership. Omit `org_id` for an unscoped login, as above, which
+reaches every organization the user is an active member of; append
+`&org_id=tos` to require active membership and confine the session to `tos`.
+Applications receive SLTs, never IAM OTPs.
 This is separate from WorkOS organization SSO.
 
 See the [full application login example](api/applications.html#briefcase-login-example)
@@ -83,7 +84,9 @@ coordination, and retry decisions with the calling application. See
 `/docs/client/`.
 
 Application bootstrap and local authorization-cache recovery use the
-`authorization` snapshot on `POST /api/v1/oauth/introspect`. Successful OBO
+`authorization` snapshot on `POST /api/v1/oauth/introspect`, or its
+`authorizations` list when the login named no organization and reaches several.
+Successful OBO
 verification returns the same current, scope-filtered membership binding for
 its exact delegated request. See [application tokens](api/applications.html),
 [OBO](api/obo.html), and the [local integration-fix report](INTEGRATION_FIXES_2026-09-05.md)
@@ -211,8 +214,10 @@ serialize an absent nullable optional as `null`, because that turns "leave
 unchanged" into "clear this field."
 
 `X-Request-ID` is accepted when valid and otherwise generated. On errors it is
-returned as `error.request_id`. `X-Org-ID` may be sent to introspection, but it
-must agree with the credential and grant; it can never expand authority. OBO
+returned as `error.request_id`. `X-Org-ID` may be sent to introspection. On an
+organization-bound token it must agree with the binding; on an unscoped token it
+selects one organization out of those the subject is an active member of. It can
+never expand authority beyond an active membership the subject already holds. OBO
 does not accept `X-Org-ID`; IAM derives its organization from the authenticated
 Applications and rejects cross-organization use.
 
@@ -548,7 +553,8 @@ IAM appends `slt` to it. Short-lived tokens are keyed-digest stored, two-minute,
 single-use, and bound to client, actor and parent session. When the login names
 `org_id` (or its IAM bearer already carries organization context), the token is
 additionally bound to that exact active membership; otherwise it remains
-unscoped.
+unscoped and reaches every organization the subject is an active member of,
+resolved live on each request rather than pinned at login.
 
 Before consuming a token, the exchange locks and revalidates current authority:
 the client application must still be verified on its current authentication
@@ -585,8 +591,9 @@ a session uses the same route rather than starting another login. Its JSON body
 always names `app_id` and may name `org_id`. Supplying `org_id` requires the
 actor's active membership and binds the exchanged Application token family to
 that organization. Omitting it preserves an unscoped login unless the IAM
-bearer already carries organization context. OBO requires an organization-bound
-Application access token.
+bearer already carries organization context. An unscoped Application token
+reaches every organization its subject belongs to; OBO works from either form
+and always resolves the calling Application's own organization.
 
 The token page's Content-Security-Policy is `default-src 'none'` widened only
 to `style-src 'self'`, `img-src 'self' data:` and `font-src` for the webfont. It
@@ -601,7 +608,11 @@ refresh onto `/api/v1/login/status` rather than a timer.
 Both routes use Application Basic authentication and form fields `token` plus
 optional `token_type_hint=access_token|refresh_token`. Introspection returns
 `active: false` for an unknown token, a token owned by another Application, a
-currently invalid token, or a valid `X-Org-ID` that does not match its authority.
+currently invalid token, or a valid `X-Org-ID` the token has no authority in --
+a mismatched binding, or an organization the unscoped subject is not an active
+member of. An active organization-bound token returns one `authorization`; an
+active unscoped token returns `authorizations`, one snapshot per organization it
+reaches, unless `X-Org-ID` selected a single one.
 A malformed or duplicated `X-Org-ID`, or an unsupported token hint, returns
 `400 invalid_request` instead. Revoking an access token affects only that token;
 revoking a refresh token affects its complete OAuth family and access authority

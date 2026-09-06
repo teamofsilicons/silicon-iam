@@ -3609,7 +3609,7 @@ components:
       name: X-Org-ID
       in: header
       required: false
-      description: Optional introspection organization context; it must agree with the token and grant. OBO never accepts this header.
+      description: Optional introspection organization context. An organization-bound token must agree with it; an unscoped token selects the named organization out of the ones its subject is an active member of, and reads inactive when it is not one of them. OBO never accepts this header.
       schema: { $ref: '#/components/schemas/OrgId' }
     SessionId:
       name: session_id
@@ -4076,10 +4076,16 @@ components:
     TokenIntrospection:
       type: object
       description: >-
-        Live token state. An active organization-bound access token also returns
-        authorization, a synchronous bootstrap/resynchronization snapshot. No
-        directory mutation or webhook delivery is required. Refresh tokens and
-        unscoped access tokens do not carry organization authorization.
+        Live token state. An active access token also returns authorization, a
+        synchronous bootstrap/resynchronization snapshot. No directory mutation
+        or webhook delivery is required. An organization-bound token returns the
+        one organization it is bound to in authorization. An unscoped token
+        reaches every organization its subject is an active member of: send
+        X-Org-ID to select one of them and read authorization, or send no header
+        and read authorizations, which lists one snapshot per organization and
+        is empty when the subject holds no membership anywhere. Exactly one of
+        the two fields is ever present. Refresh tokens carry no organization
+        authorization.
       required: [active]
       properties:
         active: { type: boolean }
@@ -4095,6 +4101,9 @@ components:
         expires_at: { type: integer }
         authorization_epoch: { type: integer, minimum: 0 }
         authorization: { $ref: '#/components/schemas/ApplicationAuthorization' }
+        authorizations:
+          type: array
+          items: { $ref: '#/components/schemas/ApplicationAuthorization' }
     AuthorizationTag:
       type: object
       required: [id, name]

@@ -2,7 +2,7 @@
 
 On-behalf-of (OBO) lets one Application call a registered endpoint on another Application in the same organization. IAM mints a proof for one exact downstream request; the audience authenticates and consumes it before doing the work.
 
-**Start with an organization-bound Application login.** Mint the SLT with `auth().short_lived_token_in_organization(app_id, Some("acme"), mutation)`, then exchange it through `oauth().login`. IAM requires the actor's membership to be active. An access token produced by an unscoped login cannot issue an OBO proof.
+**Start with an organization-bound Application login.** Mint the SLT with `auth().short_lived_token_in_organization(app_id, Some("acme"), mutation)`, then exchange it through `oauth().login`. IAM requires the actor's membership to be active. An access token from an unscoped login also works: IAM resolves the membership in the calling Application's own organization, so the proof stays inside it either way.
 
 ## Discover, hash, sign, then exchange
 
@@ -79,7 +79,7 @@ IAM does not prescribe a downstream proof header or body field. The two Applicat
 | Condition | Meaning | Do |
 | --- | --- | --- |
 | `401` | The Application Basic credential or exchange HMAC is invalid. | Correct the credential, canonical string, clock, or signature. Do not retry unchanged. |
-| `403` | The subject token is unscoped, belongs to a different organization, or no longer has the required current authority. | Start a new organization-bound login and re-check the actor's active membership and the caller's OBO scope. |
+| `403` | The subject token belongs to a different organization, its subject is not an active member of the caller's organization, or it no longer has the required current authority. | Re-check the actor's active membership in the calling Application's organization and the caller's OBO scope. |
 | `404 not_found` | The target is nonexistent, invisible, or outside the caller's organization; those cases are intentionally indistinguishable. | Correct the audience or organization. Do not retry unchanged. |
 | `409` | The proof was consumed, or an idempotency key was reused with different exchange input. | Do not retry verification. For an exchange conflict, recover the original input or use a new key for a genuinely new operation. |
 | `410 proof_expired` | The proof's 60-second life elapsed. | Exchange a new proof for a new downstream attempt. |

@@ -81,13 +81,18 @@ impl OAuth<'_> {
         self.0.send_json(built.form(request)).await
     }
 
-    /// Fetches the live authorization snapshot for an Application access token.
+    /// Fetches the live authorization snapshot for one organization.
     ///
     /// Call immediately after login, or to rebuild an empty local projection.
-    /// No directory edit or webhook arrival is necessary. `None` means there
-    /// is no current organization authority (inactive, wrong application or
-    /// organization, refresh token, or unscoped session). Undisclosed roles or
-    /// tags remain `None`; never turn them into extra privileges.
+    /// No directory edit or webhook arrival is necessary. An organization-bound
+    /// token answers for the organization it is bound to and `org_context`, when
+    /// given, must name that one. An unscoped token reaches every organization
+    /// its subject belongs to, so `org_context` picks which one to answer for
+    /// and is required: use [`authorizations`](Self::authorizations) to see them
+    /// all. `None` means there is no current organization authority (inactive,
+    /// wrong application or organization, refresh token, or an unscoped token
+    /// with no organization named). Undisclosed roles or tags remain `None`;
+    /// never turn them into extra privileges.
     ///
     /// # Errors
     ///
@@ -122,6 +127,51 @@ impl OAuth<'_> {
         } else {
             None
         })
+    }
+
+    /// Fetches one live authorization snapshot per organization the token
+    /// reaches.
+    ///
+    /// An organization-bound token yields exactly one. An unscoped token yields
+    /// one per organization its subject is an active member of, in handle
+    /// order, and an empty vector when the subject holds no membership
+    /// anywhere -- which is not the same as an inactive token. `None` means the
+    /// token is inactive or is not an Application access token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when introspection fails, its response is malformed, or
+    /// the service predates unscoped organization listing.
+    pub async fn authorizations(
+        &self,
+        access_token: &str,
+    ) -> Result<Option<Vec<models::ApplicationAuthorization>>> {
+        let inspected = self
+            .introspect(
+                &models::TokenIntrospectionRequest {
+                    token: access_token.to_owned(),
+                    token_type_hint: Some(
+                        models::TokenIntrospectionRequestTokenTypeHint::AccessToken,
+                    ),
+                },
+                None,
+            )
+            .await?;
+        if !inspected.active {
+            return Ok(None);
+        }
+        if let Some(authorization) = inspected.authorization {
+            return Ok(Some(vec![authorization]));
+        }
+        if let Some(authorizations) = inspected.authorizations {
+            return Ok(Some(authorizations));
+        }
+        if access_token.starts_with("oat_") {
+            return Err(crate::Error::Decode(
+                "IAM returned an active Application access token without any authorization snapshot; deploy an API version where an unscoped login reaches every organization before using this method".to_owned(),
+            ));
+        }
+        Ok(None)
     }
 
     /// Revokes one access token, or the complete family of a refresh token.

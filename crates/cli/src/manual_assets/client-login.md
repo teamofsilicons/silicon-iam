@@ -19,7 +19,7 @@ login.query_pairs_mut()
 // Redirect the user agent to `login`; query values are percent-encoded.
 ```
 
-Naming `app_id` is what makes this a login on your behalf; without one it is an ordinary Silicon IAM login and no token is minted. `redirect_uri` is optional and decides delivery only — give one and the token comes back on it, omit it and IAM shows the token to the person instead. `org_id` is also optional: when present, IAM requires an active membership in that organization and binds the resulting Application token family to it; when absent, the login is unscoped.
+Naming `app_id` is what makes this a login on your behalf; without one it is an ordinary Silicon IAM login and no token is minted. `redirect_uri` is optional and decides delivery only — give one and the token comes back on it, omit it and IAM shows the token to the person instead. `org_id` is also optional: when present, IAM requires an active membership in that organization and binds the resulting Application token family to it; when absent, the login is unscoped and reaches every organization the person is an active member of, now and as that set changes.
 
 The URI does not have to be registered anywhere, so an application may send people to different callbacks on different days without changing its configuration.
 
@@ -75,7 +75,7 @@ let organization_bound = signed_in
     .await?;
 ```
 
-Your server then completes it at the same exchange as any other token. This is the only way a Silicon can sign in to an application. Use the organization-bound form when the resulting access token will issue OBO proofs; an unscoped Application token is deliberately rejected for OBO.
+Your server then completes it at the same exchange as any other token. This is the only way a Silicon can sign in to an application. Use the organization-bound form when the session must stay in one organization and must not follow the subject into organizations they join later; an unscoped token reaches all of them, and OBO resolves the membership in the calling Application's own organization either way.
 
 ## Scope
 

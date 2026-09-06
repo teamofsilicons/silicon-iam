@@ -10,7 +10,8 @@
     Mint the SLT with
     <code>auth().short_lived_token_in_organization(app_id, Some("acme"), mutation)</code>, then
     exchange it through <code>oauth().login</code>. IAM requires the actor's membership to be
-    active. An access token produced by an unscoped login cannot issue an OBO proof.
+    active. An access token from an unscoped login also works: IAM resolves the membership in the
+    calling Application's own organization, so the proof stays inside it either way.
   </div>
 </div>
 
@@ -135,9 +136,10 @@ let proof = caller.obo()
     <tr><td><code>401</code></td><td>The Application Basic credential or exchange HMAC is
       invalid.</td><td>Correct the credential, canonical string, clock, or signature. Do not retry
       unchanged.</td></tr>
-    <tr><td><code>403</code></td><td>The subject token is unscoped, belongs to a different
-      organization, or no longer has the required current authority.</td>
-      <td>Start a new organization-bound login and re-check the actor's active membership and the
+    <tr><td><code>403</code></td><td>The subject token belongs to a different organization, its
+      subject is not an active member of the caller's organization, or it no longer has the
+      required current authority.</td>
+      <td>Re-check the actor's active membership in the calling Application's organization and the
       caller's OBO scope.</td></tr>
     <tr><td><code>404 not_found</code></td><td>The target is nonexistent, invisible, or outside
       the caller's organization; those cases are intentionally indistinguishable.</td>

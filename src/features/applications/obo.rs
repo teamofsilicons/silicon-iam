@@ -248,15 +248,28 @@ pub(super) async fn exchange(
     {
         return Err(ApiError::forbidden("obo_subject_token_forbidden"));
     }
-    let organization_id = access
+    // OBO never leaves the issuing Application's own organization. A subject
+    // token bound to a different one is refused outright; an unscoped one
+    // reaches every organization its subject belongs to, so it resolves the
+    // membership here and is refused only when the subject has none.
+    let organization_id = client.organization_id;
+    if access
         .organization_id
-        .ok_or_else(|| ApiError::forbidden("obo_organization_required"))?;
-    if organization_id != client.organization_id {
+        .is_some_and(|bound| bound != organization_id)
+    {
         return Err(ApiError::forbidden("obo_organization_mismatch"));
     }
-    let membership_id = access
-        .membership_id
-        .ok_or_else(|| ApiError::forbidden("obo_membership_required"))?;
+    let membership_id = match access.membership_id {
+        Some(membership_id) => membership_id,
+        None => resolve_subject_membership(
+            &mut transaction,
+            organization_id,
+            access.subject.id,
+            access.subject.actor_type.as_str(),
+        )
+        .await?
+        .ok_or_else(|| ApiError::forbidden("obo_membership_required"))?,
+    };
     let authority = sqlx::query_as::<_, ExchangeAuthorityRow>(
         r"
         SELECT audience_application_id, endpoint_path, metadata_definition,
@@ -857,6 +870,29 @@ fn validate_verify(input: &OboVerifyRequest) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// The subject's active membership in the issuing Application's organization.
+///
+/// Only an unscoped subject token needs this: a bound token already carries the
+/// exact membership it was issued against. The definer helper discloses nothing
+/// but the identifier and confers no authority; the exchange authority lock
+/// rechecks the whole chain before any proof is minted.
+async fn resolve_subject_membership(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    organization_id: Uuid,
+    subject_id: Uuid,
+    subject_kind: &str,
+) -> Result<Option<Uuid>, ApiError> {
+    sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT iam_private.current_subject_membership($1, $2, $3::iam.principal_kind)",
+    )
+    .bind(organization_id)
+    .bind(subject_id)
+    .bind(subject_kind)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("obo_subject_membership"))
+}
+
 async fn install_subject_context(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     subject_id: Uuid,
@@ -929,10 +965,15 @@ async fn exchange_replay_is_live(
             JOIN iam.access_tokens AS parent
               ON parent.id = proof.parent_access_token_id
              AND parent.client_application_id = proof.issuer_application_id
-             AND parent.organization_id = proof.organization_id
-             AND parent.membership_id = proof.membership_id
              AND parent.subject_auth_epoch = subject.auth_epoch
-             AND parent.membership_authz_epoch = membership.authz_epoch
+             AND (
+                 (parent.organization_id = proof.organization_id
+                  AND parent.membership_id = proof.membership_id
+                  AND parent.membership_authz_epoch = membership.authz_epoch)
+                 OR (parent.organization_id IS NULL
+                     AND parent.membership_id IS NULL
+                     AND parent.membership_authz_epoch IS NULL)
+             )
              AND parent.client_auth_epoch = issuer.auth_epoch
              AND parent.revoked_at IS NULL
              AND parent.expires_at > wall_clock.value
@@ -998,10 +1039,15 @@ async fn load_current_context(
                    WHERE parent.id = $6
                      AND parent.client_application_id = $4
                      AND parent.subject_principal_id = $1
-                     AND parent.organization_id = $2
-                     AND parent.membership_id = $3
                      AND parent.subject_auth_epoch = subject.auth_epoch
-                     AND parent.membership_authz_epoch = membership.authz_epoch
+                     AND (
+                         (parent.organization_id = $2
+                          AND parent.membership_id = $3
+                          AND parent.membership_authz_epoch = membership.authz_epoch)
+                         OR (parent.organization_id IS NULL
+                             AND parent.membership_id IS NULL
+                             AND parent.membership_authz_epoch IS NULL)
+                     )
                      AND parent.client_auth_epoch = issuer.auth_epoch
                      AND parent.revoked_at IS NULL
                      AND parent.expires_at > wall_clock.value

@@ -401,6 +401,11 @@ pub(super) struct IntrospectionResponse {
     pub(super) authorization_epoch: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) authorization: Option<ApplicationAuthorization>,
+    /// Every organization an unscoped bearer reaches. Present only when the
+    /// login named no organization and the Application asked for none, so a
+    /// caller reading `authorization` alone never silently sees one of many.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) authorizations: Option<Vec<ApplicationAuthorization>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

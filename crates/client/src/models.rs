@@ -2897,10 +2897,16 @@ pub struct TestingWebhookEvent {
     pub test: serde_json::Value,
 }
 
-/// Live token state. An active organization-bound access token also returns
-/// authorization, a synchronous bootstrap/resynchronization snapshot. No
-/// directory mutation or webhook delivery is required. Refresh tokens and
-/// unscoped access tokens do not carry organization authorization.
+/// Live token state. An active access token also returns authorization, a
+/// synchronous bootstrap/resynchronization snapshot. No directory mutation or
+/// webhook delivery is required. An organization-bound token returns the one
+/// organization it is bound to in authorization. An unscoped token reaches
+/// every organization its subject is an active member of: send X-Org-ID to
+/// select one of them and read authorization, or send no header and read
+/// authorizations, which lists one snapshot per organization and is empty
+/// when the subject holds no membership anywhere. Exactly one of the two
+/// fields is ever present. Refresh tokens carry no organization
+/// authorization.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TokenIntrospection {
     /// The contract's `active`.
@@ -2941,6 +2947,9 @@ pub struct TokenIntrospection {
     /// The contract's `authorization`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization: Option<ApplicationAuthorization>,
+    /// The contract's `authorizations`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorizations: Option<Vec<ApplicationAuthorization>>,
 }
 
 /// Contract type `TokenIntrospectionRequest`.

@@ -348,6 +348,20 @@ impl Plan {
                     "authorization",
                 );
             }
+            AppTokenCommand::Authorizations { app_id, .. } => {
+                self.note("An unscoped login reaches every organization its subject belongs to, and that set changes as memberships change. Authorize each request against the organization it names; never treat one listed organization as authority in another.");
+                let app_id = context
+                    .application_id(app_id)
+                    .unwrap_or_else(|_| app_id.clone());
+                self.add(
+                    "Fetch one organization's authorization",
+                    &["app", "token", "authorization", &app_id, "--org-context"],
+                );
+                self.docs(
+                    "Interpret authorization snapshots and absent fields",
+                    "authorization",
+                );
+            }
             AppTokenCommand::Revoke { app_id, .. } => {
                 self.note("Discard the token submitted for revocation locally. Revoking a refresh token ends its token family; obtain a new SLT when another application session is needed.");
                 self.add(

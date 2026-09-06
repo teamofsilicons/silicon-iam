@@ -31,8 +31,10 @@ projection. First mint an organization-bound SLT with
 
 Role disclosure requires `roles.read`; tag disclosure requires
 `memberships.read`. Missing scope means **undisclosed**, not a default role or
-empty tags. Inactive, wrong-application, wrong-organization and unscoped tokens
-have no current organization authorization. After an IAM environment clean,
+empty tags. Inactive, wrong-application and wrong-organization tokens have no
+current organization authorization. An unscoped token reaches every organization
+its subject is an active member of: `iam app token authorizations` lists them and
+`iam app token authorization --org-context` answers for one. After an IAM environment clean,
 reimport/onboard and log in again; old tokens cannot restore erased authority.
 
 Successful `app obo verify` prints the same binding, limited to the parent
@@ -381,8 +383,9 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | `iam app token` | `<subcommand>` | Application SLT exchange, refresh, introspection, and revocation namespace. |
 | `iam app token exchange` | `<app-id>` plus SLT and Application secret at flags or prompts | SLT is single-use. Optional idempotency key is 16–255 visible ASCII; reuse the same key and input after an uncertain result. |
 | `iam app token refresh` | `<app-id>` plus refresh token and Application secret at flags or prompts | Rotates the refresh and access tokens. Persist/reuse the same idempotency key after uncertainty; a new key with an already-used refresh token is a replay. |
-| `iam app token introspect` | `<app-id>` plus token and Application secret at flags or prompts | `--token-type` is a hint. Optional `--org-context` must exactly match an org-bound token or the result is inactive. |
-| `iam app token authorization` | `<app-id>` plus access token and Application secret at flags or prompts | Current scope-filtered membership/epoch/role/tag snapshot; optional `--org-context` must match. No directory mutation or webhook is required. |
+| `iam app token introspect` | `<app-id>` plus token and Application secret at flags or prompts | `--token-type` is a hint. Optional `--org-context` must exactly match an org-bound token, or name an organization an unscoped token's subject is an active member of; otherwise the result is inactive. |
+| `iam app token authorization` | `<app-id>` plus access token and Application secret at flags or prompts | Current scope-filtered membership/epoch/role/tag snapshot for one organization; `--org-context` must match a bound token and selects one for an unscoped token. No directory mutation or webhook is required. |
+| `iam app token authorizations` | `<app-id>` plus access token and Application secret at flags or prompts | One snapshot per organization the token currently reaches: exactly one for a bound token, one per active membership for an unscoped token, none when the subject holds no membership. |
 | `iam app token revoke` | `<app-id>` plus token and Application secret at flags or prompts | Access revocation affects one access token; refresh revocation affects the family. Optional 16–255 visible-ASCII idempotency key should be reused after uncertainty. |
 | `iam app obo` | `<subcommand>` | Same-organization, organization-bound on-behalf-of namespace. |
 | `iam app obo endpoints` | `<audience-app-id> --as-app-id <requester-app-id>` plus requester secret at flag or prompt | Application-authenticated catalog discovery; a cross-org target is deliberately indistinguishable from missing. |
@@ -730,10 +733,11 @@ If this profile already holds a Carbon or Silicon IAM session, mint the SLT
 without another login ceremony:
 
 ```sh
-# Override any stored/environment organization for an unscoped login.
+# Override any stored/environment organization for an unscoped login, which
+# reaches every organization the caller is an active member of.
 iam --no-org login --app-id 'acme>billing'
 
-# Bound to the caller's active membership in acme; required for OBO.
+# Confined to the caller's active membership in acme, now and later.
 iam --org acme login --app-id billing
 ```
 
@@ -755,8 +759,10 @@ membership and binds the resulting Application token family to it. Use the
 global flag `--no-org` to override every stored/environment selection for this
 invocation; it conflicts with `--org`. An unscoped login then needs the
 canonical Application ID because no organization is available to qualify a
-local handle.
-An organization-bound access token is required for OBO.
+local handle. An unscoped Application token reaches every organization its
+subject is an active member of, including ones they join after the login; a
+bound one stays in the single organization it named. OBO works from either and
+always resolves the calling Application's own organization.
 
 ### End-to-end Application proof in a test environment
 
@@ -852,10 +858,11 @@ invalidates its whole Application family and related access authority; revoking
 an access token invalidates only that access token. Either operation deliberately
 succeeds when the token is already unknown.
 
-`--org-context` on introspection is an optional exact organization handle. A
-well-formed handle that does not match the token — including any unscoped
-token — returns `active: false`; a
-malformed or duplicated `X-Org-ID` is rejected as an invalid request.
+`--org-context` on introspection is an optional exact organization handle. On an
+organization-bound token a well-formed handle it is not bound to returns
+`active: false`; on an unscoped token the handle selects one of the organizations
+it reaches and returns `active: false` when its subject is not an active member
+there. A malformed or duplicated `X-Org-ID` is rejected as an invalid request.
 
 For normal interactive use, omit `--app-secret`, `--slt`, `--refresh-token`,
 `--token`, `--subject-token`, or `--access-proof`; the CLI prompts for each so

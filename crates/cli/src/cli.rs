@@ -1296,23 +1296,44 @@ pub enum AppCommand {
 /// Application token commands.
 #[derive(Debug, Subcommand)]
 pub enum AppTokenCommand {
-    /// Fetch current organization authorization, including permitted role/tags.
+    /// Fetch one organization's authorization, including permitted role/tags.
     ///
     /// Use immediately after login or to rebuild an empty application cache.
-    /// Requires an organization-bound Application access token and its own
-    /// Application secret. Role requires roles.read; tags require memberships.read.
-    /// Undisclosed fields grant no authority. Inactive, mismatched, refresh and
-    /// unscoped tokens return no organization snapshot. No webhook or directory
-    /// edit is needed. The backend must support authorization snapshots.
+    /// Requires an Application access token and its own Application secret.
+    /// An organization-bound token answers for its own organization; an
+    /// unscoped token reaches every organization its subject belongs to and
+    /// needs --org-context to pick one, or use `authorizations` to list them
+    /// all. Role requires roles.read; tags require memberships.read.
+    /// Undisclosed fields grant no authority. Inactive, mismatched and refresh
+    /// tokens return no organization snapshot. No webhook or directory edit is
+    /// needed. The backend must support authorization snapshots.
     Authorization {
         /// Local handle, or canonical `org>handle`; local uses --org.
         app_id: String,
         /// Application access token. Prompted for when omitted.
         #[arg(long)]
         token: Option<String>,
-        /// Exact organization handle; a mismatch returns no authority.
+        /// Exact organization handle. A bound token must match it; an unscoped
+        /// token selects it and must hold an active membership there.
         #[arg(long)]
         org_context: Option<String>,
+        /// Application secret. Prompted for when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+    },
+    /// List every organization the access token currently reaches.
+    ///
+    /// An organization-bound token lists exactly its own. An unscoped token
+    /// lists one snapshot per organization its subject is an active member of;
+    /// an empty list means the subject holds no membership anywhere, which is
+    /// not the same as an inactive token. The backend must support authorization
+    /// snapshots for unscoped logins.
+    Authorizations {
+        /// Local handle, or canonical `org>handle`; local uses --org.
+        app_id: String,
+        /// Application access token. Prompted for when omitted.
+        #[arg(long)]
+        token: Option<String>,
         /// Application secret. Prompted for when omitted.
         #[arg(long)]
         app_secret: Option<String>,

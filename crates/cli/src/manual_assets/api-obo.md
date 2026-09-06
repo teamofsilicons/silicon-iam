@@ -4,7 +4,7 @@ On-behalf-of lets one application call another on a user's behalf, without eithe
 
 **OBO never crosses an organization.** IAM derives the organization from the two authenticated applications and refuses anything else. `X-Org-ID` is not accepted on these endpoints at all.
 
-**The subject token must already be organization-bound.** Include `org_id` when minting its SLT (or start the browser login with that query parameter), then exchange the SLT normally. IAM requires a current active membership and rejects an unscoped Application access token with `403 obo_organization_required`.
+**OBO never leaves the calling Application's own organization.** A subject token bound to a different organization is rejected with `403 obo_organization_mismatch`. An unscoped subject token reaches every organization its subject belongs to, so IAM resolves the membership in the calling Application's organization and rejects it with `403 obo_membership_required` only when the subject is not an active member there. Binding the token in advance with `org_id` is still the clearer choice when the Application already knows the organization.
 
 ## The shape of it
 
@@ -78,7 +78,7 @@ Only an organization owner or administrator can configure this, and the resultin
 
 | Status | Means | Do |
 | --- | --- | --- |
-| `403` | The subject token is unscoped, belongs to a different organization, or lacks current OBO authority | Start a new organization-bound Application login and re-check membership and reviewed scope. |
+| `403` | The subject token belongs to a different organization, its subject is not an active member of the caller's organization, or it lacks current OBO authority | Re-check the subject's membership in the calling Application's organization and the reviewed scope. |
 | `404` `not_found` | The target does not exist or is outside the caller's organization; those cases are intentionally indistinguishable | Do not retry without correcting the target or caller context. |
 | `409` | The proof was already consumed | Do not retry. Mint a new proof for a new request. |
 | `410` `proof_expired` | More than 60 seconds elapsed | Exchange again. Consider why the gap was that long. |

@@ -153,6 +153,12 @@ Now app id must be mentioned for it to be considered as an external configured a
 
 The short lived token would have a lifespan of 2 minutes. The short lived token would be used to request to iam by the application along with it's secret, if the request for the said app-id has the correct app-secret to it, if it's a valid request give the access and the refresh token, otherwise deny the request.
 
+A login may name an organisation or not, and the two mean different things. Naming one (`org_id` on the browser login, or on the direct short-lived-token route) requires the actor's active membership there and binds the whole resulting token family to that single organisation for its lifetime: it never follows the actor into an organisation they join later. Naming none is an unscoped login, and an unscoped login reaches every organisation in which the actor holds an active membership. It is not a login without organisation authority.
+
+Which organisations an unscoped login reaches is resolved live on each request from the membership rows themselves, never pinned into the token. Joining an organisation extends the login to it, and leaving one or being suspended removes it, without reissuing anything. An organisation-bound token still pins its membership and authorization epoch, so a membership change there invalidates it exactly as before.
+
+Reaching every organisation is not acting in all of them at once. Every request is answered for one organisation: introspection returns that organisation's authorization snapshot when the application selects one with `X-Org-ID`, and the full list of snapshots when it selects none. Role, tags, and authorization epoch belong to the organisation they were disclosed for, and an application must never carry a disclosure from one organisation into a request naming another. An unscoped actor who holds no active membership anywhere reaches nothing; that is a live login with no organisation authority, which is not the same as an inactive one.
+
 For each login that takes place also store the login history, app specific and also user wide.
 
 
@@ -391,7 +397,7 @@ When a carbon triggers logout from any given service, it would trigger a logout 
 
 # Inter app communication (On behalf of)
 
-For all the apps in an organisation, it should also be possible for the inter app communication in the organisation to take place. OBO is not supported for applications past the scope of the organisation OBO can't happen for them. For this we have a system in place:
+For all the apps in an organisation, it should also be possible for the inter app communication in the organisation to take place. OBO is not supported for applications past the scope of the organisation OBO can't happen for them. The organisation of an exchange is always the calling application's own, never one the caller chooses: a subject token bound to a different organisation is refused, and an unscoped subject token has its membership resolved in that same organisation and is refused when the subject is not an active member of it. For this we have a system in place:
 
 Application A of Organisation sends an request to IAm to do OBO for Application B, along with the request it attaches an hash of (`HMAC-SHA256(app_secret,timestamp + "." + method + "." + path + "." + body_sha256 + "." + idempotency_key)`) and the request it wants to send to application b and the metadata (this is just the metadata and not the actual request, so say for files it doesen't actually send the file), if the request endpoint exists and the metadata is also valid it returns a proof_token to Application A that is valid for just 1 request or 60 seconds (whichever happens first), Application A then requests Application B with the proof_token and the actual request (so if there's a file it would include the actual file here) while sending this request the details of the request would all be hashed. Application B would then request IAm to validate all the requests and once validated then only would it execute the task if the 60 second timer has not been passed and no request has been made (hence the proof token is still valid.).  
 

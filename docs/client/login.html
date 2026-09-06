@@ -41,7 +41,8 @@ login.query_pairs_mut()
   decides delivery only — give one and the token comes back on it, omit it and IAM shows the
   token to the person instead. <code>org_id</code> is also optional: when present, IAM requires an
   active membership in that organization and binds the resulting Application token family to it;
-  when absent, the login is unscoped.
+  when absent, the login is unscoped and reaches every organization the person is an active member
+  of, now and as that set changes.
 </p>
 
 <p>
@@ -110,9 +111,10 @@ let organization_bound = signed_in
 
 <p>
   Your server then completes it at the same exchange as any other token. This is the only way a
-  Silicon can sign in to an application. Use the organization-bound form when the resulting
-  access token will issue OBO proofs; an unscoped Application token is deliberately rejected for
-  OBO.
+  Silicon can sign in to an application. Use the organization-bound form when the session must
+  stay in one organization and must not follow the subject into organizations they join later;
+  an unscoped token reaches all of them, and OBO resolves the membership in the calling
+  Application's own organization either way.
 </p>
 
 <h2>Scope</h2>

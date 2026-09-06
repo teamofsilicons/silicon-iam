@@ -188,8 +188,8 @@
   It is what lets <code>GET /api/v1/login</code> recognise somebody who is already signed in and
   go straight to minting their short-lived token instead of asking them to log in again.
   Application login may supply <code>org_id</code> to require an active membership and bind the
-  resulting token family to that organization. Omitting it keeps a Carbon login unscoped; OBO
-  issuance requires the organization-bound form.
+  resulting token family to that organization. Omitting it keeps a Carbon login unscoped, which
+  reaches every organization the Carbon is an active member of rather than none.
 </p>
 
 <div class="banner banner-info">

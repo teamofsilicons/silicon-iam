@@ -81,9 +81,11 @@ if current.active {
 }</code></pre>
 
 <p>
-  The optional organization context must be one canonical organization handle. A valid handle
-  that does not match the token returns <code>active: false</code>, including when the token came
-  from an unscoped login. A malformed or duplicate
+  The optional organization context must be one canonical organization handle. A handle that an
+  organization-bound token is not bound to returns <code>active: false</code>; on a token from an
+  unscoped login the handle selects one of the organizations it reaches, and returns
+  <code>active: false</code> when the subject is not an active member there. A malformed or
+  duplicate
   <code>X-Org-ID</code> is a request error. Unknown, expired and revoked tokens also return an
   inactive response rather than revealing which condition applied. Use introspection for current
   authorization; a webhook is a notification, not an authorization cache. Mint the SLT with
@@ -94,23 +96,33 @@ if current.active {
 <h2>First login and rebuilding a missing authorization projection</h2>
 
 <p>
-  An active organization-bound access token now includes a typed
-  <code>authorization</code> snapshot in introspection. Fetch it immediately after
-  login and whenever your application has no local membership projection:
+  An active access token includes a typed <code>authorization</code> snapshot in
+  introspection. Fetch it immediately after login and whenever your application has
+  no local membership projection:
 </p>
 <pre><code>let authority = application.oauth()
     .authorization(&amp;access_token, Some("acme"))
     .await?;
 // None means no current organization authority; fail closed.
-// Do not replace missing role/tag disclosure with extra permissions.</code></pre>
+// Do not replace missing role/tag disclosure with extra permissions.
+
+// A token from an unscoped login reaches every organization its subject
+// belongs to. List them, then authorize each request against the one it names.
+let reachable = application.oauth()
+    .authorizations(&amp;access_token)
+    .await?;
+// None means the token is inactive. An empty list means it is live but its
+// subject holds no active membership anywhere; that is still no authority.</code></pre>
 <p>
   The snapshot binds principal ID, public ID, organization ID and handle,
   membership ID/version, current authorization epoch, audience and testing
   environment. <code>org_role</code> requires <code>roles.read</code>;
   <code>tags</code> requires <code>memberships.read</code>. Null means undisclosed;
   an empty tag array means the disclosed membership has no active tags.
-  No unrelated directory edit or webhook delivery is required. Refresh tokens
-  and unscoped access tokens do not carry organization authorization.
+  No unrelated directory edit or webhook delivery is required. One snapshot is one
+  organization: never carry a role, tag or epoch disclosed for one organization
+  into a request that names another. Refresh tokens do not carry organization
+  authorization.
 </p>
 <p>
   Keep webhook updates for asynchronous projection maintenance, but introspect

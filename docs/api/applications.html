@@ -98,8 +98,9 @@ Content-Type: application/json
     IAM signs them in if they are not already. Naming an <code>app_id</code> is what makes this a
     login on your behalf; without one it is an ordinary Silicon IAM login and no token is minted.
     <code>org_id</code> is optional. When present, IAM requires the person's active membership and
-    binds the resulting Application token family to that organization. When absent, the browser
-    login is unscoped.
+    binds the resulting Application token family to that organization. When absent, the login is
+    unscoped, which reaches every organization the person is an active member of rather than
+    none.
   </li>
   <li>
     They arrive back at your <code>redirect_uri</code> with <code>?slt=…</code>. If you gave no
@@ -176,11 +177,12 @@ app_id=tos%3Ebriefcase&amp;slt=&lt;URL_ENCODED_SHORT_LIVED_TOKEN&gt;</code></pre
 </p>
 
 <p>
-  The example omits <code>org_id</code>, so login is unscoped. The <code>tos&gt;</code> prefix
-  identifies app ownership; it does not itself require the user to belong to <code>tos</code>.
-  Append <code>&amp;org_id=tos</code> when the session must be bound to the user's active
-  <code>tos</code> membership, including organization-bound OBO use. This application-login
-  flow is distinct from WorkOS organization SSO.
+  The example omits <code>org_id</code>, so the login is unscoped and reaches every organization
+  the user is an active member of. The <code>tos&gt;</code> prefix identifies app ownership; it
+  does not itself require the user to belong to <code>tos</code>. Append
+  <code>&amp;org_id=tos</code> when the session must be confined to the user's active
+  <code>tos</code> membership and must not follow them into organizations they join later. This
+  application-login flow is distinct from WorkOS organization SSO.
 </p>
 
 <h3>When there is nobody to redirect</h3>
@@ -201,9 +203,10 @@ Idempotency-Key: &lt;key&gt;
   at <code>POST /api/v1/app-auth/tokens</code> exactly as it would one delivered through a
   redirect. <code>org_id</code> is optional. Supplying it requires an active membership and binds
   the exchanged Application token family to that organization; omitting it preserves an unscoped
-  login unless the IAM bearer itself already carries an organization context. OBO requires an
-  organization-bound Application access token. This direct SLT route is the only way a Silicon
-  can sign in to an application.
+  login unless the IAM bearer itself already carries an organization context. An unscoped
+  Application token reaches every organization its subject is an active member of, and OBO
+  resolves the membership in the calling Application's own organization. This direct SLT route is
+  the only way a Silicon can sign in to an application.
 </p>
 
 <h3>Scope</h3>
@@ -243,8 +246,10 @@ Idempotency-Key: &lt;key&gt;
 <p>
   In the snapshot, <code>org_role</code> requires <code>roles.read</code> and
   <code>tags</code> requires <code>memberships.read</code>. Null means undisclosed,
-  not a default role or an empty tag list. Refresh tokens and unscoped access
-  tokens omit the snapshot. Application sessions remain excluded from first-party
+  not a default role or an empty tag list. An organization-bound token returns one
+  <code>authorization</code>; an unscoped one returns <code>authorizations</code>, a snapshot per
+  organization it reaches, or a single <code>authorization</code> when <code>X-Org-ID</code>
+  selects one of them. Refresh tokens omit both. Application sessions remain excluded from first-party
   directory management routes; use Basic-authenticated introspection instead.
   After an IAM testing-environment clean, reimport/onboard and obtain fresh SLTs;
   the snapshot does not resurrect old tokens or erased membership state.

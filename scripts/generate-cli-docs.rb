@@ -116,8 +116,11 @@ unless ARGV.empty? || ARGV == ["--check"]
 end
 
 # New consumer guides must receive a discoverable topic, not silently disappear
-# from installed CLI builds. This dated report is evidence, not a user manual.
-excluded = %w[docs/INTEGRATION_FIXES_2026-09-05.md]
+# from installed CLI builds. These fix reports are evidence, not user manuals.
+excluded = %w[
+  docs/INTEGRATION_FIXES_2026-09-05.md
+  docs/SESSION_BOUND_CONSENT_FIX.md
+]
 canonical = Dir[File.join(ROOT, "docs/**/*.{md,html,yaml}")].map do |path|
   path.delete_prefix("#{ROOT}/")
 end

@@ -239,8 +239,11 @@ bearer remains unscoped, while a bearer already carrying a context retains it.
 Use `short_lived_token_in_organization(app_id, Some("acme"),
 &Mutation::new())` to
 require the caller's active `acme` membership and bind the exchanged
-Application token family to that organization. OBO requires the bound form;
-an unscoped Application access token cannot issue an OBO proof.
+Application token family to that organization. An unscoped Application access
+token instead reaches every organization its subject is an active member of:
+`OAuth::authorizations` lists them, `OAuth::authorization` answers for one named
+organization, and OBO resolves the membership in the calling Application's own
+organization.
 
 For OBO, hash the exact downstream bytes with
 `api::obo::body_sha256`, build one `OboExchangeRequest`, and pass that request,
@@ -618,8 +621,10 @@ minimum, prove:
 - token exchange, refresh, current introspection, refresh-family revocation,
   and post-revocation `active: false` all agree;
 - an OBO proof made from the organization-bound access token verifies exactly
-  once for the registered method, path and exact body, fails for every
-  mismatched binding, and cannot be issued from the unscoped token;
+  once for the registered method, path and exact body, and fails for every
+  mismatched binding; the unscoped token issues a proof in the calling
+  Application's own organization and is refused for any subject who is not an
+  active member there;
 - valid webhook bytes verify, while a changed byte, stale timestamp, wrong
   secret version, duplicate security header, or wrong environment key fails;
 - production credentials fail in the test plane and test credentials fail in

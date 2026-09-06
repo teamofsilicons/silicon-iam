@@ -399,8 +399,45 @@ async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
                         print_authorization(authorization);
                     } else {
                         println!(
-                            "No current organization authorization (inactive, mismatched, or unscoped token)."
+                            "No current organization authorization (inactive, mismatched, or an unscoped token with no --org-context)."
                         );
+                    }
+                    Ok(())
+                }
+            }
+        }
+        AppTokenCommand::Authorizations {
+            app_id,
+            token,
+            app_secret,
+        } => {
+            let app_id = context.application_id(&app_id)?;
+            let secret = prompted(app_secret, "Application secret: ", "--app-secret")?;
+            let token = prompted(token, "Application access token: ", "--token")?;
+            let authorizations = application_client(context, &app_id, &secret)
+                .oauth()
+                .authorizations(&token)
+                .await?;
+            match context.format {
+                Format::Json => json(&authorizations),
+                Format::Text => {
+                    match authorizations.as_deref() {
+                        None => {
+                            println!(
+                                "The token is inactive or is not an Application access token."
+                            );
+                        }
+                        Some([]) => println!(
+                            "The token is active and reaches no organization: its subject holds no active membership."
+                        ),
+                        Some(authorizations) => {
+                            for (index, authorization) in authorizations.iter().enumerate() {
+                                if index > 0 {
+                                    println!();
+                                }
+                                print_authorization(authorization);
+                            }
+                        }
                     }
                     Ok(())
                 }

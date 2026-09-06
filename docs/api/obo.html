@@ -14,10 +14,14 @@
 
 <div class="banner banner-info">
   <div>
-    <strong>The subject token must already be organization-bound.</strong>
-    Include <code>org_id</code> when minting its SLT (or start the browser login with that query
-    parameter), then exchange the SLT normally. IAM requires a current active membership and
-    rejects an unscoped Application access token with <code>403 obo_organization_required</code>.
+    <strong>OBO never leaves the calling Application's own organization.</strong>
+    A subject token bound to a different organization is rejected with
+    <code>403 obo_organization_mismatch</code>. An unscoped subject token reaches every
+    organization its subject belongs to, so IAM resolves the membership in the calling
+    Application's organization and rejects it with <code>403 obo_membership_required</code> only
+    when the subject is not an active member there. Binding the token in advance with
+    <code>org_id</code> is still the clearer choice when the Application already knows the
+    organization.
   </div>
 </div>
 
@@ -150,8 +154,8 @@ X-OBO-Signature: HMAC-SHA256(
   <thead><tr><th>Status</th><th>Means</th><th>Do</th></tr></thead>
   <tbody>
     <tr><td><code>403</code></td>
-      <td>The subject token is unscoped, belongs to a different organization, or lacks current OBO authority</td>
-      <td>Start a new organization-bound Application login and re-check membership and reviewed scope.</td></tr>
+      <td>The subject token belongs to a different organization, its subject is not an active member of the caller's organization, or it lacks current OBO authority</td>
+      <td>Re-check the subject's membership in the calling Application's organization and the reviewed scope.</td></tr>
     <tr><td><code>404</code> <code>not_found</code></td>
       <td>The target does not exist or is outside the caller's organization; those cases are intentionally indistinguishable</td>
       <td>Do not retry without correcting the target or caller context.</td></tr>

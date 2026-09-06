@@ -58,6 +58,7 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     crate::infrastructure::postgres::migrate(&pool).await?;
     seed_protocol_rows(&pool).await?;
 
+    an_unscoped_login_reaches_every_organization(&pool).await?;
     consent_preserves_each_parent_session(&pool).await?;
     direct_test_creation_rejects_a_production_application_id(&pool).await?;
     qualified_application_directory_and_webhook_rotation_are_consistent(&pool).await?;
@@ -78,6 +79,258 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     application_list_authority_lock_blocks_concurrent_demotion(&pool).await?;
     application_tenancy_and_creator_are_immutable(&pool).await?;
     Ok(())
+}
+
+/// An unscoped Application login is authority in every organization the subject
+/// is an active member of, resolved live; a bound one never leaves the single
+/// organization it named.
+///
+/// The whole case runs in one transaction that is never committed, so it can be
+/// ordered anywhere in the suite without leaving an extra organization behind.
+async fn an_unscoped_login_reaches_every_organization(pool: &PgPool) -> anyhow::Result<()> {
+    let mut transaction = pool.begin().await?;
+    let unscoped_token = Uuid::from_u128(0x101);
+    let bound_token = Uuid::from_u128(0x102);
+    let second_organization = Uuid::from_u128(0x22);
+    let second_membership = Uuid::from_u128(0x33);
+
+    set_context(&mut transaction, CARBON_ID, None, APP_A_ID).await?;
+    let reachable = reachable_organizations(&mut transaction, unscoped_token).await?;
+    ensure!(
+        reachable.as_deref() == Some(["test_org".to_owned()].as_slice()),
+        "an unscoped login did not reach its subject's only organization: {reachable:?}"
+    );
+
+    sqlx::query(
+        r"
+        INSERT INTO iam.organizations (id, org_id, created_by_carbon_id, name)
+        VALUES ($1, 'zz_second_org', $2, 'Second Organization')
+        ",
+    )
+    .bind(second_organization)
+    .bind(CARBON_ID)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.organization_memberships (
+            id, organization_id, principal_id, principal_kind, org_role,
+            job_role, role_granted_by_membership_id
+        ) VALUES ($1, $2, $3, 'carbon', 'owner', '', NULL)
+        ",
+    )
+    .bind(second_membership)
+    .bind(second_organization)
+    .bind(CARBON_ID)
+    .execute(&mut *transaction)
+    .await?;
+
+    // Joining an organization extends the login to it without reissuing it.
+    let reachable = reachable_organizations(&mut transaction, unscoped_token).await?;
+    ensure!(
+        reachable.as_deref()
+            == Some(["test_org".to_owned(), "zz_second_org".to_owned()].as_slice()),
+        "an unscoped login did not follow its subject into a new organization: {reachable:?}"
+    );
+
+    // Reaching every organization still means answering for exactly one.
+    set_context(
+        &mut transaction,
+        CARBON_ID,
+        Some(second_organization),
+        APP_A_ID,
+    )
+    .await?;
+    let selected = selected_organization(
+        &mut transaction,
+        unscoped_token,
+        second_organization,
+        second_membership,
+    )
+    .await?;
+    ensure!(
+        selected.as_deref() == Some("zz_second_org"),
+        "an unscoped login could not be answered for one of the organizations it reaches: {selected:?}"
+    );
+    let roaming_bound_token = selected_organization(
+        &mut transaction,
+        bound_token,
+        second_organization,
+        second_membership,
+    )
+    .await?;
+    ensure!(
+        roaming_bound_token.is_none(),
+        "an organization-bound token answered for an organization it was never bound to"
+    );
+    set_context(&mut transaction, CARBON_ID, Some(ORGANIZATION_ID), APP_A_ID).await?;
+    let bound_home = selected_organization(
+        &mut transaction,
+        bound_token,
+        ORGANIZATION_ID,
+        OWNER_MEMBERSHIP_ID,
+    )
+    .await?;
+    ensure!(
+        bound_home.as_deref() == Some("test_org"),
+        "an organization-bound token stopped answering for its own organization: {bound_home:?}"
+    );
+
+    // Losing the membership withdraws the organization on the next request.
+    sqlx::query(
+        r"
+        UPDATE iam.organization_memberships
+        SET status = 'removed', removed_at = transaction_timestamp()
+        WHERE id = $1
+        ",
+    )
+    .bind(second_membership)
+    .execute(&mut *transaction)
+    .await?;
+    set_context(
+        &mut transaction,
+        CARBON_ID,
+        Some(second_organization),
+        APP_A_ID,
+    )
+    .await?;
+    let selected = selected_organization(
+        &mut transaction,
+        unscoped_token,
+        second_organization,
+        second_membership,
+    )
+    .await?;
+    ensure!(
+        selected.is_none(),
+        "a removed membership still answered for its organization: {selected:?}"
+    );
+    set_context(&mut transaction, CARBON_ID, None, APP_A_ID).await?;
+    let reachable = reachable_organizations(&mut transaction, unscoped_token).await?;
+    ensure!(
+        reachable.as_deref() == Some(["test_org".to_owned()].as_slice()),
+        "a removed membership was still listed as reachable: {reachable:?}"
+    );
+
+    // OBO resolves the calling Application's own organization for an unscoped
+    // parent, and refuses a subject who is not an active member of it.
+    sqlx::query(
+        "INSERT INTO iam.access_token_scopes (access_token_id, scope) VALUES ($1, 'obo.issue')",
+    )
+    .bind(unscoped_token)
+    .execute(&mut *transaction)
+    .await?;
+    set_context(&mut transaction, APP_A_ID, Some(ORGANIZATION_ID), APP_A_ID).await?;
+    let authority = obo_exchange_authority(
+        &mut transaction,
+        unscoped_token,
+        ORGANIZATION_ID,
+        OWNER_MEMBERSHIP_ID,
+    )
+    .await?;
+    ensure!(
+        authority == Some(1),
+        "an unscoped subject token could not issue an OBO proof in its Application's organization"
+    );
+    let foreign_membership = obo_exchange_authority(
+        &mut transaction,
+        unscoped_token,
+        ORGANIZATION_ID,
+        second_membership,
+    )
+    .await?;
+    ensure!(
+        foreign_membership.is_none(),
+        "an OBO exchange accepted a membership from outside the Application's organization"
+    );
+    Ok(())
+}
+
+async fn set_context(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    principal_id: Uuid,
+    organization_id: Option<Uuid>,
+    application_id: Uuid,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r"
+        SELECT set_config('iam.principal_id', $1, true),
+               set_config('iam.organization_id', COALESCE($2, ''), true),
+               set_config('iam.application_id', $3, true)
+        ",
+    )
+    .bind(principal_id.to_string())
+    .bind(organization_id.map(|id| id.to_string()))
+    .bind(application_id.to_string())
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn reachable_organizations(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    token_id: Uuid,
+) -> anyhow::Result<Option<Vec<String>>> {
+    let listed = sqlx::query_scalar::<_, Option<Value>>(
+        "SELECT iam_private.list_current_application_authorizations($1, $2, $3, 1)",
+    )
+    .bind(token_id)
+    .bind(CARBON_ID)
+    .bind(APP_A_ID)
+    .fetch_one(&mut **transaction)
+    .await?;
+    Ok(listed.map(|value| {
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| Some(entry.get("org_id")?.as_str()?.to_owned()))
+            .collect()
+    }))
+}
+
+async fn selected_organization(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    token_id: Uuid,
+    organization_id: Uuid,
+    membership_id: Uuid,
+) -> anyhow::Result<Option<String>> {
+    let snapshot = sqlx::query_scalar::<_, Option<Value>>(
+        "SELECT iam_private.get_current_application_authorization($1, $2, $3, $4, $5, 1, NULL)",
+    )
+    .bind(token_id)
+    .bind(CARBON_ID)
+    .bind(organization_id)
+    .bind(membership_id)
+    .bind(APP_A_ID)
+    .fetch_one(&mut **transaction)
+    .await?;
+    Ok(snapshot.and_then(|value| Some(value.get("org_id")?.as_str()?.to_owned())))
+}
+
+async fn obo_exchange_authority(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    parent_token_id: Uuid,
+    organization_id: Uuid,
+    membership_id: Uuid,
+) -> anyhow::Result<Option<i64>> {
+    sqlx::query_scalar::<_, i64>(
+        r"
+        SELECT endpoint_version
+        FROM iam_private.lock_current_application_obo_exchange_authority(
+            $1, 1, $2, $3, 'carbon'::iam.principal_kind, $4, $5,
+            'test_org>app-beta', 'trust.manage'
+        )
+        ",
+    )
+    .bind(APP_A_ID)
+    .bind(parent_token_id)
+    .bind(CARBON_ID)
+    .bind(organization_id)
+    .bind(membership_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(Into::into)
 }
 
 async fn consent_preserves_each_parent_session(pool: &PgPool) -> anyhow::Result<()> {

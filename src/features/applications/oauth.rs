@@ -971,17 +971,12 @@ pub(super) async fn introspect(
             .map_err(|_| ApiError::internal("oauth_introspection_client_commit"))?;
         return Ok(Json(inactive_introspection()));
     }
-    sqlx::query(
-        r"
-        SELECT set_config('iam.principal_id', $1, true),
-               set_config('iam.organization_id', COALESCE($2, ''), true)
-        ",
-    )
-    .bind(access.subject.id.to_string())
-    .bind(access.organization_id.map(|id| id.to_string()))
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("oauth_introspection_subject_context"))?;
+    sqlx::query("SELECT set_config('iam.principal_id', $1, true)")
+        .bind(access.subject.id.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiError::internal("oauth_introspection_subject_context"))?;
+    install_organization_context(&mut transaction, access.organization_id).await?;
     let metadata = sqlx::query_as::<_, AccessIntrospectionMetadata>(
         r"
         SELECT application.app_id, organization.org_id,
@@ -1061,16 +1056,47 @@ pub(super) async fn introspect(
             .map_err(|_| ApiError::internal("oauth_introspection_inactive_commit"))?;
         return Ok(Json(inactive_introspection()));
     };
-    if org_context.is_some_and(|org_id| metadata.org_id.as_deref() != Some(org_id)) {
-        transaction
-            .commit()
-            .await
-            .map_err(|_| ApiError::internal("oauth_introspection_org_commit"))?;
-        return Ok(Json(inactive_introspection()));
-    }
-    let authorization = if let (Some(organization_id), Some(membership_id)) =
-        (access.organization_id, access.membership_id)
-    {
+    // A bearer bound to an organization may only be introspected there. An
+    // unscoped bearer reaches every organization the subject is an active
+    // member of, so X-Org-ID selects one of those instead of having to match a
+    // binding the token does not carry.
+    let selected = match (access.organization_id, access.membership_id) {
+        (Some(organization_id), Some(membership_id)) => {
+            if org_context.is_some_and(|org_id| metadata.org_id.as_deref() != Some(org_id)) {
+                transaction
+                    .commit()
+                    .await
+                    .map_err(|_| ApiError::internal("oauth_introspection_org_commit"))?;
+                return Ok(Json(inactive_introspection()));
+            }
+            Some((organization_id, membership_id))
+        }
+        _ => match org_context {
+            Some(org_id) => {
+                let selection = select_reachable_organization(
+                    &mut transaction,
+                    org_id,
+                    access.subject.id,
+                    access.subject.actor_type.as_str(),
+                )
+                .await?;
+                let Some(selection) = selection else {
+                    transaction
+                        .commit()
+                        .await
+                        .map_err(|_| ApiError::internal("oauth_introspection_org_commit"))?;
+                    return Ok(Json(inactive_introspection()));
+                };
+                // The definer snapshot refuses to answer for any organization
+                // other than the installed one, so select it before asking.
+                install_organization_context(&mut transaction, Some(selection.organization_id))
+                    .await?;
+                Some((selection.organization_id, selection.membership_id))
+            }
+            None => None,
+        },
+    };
+    let (authorization, authorizations) = if let Some((organization_id, membership_id)) = selected {
         let snapshot = super::authorization::load(
             &mut transaction,
             access.token_id,
@@ -1084,10 +1110,39 @@ pub(super) async fn introspect(
         if snapshot.is_none() {
             return Ok(Json(inactive_introspection()));
         }
-        snapshot
+        (snapshot, None)
     } else {
-        None
+        let snapshots = super::authorization::load_all(
+            &mut transaction,
+            access.token_id,
+            access.subject.id,
+            &client,
+        )
+        .await?;
+        let Some(snapshots) = snapshots else {
+            transaction
+                .commit()
+                .await
+                .map_err(|_| ApiError::internal("oauth_introspection_org_commit"))?;
+            return Ok(Json(inactive_introspection()));
+        };
+        (None, Some(snapshots))
     };
+    // An unscoped bearer that selected an organization reports that one; there
+    // is no single organization to report when it selected none.
+    let org_id = authorization
+        .as_ref()
+        .map(|value| value.org_id.clone())
+        .or(metadata.org_id);
+    let membership_id = authorization
+        .as_ref()
+        .map(|value| value.membership_id)
+        .or(access.membership_id);
+    let authorization_epoch = authorization
+        .as_ref()
+        .map(|value| value.authorization_epoch)
+        .or(metadata.membership_authz_epoch)
+        .unwrap_or(metadata.subject_auth_epoch);
     transaction
         .commit()
         .await
@@ -1097,19 +1152,16 @@ pub(super) async fn introspect(
         principal_id: Some(access.subject.id),
         actor_type: Some(access.subject.actor_type.as_str().to_owned()),
         client_id: Some(metadata.app_id),
-        org_id: metadata.org_id,
-        membership_id: access.membership_id,
+        org_id,
+        membership_id,
         session_id: Some(access.authentication_session_id),
         scope: Some(access.scopes.join(" ")),
         audience: Some(access.audience),
         issued_at: Some(metadata.created_at.unix_timestamp()),
         expires_at: Some(metadata.expires_at.unix_timestamp()),
-        authorization_epoch: Some(
-            metadata
-                .membership_authz_epoch
-                .unwrap_or(metadata.subject_auth_epoch),
-        ),
+        authorization_epoch: Some(authorization_epoch),
         authorization,
+        authorizations,
     }))
 }
 
@@ -1196,12 +1248,27 @@ async fn introspect_refresh_token(
             .map_err(|_| ApiError::internal("refresh_introspection_authority_commit"))?;
         return Ok(Json(inactive_introspection()));
     };
+    // An organization filter on a bound refresh token has to match its binding.
+    // An unscoped one reaches every organization its subject belongs to, so the
+    // filter is answered by the membership rather than by the token.
+    let organization_filter_matches = match (org_context, authority.org_id.as_deref()) {
+        (None, _) => true,
+        (Some(requested), Some(bound)) => requested == bound,
+        (Some(requested), None) => select_reachable_organization(
+            &mut transaction,
+            requested,
+            candidate.subject_principal_id,
+            &candidate.subject_kind,
+        )
+        .await?
+        .is_some(),
+    };
     if credential.consumed_at.is_some()
         || credential.revoked_at.is_some()
         || !credential.token_unexpired
         || credential.family_status != "active"
         || !credential.family_unexpired
-        || org_context.is_some_and(|org_id| authority.org_id.as_deref() != Some(org_id))
+        || !organization_filter_matches
     {
         transaction
             .commit()
@@ -1241,6 +1308,7 @@ async fn introspect_refresh_token(
                 .unwrap_or(authority.subject_auth_epoch),
         ),
         authorization: None,
+        authorizations: None,
     }))
 }
 
@@ -2419,6 +2487,7 @@ fn inactive_introspection() -> IntrospectionResponse {
         expires_at: None,
         authorization_epoch: None,
         authorization: None,
+        authorizations: None,
     }
 }
 
@@ -2431,6 +2500,49 @@ fn validate_token_type_hint(token_type_hint: Option<&str>) -> Result<(), ApiErro
             "The token_type_hint is not supported.",
         ))
     }
+}
+
+/// Installs the organization an introspection is being answered for.
+///
+/// The definer snapshot refuses to disclose any organization other than the
+/// installed one, and an unscoped bearer installs none until it selects one.
+async fn install_organization_context(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Option<Uuid>,
+) -> Result<(), ApiError> {
+    sqlx::query("SELECT set_config('iam.organization_id', COALESCE($1, ''), true)")
+        .bind(organization_id.map(|id| id.to_string()))
+        .execute(&mut **transaction)
+        .await
+        .map_err(|_| ApiError::internal("oauth_introspection_organization_context"))?;
+    Ok(())
+}
+
+/// Resolves one organization an unscoped bearer reaches, by the subject's own
+/// active membership in it. Absent membership is not an error: the Application
+/// asked about an organization this bearer does not reach, and introspection
+/// answers that the same way it answers every other miss.
+async fn select_reachable_organization(
+    transaction: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+    subject_id: Uuid,
+    subject_kind: &str,
+) -> Result<Option<SubjectOrganizationRow>, ApiError> {
+    // The authenticated Application is the RLS principal here and is never a
+    // member of anything, so the member-select policy would hide the row. The
+    // definer resolver answers only whether this membership exists.
+    sqlx::query_as::<_, SubjectOrganizationRow>(
+        r"
+        SELECT organization_id, membership_id
+        FROM iam_private.current_subject_organization($1, $2, $3::iam.principal_kind)
+        ",
+    )
+    .bind(org_id)
+    .bind(subject_id)
+    .bind(subject_kind)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("oauth_introspection_organization_selection"))
 }
 
 fn optional_org_context(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
