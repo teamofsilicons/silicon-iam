@@ -55,7 +55,7 @@ pub(super) async fn list_members(
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page_parts(query.cursor.as_deref(), query.limit)?;
     validate_member_filters(&query)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let mut items = list_members_query(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -81,7 +81,7 @@ pub(super) async fn get_member(
     Path((org_id, membership_id)): Path<(String, Uuid)>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let member = fetch_member(
         &mut scope.transaction,
         scope.access.organization_id,

@@ -217,7 +217,7 @@ pub(super) async fn get_self(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let fields = DirectoryFields::parse(query.fields.as_deref())?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let row = fetch_directory_member(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -251,7 +251,7 @@ pub(super) async fn get_member(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let fields = DirectoryFields::parse(query.fields.as_deref())?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let row = fetch_directory_member(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -286,7 +286,7 @@ pub(super) async fn list_members(
     let org_id = validation::organization_id(&org_id)?.to_string();
     let fields = DirectoryFields::parse(query.fields.as_deref())?;
     let (cursor, limit) = validation::page_parts(query.cursor.as_deref(), query.limit)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let mut rows = list_directory_members(
         &mut scope.transaction,
         scope.access.organization_id,

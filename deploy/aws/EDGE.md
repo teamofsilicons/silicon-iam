@@ -46,12 +46,28 @@ Keep deletion protection enabled on the dedicated ALB. WAF block logs retain
 ## Firewall
 
 The managed common and known-bad protections stay enabled. Registration keeps
-its existing cookie exceptions. EC2 metadata SSRF query matches are counted,
-then blocked again unless **all** conditions match: GET /api/v1/login on
-backend.iam.teamofsilicons.com, app_id=tos>briefcase, and an exact
-http://localhost:4317/auth/callback?state=<64 lowercase hex characters> callback.
+its existing cookie exceptions. EC2 metadata SSRF and generic remote-file-inclusion
+query matches are counted, then blocked again unless the request is exactly
+GET /api/v1/login on backend.iam.teamofsilicons.com and matches one of these
+application/callback pairs:
+
+- `app_id=tos>briefcase` with
+  `http://localhost:4317/auth/callback?state=<64 lowercase hex characters>`.
+- `app_id=tos>remind` with
+  `http://127.0.0.1:4330/ui/auth/callback?state=<64 lowercase hex characters>`.
+
+The paired checks cannot mix one application's ID with the other's callback.
+Both URI expressions are anchored and admit no extra callback parameters.
+The historical `ssrf-query-except-briefcase-local-callback` rule name is retained
+for dashboard continuity; it now enforces both query labels and both exact pairs.
 This exception does not bypass other query, header, cookie, body, rate or
-known-bad checks and does not create a broad Allow rule.
+known-bad checks and does not create a broad Allow rule. These are browser
+redirect destinations; IAM does not fetch the callback as a server-side URL.
+
+The Remind exception fixes a reproduced browser-login 403: its loopback callback
+matched both `EC2MetaDataSSRF_QueryArguments` and `GenericRFI_QueryArguments`
+before the request reached IAM. HTTPS production callbacks do not need this
+local-development exception.
 
 WAF uses one common-rules evaluation and one known-bad evaluation. Query strings,
 URI paths and credential-bearing headers are redacted, request sampling is off,

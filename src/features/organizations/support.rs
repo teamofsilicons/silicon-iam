@@ -102,6 +102,47 @@ pub(crate) async fn begin_organization<'a>(
     })
 }
 
+/// Opens a read-only organization directory scope for a human/Silicon bearer
+/// or an authenticated Application access token. Application tokens are
+/// deliberately admitted only here; mutation handlers continue to use
+/// `begin_organization` and reject them through `direct_iam_binding`.
+pub(crate) async fn begin_directory_organization<'a>(
+    state: &'a ApiState,
+    authenticated: &Authenticated,
+    organization_handle: &str,
+) -> Result<OrganizationTransaction<'a>, AppError> {
+    let application_token = authenticated.0.client_application_id.is_some()
+        && authenticated.0.audience_application_id.is_some()
+        && authenticated.0.audience != "silicon-iam";
+    if !application_token {
+        return begin_organization(state, authenticated, organization_handle).await;
+    }
+    let principal_id = authenticated.0.subject.id;
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(principal_id))
+        .await
+        .map_err(database)?;
+    let access = authorization::resolve_organization_access(
+        &mut transaction,
+        principal_id,
+        organization_handle,
+    )
+    .await
+    .map_err(map_authorization)?
+    .ok_or(AppError::NotFound)?;
+    if let Some(bound_organization_id) = authenticated.0.organization_id
+        && bound_organization_id != access.organization_id
+    {
+        return Err(AppError::Forbidden);
+    }
+    context::select_organization(&mut transaction, access.organization_id)
+        .await
+        .map_err(database)?;
+    Ok(OrganizationTransaction {
+        transaction,
+        access,
+    })
+}
+
 pub(super) fn require_carbon(authenticated: &Authenticated) -> Result<Uuid, AppError> {
     if authenticated.0.subject.actor_type != ActorType::Carbon
         || direct_iam_binding(authenticated)? != DirectIamBinding::Carbon

@@ -283,6 +283,12 @@
                     "ActionToUse": {
                       "Count": {}
                     }
+                  },
+                  {
+                    "Name": "GenericRFI_QUERYARGUMENTS",
+                    "ActionToUse": {
+                      "Count": {}
+                    }
                   }
                 ]
               }
@@ -366,9 +372,21 @@
               "AndStatement": {
                 "Statements": [
                   {
-                    "LabelMatchStatement": {
-                      "Scope": "LABEL",
-                      "Key": "awswaf:managed:aws:core-rule-set:EC2MetaDataSSRF_QueryArguments"
+                    "OrStatement": {
+                      "Statements": [
+                        {
+                          "LabelMatchStatement": {
+                            "Scope": "LABEL",
+                            "Key": "awswaf:managed:aws:core-rule-set:EC2MetaDataSSRF_QueryArguments"
+                          }
+                        },
+                        {
+                          "LabelMatchStatement": {
+                            "Scope": "LABEL",
+                            "Key": "awswaf:managed:aws:core-rule-set:GenericRFI_QueryArguments"
+                          }
+                        }
+                      ]
                     }
                   },
                   {
@@ -424,34 +442,85 @@
                               }
                             },
                             {
-                              "ByteMatchStatement": {
-                                "SearchString": "tos>briefcase",
-                                "FieldToMatch": {
-                                  "SingleQueryArgument": {
-                                    "Name": "app_id"
-                                  }
-                                },
-                                "TextTransformations": [
+                              "OrStatement": {
+                                "Statements": [
                                   {
-                                    "Priority": 0,
-                                    "Type": "URL_DECODE"
-                                  }
-                                ],
-                                "PositionalConstraint": "EXACTLY"
-                              }
-                            },
-                            {
-                              "RegexMatchStatement": {
-                                "RegexString": "^http://localhost:4317/auth/callback[?]state=[0-9a-f]{64}$",
-                                "FieldToMatch": {
-                                  "SingleQueryArgument": {
-                                    "Name": "redirect_uri"
-                                  }
-                                },
-                                "TextTransformations": [
+                                    "AndStatement": {
+                                      "Statements": [
+                                        {
+                                          "ByteMatchStatement": {
+                                            "SearchString": "tos>briefcase",
+                                            "FieldToMatch": {
+                                              "SingleQueryArgument": {
+                                                "Name": "app_id"
+                                              }
+                                            },
+                                            "TextTransformations": [
+                                              {
+                                                "Priority": 0,
+                                                "Type": "URL_DECODE"
+                                              }
+                                            ],
+                                            "PositionalConstraint": "EXACTLY"
+                                          }
+                                        },
+                                        {
+                                          "RegexMatchStatement": {
+                                            "RegexString": "^http://localhost:4317/auth/callback[?]state=[0-9a-f]{64}$",
+                                            "FieldToMatch": {
+                                              "SingleQueryArgument": {
+                                                "Name": "redirect_uri"
+                                              }
+                                            },
+                                            "TextTransformations": [
+                                              {
+                                                "Priority": 0,
+                                                "Type": "URL_DECODE"
+                                              }
+                                            ]
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  },
                                   {
-                                    "Priority": 0,
-                                    "Type": "URL_DECODE"
+                                    "AndStatement": {
+                                      "Statements": [
+                                        {
+                                          "ByteMatchStatement": {
+                                            "SearchString": "tos>remind",
+                                            "FieldToMatch": {
+                                              "SingleQueryArgument": {
+                                                "Name": "app_id"
+                                              }
+                                            },
+                                            "TextTransformations": [
+                                              {
+                                                "Priority": 0,
+                                                "Type": "URL_DECODE"
+                                              }
+                                            ],
+                                            "PositionalConstraint": "EXACTLY"
+                                          }
+                                        },
+                                        {
+                                          "RegexMatchStatement": {
+                                            "RegexString": "^http://127[.]0[.]0[.]1:4330/ui/auth/callback[?]state=[0-9a-f]{64}$",
+                                            "FieldToMatch": {
+                                              "SingleQueryArgument": {
+                                                "Name": "redirect_uri"
+                                              }
+                                            },
+                                            "TextTransformations": [
+                                              {
+                                                "Priority": 0,
+                                                "Type": "URL_DECODE"
+                                              }
+                                            ]
+                                          }
+                                        }
+                                      ]
+                                    }
                                   }
                                 ]
                               }
@@ -529,10 +598,26 @@
           }
         ],
         "RedactedFields": [
-          { "SingleHeader": { "Name": "x-iam-obo-access-proof" } },
-          { "SingleHeader": { "Name": "x-step-up-token" } },
-          { "SingleHeader": { "Name": "x-csrf-token" } },
-          { "SingleHeader": { "Name": "x-silicon-iam-signature" } },
+          {
+            "SingleHeader": {
+              "Name": "x-iam-obo-access-proof"
+            }
+          },
+          {
+            "SingleHeader": {
+              "Name": "x-step-up-token"
+            }
+          },
+          {
+            "SingleHeader": {
+              "Name": "x-csrf-token"
+            }
+          },
+          {
+            "SingleHeader": {
+              "Name": "x-silicon-iam-signature"
+            }
+          },
           {
             "QueryString": {}
           },

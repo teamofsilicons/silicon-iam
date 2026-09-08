@@ -112,6 +112,14 @@
 </p>
 
 <p>
+  An authenticated Application access token may use these read-only directory endpoints as well.
+  IAM resolves the token subject's active membership in the requested organization and returns the
+  complete directory projection, including role, tags, organization metadata and evaluated trust.
+  Application tokens cannot use administrative or mutation endpoints such as removing members,
+  changing roles, tags or trust.
+</p>
+
+<p>
   All three accept <code>fields</code> to narrow the projection. On a large directory this is the
   difference between a 12 KB and a 400 KB page, and it is worth using.
 </p>
