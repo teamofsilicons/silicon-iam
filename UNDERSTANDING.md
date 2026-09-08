@@ -540,11 +540,15 @@ For how this CLI is built, rust as the programming language, but can use anythin
 
 The primary Interface is the Rust Package. CLI is built using the Rust Package only and doesn't have any feature that the Rust package does not.
 
-if you need a local store for auth or something else, use ~/.{appname}/ dir.
+if you need a local store for auth or something else, use `{home_dir}/.{appname}/dir`.
+
+The default home dir is `~`.
 
 For both package and the cli write detailed docs on how to use the package and how to use the cli, and also another doc on how to use the package. 
 
 Package and CLI must only expose the client side actions, and not the internal actions performed by the backend. For the CLI follow the standard command line grammar rules, and also include a -h command that shows all the possible commands.
+
+And there should be an command to configure the home directory where the information is stored:  `{home_dir}/.{appname}/dir`. This can be confitgure via `iam config home {location}`. If it's not a directory give an error not a directory. 
 
 For both cli and client we would also package in an auto updater, the task of this auto updater is to compare the current version to the latest version in crates for them, and if there's a new verion auto update it to the said new version. By default auto update is on, users can specifically come and opt in to stop auto update. Which would stop auto updating the package. Auto updater check runs every single hour. Updates should be checked when the command is run and should happen every hour, so check for the last update check time and if it's past 1 hour old check for update and update after the command finishes running.
 

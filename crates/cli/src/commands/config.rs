@@ -21,9 +21,27 @@ pub fn run(context: &Context, command: ConfigCommand) -> Result<()> {
     match command {
         ConfigCommand::Show => show(context),
         ConfigCommand::Profiles => profiles(context),
+        ConfigCommand::Home { location } => home(context, location),
         ConfigCommand::Set { key, value } => set(context, &key, value),
         ConfigCommand::Unset { key } => unset(context, &key),
         ConfigCommand::Use { profile } => use_profile(context, &profile),
+    }
+}
+
+fn home(context: &Context, location: std::path::PathBuf) -> Result<()> {
+    if !location.is_dir() {
+        return Err(CliError::Config(format!(
+            "not a directory: {}",
+            location.display()
+        )));
+    }
+    store::set_home(&location)?;
+    match context.format {
+        Format::Json => json(&serde_json::json!({"home": location})),
+        Format::Text => {
+            println!("IAM home set to {}.", location.display());
+            Ok(())
+        }
     }
 }
 

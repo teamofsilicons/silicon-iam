@@ -24,6 +24,7 @@ use crate::error::{CliError, Result};
 use std::fs::OpenOptions;
 
 const APP_DIRECTORY: &str = ".silicon-iam";
+const HOME_OVERRIDE_FILE: &str = ".silicon-iam-home";
 const CONFIG_FILE: &str = "config.json";
 const CREDENTIALS_FILE: &str = "credentials.json";
 const UPDATE_FILE: &str = "update.json";
@@ -230,6 +231,13 @@ impl Session {
 pub fn home() -> Result<PathBuf> {
     let home = std::env::var_os("SILICON_IAM_HOME")
         .map(PathBuf::from)
+        .or_else(|| {
+            default_home().and_then(|root| {
+                std::fs::read_to_string(root.join(HOME_OVERRIDE_FILE))
+                    .ok()
+                    .map(|value| PathBuf::from(value.trim()))
+            })
+        })
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(APP_DIRECTORY)))
         .ok_or_else(|| {
             CliError::Config(
@@ -237,6 +245,30 @@ pub fn home() -> Result<PathBuf> {
             )
         })?;
     Ok(home)
+}
+
+fn default_home() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(APP_DIRECTORY))
+}
+
+/// Stores the selected directory outside the selected directory so changing
+/// homes remains possible even when the previous store is unavailable.
+pub fn set_home(path: &std::path::Path) -> Result<()> {
+    if !path.is_dir() {
+        return Err(CliError::Config(format!(
+            "not a directory: {}",
+            path.display()
+        )));
+    }
+    let root = default_home()
+        .ok_or_else(|| CliError::Config("cannot locate a home directory".to_owned()))?;
+    std::fs::create_dir_all(&root)
+        .map_err(|e| CliError::Config(format!("cannot create {}: {e}", root.display())))?;
+    std::fs::write(
+        root.join(HOME_OVERRIDE_FILE),
+        path.to_string_lossy().as_bytes(),
+    )
+    .map_err(|e| CliError::Config(format!("cannot save home directory: {e}")))
 }
 
 /// Reads the settings, or an empty set when none have been written yet.
