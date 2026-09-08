@@ -600,6 +600,7 @@ DECLARE
         'check_principal_subtype_from_principal',
         'check_principal_subtype_from_subtype',
         'complete_worker_silicon_hook',
+        'enforce_selected_obo_parent_binding',
         'expire_idle_testing_environments',
         'erase_testing_environment',
         'fail_worker_silicon_hook',
