@@ -13,6 +13,8 @@ into public contracts, runnable examples, and client guidance.
 | Add IAM login to an external app: Briefcase example | [`API_DOCS.md#example-external-application-login`](./API_DOCS.md#example-external-application-login) |
 | Generate a client or inspect the normative wire contract | [`openapi.yaml`](./openapi.yaml) |
 | Use the `iam` command-line client | [`cli/README.md`](./cli/README.md) |
+| Host or integrate the SolidJS auth and console frontend | [`frontend/README.md`](./frontend/README.md) |
+| User-selected organization consent and upgrade behavior | [`ORGANIZATION_CONSENT.md`](./ORGANIZATION_CONSENT.md) |
 | Upgrade an existing CLI home or diagnose local logout | [`cli/storage.md`](./cli/storage.md) |
 | Integrate through the official Rust client | [`client/README.md`](./client/README.md) |
 | Browse the rendered API manual sources | [`api/`](./api/) |
@@ -40,13 +42,22 @@ must be deployed and verified before publishing/adopting the client/CLI packages
 | Errors and recovery | [`api/errors.html`](./api/errors.html) | [`client/errors.html`](./client/errors.html) |
 | Automatic crate updates | — | [`client/updates.html`](./client/updates.html) |
 
-## Current source contract
+## CLI and client 1.4.0
 
 [User-selected organization consent](ORGANIZATION_CONSENT.md) supersedes the
 all-organizations login behavior below. Apps start login without `org_id`; the
 user selects at least one organization in IAM. Additive consent preserves existing
 grants; unselected and future memberships are not disclosed. Migrations 0072 and
-0073 are required. These source changes are not yet published or deployed.
+0073 and refreshed runtime grants are required. The SolidJS auth frontend lives
+in [`frontend/`](../frontend/); its integration and deployment docs live here in
+[`docs/frontend/`](frontend/).
+
+Release order: apply both migrations to production and testing databases, deploy
+and verify the API/worker and frontend, then publish `silicon-iam-client` and
+`silicon-iam-cli` 1.4.0. A source push is not proof of deployment or publication;
+check the live version endpoint and crates.io. Existing automatic-all-org grants
+need explicit user selection before organization reads work again. See the
+[consent guide](ORGANIZATION_CONSENT.md) for manual checks and upgrade details.
 
 ## Published documentation (historical)
 

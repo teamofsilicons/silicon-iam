@@ -7,9 +7,9 @@ see [credential storage](storage.md).
 
 ## Current authorization without waiting for a webhook
 
-This contract was introduced in CLI/client **1.2.0** and remains in CLI and
-client **1.3.0**, which requires the matching backend with base migrations
-`0067` and `0071` and testing overlay `9003`. Deploy those migrations, runtime
+This contract was introduced in CLI/client **1.2.0**. CLI/client **1.4.0**
+requires the matching backend with base migrations through `0073`
+and testing overlay `9003`. Deploy those migrations, runtime
 grants and backend before publishing/adopting these packages.
 Publishing a crate does not deploy the API; verify the configured backend with
 `iam system version`. Historical 1.1.1 packages do not expose this contract.
@@ -42,39 +42,39 @@ token's scopes intersected with the recipient's approved scopes. Apply it only
 to that proof's exact endpoint/request. Verification consumes the proof; never
 retry it after an uncertain result.
 
-## Source update: organization consent
+## Organization consent
 
-Migration 0072 changes multi-organization login to explicit user selection.
+Migrations 0072/0073 change multi-organization login to explicit user selection
+and preserve OBO's single-organization binding with a multi-organization parent.
 Only selected active memberships are returned. See [the consent guide](../ORGANIZATION_CONSENT.md).
-The installation/release section below describes published 1.3.0; this source
-change is not yet published.
 
 ## Installation
 
 ```sh
-cargo install silicon-iam-cli --version 1.3.0 --locked
+cargo install silicon-iam-cli --version 1.4.0 --locked
 ```
 
-Release `1.3.0` requires Rust 1.98 or newer, bundles
-`silicon-iam-client` 1.3.0, and speaks HTTP API major `v1`. The crate/CLI
+Release `1.4.0` requires Rust 1.98 or newer, bundles
+`silicon-iam-client` 1.4.0, and speaks HTTP API major `v1`. The crate/CLI
 SemVer and HTTP API major are separate version lines. Check the installed
 binary with `iam --version`, and inspect/negotiate with the configured service
 using `iam system version`.
 
-Release 1.3.0 is built from
-[`v1.3.0`](https://github.com/teamofsilicons/silicon-iam/tree/v1.3.0/crates/cli);
-use its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.3.0/docs/cli/README.md)
+Release 1.4.0 is built from
+[`v1.4.0`](https://github.com/teamofsilicons/silicon-iam/tree/v1.4.0/crates/cli);
+use its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.4.0/docs/cli/README.md)
 to audit that installed version. Later changes on `main` are unreleased until
 separately published. An automatic update may install a newer release on a
 later invocation; check `iam --version` again when collecting diagnostics.
 
-This release adds `iam app token authorizations`, which lists one snapshot per
+This release adds `--grant-org` and `--all-orgs` for explicit organization consent.
+It retains `iam app token authorizations`, which lists one snapshot per
 organization an access token currently reaches: exactly one for an
 organization-bound token, one per selected active membership for a multi-organization token, and
-none when its subject holds no membership anywhere. `iam app token
+none when no selected membership remains active. `iam app token
 authorization` is unchanged and still answers for a single organization, with
 `--org-context` selecting one for an unscoped token. It requires backend
-migration `0071`; the client moves to 1.3.0 with it.
+migrations `0072` and `0073`; the client moves to 1.4.0 with it.
 
 It retains the [bounded Unix lock-open recovery](storage.md#version-122-bounded-unix-lock-open-recovery)
 added in 1.2.2, and the 1.2.1 `app approve-webhook` command, empty-tag confirmations,

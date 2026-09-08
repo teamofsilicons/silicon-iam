@@ -24,15 +24,14 @@ PostgreSQL 16 or newer is the sole authoritative datastore.
 Start with the [integration documentation index](docs/README.md) for the API,
 Rust client, CLI, testing environments, and release provenance.
 
-CLI and client **1.3.0** let an unscoped login reach every organization its
-subject belongs to, and are pinned by
-[`v1.3.0`](https://github.com/teamofsilicons/silicon-iam/tree/v1.3.0).
-Use the [CLI 1.3.0 documentation](https://github.com/teamofsilicons/silicon-iam/tree/v1.3.0/docs/cli)
-or [client 1.3.0 documentation](https://github.com/teamofsilicons/silicon-iam/tree/v1.3.0/docs/client)
-when auditing this release. The [release notes and provenance](docs/README.md#published-documentation)
-preserve earlier releases; later changes on `main` are not part of a published
-package until separately released. This release adds API and client surface and
-requires database migration `0071`.
+CLI and client **1.4.0** use [user-selected organization consent](docs/ORGANIZATION_CONSENT.md).
+Applications initiate login without an organization; the user chooses one or more
+in IAM. Additional selections preserve existing grants. Unselected and future
+memberships remain private. Deploy migrations `0072` and `0073`, runtime grants,
+and the API before adopting these crates or the SolidJS [frontend](frontend/).
+The [release notes](docs/README.md#cli-and-client-140) describe compatibility and
+the required reauthorization of legacy all-organization grants. Historical
+behavior is recorded separately; source pushes alone do not deploy or publish.
 
 Upgrading an older CLI? Existing Unix IAM homes must be private (`0700`) and
 owned by the current user. See the [one-time permission repair](docs/cli/storage.md#upgrading-an-existing-iam-home)

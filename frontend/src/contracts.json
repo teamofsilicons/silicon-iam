@@ -1,0 +1,4842 @@
+{
+  "ErrorEnvelope": {
+    "type": "object",
+    "required": [
+      "error"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "error": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "request_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{1,63}$"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      }
+    }
+  },
+  "VersionInfo": {
+    "type": "object",
+    "required": [
+      "service",
+      "api_version",
+      "build",
+      "commit"
+    ],
+    "properties": {
+      "service": {
+        "const": "silicon-iam"
+      },
+      "api_version": {
+        "const": "v1"
+      },
+      "build": {
+        "type": "string"
+      },
+      "commit": {
+        "type": "string"
+      }
+    }
+  },
+  "ApiVersionNegotiation": {
+    "type": "object",
+    "required": [
+      "service",
+      "selected_api_version",
+      "supported_api_versions",
+      "build",
+      "commit"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "service": {
+        "const": "silicon-iam"
+      },
+      "selected_api_version": {
+        "type": "string",
+        "pattern": "^v[1-9][0-9]{0,8}$"
+      },
+      "supported_api_versions": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "uniqueItems": true,
+        "description": "Server-supported API majors in descending preference order.",
+        "items": {
+          "type": "string",
+          "pattern": "^v[1-9][0-9]{0,8}$"
+        }
+      },
+      "build": {
+        "type": "string"
+      },
+      "commit": {
+        "type": "string"
+      }
+    }
+  },
+  "VerificationCode": {
+    "type": "string",
+    "pattern": "^[0-9]{6}$",
+    "description": "Six-digit code with a ten-minute expiry; ten failed verifications trigger a 60-second reusable-challenge cooldown."
+  },
+  "CarbonId": {
+    "type": "string",
+    "pattern": "^[a-z1-9_-]{3,30}$",
+    "description": "New immutable Carbon ID; zero is not admitted."
+  },
+  "ExistingCarbonId": {
+    "type": "string",
+    "pattern": "^[a-z0-9_-]{3,30}$",
+    "description": "Existing Carbon lookup/projection, including immutable legacy IDs containing zero."
+  },
+  "OrgId": {
+    "type": "string",
+    "pattern": "^[a-z0-9_-]{3,50}$"
+  },
+  "ApplicationHandle": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 80,
+    "pattern": "^[a-z][a-z0-9_-]{0,79}$",
+    "description": "Local handle of 1-80 lowercase ASCII characters, starting with a letter and containing only letters, digits, underscores or hyphens. Supplied at creation; the public id becomes `{org_id}>{handle}`."
+  },
+  "AppId": {
+    "type": "string",
+    "pattern": "^[a-z0-9_-]{3,50}>[a-z][a-z0-9_-]{0,79}$",
+    "description": "Canonical organization-qualified Application id, `{org_id}>{handle}`; the local handle is 1-80 characters and the organization handle remains 3-50 characters."
+  },
+  "SiliconHandle": {
+    "type": "string",
+    "pattern": "^[a-z0-9_-]{3,50}$",
+    "description": "Client-supplied handle component; only the resulting `{handle}:{org_id}` Silicon ID is public."
+  },
+  "SiliconGlobalId": {
+    "type": "string",
+    "pattern": "^[a-z0-9_-]{3,50}:[a-z0-9_-]{3,50}$"
+  },
+  "TimeZoneId": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 255,
+    "pattern": "^[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$",
+    "description": "Exact identifier that must resolve in the IANA Time Zone Database, such as UTC or Asia/Kolkata."
+  },
+  "EmailInput": {
+    "type": "object",
+    "required": [
+      "email"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "email": {
+        "type": "string",
+        "format": "email",
+        "maxLength": 320
+      }
+    }
+  },
+  "PhoneInput": {
+    "type": "object",
+    "required": [
+      "phone_number"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "phone_number": {
+        "type": "string",
+        "pattern": "^\\\\+[1-9][0-9]{7,14}$"
+      }
+    }
+  },
+  "AuthSession": {
+    "type": "object",
+    "required": [
+      "session_id",
+      "expires_at"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "session_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "expires_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "local_otp": {
+        "type": "string",
+        "pattern": "^[0-9]{6}$",
+        "description": "Present only when the explicitly configured local-development provider exposes the generated code."
+      }
+    }
+  },
+  "CodeDispatchResult": {
+    "type": "object",
+    "required": [
+      "already_exists"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "already_exists": {
+        "type": "boolean"
+      },
+      "expires_in": {
+        "type": "integer",
+        "const": 600,
+        "description": "Present only when a new verification code was sent."
+      },
+      "local_otp": {
+        "type": "string",
+        "pattern": "^[0-9]{6}$",
+        "description": "Present only when the explicitly configured local-development provider exposes the generated code."
+      }
+    }
+  },
+  "Availability": {
+    "type": "object",
+    "required": [
+      "available"
+    ],
+    "properties": {
+      "available": {
+        "type": "boolean"
+      }
+    }
+  },
+  "ActorRef": {
+    "type": "object",
+    "required": [
+      "principal_id",
+      "type",
+      "public_id"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "principal_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "carbon",
+          "silicon",
+          "application"
+        ]
+      },
+      "public_id": {
+        "type": "string"
+      }
+    }
+  },
+  "CarbonPublic": {
+    "type": "object",
+    "required": [
+      "principal_id",
+      "carbon_id",
+      "display_name",
+      "profile_photo",
+      "created_at"
+    ],
+    "properties": {
+      "principal_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "carbon_id": {
+        "$ref": "#/components/schemas/ExistingCarbonId"
+      },
+      "display_name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 5000
+      },
+      "profile_photo": {
+        "type": "string",
+        "format": "uri",
+        "maxLength": 2048
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "CarbonSuggestion": {
+    "type": "object",
+    "required": [
+      "carbon_id"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "carbon_id": {
+        "$ref": "#/components/schemas/ExistingCarbonId"
+      }
+    }
+  },
+  "CarbonResolution": {
+    "type": "object",
+    "required": [
+      "carbon_id"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "carbon_id": {
+        "$ref": "#/components/schemas/ExistingCarbonId"
+      }
+    }
+  },
+  "CarbonSelf": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/CarbonPublic"
+      },
+      {
+        "type": "object",
+        "required": [
+          "timezone",
+          "email",
+          "phone_number",
+          "status",
+          "version",
+          "updated_at"
+        ],
+        "properties": {
+          "timezone": {
+            "$ref": "#/components/schemas/TimeZoneId"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "phone_number": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "suspended"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    ]
+  },
+  "CarbonSignupComplete": {
+    "type": "object",
+    "required": [
+      "carbon_id",
+      "display_name"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "carbon_id": {
+        "$ref": "#/components/schemas/CarbonId"
+      },
+      "display_name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "timezone": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TimeZoneId"
+          }
+        ],
+        "description": "Defaults to UTC when omitted."
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 5000
+      },
+      "profile_photo": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri",
+        "maxLength": 2048
+      }
+    }
+  },
+  "CarbonProfilePatch": {
+    "type": "object",
+    "minProperties": 1,
+    "additionalProperties": false,
+    "properties": {
+      "display_name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "timezone": {
+        "$ref": "#/components/schemas/TimeZoneId"
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 5000
+      },
+      "profile_photo": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri",
+        "maxLength": 2048
+      }
+    }
+  },
+  "LoginChallengeCreate": {
+    "type": "object",
+    "minProperties": 1,
+    "maxProperties": 1,
+    "oneOf": [
+      {
+        "required": [
+          "email"
+        ]
+      },
+      {
+        "required": [
+          "phone_number"
+        ]
+      },
+      {
+        "required": [
+          "carbon_id"
+        ]
+      }
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "email": {
+        "type": "string",
+        "format": "email",
+        "maxLength": 320
+      },
+      "phone_number": {
+        "type": "string",
+        "pattern": "^\\\\+[1-9][0-9]{7,14}$"
+      },
+      "carbon_id": {
+        "$ref": "#/components/schemas/ExistingCarbonId"
+      }
+    }
+  },
+  "StepUpAction": {
+    "type": "string",
+    "description": "Closed privileged-action catalog. account.session_revoke binds resource_id to the target session UUID; account.sessions_revoke_all binds it to the current Carbon principal UUID. The Silicon-webhook redirect action binds it to the target Silicon membership UUID. The Application client-secret rotation, webhook-secret rotation and webhook approval actions bind it to the internal Application UUID. Every action requires one non-null resource_id.",
+    "enum": [
+      "account.session_revoke",
+      "account.sessions_revoke_all",
+      "organization.transfer_ownership",
+      "organization.authorization_change",
+      "organization.sso_change",
+      "organization.silicon_webhook.redirect",
+      "application.client_secret.rotate",
+      "application.webhook_secret.rotate",
+      "application.webhook.approve",
+      "silicon.rotate_token",
+      "platform_admin.sso_entitlement",
+      "platform_admin.application_review"
+    ]
+  },
+  "StepUpChallengeCreate": {
+    "type": "object",
+    "required": [
+      "channel",
+      "action",
+      "resource_id"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "channel": {
+        "type": "string",
+        "enum": [
+          "email",
+          "phone_number"
+        ]
+      },
+      "action": {
+        "$ref": "#/components/schemas/StepUpAction"
+      },
+      "resource_id": {
+        "type": "string",
+        "format": "uuid"
+      }
+    }
+  },
+  "StepUpTokenResponse": {
+    "type": "object",
+    "required": [
+      "step_up_token",
+      "action",
+      "assurance",
+      "expires_in"
+    ],
+    "properties": {
+      "step_up_token": {
+        "type": "string",
+        "pattern": "^sup_[A-Za-z0-9_-]{43}$"
+      },
+      "action": {
+        "$ref": "#/components/schemas/StepUpAction"
+      },
+      "assurance": {
+        "type": "string",
+        "enum": [
+          "verified_channel"
+        ]
+      },
+      "expires_in": {
+        "type": "integer",
+        "const": 300
+      }
+    }
+  },
+  "IamTokenResponse": {
+    "type": "object",
+    "required": [
+      "access_token",
+      "refresh_token",
+      "token_type",
+      "expires_in",
+      "refresh_expires_at",
+      "actor",
+      "session_id"
+    ],
+    "properties": {
+      "access_token": {
+        "type": "string",
+        "pattern": "^(cat|sat)_[A-Za-z0-9_-]{43}$",
+        "description": "Carbon access tokens use cat_; Silicon access tokens use sat_."
+      },
+      "refresh_token": {
+        "type": "string",
+        "pattern": "^rft_[A-Za-z0-9_-]{43}$"
+      },
+      "token_type": {
+        "const": "Bearer"
+      },
+      "expires_in": {
+        "type": "integer",
+        "const": 1800
+      },
+      "refresh_expires_at": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Exactly 900 days from family creation."
+      },
+      "actor": {
+        "$ref": "#/components/schemas/ActorRef"
+      },
+      "session_id": {
+        "type": "string",
+        "format": "uuid"
+      }
+    }
+  },
+  "RefreshTokenRequest": {
+    "type": "object",
+    "required": [
+      "refresh_token"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "refresh_token": {
+        "type": "string",
+        "minLength": 32,
+        "maxLength": 512
+      }
+    }
+  },
+  "TokenIntrospectionRequest": {
+    "type": "object",
+    "required": [
+      "token"
+    ],
+    "properties": {
+      "token": {
+        "type": "string",
+        "minLength": 32,
+        "maxLength": 4096
+      },
+      "token_type_hint": {
+        "type": "string",
+        "enum": [
+          "access_token",
+          "refresh_token"
+        ]
+      }
+    }
+  },
+  "TokenIntrospection": {
+    "type": "object",
+    "description": "Live token state. An active access token also returns authorization, a synchronous bootstrap/resynchronization snapshot. No directory mutation or webhook delivery is required. An organization-bound token returns the one organization it is bound to in authorization. An unscoped token reaches only explicitly selected organizations with active membership: send X-Org-ID to select one of them and read authorization, or send no header and read authorizations, which lists one snapshot per organization and is empty when the subject holds no membership anywhere. Exactly one of the two fields is ever present. Refresh tokens carry no organization authorization.",
+    "required": [
+      "active"
+    ],
+    "properties": {
+      "active": {
+        "type": "boolean"
+      },
+      "principal_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "actor_type": {
+        "type": "string",
+        "enum": [
+          "carbon",
+          "silicon",
+          "application"
+        ]
+      },
+      "client_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "membership_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "session_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "scope": {
+        "type": "string"
+      },
+      "audience": {
+        "type": "string"
+      },
+      "issued_at": {
+        "type": "integer"
+      },
+      "expires_at": {
+        "type": "integer"
+      },
+      "authorization_epoch": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "authorization": {
+        "$ref": "#/components/schemas/ApplicationAuthorization"
+      },
+      "authorizations": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ApplicationAuthorization"
+        }
+      }
+    }
+  },
+  "AuthorizationTag": {
+    "type": "object",
+    "required": [
+      "id",
+      "name"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "name": {
+        "type": "string"
+      }
+    }
+  },
+  "ApplicationAuthorization": {
+    "type": "object",
+    "description": "Current active membership bound to the authenticated token or verified proof, audience, organization, principal and testing plane. Use on first login and cache misses; webhook snapshots are asynchronous updates, not prerequisites for initial access. org_role requires roles.read and tags requires memberships.read. Null means undisclosed, not member or empty tags. OBO disclosure uses the intersection of the parent token scopes and recipient application's currently approved scopes. The binding authorizes no action outside the verified proof's endpoint/request. Do not reuse it for a different principal, membership, epoch, audience, organization, environment or effective scope set. Never fill undisclosed fields from a broader cached token. Introspect current bearer tokens again before relying on cached authority; a consumed OBO proof is single-use.",
+    "required": [
+      "principal_id",
+      "actor_type",
+      "public_id",
+      "organization_id",
+      "org_id",
+      "membership_id",
+      "membership_version",
+      "authorization_epoch",
+      "audience",
+      "testing_environment_id",
+      "scopes",
+      "org_role",
+      "tags"
+    ],
+    "properties": {
+      "principal_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "actor_type": {
+        "type": "string",
+        "enum": [
+          "carbon",
+          "silicon"
+        ]
+      },
+      "public_id": {
+        "type": "string"
+      },
+      "organization_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "membership_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "membership_version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "authorization_epoch": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "audience": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "testing_environment_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid"
+      },
+      "scopes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "org_role": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          "owner",
+          "admin",
+          "member",
+          null
+        ]
+      },
+      "tags": {
+        "type": [
+          "array",
+          "null"
+        ],
+        "items": {
+          "$ref": "#/components/schemas/AuthorizationTag"
+        }
+      }
+    }
+  },
+  "LogoutRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mode": {
+        "type": "string",
+        "enum": [
+          "current_session",
+          "all_sessions"
+        ],
+        "default": "current_session"
+      }
+    }
+  },
+  "Session": {
+    "type": "object",
+    "required": [
+      "session_id",
+      "actor",
+      "status",
+      "created_at",
+      "last_used_at",
+      "absolute_expires_at"
+    ],
+    "properties": {
+      "session_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "actor": {
+        "$ref": "#/components/schemas/ActorRef"
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "active",
+          "revoked",
+          "expired",
+          "replay_revoked"
+        ]
+      },
+      "user_agent_summary": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 500
+      },
+      "ip_prefix": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 64
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "last_used_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "absolute_expires_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "revoked_at": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time"
+      }
+    }
+  },
+  "PageInfo": {
+    "type": "object",
+    "required": [
+      "next_cursor",
+      "has_more"
+    ],
+    "properties": {
+      "next_cursor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "has_more": {
+        "type": "boolean"
+      }
+    }
+  },
+  "SessionPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Session"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "LoginEvent": {
+    "type": "object",
+    "required": [
+      "id",
+      "actor",
+      "event_type",
+      "occurred_at",
+      "success",
+      "request_id"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "actor": {
+        "$ref": "#/components/schemas/ActorRef"
+      },
+      "app_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "org_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "event_type": {
+        "type": "string",
+        "enum": [
+          "login_challenge",
+          "login_success",
+          "login_failure",
+          "oauth_authorization",
+          "oauth_token_exchange",
+          "logout",
+          "refresh_replay"
+        ]
+      },
+      "success": {
+        "type": "boolean"
+      },
+      "ip_prefix": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "user_agent_summary": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "request_id": {
+        "type": "string"
+      },
+      "occurred_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "LoginEventPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/LoginEvent"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "SiliconAuthenticationRequest": {
+    "type": "object",
+    "required": [
+      "silicon_id",
+      "silicon_token"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "silicon_id": {
+        "$ref": "#/components/schemas/SiliconGlobalId"
+      },
+      "silicon_token": {
+        "type": "string",
+        "pattern": "^stk-[a-f0-9]{32}$"
+      }
+    }
+  },
+  "ShortLivedTokenRequest": {
+    "type": "object",
+    "required": [
+      "app_id",
+      "org_ids"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "org_ids": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 1000,
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/components/schemas/OrgId"
+        },
+        "description": "User-selected active organizations. Adds to this application's existing grants on the same parent IAM session; never includes future memberships automatically. Only a direct IAM bearer may submit this selection."
+      },
+      "redirect_uri": {
+        "type": "string",
+        "format": "uri",
+        "maxLength": 2048
+      }
+    }
+  },
+  "LoginOrganization": {
+    "type": "object",
+    "required": [
+      "org_id",
+      "name",
+      "authorized"
+    ],
+    "properties": {
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "name": {
+        "type": "string"
+      },
+      "authorized": {
+        "type": "boolean"
+      }
+    }
+  },
+  "LoginOrganizations": {
+    "type": "object",
+    "required": [
+      "app_id",
+      "items"
+    ],
+    "properties": {
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "app_name": {
+        "type": "string"
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/LoginOrganization"
+        }
+      }
+    }
+  },
+  "ShortLivedToken": {
+    "type": "object",
+    "required": [
+      "slt",
+      "expires_in"
+    ],
+    "properties": {
+      "slt": {
+        "type": "string"
+      },
+      "expires_in": {
+        "type": "integer"
+      },
+      "request_id": {
+        "type": "string",
+        "format": "uuid",
+        "description": "IAM login status identifier; never an application credential."
+      }
+    }
+  },
+  "ApplicationTokenRequest": {
+    "type": "object",
+    "required": [
+      "app_id"
+    ],
+    "additionalProperties": false,
+    "oneOf": [
+      {
+        "required": [
+          "slt"
+        ]
+      },
+      {
+        "required": [
+          "refresh_token"
+        ]
+      }
+    ],
+    "properties": {
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "slt": {
+        "type": "string",
+        "minLength": 32,
+        "maxLength": 512
+      },
+      "refresh_token": {
+        "type": "string",
+        "minLength": 32,
+        "maxLength": 512
+      }
+    }
+  },
+  "OAuthTokenResponse": {
+    "type": "object",
+    "required": [
+      "access_token",
+      "refresh_token",
+      "token_type",
+      "expires_in",
+      "scope",
+      "actor"
+    ],
+    "properties": {
+      "access_token": {
+        "type": "string",
+        "pattern": "^oat_[A-Za-z0-9_-]{43}$"
+      },
+      "refresh_token": {
+        "type": "string",
+        "pattern": "^ort_[A-Za-z0-9_-]{43}$"
+      },
+      "token_type": {
+        "const": "Bearer"
+      },
+      "expires_in": {
+        "type": "integer",
+        "const": 1800
+      },
+      "scope": {
+        "type": "string"
+      },
+      "actor": {
+        "$ref": "#/components/schemas/ActorRef"
+      },
+      "org_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    }
+  },
+  "OAuthRevocationRequest": {
+    "type": "object",
+    "required": [
+      "token"
+    ],
+    "properties": {
+      "token": {
+        "type": "string",
+        "minLength": 32,
+        "maxLength": 4096
+      },
+      "token_type_hint": {
+        "type": "string",
+        "enum": [
+          "access_token",
+          "refresh_token"
+        ]
+      }
+    }
+  },
+  "OrganizationCreate": {
+    "type": "object",
+    "required": [
+      "org_id",
+      "name"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "logo": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri",
+        "maxLength": 2048
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 5000
+      }
+    }
+  },
+  "OrganizationPatch": {
+    "type": "object",
+    "minProperties": 1,
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "logo": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri",
+        "maxLength": 2048
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 5000
+      },
+      "join_method": {
+        "type": "string",
+        "enum": [
+          "email",
+          "sso"
+        ]
+      }
+    }
+  },
+  "Organization": {
+    "type": "object",
+    "required": [
+      "id",
+      "org_id",
+      "name",
+      "owner_membership_id",
+      "join_method",
+      "sso_status",
+      "status",
+      "version",
+      "created_at",
+      "updated_at"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "name": {
+        "type": "string"
+      },
+      "logo": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri"
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "owner_membership_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "join_method": {
+        "type": "string",
+        "enum": [
+          "email",
+          "sso"
+        ]
+      },
+      "sso_status": {
+        "type": "string",
+        "enum": [
+          "disabled",
+          "pending",
+          "active",
+          "error"
+        ]
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "active",
+          "disabled"
+        ]
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "updated_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "OrganizationPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Organization"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "OwnershipTransfer": {
+    "type": "object",
+    "required": [
+      "new_owner_membership_id"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "new_owner_membership_id": {
+        "type": "string",
+        "format": "uuid"
+      }
+    }
+  },
+  "OrganizationCapability": {
+    "type": "string",
+    "enum": [
+      "organization.update",
+      "members.invite",
+      "members.update_directory",
+      "members.remove",
+      "silicons.create",
+      "silicons.update_directory",
+      "silicons.manage_hierarchy",
+      "silicons.remove",
+      "silicons.rotate_token",
+      "tags.manage",
+      "trust.manage",
+      "roles.request",
+      "roles.approve",
+      "admins.create",
+      "admins.manage",
+      "sso.manage"
+    ]
+  },
+  "Membership": {
+    "type": "object",
+    "required": [
+      "id",
+      "org_id",
+      "principal",
+      "status",
+      "org_role",
+      "job_role",
+      "tags",
+      "extra_silicons",
+      "authorization_epoch",
+      "version",
+      "created_at",
+      "updated_at"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "principal": {
+        "$ref": "#/components/schemas/ActorRef"
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "active",
+          "removed"
+        ]
+      },
+      "org_role": {
+        "type": "string",
+        "enum": [
+          "owner",
+          "admin",
+          "member"
+        ]
+      },
+      "job_role": {
+        "type": "string",
+        "maxLength": 5000
+      },
+      "tags": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/components/schemas/TagSummary"
+        }
+      },
+      "first_silicon_membership_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid"
+      },
+      "extra_silicons": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "default_trust": {
+        "description": "Carbon-wide advisory trust baseline; null for Silicon memberships.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TrustValue"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "reports_to_membership_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid"
+      },
+      "hierarchy_level": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "minimum": 1
+      },
+      "authorization_epoch": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "removed_at": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time"
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "updated_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "MembershipPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Membership"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "MembershipDirectoryPatch": {
+    "type": "object",
+    "minProperties": 1,
+    "additionalProperties": false,
+    "properties": {
+      "first_silicon_membership_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid"
+      },
+      "extra_silicon_membership_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "maxItems": 500,
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "default_trust": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TrustValue"
+          }
+        ],
+        "description": "Carbon-only advisory trust baseline; requires trust.manage."
+      },
+      "reports_to_membership_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid"
+      },
+      "profile_photo": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri",
+        "maxLength": 2048
+      }
+    }
+  },
+  "MembershipAuthorization": {
+    "type": "object",
+    "required": [
+      "membership_id",
+      "org_role",
+      "capabilities",
+      "authorization_epoch",
+      "version"
+    ],
+    "properties": {
+      "membership_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "org_role": {
+        "type": "string",
+        "enum": [
+          "owner",
+          "admin",
+          "member"
+        ]
+      },
+      "capabilities": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/components/schemas/OrganizationCapability"
+        }
+      },
+      "authorization_epoch": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      }
+    }
+  },
+  "OrganizationCapabilitiesReplace": {
+    "type": "object",
+    "required": [
+      "capabilities"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "capabilities": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/components/schemas/OrganizationCapability"
+        }
+      }
+    }
+  },
+  "DirectoryRole": {
+    "type": "object",
+    "required": [
+      "org_role",
+      "job_role"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "org_role": {
+        "type": "string",
+        "enum": [
+          "owner",
+          "admin",
+          "member"
+        ]
+      },
+      "job_role": {
+        "type": "string",
+        "maxLength": 5000
+      }
+    }
+  },
+  "DirectoryOrganization": {
+    "type": "object",
+    "required": [
+      "id",
+      "name"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    }
+  },
+  "DirectoryMember": {
+    "type": "object",
+    "additionalProperties": false,
+    "description": "Sparse organization-directory projection. Omitted fields were not requested. trust is null when no Carbon-to-Silicon or Silicon-to-Carbon/Silicon orientation exists, including Carbon-to-Carbon.",
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "id": {
+        "type": "string",
+        "description": "Public Carbon ID or global Silicon ID."
+      },
+      "role": {
+        "$ref": "#/components/schemas/DirectoryRole"
+      },
+      "org": {
+        "$ref": "#/components/schemas/DirectoryOrganization"
+      },
+      "tags": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/components/schemas/TagSummary"
+        }
+      },
+      "trust": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TrustEvaluation"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    }
+  },
+  "DirectoryPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/DirectoryMember"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "TrustValue": {
+    "type": "object",
+    "required": [
+      "boundary",
+      "level"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "boundary": {
+        "type": "string",
+        "enum": [
+          "internal",
+          "external"
+        ]
+      },
+      "level": {
+        "type": "string",
+        "enum": [
+          "not_trusted",
+          "needs_approval",
+          "trusted"
+        ]
+      }
+    }
+  },
+  "InvitationTagTrustOverride": {
+    "type": "object",
+    "required": [
+      "tag_id",
+      "trust"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "tag_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "trust": {
+        "$ref": "#/components/schemas/TrustValue"
+      }
+    }
+  },
+  "InvitationSiliconTrustOverride": {
+    "type": "object",
+    "required": [
+      "silicon_membership_id",
+      "trust"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "silicon_membership_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "trust": {
+        "$ref": "#/components/schemas/TrustValue"
+      }
+    }
+  },
+  "CarbonInviteCreate": {
+    "type": "object",
+    "required": [
+      "job_role",
+      "default_trust"
+    ],
+    "minProperties": 3,
+    "oneOf": [
+      {
+        "required": [
+          "carbon_id"
+        ]
+      },
+      {
+        "required": [
+          "email"
+        ]
+      }
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "carbon_id": {
+        "$ref": "#/components/schemas/ExistingCarbonId"
+      },
+      "email": {
+        "type": "string",
+        "format": "email",
+        "maxLength": 320
+      },
+      "job_role": {
+        "type": "string",
+        "maxLength": 5000
+      },
+      "tag_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "maxItems": 100,
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "first_silicon_membership_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid"
+      },
+      "extra_silicon_membership_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "maxItems": 500,
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "default_trust": {
+        "$ref": "#/components/schemas/TrustValue"
+      },
+      "tag_trust_overrides": {
+        "type": "array",
+        "maxItems": 100,
+        "default": [
+
+        ],
+        "description": "At most one override per active organization tag.",
+        "items": {
+          "$ref": "#/components/schemas/InvitationTagTrustOverride"
+        }
+      },
+      "silicon_trust_overrides": {
+        "type": "array",
+        "maxItems": 500,
+        "default": [
+
+        ],
+        "description": "At most one override per active Silicon membership.",
+        "items": {
+          "$ref": "#/components/schemas/InvitationSiliconTrustOverride"
+        }
+      },
+      "redirect_app_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "pattern": "^[a-z0-9_-]{3,50}>[a-z][a-z0-9_-]{0,79}$",
+        "description": "Canonical organization-qualified Application id when the invitation should continue into an Application login."
+      }
+    }
+  },
+  "InviteStatus": {
+    "type": "string",
+    "enum": [
+      "pending",
+      "accepted",
+      "revoked",
+      "expired"
+    ]
+  },
+  "Invite": {
+    "type": "object",
+    "required": [
+      "id",
+      "org_id",
+      "target_carbon",
+      "org_role",
+      "job_role",
+      "tag_ids",
+      "extra_silicon_membership_ids",
+      "default_trust",
+      "tag_trust_overrides",
+      "silicon_trust_overrides",
+      "invited_by",
+      "status",
+      "expires_at",
+      "version",
+      "created_at"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "target_carbon": {
+        "$ref": "#/components/schemas/CarbonPublic"
+      },
+      "masked_delivery_address": {
+        "type": "string"
+      },
+      "org_role": {
+        "const": "member"
+      },
+      "job_role": {
+        "type": "string",
+        "maxLength": 5000
+      },
+      "tag_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "first_silicon_membership_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid"
+      },
+      "extra_silicon_membership_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "default_trust": {
+        "$ref": "#/components/schemas/TrustValue"
+      },
+      "tag_trust_overrides": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/InvitationTagTrustOverride"
+        }
+      },
+      "silicon_trust_overrides": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/InvitationSiliconTrustOverride"
+        }
+      },
+      "invited_by": {
+        "$ref": "#/components/schemas/ActorRef"
+      },
+      "status": {
+        "$ref": "#/components/schemas/InviteStatus"
+      },
+      "expires_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "accepted_at": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time"
+      }
+    }
+  },
+  "InvitePage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Invite"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "InvitationAcceptance": {
+    "type": "object",
+    "required": [
+      "invite_id",
+      "verification_code"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "invite_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "verification_code": {
+        "$ref": "#/components/schemas/VerificationCode"
+      }
+    }
+  },
+  "InvitationEmailCodeResponse": {
+    "type": "object",
+    "required": [
+      "accepted",
+      "invite_id",
+      "expires_in"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "accepted": {
+        "const": true
+      },
+      "invite_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "expires_in": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 600
+      }
+    }
+  },
+  "SiliconCreate": {
+    "type": "object",
+    "required": [
+      "silicon_id",
+      "job_role"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "silicon_id": {
+        "$ref": "#/components/schemas/SiliconHandle"
+      },
+      "display_name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "description": "Defaults to the immutable local Silicon handle when omitted."
+      },
+      "timezone": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TimeZoneId"
+          }
+        ],
+        "description": "Defaults to UTC when omitted."
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 5000
+      },
+      "profile_photo": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri",
+        "maxLength": 2048
+      },
+      "job_role": {
+        "type": "string",
+        "maxLength": 5000
+      },
+      "reports_to_membership_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid"
+      },
+      "tag_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "maxItems": 100,
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    }
+  },
+  "SiliconPatch": {
+    "type": "object",
+    "minProperties": 1,
+    "additionalProperties": false,
+    "properties": {
+      "display_name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "timezone": {
+        "$ref": "#/components/schemas/TimeZoneId"
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 5000
+      },
+      "profile_photo": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri",
+        "maxLength": 2048
+      },
+      "reports_to_membership_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid"
+      }
+    }
+  },
+  "Silicon": {
+    "type": "object",
+    "required": [
+      "principal_id",
+      "membership_id",
+      "silicon_id",
+      "org_id",
+      "display_name",
+      "timezone",
+      "profile_photo",
+      "job_role",
+      "tags",
+      "hierarchy_level",
+      "webhook_configured",
+      "status",
+      "version",
+      "created_at",
+      "updated_at"
+    ],
+    "properties": {
+      "principal_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "membership_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "silicon_id": {
+        "$ref": "#/components/schemas/SiliconGlobalId"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "display_name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "timezone": {
+        "$ref": "#/components/schemas/TimeZoneId"
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 5000
+      },
+      "profile_photo": {
+        "type": "string",
+        "format": "uri"
+      },
+      "job_role": {
+        "type": "string",
+        "maxLength": 5000
+      },
+      "reports_to_membership_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid"
+      },
+      "tags": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TagSummary"
+        }
+      },
+      "hierarchy_level": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "webhook_configured": {
+        "type": "boolean"
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "active",
+          "removed"
+        ]
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "updated_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "SiliconCreated": {
+    "type": "object",
+    "required": [
+      "silicon",
+      "silicon_token",
+      "secret_replay_expires_at"
+    ],
+    "properties": {
+      "silicon": {
+        "$ref": "#/components/schemas/Silicon"
+      },
+      "silicon_token": {
+        "type": "string",
+        "pattern": "^stk-[a-f0-9]{32}$"
+      },
+      "secret_replay_expires_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "SiliconPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Silicon"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "SiliconWebhookReplace": {
+    "type": "object",
+    "required": [
+      "url"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "url": {
+        "type": "string",
+        "format": "uri",
+        "pattern": "^https://",
+        "maxLength": 2048
+      }
+    }
+  },
+  "SiliconWebhook": {
+    "type": "object",
+    "required": [
+      "silicon_id",
+      "url",
+      "status",
+      "secret_version",
+      "version",
+      "created_at",
+      "updated_at"
+    ],
+    "properties": {
+      "silicon_id": {
+        "$ref": "#/components/schemas/SiliconGlobalId"
+      },
+      "url": {
+        "type": "string",
+        "format": "uri",
+        "pattern": "^https://",
+        "maxLength": 2048
+      },
+      "status": {
+        "const": "active"
+      },
+      "secret_version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "updated_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "SiliconWebhookConfigured": {
+    "type": "object",
+    "required": [
+      "webhook",
+      "webhook_signing_secret",
+      "secret_replay_expires_at"
+    ],
+    "properties": {
+      "webhook": {
+        "$ref": "#/components/schemas/SiliconWebhook"
+      },
+      "webhook_signing_secret": {
+        "type": "string",
+        "pattern": "^swhs_[A-Za-z0-9_-]{43}$"
+      },
+      "secret_replay_expires_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "SiliconWebhookSubscriptionTopic": {
+    "type": "string",
+    "enum": [
+      "membership_lifecycle",
+      "member_updates",
+      "trust_updates"
+    ]
+  },
+  "SiliconWebhookSubscriptionReplace": {
+    "type": "object",
+    "required": [
+      "mode"
+    ],
+    "additionalProperties": false,
+    "description": "all receives every explicitly Silicon-routed organization event, including Full-only metadata, catalog, invitation, governance, credential, and configuration events, and canonicalizes the response to all three topic values. selected requires at least one exact topic: membership_lifecycle is actual creation/reactivation/removal, member_updates is applied existing-member role/tag/profile/hierarchy/authorization/ownership change, and trust_updates is trust state only. Optional tag_filter always includes the Silicon's own event-time before/after tag audience and may add active organization tags; later own-tag changes never alter an older event's audience.",
+    "properties": {
+      "mode": {
+        "type": "string",
+        "enum": [
+          "all",
+          "selected"
+        ]
+      },
+      "topics": {
+        "type": "array",
+        "uniqueItems": true,
+        "maxItems": 3,
+        "default": [
+
+        ],
+        "items": {
+          "$ref": "#/components/schemas/SiliconWebhookSubscriptionTopic"
+        }
+      },
+      "tag_filter": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SiliconWebhookTagFilter"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    }
+  },
+  "SiliconWebhookTagFilter": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "additional_tag_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "maxItems": 100,
+        "default": [
+
+        ],
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    }
+  },
+  "SiliconWebhookSubscription": {
+    "type": "object",
+    "required": [
+      "silicon_id",
+      "mode",
+      "topics",
+      "tag_filter",
+      "version",
+      "created_at",
+      "updated_at"
+    ],
+    "properties": {
+      "silicon_id": {
+        "$ref": "#/components/schemas/SiliconGlobalId"
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "all",
+          "selected"
+        ]
+      },
+      "topics": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 3,
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/components/schemas/SiliconWebhookSubscriptionTopic"
+        }
+      },
+      "tag_filter": {
+        "description": "Null disables tag filtering. When present, organization-wide and unattributed events are suppressed; affected tags must intersect either the Silicon's immutable event-time own-tag audience or a currently configured additional tag.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SiliconWebhookTagFilter"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "updated_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "SiliconTokenRotated": {
+    "type": "object",
+    "required": [
+      "silicon_id",
+      "credential_version",
+      "silicon_token",
+      "secret_replay_expires_at"
+    ],
+    "properties": {
+      "silicon_id": {
+        "$ref": "#/components/schemas/SiliconGlobalId"
+      },
+      "credential_version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "silicon_token": {
+        "type": "string",
+        "pattern": "^stk-[a-f0-9]{32}$"
+      },
+      "secret_replay_expires_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "TagCreate": {
+    "type": "object",
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100
+      }
+    }
+  },
+  "TagPatch": {
+    "type": "object",
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100
+      }
+    }
+  },
+  "TagSummary": {
+    "type": "object",
+    "required": [
+      "id",
+      "name"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "name": {
+        "type": "string"
+      }
+    }
+  },
+  "Tag": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/TagSummary"
+      },
+      {
+        "type": "object",
+        "required": [
+          "org_id",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "org_id": {
+            "$ref": "#/components/schemas/OrgId"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    ]
+  },
+  "TagPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Tag"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "TestingEnvironment": {
+    "type": "object",
+    "required": [
+      "id",
+      "org_id",
+      "name",
+      "description",
+      "status",
+      "created_by_membership_id",
+      "key_generation",
+      "key_rotated_at",
+      "last_activity_at",
+      "cleaned_at",
+      "deleted_at",
+      "purge_after",
+      "version",
+      "created_at",
+      "updated_at"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 500
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "active",
+          "deleted"
+        ]
+      },
+      "created_by_membership_id": {
+        "type": "string",
+        "format": "uuid",
+        "description": "Membership that created the environment; it keeps administrative authority while active."
+      },
+      "key_generation": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Increments on every key rotation."
+      },
+      "key_rotated_at": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time"
+      },
+      "last_activity_at": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Last accepted request in the environment; idleness beyond the configured window auto-deletes it."
+      },
+      "cleaned_at": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time"
+      },
+      "deleted_at": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time"
+      },
+      "purge_after": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time",
+        "description": "Deadline after which the environment and its data are destroyed permanently. Restorable until then."
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "updated_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "TestingEnvironmentPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TestingEnvironment"
+        }
+      },
+      "page": {
+        "type": "object",
+        "required": [
+          "next_cursor",
+          "has_more"
+        ],
+        "properties": {
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "has_more": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  },
+  "TestingEnvironmentCreate": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "name"
+    ],
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 500
+      }
+    }
+  },
+  "TestingEnvironmentPatch": {
+    "type": "object",
+    "additionalProperties": false,
+    "minProperties": 1,
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 500
+      }
+    }
+  },
+  "TestingEnvironmentKeyValue": {
+    "type": "string",
+    "pattern": "^[A-Za-z0-9]{32}$",
+    "description": "Root authority for one environment. Anyone holding it can do anything inside that environment."
+  },
+  "TestingEnvironmentWithKey": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/TestingEnvironment"
+      },
+      {
+        "type": "object",
+        "required": [
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/TestingEnvironmentKeyValue"
+          }
+        }
+      }
+    ]
+  },
+  "TestingEnvironmentKey": {
+    "type": "object",
+    "required": [
+      "environment_id",
+      "key_generation",
+      "key_rotated_at",
+      "key"
+    ],
+    "properties": {
+      "environment_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "key_generation": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "key_rotated_at": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time"
+      },
+      "key": {
+        "$ref": "#/components/schemas/TestingEnvironmentKeyValue"
+      }
+    }
+  },
+  "TestingEnvironmentSelf": {
+    "type": "object",
+    "required": [
+      "id",
+      "name",
+      "description",
+      "key_generation",
+      "created_at"
+    ],
+    "description": "What a key holder may see about the environment it holds a key to.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 500
+      },
+      "key_generation": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "TestingEnvironmentCleaning": {
+    "type": "object",
+    "required": [
+      "environment_id",
+      "erased_rows",
+      "cleaned_at"
+    ],
+    "properties": {
+      "environment_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "erased_rows": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "cleaned_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "TestingApplicationImport": {
+    "type": "object",
+    "required": [
+      "app_id"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "app_id": {
+        "$ref": "#/components/schemas/AppId",
+        "description": "Canonical production Application id to copy."
+      }
+    }
+  },
+  "TestingApplicationImported": {
+    "type": "object",
+    "required": [
+      "application",
+      "app_secret",
+      "app_secret_version",
+      "webhook_secret_inherited",
+      "secret_replay_expires_at"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "application": {
+        "$ref": "#/components/schemas/Application"
+      },
+      "app_secret": {
+        "type": "string",
+        "pattern": "^ask_[A-Za-z0-9_-]{43}$",
+        "description": "Fresh credential valid only inside this testing environment."
+      },
+      "app_secret_version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "webhook_secret_inherited": {
+        "type": "boolean",
+        "const": true,
+        "description": "Confirms that the production signing secret was inherited but not disclosed."
+      },
+      "secret_replay_expires_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "TrustSelector": {
+    "type": "object",
+    "additionalProperties": false,
+    "oneOf": [
+      {
+        "required": [
+          "kind",
+          "tag_id"
+        ],
+        "properties": {
+          "kind": {
+            "const": "tag"
+          },
+          "tag_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      {
+        "required": [
+          "kind",
+          "membership_id"
+        ],
+        "properties": {
+          "kind": {
+            "const": "membership"
+          },
+          "membership_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      }
+    ],
+    "properties": {
+      "kind": {
+        "type": "string",
+        "enum": [
+          "tag",
+          "membership"
+        ]
+      },
+      "tag_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "membership_id": {
+        "type": "string",
+        "format": "uuid"
+      }
+    }
+  },
+  "TrustRuleCreate": {
+    "type": "object",
+    "required": [
+      "subject",
+      "target",
+      "trust"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "subject": {
+        "$ref": "#/components/schemas/TrustSelector"
+      },
+      "target": {
+        "$ref": "#/components/schemas/TrustSelector"
+      },
+      "trust": {
+        "$ref": "#/components/schemas/TrustValue"
+      }
+    }
+  },
+  "TrustRulePatch": {
+    "type": "object",
+    "minProperties": 1,
+    "additionalProperties": false,
+    "properties": {
+      "subject": {
+        "$ref": "#/components/schemas/TrustSelector"
+      },
+      "target": {
+        "$ref": "#/components/schemas/TrustSelector"
+      },
+      "trust": {
+        "$ref": "#/components/schemas/TrustValue"
+      }
+    }
+  },
+  "TrustRule": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/TrustRuleCreate"
+      },
+      {
+        "type": "object",
+        "required": [
+          "id",
+          "org_id",
+          "specificity",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "org_id": {
+            "$ref": "#/components/schemas/OrgId"
+          },
+          "specificity": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    ]
+  },
+  "TrustRulePage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TrustRule"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "TrustEvaluationRequest": {
+    "type": "object",
+    "required": [
+      "subject_membership_id",
+      "target_silicon_membership_id"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "subject_membership_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "target_silicon_membership_id": {
+        "type": "string",
+        "format": "uuid"
+      }
+    }
+  },
+  "TrustEvaluation": {
+    "type": "object",
+    "required": [
+      "trust",
+      "source",
+      "matching_rule_ids",
+      "advisory"
+    ],
+    "properties": {
+      "trust": {
+        "$ref": "#/components/schemas/TrustValue"
+      },
+      "source": {
+        "type": "string",
+        "enum": [
+          "organization_default",
+          "tag_rule",
+          "exact_rule"
+        ]
+      },
+      "matching_rule_ids": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "advisory": {
+        "const": true
+      }
+    }
+  },
+  "ApprovalKind": {
+    "type": "string",
+    "enum": [
+      "carbon_job_role_change",
+      "silicon_job_role_change",
+      "carbon_tag_change",
+      "silicon_tag_change",
+      "silicon_token_rotation"
+    ]
+  },
+  "ApprovalStatus": {
+    "type": "string",
+    "enum": [
+      "pending",
+      "approved",
+      "rejected",
+      "completed"
+    ]
+  },
+  "RoleChangeRequestCreate": {
+    "type": "object",
+    "required": [
+      "target_membership_id",
+      "proposed_job_role"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "target_membership_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "proposed_job_role": {
+        "type": "string",
+        "maxLength": 5000
+      },
+      "reason": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 2000
+      }
+    }
+  },
+  "TagChangeRequestCreate": {
+    "type": "object",
+    "additionalProperties": false,
+    "anyOf": [
+      {
+        "required": [
+          "add_tag_ids"
+        ],
+        "properties": {
+          "add_tag_ids": {
+            "minItems": 1
+          }
+        }
+      },
+      {
+        "required": [
+          "remove_tag_ids"
+        ],
+        "properties": {
+          "remove_tag_ids": {
+            "minItems": 1
+          }
+        }
+      }
+    ],
+    "properties": {
+      "add_tag_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "maxItems": 100,
+        "default": [
+
+        ],
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "remove_tag_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "maxItems": 100,
+        "default": [
+
+        ],
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "reason": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "minLength": 1,
+        "maxLength": 2000
+      }
+    }
+  },
+  "DirectJobRoleReplace": {
+    "type": "object",
+    "required": [
+      "job_role"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "job_role": {
+        "type": "string",
+        "maxLength": 5000
+      }
+    }
+  },
+  "DirectTagSetReplace": {
+    "type": "object",
+    "required": [
+      "tag_ids"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "tag_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "maxItems": 100,
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    }
+  },
+  "ApprovalDecisionCreate": {
+    "type": "object",
+    "required": [
+      "decision"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "decision": {
+        "type": "string",
+        "enum": [
+          "approve",
+          "reject"
+        ]
+      },
+      "comment": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 2000
+      }
+    }
+  },
+  "ApprovalDecision": {
+    "type": "object",
+    "required": [
+      "id",
+      "approver",
+      "decision",
+      "decided_at"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "approver": {
+        "$ref": "#/components/schemas/ActorRef"
+      },
+      "decision": {
+        "type": "string",
+        "enum": [
+          "approve",
+          "reject"
+        ]
+      },
+      "comment": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "decided_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "ApprovalRequest": {
+    "type": "object",
+    "required": [
+      "id",
+      "org_id",
+      "kind",
+      "status",
+      "requested_by",
+      "target_membership_id",
+      "immutable_payload",
+      "required_approvals",
+      "decisions",
+      "version",
+      "created_at"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "kind": {
+        "$ref": "#/components/schemas/ApprovalKind"
+      },
+      "status": {
+        "$ref": "#/components/schemas/ApprovalStatus"
+      },
+      "requested_by": {
+        "$ref": "#/components/schemas/ActorRef"
+      },
+      "target_membership_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "immutable_payload": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "required_approvals": {
+        "type": "object",
+        "required": [
+          "target_carbon",
+          "eligible_owner_or_admin"
+        ],
+        "properties": {
+          "target_carbon": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "eligible_owner_or_admin": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1
+          }
+        }
+      },
+      "decisions": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ApprovalDecision"
+        }
+      },
+      "completed_at": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time"
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "ApprovalRequestPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ApprovalRequest"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "RoleHistory": {
+    "type": "object",
+    "required": [
+      "id",
+      "membership_id",
+      "old_job_role",
+      "new_job_role",
+      "requested_by",
+      "approvers",
+      "approval_request_id",
+      "applied_at"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "membership_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "old_job_role": {
+        "type": "string"
+      },
+      "new_job_role": {
+        "type": "string"
+      },
+      "requested_by": {
+        "$ref": "#/components/schemas/ActorRef"
+      },
+      "approvers": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ActorRef"
+        }
+      },
+      "approval_request_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid",
+        "description": "Null for an owner/admin direct change."
+      },
+      "applied_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "RoleHistoryPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/RoleHistory"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "TagHistory": {
+    "type": "object",
+    "required": [
+      "id",
+      "membership_id",
+      "previous_tag_ids",
+      "applied_tag_ids",
+      "requested_by",
+      "approvers",
+      "approval_request_id",
+      "membership_version",
+      "applied_at"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "membership_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "previous_tag_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "maxItems": 100,
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "applied_tag_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "maxItems": 100,
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "requested_by": {
+        "$ref": "#/components/schemas/ActorRef"
+      },
+      "approvers": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ActorRef"
+        }
+      },
+      "approval_request_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid",
+        "description": "Null for an owner/admin direct change."
+      },
+      "membership_version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "applied_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "TagHistoryPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TagHistory"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "SsoEntitlement": {
+    "type": "object",
+    "required": [
+      "enabled",
+      "version"
+    ],
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "reason": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 2000
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      }
+    }
+  },
+  "SsoConfiguration": {
+    "type": "object",
+    "required": [
+      "org_id",
+      "entitled",
+      "status",
+      "join_method",
+      "version",
+      "updated_at"
+    ],
+    "properties": {
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "entitled": {
+        "type": "boolean"
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "disabled",
+          "pending",
+          "active",
+          "error"
+        ]
+      },
+      "join_method": {
+        "type": "string",
+        "enum": [
+          "email",
+          "sso"
+        ]
+      },
+      "workos_organization_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "connection_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "updated_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "SsoSetupLink": {
+    "type": "object",
+    "required": [
+      "url",
+      "expires_in",
+      "expires_at"
+    ],
+    "properties": {
+      "url": {
+        "type": "string",
+        "format": "uri"
+      },
+      "expires_in": {
+        "type": "integer",
+        "const": 300
+      },
+      "expires_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "TestResult": {
+    "type": "object",
+    "required": [
+      "ok",
+      "checked_at"
+    ],
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      },
+      "message": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 1000
+      },
+      "checked_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "ApplicationStatus": {
+    "type": "string",
+    "enum": [
+      "under_review",
+      "verified",
+      "rejected",
+      "suspended",
+      "deleted"
+    ]
+  },
+  "ApplicationCreate": {
+    "type": "object",
+    "required": [
+      "app_id",
+      "org_id",
+      "webhook_url",
+      "webhook_secret",
+      "base_url"
+    ],
+    "additionalProperties": false,
+    "description": "Requires the authenticated Carbon to be a current active owner/admin of org_id.",
+    "properties": {
+      "app_id": {
+        "$ref": "#/components/schemas/ApplicationHandle"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "app_name": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 200
+      },
+      "app_logo": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri",
+        "maxLength": 2048
+      },
+      "webhook_url": {
+        "type": "string",
+        "format": "uri",
+        "pattern": "^https://",
+        "maxLength": 2048
+      },
+      "webhook_secret": {
+        "$ref": "#/components/schemas/ApplicationWebhookSecret"
+      },
+      "base_url": {
+        "type": "string",
+        "format": "uri",
+        "maxLength": 2048,
+        "description": "Pathless Application backend origin with no trailing slash, credentials, query or fragment. HTTPS is required except for literal loopback HTTP in local development."
+      },
+      "obo_endpoints": {
+        "type": "array",
+        "maxItems": 50,
+        "default": [
+
+        ],
+        "items": {
+          "$ref": "#/components/schemas/ApplicationOboEndpoint"
+        }
+      }
+    }
+  },
+  "ApplicationPatch": {
+    "type": "object",
+    "minProperties": 1,
+    "additionalProperties": false,
+    "properties": {
+      "app_name": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 200
+      },
+      "app_logo": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri",
+        "maxLength": 2048
+      },
+      "base_url": {
+        "type": "string",
+        "format": "uri",
+        "maxLength": 2048,
+        "description": "Pathless backend origin without a trailing slash; HTTPS except for literal loopback development."
+      },
+      "obo_endpoints": {
+        "type": "array",
+        "maxItems": 50,
+        "description": "Full replacement. An empty array retires every active endpoint.",
+        "items": {
+          "$ref": "#/components/schemas/ApplicationOboEndpoint"
+        }
+      }
+    }
+  },
+  "Application": {
+    "type": "object",
+    "required": [
+      "id",
+      "app_id",
+      "org_id",
+      "created_by",
+      "base_url",
+      "requested_scopes",
+      "approved_scopes",
+      "obo_endpoints",
+      "status",
+      "webhook",
+      "has_pending_changes",
+      "version",
+      "created_at",
+      "updated_at"
+    ],
+    "description": "Organization-owned Application. created_by is immutable provenance and does not confer management authority.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "created_by": {
+        "$ref": "#/components/schemas/ActorRef"
+      },
+      "app_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "app_logo": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri"
+      },
+      "base_url": {
+        "type": "string",
+        "format": "uri",
+        "maxLength": 2048,
+        "description": "Pathless backend origin without a trailing slash."
+      },
+      "requested_scopes": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string"
+        }
+      },
+      "approved_scopes": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string"
+        }
+      },
+      "obo_endpoints": {
+        "type": "array",
+        "maxItems": 50,
+        "items": {
+          "$ref": "#/components/schemas/ApplicationOboEndpoint"
+        }
+      },
+      "status": {
+        "$ref": "#/components/schemas/ApplicationStatus"
+      },
+      "webhook": {
+        "$ref": "#/components/schemas/ApplicationWebhook"
+      },
+      "has_pending_changes": {
+        "type": "boolean"
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "updated_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "ApplicationCreated": {
+    "type": "object",
+    "required": [
+      "application",
+      "app_secret",
+      "app_secret_version",
+      "webhook_signing_secret",
+      "webhook_secret_version",
+      "secret_replay_expires_at"
+    ],
+    "properties": {
+      "application": {
+        "$ref": "#/components/schemas/Application"
+      },
+      "app_secret": {
+        "type": "string",
+        "pattern": "^ask_[A-Za-z0-9_-]{43}$"
+      },
+      "app_secret_version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "webhook_signing_secret": {
+        "$ref": "#/components/schemas/ApplicationWebhookSecret"
+      },
+      "webhook_secret_version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "secret_replay_expires_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "ApplicationSecretRotated": {
+    "type": "object",
+    "required": [
+      "app_id",
+      "app_secret",
+      "app_secret_version",
+      "application_version",
+      "secret_replay_expires_at"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "app_secret": {
+        "type": "string",
+        "pattern": "^ask_[A-Za-z0-9_-]{43}$"
+      },
+      "app_secret_version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "application_version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "secret_replay_expires_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "ApplicationWebhookSecretRotated": {
+    "type": "object",
+    "required": [
+      "app_id",
+      "webhook_signing_secret",
+      "webhook_secret_version",
+      "application_version",
+      "secret_replay_expires_at"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "webhook_signing_secret": {
+        "$ref": "#/components/schemas/ApplicationWebhookSecret"
+      },
+      "webhook_secret_version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "application_version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "secret_replay_expires_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "ApplicationBaseUrl": {
+    "type": "object",
+    "required": [
+      "app_id",
+      "base_url"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "base_url": {
+        "type": "string",
+        "format": "uri",
+        "maxLength": 2048,
+        "description": "Pathless backend origin without a trailing slash."
+      }
+    }
+  },
+  "ApplicationPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Application"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "AdminApplication": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/Application"
+      }
+    ]
+  },
+  "AdminApplicationPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/AdminApplication"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "ApplicationWebhook": {
+    "type": "object",
+    "required": [
+      "active_url",
+      "status",
+      "secret_version",
+      "version"
+    ],
+    "properties": {
+      "application_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid",
+        "description": "Internal Application UUID for binding webhook-approval step-up. Present on current reads and new mutation responses; optional for compatibility with older persisted idempotency responses."
+      },
+      "active_url": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri",
+        "description": "Null until the application's initial destination is approved; a verified application's pending endpoint may be approved by its current organization owner/admin or an IAM platform reviewer."
+      },
+      "pending_url": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri"
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "pending_review",
+          "active",
+          "replacement_under_review",
+          "disabled"
+        ]
+      },
+      "secret_version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "webhook_signing_secret": {
+        "$ref": "#/components/schemas/ApplicationWebhookSecret",
+        "description": "Echoes a caller-supplied replacement secret for v1 compatibility."
+      },
+      "secret_replay_expires_at": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Present exactly when webhook_signing_secret is present."
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Application aggregate version; identical to the response ETag and the value required by If-Match for replacement or approval."
+      }
+    }
+  },
+  "ApplicationWebhookReplace": {
+    "type": "object",
+    "required": [
+      "url"
+    ],
+    "additionalProperties": false,
+    "description": "Replaces only the reviewed destination candidate. It normally reuses the existing encrypted signing secret. An imported test Application still on its inherited production key must provide a new test-only secret. Supplying a secret for any replacement installs it for the new endpoint.",
+    "properties": {
+      "url": {
+        "type": "string",
+        "format": "uri",
+        "pattern": "^https://",
+        "maxLength": 2048
+      },
+      "webhook_secret": {
+        "$ref": "#/components/schemas/ApplicationWebhookSecret"
+      }
+    }
+  },
+  "ApplicationWebhookSecret": {
+    "type": "string",
+    "minLength": 32,
+    "maxLength": 512,
+    "pattern": "^[!-~]+$",
+    "description": "Caller-chosen Application webhook signing secret containing only non-whitespace ASCII characters. IAM encrypts it at rest and never generates it."
+  },
+  "ApplicationWebhookSecretRotate": {
+    "type": "object",
+    "required": [
+      "webhook_secret"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "webhook_secret": {
+        "$ref": "#/components/schemas/ApplicationWebhookSecret"
+      }
+    }
+  },
+  "WebhookDeadLetter": {
+    "type": "object",
+    "required": [
+      "delivery_id",
+      "event_id",
+      "event_type",
+      "occurred_at",
+      "aggregate_type",
+      "aggregate_id",
+      "aggregate_version",
+      "status",
+      "attempt_count",
+      "cycle_attempt_count",
+      "manual_replay_count",
+      "last_http_status",
+      "last_error_code",
+      "dead_lettered_at",
+      "version"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "delivery_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "event_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "event_type": {
+        "type": "string"
+      },
+      "occurred_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "aggregate_type": {
+        "type": "string"
+      },
+      "aggregate_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "aggregate_version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "dead_letter"
+        ]
+      },
+      "attempt_count": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "cycle_attempt_count": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "manual_replay_count": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "last_http_status": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "minimum": 100,
+        "maximum": 599
+      },
+      "last_error_code": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "dead_lettered_at": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time"
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      }
+    }
+  },
+  "WebhookDeadLetterPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/WebhookDeadLetter"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "WebhookReplayRequest": {
+    "type": "object",
+    "required": [
+      "delivery_ids"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "delivery_ids": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 100,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    }
+  },
+  "WebhookReplayResponse": {
+    "type": "object",
+    "required": [
+      "deliveries",
+      "replayed_count"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "deliveries": {
+        "type": "array",
+        "maxItems": 100,
+        "items": {
+          "$ref": "#/components/schemas/WebhookDeadLetter"
+        }
+      },
+      "replayed_count": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100
+      }
+    }
+  },
+  "WebhookEvent": {
+    "type": "object",
+    "required": [
+      "spec_version",
+      "event_id",
+      "event_type",
+      "occurred_at",
+      "aggregate",
+      "data"
+    ],
+    "properties": {
+      "spec_version": {
+        "const": "1.0"
+      },
+      "event_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "event_type": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+\\.v[1-9][0-9]*$",
+        "description": "Stable dotted event name with its positive schema version suffix."
+      },
+      "occurred_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "organization_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid"
+      },
+      "aggregate": {
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "version"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "type": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "data": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Event-type-specific authorized projection; never contains credentials or raw provider records. For carbon.updated.v1, changed_fields and the complete current state are captured at the aggregate version and filtered per Application by its effective after-change profile, email, and phone consent scopes. The recipient union is authorized Applications immediately before or after the change, so a before-only recipient receives no fields it can no longer read. For the closed organization-member Application vocabulary (organization/ownership, tag, trust, membership/directory/authorization, and Silicon lifecycle or completed credential rotation events), recipient union, complete current state, and exact changed_fields are frozen in the domain transaction and filtered by profile, organizations.read, memberships.read, roles.read, and Carbon-only email/phone scopes. Member events always use current.members as an array; organization.updated uses current.organization and requires organizations.read; tag and trust events use current.resource plus current.members so their independently versioned aggregate is retained. Before-only recipients keep union-scope-filtered changed_fields but receive only stable resource/version authorization tombstones. Workers never hydrate these events from later state. An affected resource is an Application-readable principal or organization projection with an effective data scope; invitations, SSO/webhook configuration, administrative/protocol controls, and an unassigned tag creation have no Application projection. organization.membership.profile_updated.v1 and rotation-request, configuration, subscription, and protocol/control events are excluded from this Application projection vocabulary. organization.membership.profile_updated.v1 is the organization-bound Silicon projection of that mutation: it contains the changed non-contact profile fields, complete current membership state, and before/after affected tags captured at the same Carbon version."
+      }
+    }
+  },
+  "TestingWebhookEvent": {
+    "type": "object",
+    "required": [
+      "test"
+    ],
+    "additionalProperties": false,
+    "description": "Explicit test-plane envelope. The signature covers these exact outer bytes. testing_key is the environment root credential and must never be logged or persisted with the event.",
+    "properties": {
+      "test": {
+        "type": "object",
+        "required": [
+          "testing_key",
+          "metadata",
+          "data"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "testing_key": {
+            "$ref": "#/components/schemas/TestingEnvironmentKeyValue"
+          },
+          "metadata": {
+            "type": "object",
+            "required": [
+              "spec_version",
+              "event_id",
+              "event_type",
+              "occurred_at",
+              "organization_id",
+              "aggregate"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "spec_version": {
+                "const": "1.0"
+              },
+              "event_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "event_type": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+\\.v[1-9][0-9]*$"
+              },
+              "occurred_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "organization_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "uuid"
+              },
+              "aggregate": {
+                "type": "object",
+                "required": [
+                  "type",
+                  "id",
+                  "version"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "version": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  },
+  "SiliconFullEventType": {
+    "type": "string",
+    "description": "Exact closed 38-event vocabulary delivered by Silicon mode=all subscriptions.",
+    "enum": [
+      "organization.membership.created.v1",
+      "organization.membership.reactivated.v1",
+      "organization.membership.removed.v1",
+      "organization.silicon.created.v1",
+      "organization.silicon.removed.v1",
+      "organization.membership.updated.v1",
+      "organization.membership.profile_updated.v1",
+      "organization.membership.authorization_updated.v1",
+      "organization.ownership_transferred.v1",
+      "organization.admin.promoted.v1",
+      "organization.admin.demoted.v1",
+      "organization.silicon.updated.v1",
+      "organization.tag_updated.v1",
+      "organization.trust.default_updated.v1",
+      "organization.trust.rule_created.v1",
+      "organization.trust.rule_updated.v1",
+      "organization.trust.rule_archived.v1",
+      "organization.created.v1",
+      "organization.updated.v1",
+      "organization.tag_created.v1",
+      "organization.invitation.created.v1",
+      "organization.invitation.accepted.v1",
+      "organization.invitation.revoked.v1",
+      "organization.role_change.requested.v1",
+      "organization.tag_change.requested.v1",
+      "organization.approval.decided.v1",
+      "organization.silicon.rotation_requested.v1",
+      "organization.silicon.credential_rotated.v1",
+      "organization.silicon.webhook.configured.v1",
+      "organization.silicon.webhook.deleted.v1",
+      "organization.silicon.webhook_subscription.updated.v1",
+      "organization.silicon.webhook_subscription.deleted.v1",
+      "sso.setup_link.created.v1",
+      "sso.configuration.disabled.v1",
+      "sso.entitlement.replaced.v1",
+      "sso.connection.activated.v1",
+      "sso.connection.deactivated.v1",
+      "sso.connection.deleted.v1"
+    ]
+  },
+  "SiliconWebhookEvent": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/WebhookEvent"
+      },
+      {
+        "type": "object",
+        "required": [
+          "event_type"
+        ],
+        "properties": {
+          "event_type": {
+            "$ref": "#/components/schemas/SiliconFullEventType"
+          }
+        }
+      }
+    ]
+  },
+  "ApplicationAdminDecision": {
+    "type": "object",
+    "required": [
+      "decision"
+    ],
+    "additionalProperties": false,
+    "description": "Platform transition for an application that is already in use. Applications arrive verified, so this suspends, reactivates, rejects or deletes one rather than admitting it. delete is terminal, requires all application administration capabilities plus verified-channel step-up, and accepts reason only; approved_scopes is rejected.",
+    "properties": {
+      "decision": {
+        "type": "string",
+        "enum": [
+          "approve",
+          "reject",
+          "suspend",
+          "reactivate",
+          "delete",
+          "approve_pending_changes",
+          "reject_pending_changes"
+        ]
+      },
+      "approved_scopes": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string"
+        }
+      },
+      "reason": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 2000
+      }
+    }
+  },
+  "ApplicationOboEndpoint": {
+    "type": "object",
+    "required": [
+      "endpoint_id",
+      "path",
+      "metadata"
+    ],
+    "additionalProperties": false,
+    "description": "Callable endpoint definition configurable only by a current owner/admin of the Application's organization.",
+    "properties": {
+      "endpoint_id": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 128,
+        "pattern": "^[a-z][a-z0-9_.:-]{2,127}$",
+        "description": "Stable identifier; an existing identifier cannot be assigned a different path."
+      },
+      "path": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048,
+        "pattern": "^/(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*[?#\\x00-\\x20\\x7F]).*$",
+        "description": "Stable absolute audience-application endpoint path."
+      },
+      "metadata": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Each top-level key is required at exchange. A descriptor may declare type as string, number, integer, boolean, object, array, or null; size, nesting, and node count are bounded."
+      }
+    }
+  },
+  "OboEndpointReference": {
+    "type": "object",
+    "required": [
+      "endpoint_id",
+      "path"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "endpoint_id": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.:-]{2,127}$"
+      },
+      "path": {
+        "type": "string",
+        "maxLength": 2048
+      }
+    }
+  },
+  "OboApplicationReference": {
+    "type": "object",
+    "required": [
+      "app_id",
+      "org_id"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      }
+    }
+  },
+  "OboEndpointCatalog": {
+    "type": "object",
+    "required": [
+      "application",
+      "endpoints"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "application": {
+        "$ref": "#/components/schemas/OboApplicationReference"
+      },
+      "endpoints": {
+        "type": "array",
+        "maxItems": 50,
+        "description": "Active definitions ordered by endpoint_id.",
+        "items": {
+          "$ref": "#/components/schemas/ApplicationOboEndpoint"
+        }
+      }
+    }
+  },
+  "OboRequestMethod": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 32,
+    "pattern": "^[A-Z][A-Z0-9!#$%&'*+.^_`|~-]{0,31}$",
+    "description": "Canonical uppercase HTTP method included byte-for-byte in the OBO HMAC and proof binding."
+  },
+  "OboBodySha256": {
+    "type": "string",
+    "pattern": "^[0-9a-f]{64}$",
+    "description": "Lowercase hexadecimal SHA-256 digest of the exact downstream request body bytes."
+  },
+  "OboExchangeRequestBinding": {
+    "type": "object",
+    "required": [
+      "method",
+      "body_sha256"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "method": {
+        "$ref": "#/components/schemas/OboRequestMethod"
+      },
+      "body_sha256": {
+        "$ref": "#/components/schemas/OboBodySha256"
+      }
+    }
+  },
+  "OboVerifyRequestBinding": {
+    "type": "object",
+    "required": [
+      "method",
+      "path",
+      "body_sha256"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "method": {
+        "$ref": "#/components/schemas/OboRequestMethod"
+      },
+      "path": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048,
+        "pattern": "^/(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*[?#\\x00-\\x20\\x7F]).*$",
+        "description": "Exact registered path of the downstream request."
+      },
+      "body_sha256": {
+        "$ref": "#/components/schemas/OboBodySha256"
+      }
+    }
+  },
+  "OboExchangeRequest": {
+    "type": "object",
+    "required": [
+      "subject_token",
+      "audience",
+      "endpoint_id",
+      "metadata",
+      "request"
+    ],
+    "additionalProperties": false,
+    "description": "Organization is derived from App A and App B; org_id and X-Org-ID are not accepted.",
+    "properties": {
+      "subject_token": {
+        "type": "string",
+        "minLength": 32,
+        "maxLength": 4096,
+        "description": "Actor-bound application access token issued to the calling app."
+      },
+      "audience": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "endpoint_id": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 128,
+        "pattern": "^[a-z][a-z0-9_.:-]{2,127}$"
+      },
+      "metadata": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Exact metadata bound into the proof. It must contain every registered key, no unregistered keys, and values matching every declared type."
+      },
+      "request": {
+        "$ref": "#/components/schemas/OboExchangeRequestBinding"
+      }
+    }
+  },
+  "OboProofResponse": {
+    "type": "object",
+    "required": [
+      "access_proof",
+      "proof_id",
+      "expires_in",
+      "expires_at"
+    ],
+    "additionalProperties": false,
+    "description": "The idempotency replay envelope for this secret response expires no later than expires_at.",
+    "properties": {
+      "access_proof": {
+        "type": "string",
+        "pattern": "^obo_[A-Za-z0-9_-]{43}$"
+      },
+      "proof_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "expires_in": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 60,
+        "default": 60
+      },
+      "expires_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "OboVerifyRequest": {
+    "type": "object",
+    "required": [
+      "access_proof",
+      "request"
+    ],
+    "additionalProperties": false,
+    "description": "Exact actual-request binding; successful verification is strictly single-use and not idempotently replayable.",
+    "properties": {
+      "access_proof": {
+        "type": "string",
+        "pattern": "^obo_[A-Za-z0-9_-]{43}$"
+      },
+      "request": {
+        "$ref": "#/components/schemas/OboVerifyRequestBinding"
+      }
+    }
+  },
+  "OboAccessResult": {
+    "type": "object",
+    "required": [
+      "valid",
+      "proof_id",
+      "issuer_app_id",
+      "audience",
+      "actor",
+      "authorization",
+      "org_id",
+      "endpoint",
+      "metadata",
+      "expires_at",
+      "consumed_at"
+    ],
+    "properties": {
+      "valid": {
+        "const": true
+      },
+      "proof_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "issuer_app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "audience": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "actor": {
+        "$ref": "#/components/schemas/ActorRef"
+      },
+      "authorization": {
+        "$ref": "#/components/schemas/ApplicationAuthorization"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "endpoint": {
+        "$ref": "#/components/schemas/OboEndpointReference"
+      },
+      "metadata": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "expires_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "consumed_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  }
+}

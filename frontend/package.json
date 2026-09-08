@@ -1,0 +1,29 @@
+{
+  "name": "silicon-iam-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4310 --strictPort",
+    "check": "tsc --noEmit",
+    "build": "npm run check && vite build && node scripts/build-server.mjs",
+    "build:vercel": "npm run build && node scripts/build-vercel.mjs",
+    "start": "node dist/server/node.js",
+    "preview": "node --env-file=.env.development.local dist/server/node.js",
+    "format": "prettier --write src server vite.config.ts scripts/build-server.mjs"
+  },
+  "engines": {
+    "node": "24.x"
+  },
+  "dependencies": {
+    "solid-js": "1.9.15"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "esbuild": "0.28.2",
+    "prettier": "3.6.2",
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
+    "vite-plugin-solid": "2.11.14"
+  }
+}
