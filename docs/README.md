@@ -48,7 +48,8 @@ must be deployed and verified before publishing/adopting the client/CLI packages
 all-organizations login behavior below. Apps start login without `org_id`; the
 user selects at least one organization in IAM. Additive consent preserves existing
 grants; unselected and future memberships are not disclosed. Migrations 0072 and
-0073 and refreshed runtime grants are required. The SolidJS auth frontend lives
+0073 and refreshed runtime grants are required; backend follow-up 0074 preserves
+active-key-only webhook delivery during rotation. The SolidJS auth frontend lives
 in [`frontend/`](../frontend/); its integration and deployment docs live here in
 [`docs/frontend/`](frontend/).
 

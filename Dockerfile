@@ -11,7 +11,7 @@ WORKDIR /workspace
 
 ENV SILICON_IAM_GIT_COMMIT=${BUILD_REVISION}
 
-COPY Cargo.toml Cargo.lock rust-toolchain.toml rustfmt.toml ./
+COPY Cargo.toml Cargo.lock rust-toolchain.toml rustfmt.toml build.rs ./
 COPY migrations ./migrations
 COPY src ./src
 # The client and CLI are workspace members, so cargo has to be able to load

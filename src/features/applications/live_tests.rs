@@ -58,7 +58,8 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     crate::infrastructure::postgres::migrate(&pool).await?;
     seed_protocol_rows(&pool).await?;
 
-    an_unscoped_login_reaches_every_organization(&pool).await?;
+    selected_login_additions_preserve_existing_organizations(&pool).await?;
+    expired_obo_proof_cannot_be_consumed_after_transaction_wait(&pool).await?;
     consent_preserves_each_parent_session(&pool).await?;
     direct_test_creation_rejects_a_production_application_id(&pool).await?;
     qualified_application_directory_and_webhook_rotation_are_consistent(&pool).await?;
@@ -72,7 +73,6 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     refresh_reuse_compromises_the_complete_family(&pool).await?;
     consent_revocation_cascades_to_tokens(&pool).await?;
     obo_proof_is_single_use(&pool).await?;
-    expired_obo_proof_cannot_be_consumed_after_transaction_wait(&pool).await?;
     stale_obo_parent_authority_is_rejected(&pool).await?;
     committed_application_secret_revocation_wins_authentication(&pool).await?;
     organization_management_authority_tracks_current_roles(&pool).await?;
@@ -81,13 +81,14 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     Ok(())
 }
 
-/// An unscoped Application login is authority in every organization the subject
-/// is an active member of, resolved live; a bound one never leaves the single
-/// organization it named.
+/// Application authority follows explicit selected active memberships; additions
+/// preserve previous grants. A legacy bound token still cannot leave its org.
 ///
 /// The whole case runs in one transaction that is never committed, so it can be
 /// ordered anywhere in the suite without leaving an extra organization behind.
-async fn an_unscoped_login_reaches_every_organization(pool: &PgPool) -> anyhow::Result<()> {
+async fn selected_login_additions_preserve_existing_organizations(
+    pool: &PgPool,
+) -> anyhow::Result<()> {
     let mut transaction = pool.begin().await?;
     let unscoped_token = Uuid::from_u128(0x101);
     let bound_token = Uuid::from_u128(0x102);
@@ -125,12 +126,22 @@ async fn an_unscoped_login_reaches_every_organization(pool: &PgPool) -> anyhow::
     .execute(&mut *transaction)
     .await?;
 
-    // Joining an organization extends the login to it without reissuing it.
+    // Joining alone does not disclose the new organization.
+    let reachable = reachable_organizations(&mut transaction, unscoped_token).await?;
+    ensure!(reachable.as_deref() == Some(["test_org".to_owned()].as_slice()));
+    // Explicit additive consent extends the existing token without replacing it.
+    sqlx::query(
+        "UPDATE iam.oauth_consent_grants SET selected_membership_ids = array_append(selected_membership_ids, $1) WHERE id = $2",
+    )
+    .bind(second_membership)
+    .bind(CONSENT_ID)
+    .execute(&mut *transaction)
+    .await?;
     let reachable = reachable_organizations(&mut transaction, unscoped_token).await?;
     ensure!(
         reachable.as_deref()
             == Some(["test_org".to_owned(), "zz_second_org".to_owned()].as_slice()),
-        "an unscoped login did not follow its subject into a new organization: {reachable:?}"
+        "explicit additive consent did not preserve and extend the token: {reachable:?}"
     );
 
     // Reaching every organization still means answering for exactly one.
@@ -1737,6 +1748,8 @@ async fn expired_obo_proof_cannot_be_consumed_after_transaction_wait(
     pool: &PgPool,
 ) -> anyhow::Result<()> {
     let expiring_proof_id = Uuid::from_u128(0x122);
+    let mut issuance = pool.begin().await?;
+    set_context(&mut issuance, CARBON_ID, Some(ORGANIZATION_ID), APP_A_ID).await?;
     sqlx::query(
         r"
         WITH wall_clock AS MATERIALIZED (
@@ -1766,8 +1779,9 @@ async fn expired_obo_proof_cannot_be_consumed_after_transaction_wait(
     )
     .bind(expiring_proof_id)
     .bind(PROOF_ID)
-    .execute(pool)
+    .execute(&mut *issuance)
     .await?;
+    issuance.commit().await?;
 
     let mut verification = pool.begin().await?;
     sqlx::query("SELECT transaction_timestamp()")
@@ -1983,12 +1997,26 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
         );
         INSERT INTO iam.oauth_consent_grants (
             id, application_id, subject_principal_id, subject_kind,
-            parent_authentication_session_id
+            parent_authentication_session_id, selected_membership_ids
         ) VALUES (
             '00000000-0000-0000-0000-000000000071',
             '00000000-0000-0000-0000-000000000011',
             '00000000-0000-0000-0000-000000000001', 'carbon',
-            '00000000-0000-0000-0000-000000000041'
+            '00000000-0000-0000-0000-000000000041',
+            ARRAY['00000000-0000-0000-0000-000000000031'::uuid]
+        );
+        INSERT INTO iam.oauth_consent_grants (
+            id, application_id, subject_principal_id, subject_kind,
+            organization_id, membership_id, parent_authentication_session_id,
+            selected_membership_ids
+        ) VALUES (
+            '00000000-0000-0000-0000-000000000072',
+            '00000000-0000-0000-0000-000000000011',
+            '00000000-0000-0000-0000-000000000001', 'carbon',
+            '00000000-0000-0000-0000-000000000021',
+            '00000000-0000-0000-0000-000000000031',
+            '00000000-0000-0000-0000-000000000041',
+            ARRAY['00000000-0000-0000-0000-000000000031'::uuid]
         );
         INSERT INTO iam.oauth_consent_grant_scopes (consent_grant_id, scope)
         VALUES ('00000000-0000-0000-0000-000000000071', 'organizations.read');
@@ -2086,6 +2114,8 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             '00000000-0000-0000-0000-000000000012',
             'trust.manage', '/v1/trust', '{"reason":{"type":"string"}}'
         );
+        SELECT set_config('iam.principal_id', '00000000-0000-0000-0000-000000000001', true),
+               set_config('iam.application_id', '00000000-0000-0000-0000-000000000011', true);
         INSERT INTO iam.obo_proofs (
             id, proof_digest, digest_key_version, proof_prefix,
             issuer_application_id, audience_application_id,

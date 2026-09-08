@@ -101,6 +101,12 @@ compatible backend. The same migration applies in the shared testing database;
 its restricted security-definer ownership and environment isolation remain in
 force. Use the normal testing header/CLI `--test` selection for all flows.
 
+Apply the backend follow-up `0074_selected_consent_webhook_active_key` too.
+It preserves consent filtering while retaining the existing rule that new webhook
+events select exactly one active signing key per endpoint. Retiring keys remain
+available only for previously bound deliveries. Client/CLI 1.4.0 needs no package
+change for this backend-only correction.
+
 Existing explicitly single-organization grants retain only that organization.
 Legacy all-organization grants have no evidence of explicit user selection and
 receive **no organization authority** until the user revisits IAM and selects

@@ -1292,12 +1292,15 @@ mod tests {
               ('{profile_application_id}', 'profile', '{actor_id}');
             INSERT INTO iam.oauth_consent_grants (
                 id, application_id, subject_principal_id, subject_kind,
-                organization_id, membership_id, parent_authentication_session_id
+                organization_id, membership_id, parent_authentication_session_id,
+                selected_membership_ids
             ) VALUES
               ('{full_consent_id}', '{full_application_id}', '{silicon_id}', 'silicon',
-               '{organization_id}', '{silicon_membership_id}', '{silicon_session_id}'),
+               '{organization_id}', '{silicon_membership_id}', '{silicon_session_id}',
+               ARRAY['{silicon_membership_id}'::uuid]),
               ('{profile_consent_id}', '{profile_application_id}', '{silicon_id}', 'silicon',
-               '{organization_id}', '{silicon_membership_id}', '{silicon_session_id}');
+               '{organization_id}', '{silicon_membership_id}', '{silicon_session_id}',
+               ARRAY['{silicon_membership_id}'::uuid]);
             INSERT INTO iam.oauth_consent_grant_scopes (consent_grant_id, scope) VALUES
               ('{full_consent_id}', 'profile'),
               ('{full_consent_id}', 'organizations.read'),
