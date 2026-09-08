@@ -1619,7 +1619,10 @@ pub enum ConfigCommand {
     /// List configured profiles.
     Profiles,
     /// Set the directory used for IAM credentials and local configuration.
-    Home { location: PathBuf },
+    Home {
+        /// Existing directory to use for IAM credentials and configuration.
+        location: PathBuf,
+    },
     /// Set a value on the current profile.
     Set {
         /// One of `url`, `org`, `auto-update`.
