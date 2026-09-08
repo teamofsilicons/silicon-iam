@@ -1156,6 +1156,11 @@ paths:
     get:
       tags: [Memberships]
       operationId: getOrganizationDirectorySelf
+      description: >-
+        Read-only directory projection. Human/Silicon bearers and authenticated
+        Application access tokens may use this endpoint. Application tokens are
+        resolved through the token subject's active membership and cannot call
+        directory or governance mutation endpoints.
       security: [{ iamBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/OrgIdPath' }
@@ -1176,6 +1181,10 @@ paths:
     get:
       tags: [Memberships]
       operationId: listOrganizationDirectoryMembers
+      description: >-
+        Read-only directory listing. Human/Silicon bearers and authenticated
+        Application access tokens may use this endpoint; Application tokens are
+        never accepted by mutation routes.
       security: [{ iamBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/OrgIdPath' }
@@ -1198,6 +1207,10 @@ paths:
     get:
       tags: [Memberships]
       operationId: getOrganizationDirectoryMember
+      description: >-
+        Read-only directory member projection. Authenticated Application access
+        tokens may read role, tags, organization metadata and evaluated trust,
+        but cannot mutate directory or governance state.
       security: [{ iamBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/OrgIdPath' }

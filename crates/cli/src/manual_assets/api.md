@@ -727,6 +727,11 @@ evaluated from the requester's point of view for each row. The defined trust
 directions are Carbon-to-Silicon and Silicon-to-Silicon. Carbon-to-Carbon and
 Silicon-to-Carbon trust are undefined and therefore serialized as `null`.
 
+Authenticated Application access tokens may call these three read-only directory
+endpoints too. IAM resolves the token subject's active membership in the requested
+organization and returns the complete projection; Application tokens cannot perform
+directory or governance mutations such as changing roles, tags, trust, or membership.
+
 Removing a Carbon disables only that organization's authority. Removing a
 Silicon revokes every Silicon credential and session. If the Silicon has direct
 reports, `reassign_reports_to` is required and the graph rewrite is atomic.

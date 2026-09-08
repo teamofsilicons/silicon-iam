@@ -53,6 +53,8 @@ Three read-optimised endpoints answer "who is here, and what is my relationship 
 
 Each returns name, ID, job role, tags and trust. **Trust is always resolved from the caller's point of view** — the same pair reads differently depending on who is asking — so label the column accordingly rather than presenting it as an absolute property.
 
+An authenticated Application access token may use these read-only directory endpoints as well. IAM resolves the token subject's active membership in the requested organization and returns the complete directory projection, including role, tags, organization metadata and evaluated trust. Application tokens cannot use administrative or mutation endpoints such as removing members, changing roles, tags or trust.
+
 All three accept `fields` to narrow the projection. On a large directory this is the difference between a 12 KB and a 400 KB page, and it is worth using.
 
 The directory deliberately exposes public handles rather than `membership_id`. To act on somebody you need the membership endpoints, which are authority-checked.

@@ -537,7 +537,7 @@ pub(super) async fn get_member_authorization(
     Path((org_id, membership_id)): Path<(String, Uuid)>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let authorization = fetch_authorization(
         &mut scope.transaction,
         scope.access.organization_id,
