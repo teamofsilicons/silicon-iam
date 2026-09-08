@@ -1254,11 +1254,7 @@ async fn current_membership_scopes(
           ON consent.subject_principal_id = membership.principal_id
          AND consent.subject_kind = membership.principal_kind
          AND consent.status = 'active'
-         AND (
-             (consent.organization_id IS NULL AND consent.membership_id IS NULL)
-             OR (consent.organization_id = membership.organization_id
-                 AND consent.membership_id = membership.id)
-         )
+         AND membership.id = ANY(consent.selected_membership_ids)
         JOIN iam.oauth_consent_grant_scopes AS consent_scope
           ON consent_scope.consent_grant_id = consent.id
         JOIN iam.application_approved_scopes AS approved
@@ -1295,11 +1291,7 @@ async fn current_organization_scopes(
           ON consent.subject_principal_id = membership.principal_id
          AND consent.subject_kind = membership.principal_kind
          AND consent.status = 'active'
-         AND (
-             (consent.organization_id IS NULL AND consent.membership_id IS NULL)
-             OR (consent.organization_id = membership.organization_id
-                 AND consent.membership_id = membership.id)
-         )
+         AND membership.id = ANY(consent.selected_membership_ids)
         JOIN iam.oauth_consent_grant_scopes AS consent_scope
           ON consent_scope.consent_grant_id = consent.id
         JOIN iam.application_approved_scopes AS approved
@@ -1347,8 +1339,12 @@ async fn current_principal_scopes(
         WHERE consent.application_id = $1
           AND consent.subject_principal_id = $2
           AND consent.status = 'active'
-          AND ($3::uuid IS NULL OR consent.organization_id IS NULL
-               OR (consent.organization_id = $3 AND membership.status = 'active'))
+          AND ($3::uuid IS NULL OR EXISTS (
+              SELECT 1 FROM iam.organization_memberships selected
+              WHERE selected.id = ANY(consent.selected_membership_ids)
+                AND selected.organization_id = $3 AND selected.status = 'active'
+                AND selected.principal_id = consent.subject_principal_id
+          ))
         ORDER BY consent_scope.scope
         ",
     )

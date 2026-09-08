@@ -128,11 +128,11 @@ let event = verified.event();
 
 3. Create or import the Application and persist every one-time test secret.
 
-4. Mint the SLT with `short_lived_token_in_organization`, give the Application client only that SLT, complete `OAuth::login`, and introspect it with the matching organization in the same plane. Use an unscoped Carbon bearer and `short_lived_token` separately when proving an ordinary non-OBO login.
+4. Mint the SLT with `short_lived_token_in_organization`, give the Application client only that SLT, complete `OAuth::login`, and introspect it with the matching organization in the same plane. Use `short_lived_token_for_organizations` with explicit selections; test selected and unselected organizations separately.
 
 5. Prove production credentials fail inside the environment and test credentials fail without it.
 
-6. Verify and deduplicate a wrapped webhook; run OBO exchange/verification with the organization-bound access token, and prove an unscoped access token is refused.
+6. Verify and deduplicate a wrapped webhook; run OBO exchange/verification with the organization-bound access token, and prove a token without the calling app's organization in its selection is refused.
 
 7. Call `clean_current` with the key when the run finishes, or retire it from production.
 

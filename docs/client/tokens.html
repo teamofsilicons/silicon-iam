@@ -84,13 +84,12 @@ if current.active {
   The optional organization context must be one canonical organization handle. A handle that an
   organization-bound token is not bound to returns <code>active: false</code>; on a token from an
   unscoped login the handle selects one of the organizations it reaches, and returns
-  <code>active: false</code> when the subject is not an active member there. A malformed or
+  <code>active: false</code> when the organization is unselected or membership is inactive. A malformed or
   duplicate
   <code>X-Org-ID</code> is a request error. Unknown, expired and revoked tokens also return an
   inactive response rather than revealing which condition applied. Use introspection for current
-  authorization; a webhook is a notification, not an authorization cache. Mint the SLT with
-  <code>short_lived_token_in_organization</code> when the token must be active in an organization
-  or used for OBO.
+  authorization; a webhook is a notification, not an authorization cache. The user must
+  select the required organization in IAM before that token can read it or use it for OBO.
 </p>
 
 <h2>First login and rebuilding a missing authorization projection</h2>
@@ -106,13 +105,12 @@ if current.active {
 // None means no current organization authority; fail closed.
 // Do not replace missing role/tag disclosure with extra permissions.
 
-// A token from an unscoped login reaches every organization its subject
-// belongs to. List them, then authorize each request against the one it names.
+// A multi-organization token reaches only the user's selected active memberships. List them, then authorize each request against the one it names.
 let reachable = application.oauth()
     .authorizations(&amp;access_token)
     .await?;
 // None means the token is inactive. An empty list means it is live but its
-// subject holds no active membership anywhere; that is still no authority.</code></pre>
+// subject has no selected active memberships; that is still no authority.</code></pre>
 <p>
   The snapshot binds principal ID, public ID, organization ID and handle,
   membership ID/version, current authorization epoch, audience and testing
@@ -130,8 +128,8 @@ let reachable = application.oauth()
   environment/audience/organization/principal/membership/epoch/effective-scopes
   tuple. Never fill undisclosed fields from a broader cached token. After an
   IAM environment clean, reimport, onboard and log in again; old tokens cannot
-  reconstruct erased authority. Application bearer tokens do not gain access to
-  IAM's first-party member/directory management routes through this contract.
+  reconstruct erased authority. Application bearer tokens can read the selected organizations'
+  members, directory, tags and trust data, but cannot mutate those resources.
 </p>
 
 <h2>Revocation</h2>

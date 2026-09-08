@@ -51,10 +51,9 @@ query string, and redirect to a clean app URL afterward.
 
 `redirect_uri` is the app's implemented callback, **not** its backend `base_url`
 or webhook URL. The `tos>` prefix identifies the owning organization, not the
-user's required membership. Omit `org_id` for an unscoped login, as above, which
-reaches every organization the user is an active member of; append
-`&org_id=tos` to require active membership and confine the session to `tos`.
-Applications receive SLTs, never IAM OTPs.
+user's required membership. Do not supply `org_id`: IAM asks the user which
+organizations to share (at least one). Only that selected set is disclosed;
+future memberships are not added automatically. Applications receive SLTs, never IAM OTPs.
 This is separate from WorkOS organization SSO.
 
 See the [full application login example](api/applications.html#briefcase-login-example)
@@ -515,90 +514,48 @@ those four fields under the current strong ETag; the public `carbon_id` remains
 immutable. Existing accounts migrated before time zones were captured use the
 safe `UTC` default until the Carbon chooses another identifier.
 
-## OAuth 2.0
+## Application login and organization consent
 
-Silicon IAM implements one login for applications: a short-lived token that the
-application exchanges, using its own credential, for a session. There is no
-authorization-code negotiation, no PKCE exchange, no `state` round-trip and no
-consent screen.
+See [User-selected Application organization access](ORGANIZATION_CONSENT.md) for
+the complete API, Rust client, CLI, additive-access, upgrade and testing contract.
 
-**An application never receives anyone's credentials.** Nothing in this flow
-hands an application a password, a verification code, or any other
-authentication secret. The only thing it receives is the short-lived token.
+1. Send the browser to `<auth_base_url>/login?app_id=...&redirect_uri=...`.
+   Applications cannot supply `org_id` or select the user's organizations.
+2. IAM signs the user in, validates the Application, and presents organization
+   choices. The user chooses at least one or all current active organizations.
+3. IAM records the selection and returns a two-minute, single-use SLT. The
+   button shows loading and a successful authorization state before redirecting.
+4. The Application backend exchanges `app_id` and `slt`, using its own HTTP
+   Basic credentials and an idempotency key, at `POST /api/v1/app-auth/tokens`.
+   It receives a 30-minute access token and a rotating refresh token.
 
-### Login sequence
-
-```text
-Browser -> GET <auth_base_url>/login
-  app_id            names the application; without it this is an ordinary
-                    Silicon IAM login and no token is minted
-  redirect_uri      optional; decides delivery only
-  optional org_id
-
-IAM -> redirect_uri?slt=...        when a redirect URI was given
-IAM -> a page showing the token    when one was not
-
-Application backend -> POST /api/v1/app-auth/tokens
-  HTTP Basic app credentials
-  app_id + slt
-IAM -> opaque access token + rotating refresh token
-```
-
-Browser navigation uses the secure HttpOnly `iam_session` cookie, which is how
-IAM recognises somebody already signed in and goes straight to minting. The
-login endpoint never expects a bearer header on a top-level navigation.
-
-Redirect URIs are not registered. The caller names one in the query string and
-IAM appends `slt` to it. Short-lived tokens are keyed-digest stored, two-minute,
-single-use, and bound to client, actor and parent session. When the login names
-`org_id` (or its IAM bearer already carries organization context), the token is
-additionally bound to that exact active membership; otherwise it remains
-unscoped and reaches every organization the subject is an active member of,
-resolved live on each request rather than pinned at login.
-
-Before consuming a token, the exchange locks and revalidates current authority:
-the client application must still be verified on its current authentication
-epoch; the subject principal must be active; the exact parent session must be
-active, unexpired, subject-bound, and on the principal's current authentication
-epoch; any organization membership must still be active and match the original
-tenant and subject; and the exact consent grant must remain active and bound to
-that session and context. A failed revalidation returns the uniform
-`invalid_grant` response without consuming the token.
-
-The consent grant is no longer a prompt. It is written implicitly by the login
-and remains the record of which applications a principal is authorized in,
-which is what decides webhook recipients.
-
-Every successful exchange returns one rotating `ort_` refresh token. Reuse of
-any consumed family member compromises the whole family, revokes every member,
-and immediately revokes access tokens for that parent session and client
-application without revoking the session or another application's tokens.
-
-A login carries the whole scope catalogue. `scope` on an application is the
-webhook's scope — which changes it is told about — and does not bound what a
-session may read.
+Credentials stay in IAM. No Application may collect IAM OTPs, STKs or direct
+bearers. Bind the callback to the initiating browser; do not log its query.
 
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
-| GET | `/api/v1/login` | Mint a short-lived token; redirect with it or show it |
-| GET | `/api/v1/login/status` | Report whether a shown token was spent or expired |
-| POST | `/api/v1/app-auth/short-lived-tokens` | Mint one for a caller already signed in |
-| POST | `/api/v1/app-auth/tokens` | Exchange a short-lived token or rotate a refresh token |
+| GET | `/api/v1/login` | Navigate to IAM consent; never grants or mints on GET |
+| GET | `/api/v1/app-auth/organizations?app_id=...` | Direct IAM bearer: validate app and list the user's choices |
+| POST | `/api/v1/app-auth/short-lived-tokens` | Direct IAM bearer: submit `app_id`, required `org_ids`, optional `redirect_uri`; mint SLT |
+| GET | `/api/v1/login/status` | Report a displayed token's outcome on its exact parent IAM session |
+| POST | `/api/v1/app-auth/tokens` | Application secret + SLT exchange, or refresh rotation |
 
-`POST /api/v1/app-auth/short-lived-tokens` is how a Silicon signs in to an
-application: it has no browser to be redirected in. A Carbon that already holds
-a session uses the same route rather than starting another login. Its JSON body
-always names `app_id` and may name `org_id`. Supplying `org_id` requires the
-actor's active membership and binds the exchanged Application token family to
-that organization. Omitting it preserves an unscoped login unless the IAM
-bearer already carries organization context. An unscoped Application token
-reaches every organization its subject belongs to; OBO works from either form
-and always resolves the calling Application's own organization.
+Consent additions union with the selected membership IDs on the same parent
+IAM login. Existing multi-organization tokens retain their selected access.
+Joining another organization is not consent. Removed/suspended memberships lose
+access immediately. Independent parent IAM sessions remain independent.
+An empty selection fails; unknown/nonmember choices fail the whole operation.
 
-The token page's Content-Security-Policy is `default-src 'none'` widened only
-to `style-src 'self'`, `img-src 'self' data:` and `font-src` for the webfont. It
-has no `script-src` at all, which is why the page reports expiry with a meta
-refresh onto `/api/v1/login/status` rather than a timer.
+Application tokens can read organization lists and directory details only for
+selected active organizations. They cannot make restricted changes. Introspection
+without `X-Org-ID` lists only the selected set; selecting an unauthorized org
+returns inactive. OBO additionally requires selection of the calling app's own
+organization and remains same-organization only. Webhooks and replay use the same
+allowlist. Scope-catalogue permission never widens the organization selection.
+
+Exchange and refresh still revalidate the current client, actor, parent session,
+and consent. Reusing a consumed refresh token compromises its family and revokes
+the parent-session/client access tokens, without revoking unrelated app sessions.
 
 | Method | Endpoint | Behavior |
 | --- | --- | --- |

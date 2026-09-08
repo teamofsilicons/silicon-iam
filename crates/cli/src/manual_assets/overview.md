@@ -40,7 +40,15 @@ must be deployed and verified before publishing/adopting the client/CLI packages
 | Errors and recovery | [`api/errors.html`](./api/errors.html) | [`client/errors.html`](./client/errors.html) |
 | Automatic crate updates | — | [`client/updates.html`](./client/updates.html) |
 
-## Published documentation
+## Current source contract
+
+[User-selected organization consent](ORGANIZATION_CONSENT.md) supersedes the
+all-organizations login behavior below. Apps start login without `org_id`; the
+user selects at least one organization in IAM. Additive consent preserves existing
+grants; unselected and future memberships are not disclosed. Migrations 0072 and
+0073 are required. These source changes are not yet published or deployed.
+
+## Published documentation (historical)
 
 ### CLI/client 1.3.0
 

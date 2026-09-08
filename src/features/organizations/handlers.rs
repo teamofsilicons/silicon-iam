@@ -83,7 +83,15 @@ pub(super) async fn list_organizations(
     authenticated: Authenticated,
     Query(query): Query<StatusPageQuery>,
 ) -> Result<Response, AppError> {
-    let carbon_id = support::require_carbon(&authenticated)?;
+    let application_token = authenticated.0.client_application_id.is_some();
+    let carbon_id = if application_token {
+        if query.status.as_deref() == Some("removed") {
+            return Err(AppError::Forbidden);
+        }
+        authenticated.0.subject.id
+    } else {
+        support::require_carbon(&authenticated)?
+    };
     if query
         .status
         .as_deref()
@@ -134,6 +142,7 @@ pub(super) async fn list_organizations(
               ON caller_membership.organization_id = organization.id
              AND caller_membership.principal_id = $1
             WHERE caller_membership.status = 'active'
+              AND (NOT $4 OR iam_private.application_token_allows_membership($5, caller_membership.id))
               AND ($2::uuid IS NULL OR organization.id > $2)
             ORDER BY organization.id
             LIMIT $3
@@ -142,6 +151,8 @@ pub(super) async fn list_organizations(
         .bind(carbon_id)
         .bind(cursor)
         .bind(limit + 1)
+        .bind(application_token)
+        .bind(authenticated.0.token_id)
         .fetch_all(&mut *transaction)
         .await
         .map_err(support::database)?
@@ -271,7 +282,7 @@ pub(super) async fn get_organization(
     Path(org_id): Path<String>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let organization =
         fetch_organization(&mut scope.transaction, scope.access.organization_id).await?;
     scope
@@ -691,7 +702,7 @@ pub(super) async fn list_tags(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page(&query)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let mut tags = sqlx::query_as::<_, TagResponse>(
         r"
         SELECT
@@ -807,7 +818,7 @@ pub(super) async fn get_tag(
     Path((org_id, tag_id)): Path<(String, Uuid)>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let tag = fetch_tag(&mut scope.transaction, scope.access.organization_id, tag_id).await?;
     scope
         .transaction
@@ -1048,7 +1059,7 @@ pub(super) async fn list_tag_members(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page(&query)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     fetch_tag(&mut scope.transaction, scope.access.organization_id, tag_id).await?;
     let mut members = super::directory::list_members_query(
         &mut scope.transaction,

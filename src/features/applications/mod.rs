@@ -35,6 +35,10 @@ pub fn router() -> Router<ApiState> {
     Router::new()
         .route("/api/v1/login", get(oauth::login))
         .route("/api/v1/login/status", get(oauth::login_status))
+        .route(
+            "/api/v1/app-auth/organizations",
+            get(oauth::login_organizations),
+        )
         .route("/api/v1/app-auth/tokens", post(oauth::app_tokens))
         .route(
             "/api/v1/app-auth/short-lived-tokens",

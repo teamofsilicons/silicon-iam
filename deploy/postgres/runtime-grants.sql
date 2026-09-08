@@ -498,6 +498,7 @@ DECLARE
     api_function_names text[] := ARRAY[
         'active_organization_membership_id',
         'apply_approved_tag_change',
+        'application_token_allows_membership',
         'apply_workos_connection_event',
         'archive_organization_tag',
         'assert_active_carbon_contacts',
@@ -550,6 +551,7 @@ DECLARE
         'lock_current_application_obo_exchange_authority',
         'lock_governance_request_target',
         'lock_invitation_verification_challenge',
+        'lock_login_organization_selection',
         'lock_membership_removal_event_scope',
         'lock_organization_tag_scope',
         'lock_silicon_webhook_delivery_scope',

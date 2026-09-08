@@ -346,25 +346,21 @@ paths:
     get:
       tags: [Login]
       operationId: startLogin
-      summary: Sign in, and mint a short-lived token for an application.
+      summary: Open IAM sign-in and user-controlled organization selection.
       description: |
-        Naming an `app_id` makes this a login on that application's behalf and
-        produces a short-lived token; omitting it is an ordinary Silicon IAM
-        login and produces none. A `redirect_uri` decides delivery only: given
-        one, the token is appended to it as `slt` and the browser is sent there;
-        without one the token is rendered on a page, because there is nowhere to
-        send it. The token is valid for two minutes and for a single exchange.
+        Navigates to IAM sign-in, Application validation and explicit user organization
+        selection. GET never changes consent or issues a token. Apps must not supply
+        org_id. IAM requires at least one selected active organization; the trusted
+        IAM frontend submits the choice by POST. After authorization, the frontend
+        redirects with a two-minute single-use SLT, or displays it when no callback
+        was supplied. Selections are additive on the same parent IAM session.
       security: [{ sessionCookie: [] }]
       parameters:
         - { name: app_id, in: query, schema: { $ref: '#/components/schemas/AppId' } }
         - { name: redirect_uri, in: query, schema: { type: string, format: uri, maxLength: 2048 } }
-        - { name: org_id, in: query, schema: { $ref: '#/components/schemas/OrgId' } }
       responses:
-        '200':
-          description: The short-lived token rendered as HTML, when no redirect URI was given.
-          content: { text/html: { schema: { type: string } } }
         '302':
-          description: The given redirect URI with the short-lived token appended as `slt`.
+          description: The IAM authentication and organization-consent frontend.
           headers: { Location: { schema: { type: string, format: uri } } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -378,9 +374,9 @@ paths:
       operationId: readLoginStatus
       summary: Report what became of a short-lived token that was shown.
       description: |
-        The page that shows a token cannot run a script, so it carries a meta
-        refresh onto this route timed to the token's expiry. By then the token
-        has either been exchanged, and the login worked, or it has expired.
+        After displaying an SLT without a callback, the IAM frontend navigates
+        here at token expiry. The request must belong to the current IAM session.
+        The result reports whether the token was exchanged or expired.
       security: [{ sessionCookie: [] }]
       parameters:
         - { name: request, in: query, required: true, schema: { type: string, format: uuid } }
@@ -422,6 +418,26 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/app-auth/organizations:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    get:
+      tags: [Login]
+      operationId: listLoginOrganizations
+      summary: Validate an application and list organization choices for the IAM user.
+      description: Direct IAM Carbon/Silicon bearer only. Application credentials cannot list unselected organizations. Previously selected organizations on this parent IAM session are marked authorized.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: app_id, in: query, required: true, schema: { $ref: '#/components/schemas/AppId' } }
+      responses:
+        '200':
+          description: Verified application and active organization choices.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginOrganizations' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /api/v1/app-auth/short-lived-tokens:
     parameters:
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
@@ -430,7 +446,7 @@ paths:
       operationId: issueShortLivedToken
       summary: Get a short-lived token while already signed in.
       description: |
-        For a caller that already holds a session -- a Silicon, which has no
+        For a direct IAM caller that explicitly selects org_ids -- a Silicon, which has no
         browser to be redirected in, or a Carbon that should not have to start
         another login. The token is valid for two minutes and for a single
         exchange, and the application completes it at /api/v1/app-auth/tokens
@@ -3622,7 +3638,7 @@ components:
       name: X-Org-ID
       in: header
       required: false
-      description: Optional introspection organization context. An organization-bound token must agree with it; an unscoped token selects the named organization out of the ones its subject is an active member of, and reads inactive when it is not one of them. OBO never accepts this header.
+      description: Optional introspection organization context. An organization-bound token must agree with it; an unscoped token selects the named organization out of the user's explicitly selected active memberships, and reads inactive when it is not one of them. OBO never accepts this header.
       schema: { $ref: '#/components/schemas/OrgId' }
     SessionId:
       name: session_id
@@ -4093,7 +4109,7 @@ components:
         synchronous bootstrap/resynchronization snapshot. No directory mutation
         or webhook delivery is required. An organization-bound token returns the
         one organization it is bound to in authorization. An unscoped token
-        reaches every organization its subject is an active member of: send
+        reaches only explicitly selected organizations with active membership: send
         X-Org-ID to select one of them and read authorization, or send no header
         and read authorizations, which lists one snapshot per organization and
         is empty when the subject holds no membership anywhere. Exactly one of
@@ -4212,19 +4228,41 @@ components:
         silicon_token: { type: string, pattern: '^stk-[a-f0-9]{32}$' }
     ShortLivedTokenRequest:
       type: object
-      required: [app_id]
+      required: [app_id, org_ids]
       additionalProperties: false
       properties:
         app_id: { $ref: '#/components/schemas/AppId' }
-        org_id:
-          allOf: [{ $ref: '#/components/schemas/OrgId' }]
-          description: Optional organization membership to bind into the resulting Application tokens. Omit for an unscoped login.
+        org_ids:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/OrgId' }
+          description: User-selected active organizations. Adds to this application's existing grants on the same parent IAM session; never includes future memberships automatically. Only a direct IAM bearer may submit this selection.
+        redirect_uri: { type: string, format: uri, maxLength: 2048 }
+    LoginOrganization:
+      type: object
+      required: [org_id, name, authorized]
+      properties:
+        org_id: { $ref: '#/components/schemas/OrgId' }
+        name: { type: string }
+        authorized: { type: boolean }
+    LoginOrganizations:
+      type: object
+      required: [app_id, items]
+      properties:
+        app_id: { $ref: '#/components/schemas/AppId' }
+        app_name: { type: string }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/LoginOrganization' }
     ShortLivedToken:
       type: object
       required: [slt, expires_in]
       properties:
         slt: { type: string }
         expires_in: { type: integer }
+        request_id: { type: string, format: uuid, description: IAM login status identifier; never an application credential. }
     ApplicationTokenRequest:
       type: object
       required: [app_id]

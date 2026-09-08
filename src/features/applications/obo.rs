@@ -250,8 +250,8 @@ pub(super) async fn exchange(
     }
     // OBO never leaves the issuing Application's own organization. A subject
     // token bound to a different one is refused outright; an unscoped one
-    // reaches every organization its subject belongs to, so it resolves the
-    // membership here and is refused only when the subject has none.
+    // must resolve a selected active membership here. The authority lock
+    // rejects memberships absent from the user-controlled consent allowlist.
     let organization_id = client.organization_id;
     if access
         .organization_id
@@ -974,6 +974,7 @@ async fn exchange_replay_is_live(
                      AND parent.membership_id IS NULL
                      AND parent.membership_authz_epoch IS NULL)
              )
+             AND iam_private.application_token_allows_membership(parent.id, membership.id)
              AND parent.client_auth_epoch = issuer.auth_epoch
              AND parent.revoked_at IS NULL
              AND parent.expires_at > wall_clock.value

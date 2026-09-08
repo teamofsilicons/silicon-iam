@@ -16,6 +16,7 @@ ASSETS = "crates/cli/src/manual_assets"
 
 CATALOG = [
   ["overview", "Integration documentation index", "docs/README.md", %w[index]],
+  ["organization-consent", "User-selected Application organizations", "docs/ORGANIZATION_CONSENT.md", %w[consent organization-selection]],
   ["cli", "Complete CLI guide and command reference", "docs/cli/README.md", %w[commands]],
   ["storage", "CLI credential storage and concurrent sessions", "docs/cli/storage.md", %w[cli/storage]],
   ["api", "Complete HTTP API reference", "docs/API_DOCS.md", %w[http]],

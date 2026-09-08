@@ -48,7 +48,14 @@ pub async fn login(context: &Context, args: LoginArgs) -> Result<()> {
     if args.email.is_none() && args.phone.is_none() && args.carbon_id.is_none() {
         if let Some(app_id) = args.app_id.as_deref() {
             let authenticated = context.authenticated().await?;
-            return report_short_lived_token(context, &authenticated, app_id).await;
+            return report_short_lived_token(
+                context,
+                &authenticated,
+                app_id,
+                &args.grant_orgs,
+                args.all_orgs,
+            )
+            .await;
         }
         return Err(CliError::Usage(
             "give one of --email, --phone or --carbon-id, or use --app-id with the stored session"
@@ -96,7 +103,14 @@ pub async fn login(context: &Context, args: LoginArgs) -> Result<()> {
 
     if let Some(app_id) = args.app_id.as_deref() {
         let authenticated = context.authenticated().await?;
-        return report_short_lived_token(context, &authenticated, app_id).await;
+        return report_short_lived_token(
+            context,
+            &authenticated,
+            app_id,
+            &args.grant_orgs,
+            args.all_orgs,
+        )
+        .await;
     }
 
     match context.format {
@@ -133,7 +147,14 @@ pub async fn silicon_login(context: &Context, args: SiliconLoginArgs) -> Result<
             ));
         }
         let authenticated = context.authenticated().await?;
-        return report_short_lived_token(context, &authenticated, app_id).await;
+        return report_short_lived_token(
+            context,
+            &authenticated,
+            app_id,
+            &args.grant_orgs,
+            args.all_orgs,
+        )
+        .await;
     }
     let sid = match args.sid {
         Some(value) => value,
@@ -172,7 +193,14 @@ pub async fn silicon_login(context: &Context, args: SiliconLoginArgs) -> Result<
     let authenticated = context.authenticated().await?;
 
     if let Some(app_id) = args.app_id.as_deref() {
-        return report_short_lived_token(context, &authenticated, app_id).await;
+        return report_short_lived_token(
+            context,
+            &authenticated,
+            app_id,
+            &args.grant_orgs,
+            args.all_orgs,
+        )
+        .await;
     }
 
     let signed_in = authenticated.silicons().get(&org, &sid).await?;
@@ -193,15 +221,72 @@ fn report_silicon_login(context: &Context, signed_in: &models::Silicon) -> Resul
 }
 
 /// Asks for a short-lived token on an existing session and prints it.
-async fn report_short_lived_token(context: &Context, client: &Client, app_id: &str) -> Result<()> {
+async fn report_short_lived_token(
+    context: &Context,
+    client: &Client,
+    app_id: &str,
+    requested: &[String],
+    all_orgs: bool,
+) -> Result<()> {
     let app_id = context.application_id(app_id)?;
+    let choices = client.auth().login_organizations(&app_id).await?;
+    let org_ids = if all_orgs {
+        choices
+            .items
+            .iter()
+            .map(|org| org.org_id.clone())
+            .collect::<Vec<_>>()
+    } else if !requested.is_empty() {
+        requested.to_vec()
+    } else {
+        if !std::io::stdin().is_terminal() {
+            return Err(CliError::Usage(
+                "Choose the organizations to share: --grant-org <org>[,<org>...] or --all-orgs. --org and stored defaults never grant Application access.".to_owned(),
+            ));
+        }
+        eprintln!(
+            "Verified application: {} ({app_id})",
+            choices.app_name.as_deref().unwrap_or(&app_id)
+        );
+        eprintln!(
+            "Choose which organizations to share. Existing grants are kept; future memberships are not included."
+        );
+        for org in &choices.items {
+            eprintln!(
+                "  {} — {}{}",
+                org.org_id,
+                org.name,
+                if org.authorized {
+                    " (already authorized)"
+                } else {
+                    ""
+                }
+            );
+        }
+        let selection = prompt(
+            "Organization handles (comma-separated), or all: ",
+            "Use --grant-org or --all-orgs.",
+        )?;
+        if selection.trim() == "all" {
+            choices.items.iter().map(|org| org.org_id.clone()).collect()
+        } else {
+            selection
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        }
+    };
+    if org_ids.is_empty() {
+        return Err(CliError::Usage(
+            "Select at least one active organization. Join or create an organization in IAM first."
+                .to_owned(),
+        ));
+    }
     let issued = client
         .auth()
-        .short_lived_token_in_organization(
-            &app_id,
-            context.organization_if_set(),
-            &context.mutation(),
-        )
+        .short_lived_token_for_organizations(&app_id, &org_ids, &context.mutation())
         .await?;
     match context.format {
         Format::Json => json(&issued),

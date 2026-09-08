@@ -236,6 +236,12 @@ pub(super) fn scopes(values: &[String]) -> Result<(), ApiError> {
 /// delivered. There is nothing else to validate -- the login grants the whole
 /// scope catalogue, so there are no scopes to parse or approve.
 pub(super) fn login(query: &model::LoginQuery) -> Result<(), ApiError> {
+    if query.app_id.is_some() && query.org_id.is_some() {
+        return Err(ApiError::bad_request(
+            "organization_selection_required",
+            "Applications cannot choose org_id. Start login without it; the user selects organizations in IAM.",
+        ));
+    }
     if let Some(value) = &query.app_id {
         app_id(value)?;
     }

@@ -349,7 +349,7 @@ impl Plan {
                 );
             }
             AppTokenCommand::Authorizations { app_id, .. } => {
-                self.note("An unscoped login reaches every organization its subject belongs to, and that set changes as memberships change. Authorize each request against the organization it names; never treat one listed organization as authority in another.");
+                self.note("An Application login reaches only explicitly selected active organizations. New memberships are not shared until the user adds them in IAM. Authorize each request against the organization it names; never treat one listed organization as authority in another.");
                 let app_id = context
                     .application_id(app_id)
                     .unwrap_or_else(|_| app_id.clone());

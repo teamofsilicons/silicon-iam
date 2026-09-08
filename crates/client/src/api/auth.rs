@@ -162,27 +162,41 @@ impl Auth<'_> {
         app_id: &str,
         mutation: &Mutation,
     ) -> Result<models::ShortLivedToken> {
-        self.short_lived_token_in_organization(app_id, None, mutation)
+        let choices = self.login_organizations(app_id).await?;
+        let org_ids = choices
+            .items
+            .into_iter()
+            .filter(|org| org.authorized)
+            .map(|org| org.org_id)
+            .collect::<Vec<_>>();
+        self.short_lived_token_for_organizations(app_id, &org_ids, mutation)
             .await
     }
 
-    /// Gets a short-lived token bound to an optional organization membership.
-    ///
-    /// Supplying `org_id` makes the exchanged Application tokens usable only
-    /// in that exact organization and is required before issuing OBO proofs.
-    /// The authenticated principal must have an active membership there.
-    /// When omitted, the resulting login preserves any organization already
-    /// carried by the bearer. A global Carbon session therefore stays
-    /// unscoped, while an organization-bound Silicon session stays bound.
+    /// Validates the application and lists the direct IAM user's choices.
+    /// Application credentials cannot call this endpoint or enumerate hidden organizations.
     ///
     /// # Errors
+    /// Fails if the bearer is not a direct IAM session or the app is not verified.
+    pub async fn login_organizations(&self, app_id: &str) -> Result<models::LoginOrganizations> {
+        self.0
+            .get_with(
+                &["app-auth", "organizations"],
+                &[("app_id", app_id.to_owned())],
+            )
+            .await
+    }
+
+    /// Grants the explicitly selected organizations and returns a single-use SLT.
+    /// Additive on this parent IAM session: existing selections remain available
+    /// to existing tokens. Newly joined organizations are never automatic.
     ///
-    /// Returns an error when the application is unknown, the organization
-    /// handle is invalid, or the caller is not an active member.
-    pub async fn short_lived_token_in_organization(
+    /// # Errors
+    /// Fails on an empty selection, nonmembership, or Application credentials.
+    pub async fn short_lived_token_for_organizations(
         &self,
         app_id: &str,
-        org_id: Option<&str>,
+        org_ids: &[String],
         mutation: &Mutation,
     ) -> Result<models::ShortLivedToken> {
         self.0
@@ -190,10 +204,33 @@ impl Auth<'_> {
                 &["app-auth", "short-lived-tokens"],
                 &models::ShortLivedTokenRequest {
                     app_id: app_id.to_owned(),
-                    org_id: org_id.map(ToOwned::to_owned),
+                    org_ids: org_ids.to_vec(),
+                    redirect_uri: None,
                 },
                 mutation,
             )
             .await
+    }
+
+    /// Compatibility helper: adds one explicit organization to this IAM session's
+    /// Application grant. It does not create a single-organization token family.
+    /// Omit the organization only to reuse previously selected organizations.
+    ///
+    /// # Errors
+    ///
+    /// Fails when there is no selection, membership is inactive, or the bearer
+    /// is not a direct IAM session. Prefer `short_lived_token_for_organizations`.
+    pub async fn short_lived_token_in_organization(
+        &self,
+        app_id: &str,
+        org_id: Option<&str>,
+        mutation: &Mutation,
+    ) -> Result<models::ShortLivedToken> {
+        if let Some(org_id) = org_id {
+            self.short_lived_token_for_organizations(app_id, &[org_id.to_owned()], mutation)
+                .await
+        } else {
+            self.short_lived_token(app_id, mutation).await
+        }
     }
 }

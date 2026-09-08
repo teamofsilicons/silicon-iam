@@ -1723,6 +1723,29 @@ pub struct LoginEventPage {
     pub page: PageInfo,
 }
 
+/// Contract type `LoginOrganization`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LoginOrganization {
+    /// The contract's `org_id`.
+    pub org_id: OrgId,
+    /// The contract's `name`.
+    pub name: String,
+    /// The contract's `authorized`.
+    pub authorized: bool,
+}
+
+/// Contract type `LoginOrganizations`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LoginOrganizations {
+    /// The contract's `app_id`.
+    pub app_id: AppId,
+    /// The contract's `app_name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    /// The contract's `items`.
+    pub items: Vec<LoginOrganization>,
+}
+
 /// Contract type `LogoutRequest`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LogoutRequest {
@@ -2209,6 +2232,9 @@ pub struct ShortLivedToken {
     pub slt: String,
     /// The contract's `expires_in`.
     pub expires_in: i64,
+    /// IAM login status identifier; never an application credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<Uuid>,
 }
 
 /// Contract type `ShortLivedTokenRequest`.
@@ -2216,10 +2242,14 @@ pub struct ShortLivedToken {
 pub struct ShortLivedTokenRequest {
     /// The contract's `app_id`.
     pub app_id: AppId,
-    /// Optional organization membership to bind into the resulting
-    /// Application tokens. Omit for an unscoped login.
+    /// User-selected active organizations. Adds to this application's
+    /// existing grants on the same parent IAM session; never includes future
+    /// memberships automatically. Only a direct IAM bearer may submit this
+    /// selection.
+    pub org_ids: Vec<OrgId>,
+    /// The contract's `redirect_uri`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub org_id: Option<OrgId>,
+    pub redirect_uri: Option<String>,
 }
 
 /// Contract type `Silicon`.
@@ -2901,11 +2931,11 @@ pub struct TestingWebhookEvent {
 /// synchronous bootstrap/resynchronization snapshot. No directory mutation or
 /// webhook delivery is required. An organization-bound token returns the one
 /// organization it is bound to in authorization. An unscoped token reaches
-/// every organization its subject is an active member of: send X-Org-ID to
-/// select one of them and read authorization, or send no header and read
-/// authorizations, which lists one snapshot per organization and is empty
-/// when the subject holds no membership anywhere. Exactly one of the two
-/// fields is ever present. Refresh tokens carry no organization
+/// only explicitly selected organizations with active membership: send
+/// X-Org-ID to select one of them and read authorization, or send no header
+/// and read authorizations, which lists one snapshot per organization and is
+/// empty when the subject holds no membership anywhere. Exactly one of the
+/// two fields is ever present. Refresh tokens carry no organization
 /// authorization.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TokenIntrospection {

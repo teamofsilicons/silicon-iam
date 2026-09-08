@@ -64,7 +64,7 @@ pub(super) async fn get_default_trust(
     Path(org_id): Path<String>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let (boundary, level, version) = sqlx::query_as::<_, (String, String, i64)>(
         "SELECT default_trust_boundary::text, default_trust_level::text, version FROM iam.organizations WHERE id = $1",
     )
@@ -183,7 +183,7 @@ pub(super) async fn list_trust_rules(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page(&query)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let rows = sqlx::query_as::<_, TrustRuleRow>(TRUST_RULE_LIST_SQL)
         .bind(scope.access.organization_id)
         .bind(cursor)
@@ -310,7 +310,7 @@ pub(super) async fn get_trust_rule(
     Path((org_id, rule_id)): Path<(String, Uuid)>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let rule = fetch_rule(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -537,7 +537,7 @@ pub(super) async fn evaluate_trust(
     Json(input): Json<TrustEvaluationInput>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     validate_evaluation(&mut scope.transaction, scope.access.organization_id, &input).await?;
     let (default_boundary, default_level) =
         sqlx::query_as::<_, (String, String)>(TRUST_DEFAULT_FOR_SUBJECT_SQL)

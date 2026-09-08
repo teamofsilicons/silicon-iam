@@ -185,11 +185,10 @@
 </p>
 
 <p>
-  It is what lets <code>GET /api/v1/login</code> recognise somebody who is already signed in and
-  go straight to minting their short-lived token instead of asking them to log in again.
-  Application login may supply <code>org_id</code> to require an active membership and bind the
-  resulting token family to that organization. Omitting it keeps a Carbon login unscoped, which
-  reaches every organization the Carbon is an active member of rather than none.
+  IAM recognizes an existing session and shows Application validation followed by
+  its organization picker. The user must choose at least one organization. Apps
+  cannot supply <code>org_id</code>. GET navigation never mints a token; the trusted
+  IAM interface submits explicit <code>org_ids</code> with a direct IAM bearer.
 </p>
 
 <div class="banner banner-info">

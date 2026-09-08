@@ -35,8 +35,7 @@ version it builds, especially after dependency maintenance.
 
 The 1.3.0 client adds `oauth().authorizations(access_token)`, which lists one
 authorization snapshot per organization an access token currently reaches: one
-for an organization-bound token, one per active membership for a token from an
-unscoped login, and an empty list when its subject holds no membership anywhere.
+for an organization-bound token, one per selected active membership for a multi-organization login, and an empty list when its subject holds no membership anywhere.
 `oauth().authorization(...)` is unchanged and still answers for a single
 organization. Deploy the matching backend, including migration `0071`, before
 using the new method; against an older API it returns `Error::Decode` rather
@@ -237,18 +236,16 @@ OTP or refresh-token input: the SLT is the only credential that can begin an
 Application session. Renew an existing session separately with
 `OAuth::refresh(app_id, refresh_token, mutation)`.
 
-A Silicon has no browser, and a Carbon that already holds a session should not
-have to start another one. `client.auth().short_lived_token(app_id,
-&Mutation::new())` requests no new organization context: an unscoped Carbon
-bearer remains unscoped, while a bearer already carrying a context retains it.
-Use `short_lived_token_in_organization(app_id, Some("acme"),
-&Mutation::new())` to
-require the caller's active `acme` membership and bind the exchanged
-Application token family to that organization. An unscoped Application access
-token instead reaches every organization its subject is an active member of:
-`OAuth::authorizations` lists them, `OAuth::authorization` answers for one named
-organization, and OBO resolves the membership in the calling Application's own
-organization.
+For a direct IAM Carbon/Silicon session, call `auth().login_organizations(app_id)`
+and present its choices to the user. Then call
+`auth().short_lived_token_for_organizations(app_id, &selected_org_ids, &Mutation::new())`.
+The selected set is additive on the same parent login. `short_lived_token`
+reuses only existing grants; it does not mean “all organizations”.
+The compatibility single-organization helper now adds that explicit selection.
+Applications never call these methods with their own credentials; initiate
+IAM browser login and receive an SLT instead.
+
+See [organization consent](../ORGANIZATION_CONSENT.md) for scope, CLI, and upgrade details.
 
 For OBO, hash the exact downstream bytes with
 `api::obo::body_sha256`, build one `OboExchangeRequest`, and pass that request,

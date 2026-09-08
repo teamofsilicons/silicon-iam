@@ -325,8 +325,26 @@ pub(super) struct LoginQuery {
 #[serde(deny_unknown_fields)]
 pub(super) struct ShortLivedTokenRequest {
     pub(super) app_id: String,
+    /// Explicit user selection, never inferred from an Application login URL.
+    #[serde(default)]
+    pub(super) org_ids: Vec<String>,
     #[serde(default)]
     pub(super) org_id: Option<String>,
+    #[serde(default)]
+    pub(super) redirect_uri: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LoginOrganizationsQuery {
+    pub(super) app_id: String,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+pub(super) struct LoginOrganization {
+    pub(super) org_id: String,
+    pub(super) name: String,
+    pub(super) authorized: bool,
 }
 
 /// A short-lived token handed to a caller who is already signed in.
@@ -334,6 +352,8 @@ pub(super) struct ShortLivedTokenRequest {
 pub(super) struct ShortLivedTokenResponse {
     pub(super) slt: String,
     pub(super) expires_in: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) request_id: Option<Uuid>,
 }
 
 /// Which login a token page is reporting on.

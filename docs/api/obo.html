@@ -16,12 +16,11 @@
   <div>
     <strong>OBO never leaves the calling Application's own organization.</strong>
     A subject token bound to a different organization is rejected with
-    <code>403 obo_organization_mismatch</code>. An unscoped subject token reaches every
-    organization its subject belongs to, so IAM resolves the membership in the calling
-    Application's organization and rejects it with <code>403 obo_membership_required</code> only
-    when the subject is not an active member there. Binding the token in advance with
-    <code>org_id</code> is still the clearer choice when the Application already knows the
-    organization.
+    <code>403 obo_organization_mismatch</code>. A multi-organization subject token reaches only
+    the user's explicitly selected active memberships. IAM resolves the calling Application's
+    organization and refuses OBO when it is unselected or membership is inactive. The user
+    must select that organization in IAM; Applications cannot supply <code>org_id</code>
+    to choose it on the user's behalf.
   </div>
 </div>
 

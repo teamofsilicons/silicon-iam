@@ -65,7 +65,7 @@ if current.active {
 }
 ```
 
-The optional organization context must be one canonical organization handle. A handle that an organization-bound token is not bound to returns `active: false`; on a token from an unscoped login the handle selects one of the organizations it reaches, and returns `active: false` when the subject is not an active member there. A malformed or duplicate `X-Org-ID` is a request error. Unknown, expired and revoked tokens also return an inactive response rather than revealing which condition applied. Use introspection for current authorization; a webhook is a notification, not an authorization cache. Mint the SLT with `short_lived_token_in_organization` when the token must be active in an organization or used for OBO.
+The optional organization context must be one canonical organization handle. A handle that an organization-bound token is not bound to returns `active: false`; on a token from an unscoped login the handle selects one of the organizations it reaches, and returns `active: false` when the organization is unselected or membership is inactive. A malformed or duplicate `X-Org-ID` is a request error. Unknown, expired and revoked tokens also return an inactive response rather than revealing which condition applied. Use introspection for current authorization; a webhook is a notification, not an authorization cache. The user must select the required organization in IAM before that token can read it or use it for OBO.
 
 ## First login and rebuilding a missing authorization projection
 
@@ -78,18 +78,17 @@ let authority = application.oauth()
 // None means no current organization authority; fail closed.
 // Do not replace missing role/tag disclosure with extra permissions.
 
-// A token from an unscoped login reaches every organization its subject
-// belongs to. List them, then authorize each request against the one it names.
+// A multi-organization token reaches only the user's selected active memberships. List them, then authorize each request against the one it names.
 let reachable = application.oauth()
     .authorizations(&access_token)
     .await?;
 // None means the token is inactive. An empty list means it is live but its
-// subject holds no active membership anywhere; that is still no authority.
+// subject has no selected active memberships; that is still no authority.
 ```
 
 The snapshot binds principal ID, public ID, organization ID and handle, membership ID/version, current authorization epoch, audience and testing environment. `org_role` requires `roles.read`; `tags` requires `memberships.read`. Null means undisclosed; an empty tag array means the disclosed membership has no active tags. No unrelated directory edit or webhook delivery is required. One snapshot is one organization: never carry a role, tag or epoch disclosed for one organization into a request that names another. Refresh tokens do not carry organization authorization.
 
-Keep webhook updates for asynchronous projection maintenance, but introspect current access tokens before authorizing. Bind any cache to the full environment/audience/organization/principal/membership/epoch/effective-scopes tuple. Never fill undisclosed fields from a broader cached token. After an IAM environment clean, reimport, onboard and log in again; old tokens cannot reconstruct erased authority. Application bearer tokens do not gain access to IAM's first-party member/directory management routes through this contract.
+Keep webhook updates for asynchronous projection maintenance, but introspect current access tokens before authorizing. Bind any cache to the full environment/audience/organization/principal/membership/epoch/effective-scopes tuple. Never fill undisclosed fields from a broader cached token. After an IAM environment clean, reimport, onboard and log in again; old tokens cannot reconstruct erased authority. Application bearer tokens can read the selected organizations' members, directory, tags and trust data, but cannot mutate those resources.
 
 ## Revocation
 

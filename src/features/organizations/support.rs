@@ -134,6 +134,17 @@ pub(crate) async fn begin_directory_organization<'a>(
     {
         return Err(AppError::Forbidden);
     }
+    let selected = sqlx::query_scalar::<_, bool>(
+        "SELECT iam_private.application_token_allows_membership($1, $2)",
+    )
+    .bind(authenticated.0.token_id)
+    .bind(access.membership_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(database)?;
+    if !selected {
+        return Err(AppError::NotFound);
+    }
     context::select_organization(&mut transaction, access.organization_id)
         .await
         .map_err(database)?;

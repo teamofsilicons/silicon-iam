@@ -58,6 +58,8 @@ pub(super) const OAUTH_CONSENT_UPSERT_QUERY: &str = r"
         parent_authentication_session_id
     ) DO UPDATE SET
         status = 'active', membership_id = EXCLUDED.membership_id,
+        selected_membership_ids = CASE WHEN iam.oauth_consent_grants.status = 'active'
+            THEN iam.oauth_consent_grants.selected_membership_ids ELSE '{}'::uuid[] END,
         revoked_at = NULL
     RETURNING id, version
 ";
@@ -324,134 +326,77 @@ enum RevokedTarget {
 /// because there is nowhere to send it and a token the caller cannot read is
 /// no use to them.
 ///
-/// There is no consent step and no scope negotiation: the login carries the
-/// whole catalogue, and the consent grant is written implicitly so that
-/// webhook recipients still resolve.
+/// IAM validates the app, then collects the user's organization selection.
+/// This GET never mints a token or changes consent.
 pub(super) async fn login(
     State(state): State<ApiState>,
     MaybeBrowserSession(session): MaybeBrowserSession,
     Query(query): Query<LoginQuery>,
 ) -> Result<Response, ApiError> {
     validation::login(&query)?;
-    // "In iam if the user is already logged in, move on to the next step.
-    // Otherwise prompt the login." The prompt is a browser surface and lives
-    // in the authentication frontend, so an unauthenticated visitor is sent
-    // there with their request intact rather than being told, in JSON, that
-    // they are not signed in.
-    let Some(session) = session else {
-        return redirect_response(StatusCode::FOUND, &sign_in_location(&state, &query)?, false);
-    };
-    let Some(app_id) = query.app_id.as_deref() else {
-        return Ok(login_page(
-            "Signed in",
-            "You are signed in.",
-            "No application asked for this login, so there is no token to hand over.",
-            "",
-            "Name an app_id in the query to sign in on an application's behalf.",
-            None,
-        ));
-    };
-    let mut transaction = context::begin(state.db(), DatabaseContext::principal(session.carbon_id))
+    // GET never grants authority. IAM submits the user's selection by POST.
+    let _ = session;
+    redirect_response(StatusCode::FOUND, &sign_in_location(&state, &query)?, false)
+}
+
+pub(super) async fn login_organizations(
+    State(state): State<ApiState>,
+    Bearer(access): Bearer,
+    Query(query): Query<super::model::LoginOrganizationsQuery>,
+) -> Result<Response, ApiError> {
+    require_direct_login(&access)?;
+    validation::app_id(&query.app_id)?;
+    let mut transaction = context::begin(state.db(), DatabaseContext::principal(access.subject.id))
         .await
-        .map_err(|_| ApiError::internal("login_context"))?;
+        .map_err(|_| ApiError::internal("login_choices_context"))?;
     let app = sqlx::query_as::<_, AuthorizeApplicationRow>(
+        "SELECT a.id, a.app_id, a.app_name FROM iam.applications a JOIN iam.principals p ON p.id = a.id WHERE a.app_id = $1 AND a.review_status = 'verified' AND a.deleted_at IS NULL AND p.status = 'active'",
+    ).bind(&query.app_id).fetch_optional(&mut *transaction).await
+        .map_err(|_| ApiError::internal("login_choices_application"))?
+        .ok_or_else(|| ApiError::bad_request("invalid_request", "The application is unknown or not verified."))?;
+    let items = sqlx::query_as::<_, super::model::LoginOrganization>(
         r"
-        SELECT application.id, application.app_id, application.app_name
-        FROM iam.applications AS application
-        JOIN iam.principals AS principal
-          ON principal.id = application.id
-         AND principal.kind = 'application'
-         AND principal.status = 'active'
-        WHERE application.app_id = $1
-          AND application.review_status = 'verified'
-          AND application.deleted_at IS NULL
-        ",
+        SELECT o.org_id, o.name, EXISTS (
+            SELECT 1 FROM iam.oauth_consent_grants c
+            WHERE c.application_id = $2 AND c.subject_principal_id = $1
+              AND c.parent_authentication_session_id = $3 AND c.status = 'active'
+              AND m.id = ANY(c.selected_membership_ids)
+        ) AS authorized
+        FROM iam.organization_memberships m
+        JOIN iam.organizations o ON o.id = m.organization_id AND o.status = 'active'
+        WHERE m.principal_id = $1 AND m.status = 'active'
+        ORDER BY o.org_id
+    ",
     )
-    .bind(app_id)
-    .fetch_optional(&mut *transaction)
+    .bind(access.subject.id)
+    .bind(app.id)
+    .bind(access.authentication_session_id)
+    .fetch_all(&mut *transaction)
     .await
-    .map_err(|_| ApiError::internal("login_application"))?
-    .ok_or_else(|| ApiError::bad_request("invalid_request", "The application is unknown."))?;
-    // "Scope of the login is always everything": the catalogue is the consent.
-    let scopes =
-        sqlx::query_scalar::<_, String>("SELECT scope FROM iam.oauth_scope_catalog ORDER BY scope")
-            .fetch_all(&mut *transaction)
-            .await
-            .map_err(|_| ApiError::internal("login_scopes"))?;
-    let organization = if let Some(org_id) = &query.org_id {
-        Some(
-            sqlx::query_as::<_, SubjectOrganizationRow>(
-                r"
-                SELECT organization.id AS organization_id,
-                       membership.id AS membership_id
-                FROM iam.organizations AS organization
-                JOIN iam.organization_memberships AS membership
-                  ON membership.organization_id = organization.id
-                 AND membership.principal_id = $2
-                 AND membership.principal_kind = 'carbon'
-                 AND membership.status = 'active'
-                WHERE organization.org_id = $1 AND organization.status = 'active'
-                ",
-            )
-            .bind(org_id)
-            .bind(session.carbon_id)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|_| ApiError::internal("login_org"))?
-            .ok_or_else(|| ApiError::forbidden("organization_context_forbidden"))?,
-        )
-    } else {
-        None
-    };
-    let (request_id, token) = mint_short_lived_token(
-        &mut transaction,
-        &state,
-        MintSubject {
-            application_id: app.id,
-            session_id: session.session_id,
-            principal_id: session.carbon_id,
-            subject_kind: "carbon",
-            organization_id: organization.as_ref().map(|value| value.organization_id),
-            membership_id: organization.as_ref().map(|value| value.membership_id),
-            redirect_uri: query.redirect_uri.as_deref(),
-        },
-        &scopes,
-    )
-    .await?;
-    events::authentication_event(
-        &mut transaction,
-        app.id,
-        Some(session.carbon_id),
-        Some("carbon"),
-        Some(session.session_id),
-        "login.short_lived_token",
-        "success",
-        None,
-        json!({ "delivered": query.redirect_uri.is_some(), "scope_count": scopes.len() }),
-    )
-    .await?;
+    .map_err(|_| ApiError::internal("login_choices"))?;
     transaction
         .commit()
         .await
-        .map_err(|_| ApiError::internal("login_commit"))?;
-    let display = app.app_name.as_deref().unwrap_or(&app.app_id);
-    match query.redirect_uri.as_deref() {
-        Some(uri) => {
-            let location = append_redirect_parameters(uri, &[("slt", token.expose_secret())])?;
-            redirect_response(StatusCode::FOUND, &location, false)
-        }
-        None => Ok(login_page(
-            "Your short-lived token",
-            "If requested, this is your short live token.",
-            &format!("{display} can exchange it for a session. It is good for a single use."),
-            &format!(
-                "<div class=\"stack login-intro\"><span class=\"label\">Short-lived token</span><code class=\"login-token\">{}</code></div>",
-                escape_html(token.expose_secret())
-            ),
-            "Nobody will ever ask you for your password or a verification code to complete this. Only this token.",
-            Some(request_id),
-        )),
+        .map_err(|_| ApiError::internal("login_choices_commit"))?;
+    Ok(
+        Json(json!({"app_id": app.app_id, "app_name": app.app_name, "items": items}))
+            .into_response(),
+    )
+}
+
+fn require_direct_login(access: &tokens::AccessContext) -> Result<(), ApiError> {
+    if access.client_application_id.is_some()
+        || access.audience_application_id.is_some()
+        || access.audience != "silicon-iam"
+        || !access.scopes.iter().any(|s| s == "iam.self")
+        || !matches!(
+            access.subject.actor_type,
+            ActorType::Carbon | ActorType::Silicon
+        )
+    {
+        return Err(ApiError::forbidden("direct_iam_login_required"));
     }
+    Ok(())
 }
 
 /// Who a short-lived token is being minted for.
@@ -463,6 +408,7 @@ pub(super) struct MintSubject<'a> {
     pub(super) organization_id: Option<Uuid>,
     pub(super) membership_id: Option<Uuid>,
     pub(super) redirect_uri: Option<&'a str>,
+    pub(super) selected_membership_ids: &'a [Uuid],
 }
 
 /// Records the login and issues the token that completes it.
@@ -519,26 +465,46 @@ async fn mint_short_lived_token(
         .map_err(|_| ApiError::internal("login_scope_insert"))?;
     }
     let request = load_authorization_request(transaction, request_id, true).await?;
-    let token = approve_request(transaction, state, &request).await?;
+    let token = approve_request(
+        transaction,
+        state,
+        &request,
+        subject.selected_membership_ids,
+    )
+    .await?;
     Ok((request_id, token))
 }
 
 /// Hands a short-lived token to a caller who is already signed in.
 ///
-/// UNDERSTANDING.md: "If the carbon/silicon is already logged in directly
-/// return the short lived token." This is that route, and it is the one the
-/// CLI and the client crate use -- a Silicon has no browser to be redirected
-/// in, and a Carbon that already holds a session should not have to start
-/// another one.
+/// Only a direct IAM Carbon/Silicon session may submit the user's explicit
+/// organization selection. The CLI and trusted IAM frontend use this route;
+/// an Application bearer cannot grant itself additional authority.
 pub(super) async fn issue_short_lived_token(
     State(state): State<ApiState>,
     Bearer(access): Bearer,
     headers: HeaderMap,
     Json(input): Json<ShortLivedTokenRequest>,
 ) -> Result<Response, ApiError> {
+    require_direct_login(&access)?;
     validation::app_id(&input.app_id)?;
-    if let Some(org_id) = input.org_id.as_deref() {
-        validation::org_id(org_id)?;
+    if input.org_id.is_some() {
+        return Err(ApiError::bad_request(
+            "organization_selection_required",
+            "Use org_ids for the user's explicit selection; org_id no longer scopes an Application login.",
+        ));
+    }
+    if input.org_ids.is_empty() || input.org_ids.len() > 1000 {
+        return Err(ApiError::bad_request(
+            "organization_selection_required",
+            "Select between 1 and 1000 organizations in IAM.",
+        ));
+    }
+    for org in &input.org_ids {
+        validation::org_id(org)?;
+    }
+    if let Some(uri) = &input.redirect_uri {
+        validation::redirect_uri(uri)?;
     }
     let subject_kind = match access.subject.actor_type {
         ActorType::Carbon => "carbon",
@@ -551,7 +517,8 @@ pub(super) async fn issue_short_lived_token(
     let caller_scope = format!("{subject_kind}:{}", access.subject.id);
     let canonical = serde_json::to_vec(&json!({
         "app_id": input.app_id,
-        "org_id": input.org_id,
+        "org_ids": input.org_ids,
+        "redirect_uri": input.redirect_uri,
     }))
     .map_err(|_| ApiError::internal("short_lived_token_canonical"))?;
     let claim = idempotency::claim::<ShortLivedTokenResponse>(
@@ -599,39 +566,30 @@ pub(super) async fn issue_short_lived_token(
             .fetch_all(&mut *transaction)
             .await
             .map_err(|_| ApiError::internal("short_lived_token_scopes"))?;
-    let requested_organization = if let Some(org_id) = input.org_id.as_deref() {
-        Some(
-            sqlx::query_as::<_, SubjectOrganizationRow>(
-                r"
-                SELECT organization.id AS organization_id,
-                       membership.id AS membership_id
-                FROM iam.organizations AS organization
-                JOIN iam.organization_memberships AS membership
-                  ON membership.organization_id = organization.id
-                 AND membership.principal_id = $2
-                 AND membership.principal_kind = $3::iam.principal_kind
-                 AND membership.status = 'active'
-                WHERE organization.org_id = $1 AND organization.status = 'active'
-                ",
-            )
-            .bind(org_id)
-            .bind(access.subject.id)
-            .bind(subject_kind)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|_| ApiError::internal("short_lived_token_org"))?
-            .ok_or_else(|| ApiError::forbidden("organization_context_forbidden"))?,
-        )
-    } else {
-        None
-    };
-    let organization_id = requested_organization
-        .as_ref()
-        .map_or(access.organization_id, |value| Some(value.organization_id));
-    let membership_id = requested_organization
-        .as_ref()
-        .map_or(access.membership_id, |value| Some(value.membership_id));
-    let (_, token) = mint_short_lived_token(
+    let requested = input
+        .org_ids
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    if requested.len() != input.org_ids.len() {
+        return Err(ApiError::validation(
+            "org_ids",
+            "must not contain duplicates",
+        ));
+    }
+    let selected_membership_ids = sqlx::query_scalar::<_, Vec<Uuid>>(
+        "SELECT iam_private.lock_login_organization_selection($1, $2, $3)",
+    )
+    .bind(access.subject.id)
+    .bind(access.authentication_session_id)
+    .bind(requested.iter().cloned().collect::<Vec<_>>())
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("login_selection"))?;
+    if selected_membership_ids.len() != requested.len() {
+        return Err(ApiError::forbidden("organization_context_forbidden"));
+    }
+    let (request_id, token) = mint_short_lived_token(
         &mut transaction,
         &state,
         MintSubject {
@@ -639,9 +597,10 @@ pub(super) async fn issue_short_lived_token(
             session_id: access.authentication_session_id,
             principal_id: access.subject.id,
             subject_kind,
-            organization_id,
-            membership_id,
-            redirect_uri: None,
+            organization_id: None,
+            membership_id: None,
+            redirect_uri: input.redirect_uri.as_deref(),
+            selected_membership_ids: &selected_membership_ids,
         },
         &scopes,
     )
@@ -651,6 +610,7 @@ pub(super) async fn issue_short_lived_token(
     let response = ShortLivedTokenResponse {
         slt: token.expose_secret().to_owned(),
         expires_in,
+        request_id: Some(request_id),
     };
     events::authentication_event(
         &mut transaction,
@@ -661,7 +621,7 @@ pub(super) async fn issue_short_lived_token(
         "login.short_lived_token",
         "success",
         None,
-        json!({ "delivered": false, "scope_count": scopes.len() }),
+        json!({ "delivered": false, "scope_count": scopes.len(), "selected_org_ids": input.org_ids }),
     )
     .await?;
     idempotency::complete(
@@ -709,10 +669,8 @@ fn sign_in_location(state: &ApiState, query: &LoginQuery) -> Result<String, ApiE
 
 /// Reports what became of a token that was shown rather than delivered.
 ///
-/// The page that shows a token cannot run a script -- there is no `script-src`
-/// at all -- so it carries a meta refresh onto this route timed to the token's
-/// expiry. By then the token has either been spent, in which case the login
-/// worked, or it has not, in which case it is gone.
+/// The IAM frontend navigates here at the displayed token's expiry. By then
+/// the token has either been exchanged successfully or expired unused.
 pub(super) async fn login_status(
     State(state): State<ApiState>,
     session: BrowserSession,
@@ -734,10 +692,12 @@ pub(super) async fn login_status(
           ON code.authorization_request_id = request.id
         WHERE request.id = $1
           AND request.subject_principal_id = $2
+          AND request.authentication_session_id = $3
         ",
     )
     .bind(query.request)
     .bind(session.carbon_id)
+    .bind(session.session_id)
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|_| ApiError::internal("login_status_lookup"))?
@@ -1057,8 +1017,8 @@ pub(super) async fn introspect(
         return Ok(Json(inactive_introspection()));
     };
     // A bearer bound to an organization may only be introspected there. An
-    // unscoped bearer reaches every organization the subject is an active
-    // member of, so X-Org-ID selects one of those instead of having to match a
+    // multi-org bearer reaches explicitly selected active memberships, so
+    // X-Org-ID selects one of those instead of having to match a
     // binding the token does not carry.
     let selected = match (access.organization_id, access.membership_id) {
         (Some(organization_id), Some(membership_id)) => {
@@ -1249,19 +1209,30 @@ async fn introspect_refresh_token(
         return Ok(Json(inactive_introspection()));
     };
     // An organization filter on a bound refresh token has to match its binding.
-    // An unscoped one reaches every organization its subject belongs to, so the
-    // filter is answered by the membership rather than by the token.
+    // Multi-organization refresh tokens must also honor the explicit selection;
+    // membership existence alone must not disclose unselected organizations.
     let organization_filter_matches = match (org_context, authority.org_id.as_deref()) {
         (None, _) => true,
         (Some(requested), Some(bound)) => requested == bound,
-        (Some(requested), None) => select_reachable_organization(
-            &mut transaction,
-            requested,
-            candidate.subject_principal_id,
-            &candidate.subject_kind,
-        )
-        .await?
-        .is_some(),
+        (Some(requested), None) => {
+            let selected = select_reachable_organization(
+                &mut transaction,
+                requested,
+                candidate.subject_principal_id,
+                &candidate.subject_kind,
+            )
+            .await?;
+            if let Some(selected) = selected {
+                sqlx::query_scalar::<_, bool>(
+                    "SELECT $2 = ANY(selected_membership_ids) FROM iam.oauth_consent_grants WHERE id = $1 AND status = 'active'",
+                ).bind(candidate.consent_grant_id).bind(selected.membership_id)
+                    .fetch_optional(&mut *transaction).await
+                    .map_err(|_| ApiError::internal("refresh_introspection_selection"))?
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        }
     };
     if credential.consumed_at.is_some()
         || credential.revoked_at.is_some()
@@ -1991,6 +1962,7 @@ async fn approve_request(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     request: &AuthorizationRequestRow,
+    selected_membership_ids: &[Uuid],
 ) -> Result<SecretString, ApiError> {
     let scopes = authorization_request_scopes(transaction, request.id).await?;
     let grant_id = Uuid::now_v7();
@@ -2005,6 +1977,20 @@ async fn approve_request(
         .fetch_one(&mut **transaction)
         .await
         .map_err(|_| ApiError::internal("oauth_consent_grant_upsert"))?;
+    // Upsert locks the session-bound consent so concurrent additions are unioned.
+    sqlx::query(
+        r"
+        UPDATE iam.oauth_consent_grants SET selected_membership_ids = ARRAY(
+            SELECT DISTINCT member_id FROM unnest(selected_membership_ids || $2::uuid[]) member_id
+            ORDER BY member_id
+        ) WHERE id = $1
+    ",
+    )
+    .bind(consent.0)
+    .bind(selected_membership_ids)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("oauth_organization_selection"))?;
     sqlx::query("DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id = $1")
         .bind(consent.0)
         .execute(&mut **transaction)
@@ -2410,6 +2396,7 @@ async fn protocol_event(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn append_redirect_parameters(base: &str, values: &[(&str, &str)]) -> Result<String, ApiError> {
     let mut url = Url::parse(base).map_err(|_| ApiError::internal("redirect_uri_stored"))?;
     {

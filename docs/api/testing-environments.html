@@ -161,7 +161,7 @@ Content-Type: application/json
   <li>Run ordinary signup under the key, verify both contacts with <code>000000</code>, then log in and retain the test bearer under the environment UUID.</li>
   <li>Create a test organization/Application or import the production Application; persist the returned test-only client secret during its ten-minute replay window.</li>
   <li>Complete an organization-bound short-lived-token login and matching-organization introspection entirely in the test plane. Also prove an unscoped login remains valid for ordinary Application use. Assert that production credentials fail there and test credentials fail without the header.</li>
-  <li>Trigger a directory change; verify, route, deduplicate, and apply the wrapped webhook. Exercise OBO with the organization-bound token, and prove the unscoped token is refused.</li>
+  <li>Trigger a directory change; verify, route, deduplicate, and apply the wrapped webhook. Exercise OBO with the organization-bound token, and prove a token without the OBO organization's selection is refused.</li>
   <li>Clean the environment for another run or retire it from the production control plane.</li>
 </ol>
 

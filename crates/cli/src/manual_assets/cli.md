@@ -26,14 +26,14 @@ Add `--test <environment-id>` for a testing environment. `-o json` returns the
 typed snapshot; text output explains membership, epoch, audience, environment,
 role and tags. `app token introspect` also includes it. No directory edit or
 webhook arrival is required, including after losing an application's local
-projection. First mint an organization-bound SLT with
-`iam --org acme login --app-id 'acme>checkout'`, then exchange it.
+projection. First select the organization with
+`iam login --app-id 'acme>checkout' --grant-org acme`, then exchange the SLT.
 
 Role disclosure requires `roles.read`; tag disclosure requires
 `memberships.read`. Missing scope means **undisclosed**, not a default role or
 empty tags. Inactive, wrong-application and wrong-organization tokens have no
-current organization authorization. An unscoped token reaches every organization
-its subject is an active member of: `iam app token authorizations` lists them and
+current organization authorization. An unscoped token reaches each explicitly selected organization
+where its subject has an active membership: `iam app token authorizations` lists them and
 `iam app token authorization --org-context` answers for one. After an IAM environment clean,
 reimport/onboard and log in again; old tokens cannot restore erased authority.
 
@@ -41,6 +41,13 @@ Successful `app obo verify` prints the same binding, limited to the parent
 token's scopes intersected with the recipient's approved scopes. Apply it only
 to that proof's exact endpoint/request. Verification consumes the proof; never
 retry it after an uncertain result.
+
+## Source update: organization consent
+
+Migration 0072 changes multi-organization login to explicit user selection.
+Only selected active memberships are returned. See [the consent guide](../ORGANIZATION_CONSENT.md).
+The installation/release section below describes published 1.3.0; this source
+change is not yet published.
 
 ## Installation
 
@@ -63,7 +70,7 @@ later invocation; check `iam --version` again when collecting diagnostics.
 
 This release adds `iam app token authorizations`, which lists one snapshot per
 organization an access token currently reaches: exactly one for an
-organization-bound token, one per active membership for an unscoped token, and
+organization-bound token, one per selected active membership for a multi-organization token, and
 none when its subject holds no membership anywhere. `iam app token
 authorization` is unchanged and still answers for a single organization, with
 `--org-context` selecting one for an unscoped token. It requires backend
@@ -388,9 +395,9 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | `iam app token` | `<subcommand>` | Application SLT exchange, refresh, introspection, and revocation namespace. |
 | `iam app token exchange` | `<app-id>` plus SLT and Application secret at flags or prompts | SLT is single-use. Optional idempotency key is 16–255 visible ASCII; reuse the same key and input after an uncertain result. |
 | `iam app token refresh` | `<app-id>` plus refresh token and Application secret at flags or prompts | Rotates the refresh and access tokens. Persist/reuse the same idempotency key after uncertainty; a new key with an already-used refresh token is a replay. |
-| `iam app token introspect` | `<app-id>` plus token and Application secret at flags or prompts | `--token-type` is a hint. Optional `--org-context` must exactly match an org-bound token, or name an organization an unscoped token's subject is an active member of; otherwise the result is inactive. |
+| `iam app token introspect` | `<app-id>` plus token and Application secret at flags or prompts | `--token-type` is a hint. Optional `--org-context` must exactly match an org-bound token, or name an explicitly selected organization where the subject is active; otherwise the result is inactive. |
 | `iam app token authorization` | `<app-id>` plus access token and Application secret at flags or prompts | Current scope-filtered membership/epoch/role/tag snapshot for one organization; `--org-context` must match a bound token and selects one for an unscoped token. No directory mutation or webhook is required. |
-| `iam app token authorizations` | `<app-id>` plus access token and Application secret at flags or prompts | One snapshot per organization the token currently reaches: exactly one for a bound token, one per active membership for an unscoped token, none when the subject holds no membership. |
+| `iam app token authorizations` | `<app-id>` plus access token and Application secret at flags or prompts | One snapshot per organization the token currently reaches: exactly one for a bound token, one per selected active membership for a multi-organization token, none when the subject holds no membership. |
 | `iam app token revoke` | `<app-id>` plus token and Application secret at flags or prompts | Access revocation affects one access token; refresh revocation affects the family. Optional 16–255 visible-ASCII idempotency key should be reused after uncertainty. |
 | `iam app obo` | `<subcommand>` | Same-organization, organization-bound on-behalf-of namespace. |
 | `iam app obo endpoints` | `<audience-app-id> --as-app-id <requester-app-id>` plus requester secret at flag or prompt | Application-authenticated catalog discovery; a cross-org target is deliberately indistinguishable from missing. |
@@ -734,40 +741,26 @@ An Application can start a session only by exchanging an IAM-issued,
 single-use short-lived token (SLT). It cannot submit an OTP, email, phone,
 Carbon ID, Silicon token, or IAM refresh token.
 
-If this profile already holds a Carbon or Silicon IAM session, mint the SLT
-without another login ceremony:
+With a direct IAM session, explicitly select the organizations to share:
 
 ```sh
-# Override any stored/environment organization for an unscoped login, which
-# reaches every organization the caller is an active member of.
-iam --no-org login --app-id 'acme>billing'
-
-# Confined to the caller's active membership in acme, now and later.
-iam --org acme login --app-id billing
+iam login --app-id 'acme>billing' --grant-org acme,my-team
+iam login --app-id 'acme>billing' --all-orgs
+iam silicon-login --sid 'builder:acme' --app-id 'acme>billing' --grant-org acme
+# Add access later without dropping previous grants on this parent login:
+iam login --app-id 'acme>billing' --grant-org another-team
 ```
 
-To establish a new IAM session and then mint the SLT in one command:
+Without these flags an interactive terminal lists choices and prompts;
+noninteractive use requires flags. At least one active organization is required.
+`--org`, `SILICON_IAM_ORG`, and stored defaults qualify IDs or select management
+commands, but **never grant Application access**. `--no-org` only clears that
+management context. New memberships are not automatically shared.
 
-```sh
-iam --org acme login --email you@example.com --app-id billing
-iam --org acme silicon-login --sid builder --app-id billing
-```
-
-`iam silicon-login` prompts for the Silicon token rather than taking it as a
-flag by default, so it stays out of shell history. Without `--app-id` both
-commands simply sign in to IAM. In every case, the Application receives only
-the printed SLT and exchanges it through `iam app token exchange` (or
-`OAuth::login` in the Rust client). This is the only Application-login path for
-both Carbons and Silicons. A selected organization — from `--org`,
-`SILICON_IAM_ORG`, or the current profile — requires the actor's active
-membership and binds the resulting Application token family to it. Use the
-global flag `--no-org` to override every stored/environment selection for this
-invocation; it conflicts with `--org`. An unscoped login then needs the
-canonical Application ID because no organization is available to qualify a
-local handle. An unscoped Application token reaches every organization its
-subject is an active member of, including ones they join after the login; a
-bound one stays in the single organization it named. OBO works from either and
-always resolves the calling Application's own organization.
+IAM validates the Application and the entire selection. Applications cannot
+use their own bearer or secret to choose or enlarge grants. The printed SLT is
+the only credential handed to the app. See
+[organization consent](../ORGANIZATION_CONSENT.md) (`iam docs consent`).
 
 ### End-to-end Application proof in a test environment
 

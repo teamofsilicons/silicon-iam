@@ -44,7 +44,7 @@ A new application is usable immediately: there is no review to wait behind. In p
 
 A short-lived token. Three steps, two of them yours.
 
-1. **Send** the person to `<auth_base_url>/login?app_id=acme%3Eyour-app&redirect_uri=https://you.example/callback&org_id=acme`. IAM signs them in if they are not already. Naming an `app_id` is what makes this a login on your behalf; without one it is an ordinary Silicon IAM login and no token is minted. `org_id` is optional. When present, IAM requires the person's active membership and binds the resulting Application token family to that organization. When absent, the login is unscoped, which reaches every organization the person is an active member of rather than none.
+1. **Send** the person to `<auth_base_url>/login?app_id=acme%3Eyour-app&redirect_uri=https://you.example/callback`. IAM signs them in if they are not already. Naming an `app_id` is what makes this a login on your behalf; without one it is an ordinary Silicon IAM login and no token is minted. Applications cannot supply `org_id`. IAM validates the app and asks the user to select at least one organization; only that set is shared.
 
 2. They arrive back at your `redirect_uri` with `?slt=…`. If you gave no `redirect_uri`, IAM shows them the token on a page instead — useful for a device or a terminal that has nowhere to be redirected to.
 
@@ -81,7 +81,7 @@ app_id=tos%3Ebriefcase&slt=<URL_ENCODED_SHORT_LIVED_TOKEN>
 
 The SLT expires after two minutes and is single-use. Keep the app secret and returned tokens server-side; do not exchange the token through the IAM frontend gateway, collect IAM OTPs in Briefcase, or log callback query strings. Bind the callback to a login initiated by that browser, and remove the SLT from the browser URL after establishing the app's session.
 
-The example omits `org_id`, so the login is unscoped and reaches every organization the user is an active member of. The `tos>` prefix identifies app ownership; it does not itself require the user to belong to `tos`. Append `&org_id=tos` when the session must be confined to the user's active `tos` membership and must not follow them into organizations they join later. This application-login flow is distinct from WorkOS organization SSO.
+Do not supply `org_id`. IAM owns the organization picker and the user chooses what to share. The `tos>` prefix identifies app ownership, not the user's organization scope. This flow is separate from WorkOS organization SSO.
 
 ### When there is nobody to redirect
 
@@ -92,10 +92,10 @@ POST /api/v1/app-auth/short-lived-tokens
 Authorization: Bearer <access token>
 Idempotency-Key: <key>
 
-{ "app_id": "acme>your-app", "org_id": "acme" }
+{ "app_id": "acme>your-app", "org_ids": ["acme"] }
 ```
 
-The answer carries `slt` and `expires_in`, and your server completes it at `POST /api/v1/app-auth/tokens` exactly as it would one delivered through a redirect. `org_id` is optional. Supplying it requires an active membership and binds the exchanged Application token family to that organization; omitting it preserves an unscoped login unless the IAM bearer itself already carries an organization context. An unscoped Application token reaches every organization its subject is an active member of, and OBO resolves the membership in the calling Application's own organization. This direct SLT route is the only way a Silicon can sign in to an application.
+The answer carries `slt` and `expires_in`, and your server completes it at `POST /api/v1/app-auth/tokens` exactly as it would one delivered through a redirect. Required `org_ids` is the user's explicit list, submitted only with a direct IAM bearer. Call `GET /api/v1/app-auth/organizations?app_id=...` to validate the app and obtain choices. Additions preserve previous grants on this parent login. App credentials cannot call either endpoint to choose or expand access. Only selected active memberships are authorized, including OBO.
 
 ### Scope
 

@@ -53,7 +53,7 @@ pub struct Global {
     pub org: Option<String>,
 
     /// Ignore any stored or environment organization for this invocation.
-    /// Useful with a canonical app ID for an unscoped Application login.
+    /// This controls ID qualification only, not Application consent. Use --grant-org or --all-orgs when logging into an app.
     #[arg(long, global = true, conflicts_with = "org")]
     pub no_org: bool,
 
@@ -166,6 +166,18 @@ pub enum Command {
         .multiple(true)
 ))]
 pub struct LoginArgs {
+    /// Organizations you choose to share with --app-id (comma-separated or repeated).
+    /// Does not inherit --org or the stored default; existing grants are preserved.
+    #[arg(
+        long = "grant-org",
+        value_delimiter = ',',
+        requires = "app_id",
+        conflicts_with = "all_orgs"
+    )]
+    pub grant_orgs: Vec<String>,
+    /// Explicitly share all current active organizations (not future memberships).
+    #[arg(long, requires = "app_id")]
+    pub all_orgs: bool,
     /// Email address to sign in with.
     #[arg(long)]
     pub email: Option<String>,
@@ -199,6 +211,17 @@ pub struct LogoutArgs {
 /// Arguments for signing a Silicon in.
 #[derive(Debug, Args)]
 pub struct SiliconLoginArgs {
+    /// Organizations you choose to share with --app-id (comma-separated or repeated).
+    #[arg(
+        long = "grant-org",
+        value_delimiter = ',',
+        requires = "app_id",
+        conflicts_with = "all_orgs"
+    )]
+    pub grant_orgs: Vec<String>,
+    /// Explicitly share all current active organizations, never future memberships.
+    #[arg(long, requires = "app_id")]
+    pub all_orgs: bool,
     /// Silicon ID, in `handle:org` form. With only --app-id, reuse the stored Silicon session.
     #[arg(long = "sid")]
     pub sid: Option<String>,
@@ -1301,7 +1324,7 @@ pub enum AppTokenCommand {
     /// Use immediately after login or to rebuild an empty application cache.
     /// Requires an Application access token and its own Application secret.
     /// An organization-bound token answers for its own organization; an
-    /// unscoped token reaches every organization its subject belongs to and
+    /// multi-organization token reaches only selected active organizations and
     /// needs --org-context to pick one, or use `authorizations` to list them
     /// all. Role requires roles.read; tags require memberships.read.
     /// Undisclosed fields grant no authority. Inactive, mismatched and refresh
@@ -1314,7 +1337,7 @@ pub enum AppTokenCommand {
         #[arg(long)]
         token: Option<String>,
         /// Exact organization handle. A bound token must match it; an unscoped
-        /// token selects it and must hold an active membership there.
+        /// token must include it in consent and hold an active membership there.
         #[arg(long)]
         org_context: Option<String>,
         /// Application secret. Prompted for when omitted.
@@ -1324,8 +1347,8 @@ pub enum AppTokenCommand {
     /// List every organization the access token currently reaches.
     ///
     /// An organization-bound token lists exactly its own. An unscoped token
-    /// lists one snapshot per organization its subject is an active member of;
-    /// an empty list means the subject holds no membership anywhere, which is
+    /// lists one snapshot per explicitly selected active membership;
+    /// an empty list means no selected membership is currently usable, which is
     /// not the same as an inactive token. The backend must support authorization
     /// snapshots for unscoped logins.
     Authorizations {

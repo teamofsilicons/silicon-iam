@@ -86,8 +86,7 @@ impl OAuth<'_> {
     /// Call immediately after login, or to rebuild an empty local projection.
     /// No directory edit or webhook arrival is necessary. An organization-bound
     /// token answers for the organization it is bound to and `org_context`, when
-    /// given, must name that one. An unscoped token reaches every organization
-    /// its subject belongs to, so `org_context` picks which one to answer for
+    /// given, must name that one. An unscoped token reaches only selected active organizations, so `org_context` picks which one to answer for
     /// and is required: use [`authorizations`](Self::authorizations) to see them
     /// all. `None` means there is no current organization authority (inactive,
     /// wrong application or organization, refresh token, or an unscoped token
@@ -133,9 +132,8 @@ impl OAuth<'_> {
     /// reaches.
     ///
     /// An organization-bound token yields exactly one. An unscoped token yields
-    /// one per organization its subject is an active member of, in handle
-    /// order, and an empty vector when the subject holds no membership
-    /// anywhere -- which is not the same as an inactive token. `None` means the
+    /// one per selected organization with active membership, in handle
+    /// order, and an empty vector when the subject has no currently selected active memberships -- which is not the same as an inactive token. `None` means the
     /// token is inactive or is not an Application access token.
     ///
     /// # Errors
@@ -168,7 +166,7 @@ impl OAuth<'_> {
         }
         if access_token.starts_with("oat_") {
             return Err(crate::Error::Decode(
-                "IAM returned an active Application access token without any authorization snapshot; deploy an API version where an unscoped login reaches every organization before using this method".to_owned(),
+                "IAM returned an active Application access token without any authorization snapshot; deploy an API version supporting selected-organization authorization snapshots before using this method".to_owned(),
             ));
         }
         Ok(None)

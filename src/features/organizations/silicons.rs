@@ -51,7 +51,7 @@ pub(super) async fn list_silicons(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page_parts(query.cursor.as_deref(), query.limit)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let profile_base = silicon_profile_base(&state)?;
     let mut items = sqlx::query_as::<_, SiliconResponse>(SILICON_LIST_SQL)
         .bind(scope.access.organization_id)
@@ -260,7 +260,7 @@ pub(super) async fn get_silicon(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     validate_global_silicon_id(&silicon_id, &org_id)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let silicon = fetch_silicon(
         &mut scope.transaction,
         scope.access.organization_id,

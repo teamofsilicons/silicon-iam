@@ -100,6 +100,6 @@ The partial failure count and any active cooldown **carry into a replacement cod
 
 A successful Carbon login also sets `iam_session`: host-only, `Secure`, `HttpOnly`, `SameSite=Lax`, and signed. It exists for the two flows that are navigations rather than API calls — application login and SSO — and it is bound to the same refresh family, so revoking the session revokes the cookie.
 
-It is what lets `GET /api/v1/login` recognise somebody who is already signed in and go straight to minting their short-lived token instead of asking them to log in again. Application login may supply `org_id` to require an active membership and bind the resulting token family to that organization. Omitting it keeps a Carbon login unscoped, which reaches every organization the Carbon is an active member of rather than none.
+IAM recognizes an existing session and shows Application validation followed by its organization picker. The user must choose at least one organization. Apps cannot supply `org_id`. GET navigation never mints a token; the trusted IAM interface submits explicit `org_ids` with a direct IAM bearer.
 
 **An application never sees a credential.** Signing in to an application never asks anyone for a password, a verification code, or any other authentication secret on that application's behalf. The only thing an application receives is a short-lived token.

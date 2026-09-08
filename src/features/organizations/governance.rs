@@ -1343,7 +1343,7 @@ pub(super) async fn list_job_role_history(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page(&query)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     fetch_target(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -1396,7 +1396,7 @@ pub(super) async fn list_tag_history(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page(&query)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let target = fetch_target(
         &mut scope.transaction,
         scope.access.organization_id,

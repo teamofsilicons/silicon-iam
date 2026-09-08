@@ -4,7 +4,7 @@ On-behalf-of lets one application call another on a user's behalf, without eithe
 
 **OBO never crosses an organization.** IAM derives the organization from the two authenticated applications and refuses anything else. `X-Org-ID` is not accepted on these endpoints at all.
 
-**OBO never leaves the calling Application's own organization.** A subject token bound to a different organization is rejected with `403 obo_organization_mismatch`. An unscoped subject token reaches every organization its subject belongs to, so IAM resolves the membership in the calling Application's organization and rejects it with `403 obo_membership_required` only when the subject is not an active member there. Binding the token in advance with `org_id` is still the clearer choice when the Application already knows the organization.
+**OBO never leaves the calling Application's own organization.** A subject token bound to a different organization is rejected with `403 obo_organization_mismatch`. A multi-organization subject token reaches only the user's explicitly selected active memberships. IAM resolves the calling Application's organization and refuses OBO when it is unselected or membership is inactive. The user must select that organization in IAM; Applications cannot supply `org_id` to choose it on the user's behalf.
 
 ## The shape of it
 

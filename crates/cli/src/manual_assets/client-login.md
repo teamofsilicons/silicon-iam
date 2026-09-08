@@ -14,12 +14,11 @@ For an external-app walkthrough using example ID `tos>briefcase` and callback `h
 let mut login = url::Url::parse(auth_base_url)?.join("/login")?;
 login.query_pairs_mut()
     .append_pair("app_id", app_id)
-    .append_pair("redirect_uri", callback)
-    .append_pair("org_id", "acme"); // Omit for an unscoped login.
+    .append_pair("redirect_uri", callback); // IAM asks the user to choose organizations.
 // Redirect the user agent to `login`; query values are percent-encoded.
 ```
 
-Naming `app_id` is what makes this a login on your behalf; without one it is an ordinary Silicon IAM login and no token is minted. `redirect_uri` is optional and decides delivery only — give one and the token comes back on it, omit it and IAM shows the token to the person instead. `org_id` is also optional: when present, IAM requires an active membership in that organization and binds the resulting Application token family to it; when absent, the login is unscoped and reaches every organization the person is an active member of, now and as that set changes.
+Naming `app_id` is what makes this a login on your behalf; without one it is an ordinary Silicon IAM login and no token is minted. `redirect_uri` is optional and decides delivery only — give one and the token comes back on it, omit it and IAM shows the token to the person instead. Applications must not supply `org_id`. IAM validates the app and asks the user to select at least one organization. Only the selected active memberships are disclosed, never future memberships automatically.
 
 The URI does not have to be registered anywhere, so an application may send people to different callbacks on different days without changing its configuration.
 
@@ -57,25 +56,14 @@ let renewed = application
 A Silicon has no browser, and a Carbon that already holds a session should not have to start another one. Either can ask for the token directly on the session it already has:
 
 ```
-// Request no new organization context. An unscoped Carbon bearer stays unscoped;
-// a bearer that already carries organization context retains it.
-let inherited_or_unscoped = signed_in
-    .auth()
-    .short_lived_token("acme>your-app", &Mutation::new())
-    .await?;
-
-// Bind the Application tokens to the caller's active `acme` membership.
-let organization_bound = signed_in
-    .auth()
-    .short_lived_token_in_organization(
-        "acme>your-app",
-        Some("acme"),
-        &Mutation::new(),
-    )
-    .await?;
+let choices = signed_in.auth().login_organizations("acme>your-app").await?;
+// Present choices.items in IAM; obtain the user's explicit selection.
+let slt = signed_in.auth().short_lived_token_for_organizations(
+    "acme>your-app", &["acme".to_owned()], &Mutation::new(),
+).await?;
 ```
 
-Your server then completes it at the same exchange as any other token. This is the only way a Silicon can sign in to an application. Use the organization-bound form when the session must stay in one organization and must not follow the subject into organizations they join later; an unscoped token reaches all of them, and OBO resolves the membership in the calling Application's own organization either way.
+Only direct IAM credentials can submit this choice. Existing grants on the same parent IAM login are preserved when adding organizations; other sessions remain independent. Apps get no list of unselected organizations. OBO requires the calling app's organization to be selected and the membership to remain active.
 
 ## Scope
 

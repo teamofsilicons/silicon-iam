@@ -93,7 +93,7 @@ Verify the signature over the exact outer bytes before parsing. Deduplicate on `
 
 4. Complete an organization-bound short-lived-token login and matching-organization introspection entirely in the test plane. Also prove an unscoped login remains valid for ordinary Application use. Assert that production credentials fail there and test credentials fail without the header.
 
-5. Trigger a directory change; verify, route, deduplicate, and apply the wrapped webhook. Exercise OBO with the organization-bound token, and prove the unscoped token is refused.
+5. Trigger a directory change; verify, route, deduplicate, and apply the wrapped webhook. Exercise OBO with the organization-bound token, and prove a token without the OBO organization's selection is refused.
 
 6. Clean the environment for another run or retire it from the production control plane.
 
