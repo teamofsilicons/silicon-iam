@@ -299,12 +299,16 @@ async fn the_client_speaks_the_contract_end_to_end() {
     );
 
     // The Application-login contract is form encoded and starts only from an
-    // IAM-issued SLT. Walk the whole token lifecycle so media-type drift,
-    // application Basic auth, token RLS, retry semantics, and revocation are
-    // all exercised against the real service rather than a mock.
+    // IAM-issued SLT with explicit organization consent. Walk the whole token
+    // lifecycle so media-type drift, application Basic auth, token RLS, retry
+    // semantics, and revocation are all exercised against the real service.
     let short_lived = client
         .auth()
-        .short_lived_token(&qualified_app_id, &Mutation::new())
+        .short_lived_token_for_organizations(
+            &qualified_app_id,
+            std::slice::from_ref(&org_id),
+            &Mutation::new(),
+        )
         .await
         .expect("an IAM-issued short-lived token");
     let application_client = anonymous.with_credential(Credential::application(
