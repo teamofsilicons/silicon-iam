@@ -174,4 +174,3 @@ COMMENT ON FUNCTION iam_private.lock_current_application_oauth_subject_authority
 REVOKE ALL ON FUNCTION iam_private.lock_current_application_oauth_subject_authority(
     uuid, uuid, uuid, uuid, iam.principal_kind, uuid, uuid
 ) FROM PUBLIC;
-
