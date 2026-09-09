@@ -24,7 +24,10 @@ PostgreSQL 16 or newer is the sole authoritative datastore.
 Start with the [integration documentation index](docs/README.md) for the API,
 Rust client, CLI, testing environments, and release provenance.
 
-CLI and client **1.4.0** use [user-selected organization consent](docs/ORGANIZATION_CONSENT.md).
+CLI **1.4.1** adds `SILICON_HOME` storage selection and complete offline
+`iam --help`; see the [CLI guide](docs/cli/README.md). It uses client **1.4.0**.
+
+CLI and client **1.4.0** introduced [user-selected organization consent](docs/ORGANIZATION_CONSENT.md).
 Applications initiate login without an organization; the user chooses one or more
 in IAM. Additional selections preserve existing grants. Unselected and future
 memberships remain private. Deploy migrations `0072` and `0073`, runtime grants,

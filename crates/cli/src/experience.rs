@@ -18,7 +18,7 @@ pub fn command() -> Command {
                 .global(true)
                 .action(ArgAction::HelpLong)
                 .help_heading("Help and version")
-                .help("Show detailed help, requirements and related documentation"),
+                .help("Show complete command help; on a subcommand, show its detailed help"),
         )
         .arg(
             Arg::new("version")
@@ -30,6 +30,20 @@ pub fn command() -> Command {
                 .help("Show the installed CLI version; use `iam system version` for the backend"),
         );
     command.build();
+    // Render after building so every nested command includes inherited global
+    // options and its fully qualified usage. Keep this derived from the parser.
+    let mut entries = Vec::new();
+    collect_help(&mut command, &mut Vec::new(), &mut entries);
+    let mut reference = command
+        .get_after_long_help()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    reference.push_str("\n\nComplete command reference:\n");
+    for (path, help) in entries.into_iter().skip(1) {
+        use std::fmt::Write as _;
+        let _ = write!(reference, "\n=== iam{} ===\n\n{help}\n", path_suffix(&path));
+    }
+    command = command.after_long_help(reference);
     command
 }
 
@@ -312,7 +326,7 @@ fn notes(path: &str) -> String {
             "WARNING: deletes data inside the targeted testing environment. There is no undo.\nWith an explicit ID, use the production control plane (no --test). Without an ID,\n--test selects the environment and uses this profile's stored key.\nRead `iam env show <ENVIRONMENT_ID>` or `iam --test <ENVIRONMENT_ID> env current`\nfirst to confirm the target. After cleaning, sign up and import again; old tokens\nand memberships no longer provide access. Other environments remain separate."
         }
         "iam config" | "iam config set" | "iam config use" => {
-            "Examples:\n  iam config show\n  iam config set org tos\n  iam --profile local config set url http://127.0.0.1:58080\n  iam --test <ENVIRONMENT_ID> config set org tos\n  iam config set auto-update off\n\nCommand flags override environment variables, which override profile defaults.\nTest organizations/sessions are stored separately; setting a test org does not\nchange the production default. SILICON_IAM_HOME chooses a private credential\ndirectory. Help and docs remain usable even when that directory is unavailable."
+            "Examples:\n  iam config show\n  iam config set org tos\n  iam --profile local config set url http://127.0.0.1:58080\n  iam --test <ENVIRONMENT_ID> config set org tos\n  iam config set auto-update off\n\nCommand flags override environment variables, which override profile defaults.\nTest organizations/sessions are stored separately; setting a test org does not\nchange the production default. SILICON_HOME selects the default home base;\nIAM uses its .silicon-iam subdirectory, or ~/.silicon-iam when unset.\nSILICON_IAM_HOME overrides the exact private credential directory. Help and docs remain usable even when that directory is unavailable."
         }
         _ => "",
     };

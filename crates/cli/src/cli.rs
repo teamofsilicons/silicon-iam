@@ -19,7 +19,9 @@ use crate::output::Format;
     about = "Silicon IAM from the command line",
     long_about = "Silicon IAM from the command line.\n\n\
         Sign in once with `iam login`; the session is stored under \
-        ~/.silicon-iam/ and renewed automatically. Most commands act on an \
+        $SILICON_HOME/.silicon-iam/ (or ~/.silicon-iam/ when unset) and renewed \
+        automatically. SILICON_IAM_HOME overrides the exact storage directory. \
+        Most commands act on an \
         organization: pass --org, or set a default with \
         `iam config set org <handle>`.",
     propagate_version = true,

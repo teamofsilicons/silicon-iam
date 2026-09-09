@@ -1,12 +1,36 @@
 # Local state and concurrent CLI use
 
-The CLI stores profiles, sessions and updater state under `~/.silicon-iam`, or the directory selected by `SILICON_IAM_HOME`. A home may be shared by concurrent CLI processes; production sessions and each testing-environment session remain separate.
+The CLI stores profiles, sessions and updater state under `$SILICON_HOME/.silicon-iam` when `SILICON_HOME` is set, otherwise `~/.silicon-iam`. A home may be shared by concurrent CLI processes; production sessions and each testing-environment session remain separate.
 
 State changes lock the complete read/modify/write operation across processes and merge into the latest document. Readers see a complete old or new JSON document, never a truncated intermediate write. Each write creates a unique temporary file, syncs it, then atomically renames it into place. On Unix, new directories are `0700`, files are `0600` from creation, and the containing directory is synced after rename.
 
 Each profile/environment session has its own transition lock. Refresh re-reads the session after acquiring that lock and keeps it through idempotency-key reservation, the network exchange and credential commit. A concurrent command uses the newly refreshed session instead of exchanging the old refresh token again. Login commits and local/remote logout use the same lock, so a refresh cannot resurrect a logged-out session or overwrite a later login. An uncertain refresh or remote logout retains its original idempotency key for an exact retry.
 
 Do not delete `credentials.lock` or the `session-*.lock` files while CLI processes are running. Locks are released automatically when a process exits; the empty files are intentionally retained to keep a stable locking identity.
+
+## Version 1.4.1: storage base and overrides
+
+The storage directory is selected in this order:
+
+1. `SILICON_IAM_HOME`: an explicit, exact IAM storage directory.
+2. The directory saved by `iam config home <location>` under the current default base.
+3. `$SILICON_HOME/.silicon-iam` if `SILICON_HOME` is present.
+4. `$HOME/.silicon-iam` otherwise.
+
+`SILICON_HOME` replaces the user-home base; it is not the credential directory
+itself. It also works when `HOME` is unset. `iam config home` requires an existing
+directory and saves its selection in `.silicon-iam/.silicon-iam-home` under
+`SILICON_HOME` (or `HOME` when unset). Each base has its own saved selection.
+An explicit `SILICON_IAM_HOME` still wins over that saved selection.
+
+```sh
+SILICON_HOME=/path/to/silicon iam config show
+SILICON_HOME=/path/to/silicon iam config home /existing/private/iam-store
+SILICON_IAM_HOME=/exact/private/iam-store iam config show
+```
+
+Changing the base selects a different store; existing credentials are not moved.
+The Rust client is stateless and does not create a local credential store.
 
 ## Upgrading an existing IAM home
 
@@ -16,7 +40,8 @@ reject that directory even if its credential file is already `0600`. This
 requires a one-time permission repair, not a new login or deleting credentials.
 
 Before changing permissions, stop other CLI processes and inspect the exact
-directory selected by `SILICON_IAM_HOME`, or `~/.silicon-iam` when it is unset.
+directory selected using the precedence above (`iam config show` reports it
+when the store is accessible).
 Confirm it is the intended IAM-only directory, is not a symbolic link, and is
 owned by your current user. Do not change permissions on a shared directory,
 another user's home, or an unexpected link target. If the ownership or path is

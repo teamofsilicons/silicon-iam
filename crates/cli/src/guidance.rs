@@ -101,9 +101,10 @@ impl Plan {
 
     fn new(context: &Context) -> Self {
         let custom_home = std::env::var("SILICON_IAM_HOME");
+        let silicon_home = std::env::var("SILICON_HOME");
         let production = context.testing_environment_id().is_none();
         let mut prefix = Vec::new();
-        if production || custom_home.is_ok() {
+        if production || custom_home.is_ok() || silicon_home.is_ok() {
             prefix.push("env".to_owned());
         }
         if production {
@@ -115,6 +116,9 @@ impl Plan {
             // The same profile name is not sufficient when credentials and
             // testing keys live in an invocation-specific private directory.
             prefix.push(format!("SILICON_IAM_HOME={home}"));
+        }
+        if let Ok(home) = &silicon_home {
+            prefix.push(format!("SILICON_HOME={home}"));
         }
         prefix.extend([
             "iam".to_owned(),
@@ -130,7 +134,8 @@ impl Plan {
             prefix,
             organization: context.organization_if_set().map(str::to_owned),
             enabled: matches!(context.format, Format::Text)
-                && !matches!(custom_home, Err(std::env::VarError::NotUnicode(_))),
+                && !matches!(custom_home, Err(std::env::VarError::NotUnicode(_)))
+                && !matches!(silicon_home, Err(std::env::VarError::NotUnicode(_))),
             ..Self::default()
         }
     }

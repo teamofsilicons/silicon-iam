@@ -2769,7 +2769,7 @@ dependencies = [
 
 [[package]]
 name = "silicon-iam-cli"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "clap",
  "http",

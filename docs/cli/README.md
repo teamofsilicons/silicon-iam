@@ -5,6 +5,17 @@ Silicon IAM from the command line. Installs a single binary, `iam`.
 Local session safety, concurrent invocations and filesystem requirements:
 see [credential storage](storage.md).
 
+## CLI 1.4.1 — 2026-09-09
+
+This release adds `SILICON_HOME` as the default home base and expands
+`iam --help` (also `iam -h`) into the complete command reference, including
+nested commands, options, requirements and examples. Subcommand help remains
+focused on that command. Help works offline without reading credentials,
+writing configuration or checking for updates. The CLI still uses Rust client
+1.4.0; no backend API or migration change is required.
+
+See [storage precedence and configuration](storage.md#version-141-storage-base-and-overrides).
+
 ## Current authorization without waiting for a webhook
 
 This contract was introduced in CLI/client **1.2.0**. CLI/client **1.4.0**
@@ -51,23 +62,23 @@ Only selected active memberships are returned. See [the consent guide](../ORGANI
 ## Installation
 
 ```sh
-cargo install silicon-iam-cli --version 1.4.0 --locked
+cargo install silicon-iam-cli --version 1.4.1 --locked
 ```
 
-Release `1.4.0` requires Rust 1.98 or newer, bundles
+Release `1.4.1` requires Rust 1.98 or newer, bundles
 `silicon-iam-client` 1.4.0, and speaks HTTP API major `v1`. The crate/CLI
 SemVer and HTTP API major are separate version lines. Check the installed
 binary with `iam --version`, and inspect/negotiate with the configured service
 using `iam system version`.
 
-Release 1.4.0 is built from
-[`v1.4.0`](https://github.com/teamofsilicons/silicon-iam/tree/v1.4.0/crates/cli);
-use its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.4.0/docs/cli/README.md)
+Release 1.4.1 is built from
+[`v1.4.1`](https://github.com/teamofsilicons/silicon-iam/tree/v1.4.1/crates/cli);
+use its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.4.1/docs/cli/README.md)
 to audit that installed version. Later changes on `main` are unreleased until
 separately published. An automatic update may install a newer release on a
 later invocation; check `iam --version` again when collecting diagnostics.
 
-This release adds `--grant-org` and `--all-orgs` for explicit organization consent.
+Release 1.4.0 added `--grant-org` and `--all-orgs` for explicit organization consent.
 It retains `iam app token authorizations`, which lists one snapshot per
 organization an access token currently reaches: exactly one for an
 organization-bound token, one per selected active membership for a multi-organization token, and
@@ -158,7 +169,8 @@ access to discover commands or read the bundled documentation. Local help,
 Commands read as noun then verb:
 
 ```sh
-iam -h                 # the top-level commands and global options
+iam --help             # full help for every command, including nested options
+iam -h                 # the same complete command reference
 iam commands           # every command, at every depth
 iam tag --help         # one group
 iam tag delete --help  # one command's options
@@ -185,7 +197,7 @@ Successful commands in text mode offer relevant next commands where useful.
 For example, application creation explains the returned credentials and points
 to inspecting the application, minting an SLT and exchanging it. Suggestions
 retain the selected service URL, profile, organization, testing environment
-and custom `SILICON_IAM_HOME`, so a copied follow-up stays in the same context.
+and custom `SILICON_HOME` / `SILICON_IAM_HOME`, so a copied follow-up stays in the same context.
 They use POSIX shell quoting (including quoted `org>app` IDs); production
 suggestions explicitly unset `SILICON_IAM_TEST` to avoid inheriting a different
 environment. They are suggestions only: the CLI does not execute them. Secret
@@ -933,8 +945,11 @@ Every setting can also come from the environment: `SILICON_IAM_URL`,
 `SILICON_IAM_AUTO_UPDATE`. Flags win over environment variables, which win
 over stored settings.
 
-`SILICON_IAM_HOME` moves the store somewhere else, which is what to use in CI so
-a build never touches a developer's real credentials.
+`SILICON_HOME` selects the home base: IAM stores state in its `.silicon-iam`
+subdirectory, falling back to `~/.silicon-iam` when unset. `SILICON_IAM_HOME`
+overrides the exact storage directory, which is useful for isolated CI runs.
+`iam config home <existing-directory>` persists a selection for the current
+base. See [credential storage](storage.md) for the complete precedence rules.
 
 ## Step-up
 

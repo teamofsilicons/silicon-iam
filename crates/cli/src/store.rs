@@ -2,7 +2,8 @@
 //!
 //! The client crate is stateless by design, so everything durable lives here:
 //! which service to talk to, which profile is current, and the tokens for
-//! each. All of it sits under `~/.silicon-iam/`, and the file holding tokens is
+//! each. By default it sits under `$SILICON_HOME/.silicon-iam/` (or
+//! `~/.silicon-iam/` when unset), and the file holding tokens is
 //! created `0600` and re-checked on every write, because a credential readable
 //! by other users on the machine is not a credential.
 
@@ -238,17 +239,19 @@ pub fn home() -> Result<PathBuf> {
                     .map(|value| PathBuf::from(value.trim()))
             })
         })
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(APP_DIRECTORY)))
+        .or_else(default_home)
         .ok_or_else(|| {
             CliError::Config(
-                "cannot locate a home directory; set SILICON_IAM_HOME to choose one".to_owned(),
+                "cannot locate a home directory; set SILICON_HOME or SILICON_IAM_HOME to choose one".to_owned(),
             )
         })?;
     Ok(home)
 }
 
 fn default_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(APP_DIRECTORY))
+    std::env::var_os("SILICON_HOME")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(|home| PathBuf::from(home).join(APP_DIRECTORY))
 }
 
 /// Stores the selected directory outside the selected directory so changing

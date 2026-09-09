@@ -540,7 +540,7 @@ The primary Interface is the Rust Package. CLI is built using the Rust Package o
 
 if you need a local store for auth or something else, use `{home_dir}/.{appname}/dir`.
 
-The default home dir is `~`.
+The default home dir is `~`. If `SILICON_HOME` is present in the enviorment variables, use that as the home directory by default. 
 
 For both package and the cli write detailed docs on how to use the package and how to use the cli, and also another doc on how to use the package. 
 
@@ -557,6 +557,8 @@ When the carbon login is initiated the simple login can happen, even for the car
 If the carbon/silicon is already logged in directly return the short lived token. 
 
 Testing enviorment in cli, for testing enviorment in cli i should just be able to `iam --test <test_id> <command>` infront of the same command and it should treat that as a test command. Same for test only commands even they would have the same style just without specifying --test for them would return this action is only possible for test enviorment.  
+
+It should expose `--help` command, so the user can run `iam --help` and get the entire help docs. 
 
 
 ### Cli experience

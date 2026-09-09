@@ -42,6 +42,14 @@ must be deployed and verified before publishing/adopting the client/CLI packages
 | Errors and recovery | [`api/errors.html`](./api/errors.html) | [`client/errors.html`](./client/errors.html) |
 | Automatic crate updates | — | [`client/updates.html`](./client/updates.html) |
 
+## CLI 1.4.1 — 2026-09-09
+
+The CLI now defaults local state to `$SILICON_HOME/.silicon-iam` when
+`SILICON_HOME` is present, with explicit IAM storage overrides preserved.
+Root `iam --help` / `iam -h` prints every command's detailed help offline.
+See the [CLI guide](cli/README.md) and [storage guide](cli/storage.md).
+This is a CLI-only change using client 1.4.0; it adds no backend migration.
+
 ## CLI and client 1.4.0
 
 [User-selected organization consent](ORGANIZATION_CONSENT.md) supersedes the
