@@ -1881,7 +1881,6 @@
     "required": [
       "id",
       "org_id",
-      "target_carbon",
       "org_role",
       "job_role",
       "tag_ids",
@@ -1904,7 +1903,8 @@
         "$ref": "#/components/schemas/OrgId"
       },
       "target_carbon": {
-        "$ref": "#/components/schemas/CarbonPublic"
+        "$ref": "#/components/schemas/CarbonPublic",
+        "description": "Present after the invitation is bound to a Carbon account; absent before signup and verified email binding."
       },
       "masked_delivery_address": {
         "type": "string"

@@ -15,6 +15,7 @@ MANIFEST = "crates/cli/src/manual_data.rs"
 ASSETS = "crates/cli/src/manual_assets"
 
 CATALOG = [
+  ["email-invitations", "Email invitations before signup", "docs/EMAIL_INVITATIONS.md", []],
   ["overview", "Integration documentation index", "docs/README.md", %w[index]],
   ["organization-consent", "User-selected Application organizations", "docs/ORGANIZATION_CONSENT.md", %w[consent organization-selection]],
   ["frontend", "SolidJS frontend integration and hosting", "docs/frontend/README.md", %w[browser]],

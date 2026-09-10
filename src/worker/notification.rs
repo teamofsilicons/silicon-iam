@@ -20,7 +20,7 @@ struct ClaimedNotification {
     id: Uuid,
     notification_kind: String,
     provider: String,
-    recipient_contact_id: Uuid,
+    recipient_contact_id: Option<Uuid>,
     recipient_contact_kind: String,
     template_id: String,
     context_type: String,
@@ -144,6 +144,10 @@ async fn deliver(
     context: &WorkerContext,
     job: &ClaimedNotification,
 ) -> Result<DeliveryReceipt, DeliveryError> {
+    if job.recipient_contact_id.is_none() {
+        return deliver_email_invitation(context, job).await;
+    }
+    let contact_id = job.recipient_contact_id.ok_or(DeliveryError::Rejected)?;
     let contact = if job.notification_kind == "security_notice" {
         sqlx::query_as::<_, ContactMaterial>(
             "SELECT * FROM iam_private.get_worker_security_notice_contact($1, $2)",
@@ -182,7 +186,7 @@ async fn deliver(
     let plaintext = context
         .encryption
         .decrypt(
-            EncryptionContext::global(field, job.recipient_contact_id),
+            EncryptionContext::global(field, contact_id),
             &EncryptedValue {
                 key_version: contact.encryption_key_version,
                 nonce,
@@ -198,6 +202,67 @@ async fn deliver(
         "security_notice" => deliver_security_notice(context, job, &destination).await,
         _ => Err(DeliveryError::Rejected),
     }
+}
+
+#[derive(sqlx::FromRow)]
+struct EmailInvitation {
+    invitation_id: Uuid,
+    ciphertext: Vec<u8>,
+    nonce: Vec<u8>,
+    encryption_key_version: i16,
+    organization_name: String,
+    organization_handle: String,
+}
+
+async fn deliver_email_invitation(
+    context: &WorkerContext,
+    job: &ClaimedNotification,
+) -> Result<DeliveryReceipt, DeliveryError> {
+    let invitation = sqlx::query_as::<_, EmailInvitation>(
+        "SELECT * FROM iam_private.get_worker_email_invitation($1, $2)",
+    )
+    .bind(job.id)
+    .bind(&context.instance_id)
+    .fetch_optional(&context.pool)
+    .await
+    .map_err(|_| DeliveryError::Unavailable)?
+    .ok_or(DeliveryError::Rejected)?;
+    let plaintext = context
+        .encryption
+        .decrypt(
+            EncryptionContext::global(ProtectedField::InvitationEmail, invitation.invitation_id),
+            &EncryptedValue {
+                ciphertext: invitation.ciphertext,
+                nonce: invitation
+                    .nonce
+                    .try_into()
+                    .map_err(|_| DeliveryError::Rejected)?,
+                key_version: invitation.encryption_key_version,
+            },
+        )
+        .map_err(|_| DeliveryError::Unavailable)?;
+    let recipient = SecretString::from(
+        std::str::from_utf8(&plaintext)
+            .map_err(|_| DeliveryError::Rejected)?
+            .to_owned(),
+    );
+    let join_url = invitation_join_url(
+        &context.settings.auth_base_url,
+        &invitation.organization_handle,
+    );
+    ensure_current_lease(context, job.id).await?;
+    if job.provider != "postmark" {
+        return Err(DeliveryError::Rejected);
+    }
+    context
+        .notifications
+        .email
+        .send_invitation(InvitationEmail {
+            recipient: &recipient,
+            organization_name: &invitation.organization_name,
+            join_url: &join_url,
+        })
+        .await
 }
 
 /// Builds the link an invitation email or SMS asks the recipient to open.

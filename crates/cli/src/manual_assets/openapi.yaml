@@ -1278,7 +1278,7 @@ paths:
             schema: { $ref: '#/components/schemas/CarbonInviteCreate' }
       responses:
         '201':
-          description: 48-hour invitation created for an existing Carbon; org_role is always member.
+          description: 48-hour invitation created for an email recipient or existing Carbon; org_role is always member.
           headers:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
@@ -4510,11 +4510,13 @@ components:
     InviteStatus: { type: string, enum: [pending, accepted, revoked, expired] }
     Invite:
       type: object
-      required: [id, org_id, target_carbon, org_role, job_role, tag_ids, extra_silicon_membership_ids, default_trust, tag_trust_overrides, silicon_trust_overrides, invited_by, status, expires_at, version, created_at]
+      required: [id, org_id, org_role, job_role, tag_ids, extra_silicon_membership_ids, default_trust, tag_trust_overrides, silicon_trust_overrides, invited_by, status, expires_at, version, created_at]
       properties:
         id: { type: string, format: uuid }
         org_id: { $ref: '#/components/schemas/OrgId' }
-        target_carbon: { $ref: '#/components/schemas/CarbonPublic' }
+        target_carbon:
+          $ref: '#/components/schemas/CarbonPublic'
+          description: Present after the invitation is bound to a Carbon account; absent before signup and verified email binding.
         masked_delivery_address: { type: string }
         org_role: { const: member }
         job_role: { type: string, maxLength: 5000 }

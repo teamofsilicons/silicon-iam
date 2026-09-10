@@ -652,7 +652,8 @@ pub(super) struct CarbonPublicResponse {
 pub(super) struct InvitationResponse {
     pub(super) id: Uuid,
     pub(super) org_id: String,
-    pub(super) target_carbon: CarbonPublicResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) target_carbon: Option<CarbonPublicResponse>,
     pub(super) masked_delivery_address: Option<String>,
     pub(super) org_role: String,
     pub(super) job_role: String,

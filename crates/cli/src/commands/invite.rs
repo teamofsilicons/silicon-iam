@@ -34,7 +34,7 @@ pub async fn run(context: &Context, command: InviteCommand) -> Result<()> {
                     for invite in &listed.items {
                         table.row([
                             invite.id.to_string(),
-                            invite.target_carbon.carbon_id.clone(),
+                            invitee_label(invite).to_owned(),
                             label(&invite.status),
                             timestamp(invite.expires_at),
                         ]);
@@ -135,7 +135,7 @@ fn report(context: &Context, invite: &models::Invite) -> Result<()> {
         Format::Text => {
             let mut table = Table::new(["field", "value"]);
             table.row(["id", &invite.id.to_string()]);
-            table.row(["invitee", &invite.target_carbon.carbon_id]);
+            table.row(["invitee", invitee_label(invite)]);
             table.row(["status", &label(&invite.status)]);
             table.row(["expires", &timestamp(invite.expires_at)]);
             table.row(["version", &invite.version.to_string()]);
@@ -143,4 +143,13 @@ fn report(context: &Context, invite: &models::Invite) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn invitee_label(invite: &models::Invite) -> &str {
+    invite
+        .target_carbon
+        .as_ref()
+        .map(|carbon| carbon.carbon_id.as_str())
+        .or(invite.masked_delivery_address.as_deref())
+        .unwrap_or("Awaiting signup")
 }

@@ -695,10 +695,12 @@ reports, `reassign_reports_to` is required and the graph rewrite is atomic.
 
 ## Carbon invitations and joining
 
-An authorized caller creates a 48-hour invitation with exactly one existing
-`carbon_id` or email. The backend resolves the target privately and emails the
-registered address. Invitation responses expose a public Carbon projection and
-a masked delivery address, never a raw reverse lookup.
+An authorized caller creates a 48-hour invitation with either an existing
+`carbon_id` or an email address, including an address whose owner has not signed
+up yet. IAM stores an encrypted email destination and sends the invitation.
+Responses expose a masked delivery address and omit `target_carbon` until an
+account is bound; no Carbon account or organization membership is created by
+the invitation itself.
 
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
@@ -721,9 +723,10 @@ The notification link is built only from configured frontend origin plus
 `/join/{org_id}?app={redirect_app_id}`; the optional app ID is validated and
 does not introduce a caller-controlled redirect URL.
 
-From that link, an authenticated direct Carbon submits the invited email to the
-email-verification-code endpoint. The email must still be the exact active,
-verified address immutably bound when that Carbon's invitation was created, and
+From that link, the recipient signs up or signs in, then submits the invited
+email to the email-verification-code endpoint. An unbound invitation is attached
+only to the authenticated Carbon with that active, verified email. Already bound
+invitations retain their original target and contact. In either case,
 the invitation must be pending and unexpired for the active email-join
 organization. A match sends a six-digit Postmark code,
 supersedes any prior live code, and returns only `accepted`, `invite_id`, and
@@ -731,7 +734,7 @@ the code's `expires_in`; it never returns contact data. A missing or mismatched
 email/invitation returns the same `404 not_invited` response. The
 returned invitation ID is then supplied with the code to the join endpoint.
 
-Only one pending invitation per organization/Carbon is allowed. Join verifies
+Only one pending invitation per organization/email and organization/Carbon is allowed. Join verifies
 that the authenticated Carbon is the target, the invitation and code are
 pending/unexpired, the organization matches, and every referenced tag/Silicon
 is still active. Ten failed code verifications start a one-minute cooldown; the

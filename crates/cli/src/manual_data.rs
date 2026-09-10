@@ -6,6 +6,15 @@ use super::Document;
 #[rustfmt::skip]
 pub(super) static DOCUMENTS: &[Document] = &[
     Document {
+        topic: "email-invitations",
+        title: "Email invitations before signup",
+        source: "docs/EMAIL_INVITATIONS.md",
+        source_sha256: "6814d7d28647bc1d8b607c51edb20f4f6232d791b4fa102704d216996fdab047",
+        format: "markdown",
+        aliases: &[],
+        content: include_str!("manual_assets/email-invitations.md"),
+    },
+    Document {
         topic: "overview",
         title: "Integration documentation index",
         source: "docs/README.md",
@@ -72,7 +81,7 @@ pub(super) static DOCUMENTS: &[Document] = &[
         topic: "api",
         title: "Complete HTTP API reference",
         source: "docs/API_DOCS.md",
-        source_sha256: "81cf6d756150cddb6be90e7d3d5b94c4f7545db6f41fdddbdd4f3ae6f51c3dfd",
+        source_sha256: "ca0672dc15cc22d29d42f4f84169024c414bff4aa3bc7fb2e3966c1ffd46054d",
         format: "markdown",
         aliases: &["http"],
         content: include_str!("manual_assets/api.md"),
@@ -81,7 +90,7 @@ pub(super) static DOCUMENTS: &[Document] = &[
         topic: "openapi",
         title: "Normative OpenAPI wire contract",
         source: "docs/openapi.yaml",
-        source_sha256: "a2434caa94fd4c9701b9bdaa7d7d8595f17836f71ecb5d3945752e1f3c6f946c",
+        source_sha256: "54c30dacd2188c68433a24732ec349c709260ad3de683d711eb89e3087756abe",
         format: "yaml",
         aliases: &["schema"],
         content: include_str!("manual_assets/openapi.yaml"),
@@ -135,7 +144,7 @@ pub(super) static DOCUMENTS: &[Document] = &[
         topic: "api/organizations",
         title: "Organizations, membership and SSO",
         source: "docs/api/organizations.html",
-        source_sha256: "a81cd5952608f90fd36bab49bd6ecfa5e1db221336befc463b94d8617e10904e",
+        source_sha256: "73d8982afe65f0ad0c78fd7aa26652b9d24a0a5911dde8d0c7af9a1aa936cc32",
         format: "markdown",
         aliases: &["organizations", "members", "sso"],
         content: include_str!("manual_assets/api-organizations.md"),

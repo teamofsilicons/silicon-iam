@@ -170,6 +170,8 @@ pub enum BlindIndexPurpose {
 pub enum ProtectedField {
     /// Carbon email address.
     CarbonEmail,
+    /// Invitation email before Carbon registration.
+    InvitationEmail,
     /// Carbon phone number.
     CarbonPhone,
     /// Bounded idempotency replay envelope containing a one-time secret.
@@ -671,6 +673,7 @@ impl BlindIndexPurpose {
 impl ProtectedField {
     const fn label(self) -> &'static [u8] {
         match self {
+            Self::InvitationEmail => b"invitation-email",
             Self::CarbonEmail => b"carbon-email",
             Self::CarbonPhone => b"carbon-phone",
             Self::IdempotencySecretResponse => b"idempotency-secret-response",

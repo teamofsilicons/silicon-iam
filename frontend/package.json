@@ -10,7 +10,8 @@
     "build:vercel": "npm run build && node scripts/build-vercel.mjs",
     "start": "node dist/server/node.js",
     "preview": "node --env-file=.env.development.local dist/server/node.js",
-    "format": "prettier --write src server vite.config.ts scripts/build-server.mjs"
+    "format": "prettier --write src server vite.config.ts scripts/build-server.mjs",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "engines": {
     "node": "24.x"
