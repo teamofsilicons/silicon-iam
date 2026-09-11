@@ -285,6 +285,15 @@ code that no reader asked for.
 | 503 | A required dependency is unavailable | `service_unavailable` |
 | 504 | A bounded server or provider deadline elapsed | `gateway_timeout` |
 
+Active OAuth introspection is limited to **200 requests per account per minute**.
+The bucket uses the authenticated Carbon or Silicon principal, shared across its
+application credentials, access tokens, refresh tokens and sessions. Different
+accounts receive independent budgets, and testing environments retain their own
+isolated rate-limit storage. Invalid or unresolvable tokens use a separate
+application budget of 120 per minute. Other authentication endpoint limits are
+unchanged. A rejected introspection returns HTTP 429 with `Retry-After` and
+`RateLimit-*` headers.
+
 A `validation_failed` body carries `details.fields`, each entry naming the
 offending `field` and its safe `message`, as an array such as
 `[{"field":"job_role","message":"at most 5000 characters"}]`. A body that

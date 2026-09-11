@@ -8,7 +8,7 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use secrecy::SecretString;
-use sqlx::{FromRow, Postgres, Transaction};
+use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -17,7 +17,7 @@ use crate::{
     domain::actor::ActorType,
     infrastructure::{
         browser_session::{self, BrowserSessionCookieError},
-        crypto::{DigestPurpose, SecretDigest},
+        crypto::{CryptoService, DigestPurpose, SecretDigest},
         postgres::{
             context::{self, DatabaseContext},
             rate_limit::{self, RateLimitPolicy},
@@ -50,6 +50,10 @@ pub(crate) struct ApplicationClient {
     pub(crate) auth_epoch: i64,
     pub(crate) authenticated_secret: SecretString,
 }
+
+/// Introspection identifies the end-user account from the submitted token.
+/// Its quota must not be shared by every user of the application's secret.
+pub(super) struct IntrospectionClient(pub(super) ApplicationClient);
 
 #[derive(FromRow)]
 struct ClientSecretRow {
@@ -204,8 +208,31 @@ impl FromRequestParts<ApiState> for ApplicationClient {
         parts: &mut Parts,
         state: &ApiState,
     ) -> Result<Self, Self::Rejection> {
-        let (app_id, supplied) = basic_credentials(&parts.headers)?;
-        validation::app_id(&app_id).map_err(|_| ApiError::invalid_client())?;
+        authenticate_application_client(parts, state, false).await
+    }
+}
+
+impl FromRequestParts<ApiState> for IntrospectionClient {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &ApiState,
+    ) -> Result<Self, Self::Rejection> {
+        authenticate_application_client(parts, state, true)
+            .await
+            .map(Self)
+    }
+}
+
+async fn authenticate_application_client(
+    parts: &mut Parts,
+    state: &ApiState,
+    account_scoped: bool,
+) -> Result<ApplicationClient, ApiError> {
+    let (app_id, supplied) = basic_credentials(&parts.headers)?;
+    validation::app_id(&app_id).map_err(|_| ApiError::invalid_client())?;
+    if !account_scoped {
         enforce_request_rate_limit(
             state,
             "applications_client_request",
@@ -213,31 +240,32 @@ impl FromRequestParts<ApiState> for ApplicationClient {
             120,
         )
         .await?;
-        let candidates = state
-            .crypto
-            .digest_secrets(DigestPurpose::ApplicationSecret, &supplied)
-            .map_err(|_| ApiError::internal("application_secret_digest"))?;
-        let versions = candidates
-            .iter()
-            .map(SecretDigest::key_version)
-            .collect::<Vec<_>>();
-        let digests = candidates
-            .iter()
-            .map(|digest| digest.as_bytes().to_vec())
-            .collect::<Vec<_>>();
-        let mut transaction = context::begin(
-            state.db(),
-            DatabaseContext {
-                principal_id: None,
-                organization_id: None,
-                application_id: None,
-                signup_session_id: None,
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal("application_client_context"))?;
-        let candidate_rows = sqlx::query_as::<_, ClientSecretRow>(
-            r"
+    }
+    let candidates = state
+        .crypto
+        .digest_secrets(DigestPurpose::ApplicationSecret, &supplied)
+        .map_err(|_| ApiError::internal("application_secret_digest"))?;
+    let versions = candidates
+        .iter()
+        .map(SecretDigest::key_version)
+        .collect::<Vec<_>>();
+    let digests = candidates
+        .iter()
+        .map(|digest| digest.as_bytes().to_vec())
+        .collect::<Vec<_>>();
+    let mut transaction = context::begin(
+        state.db(),
+        DatabaseContext {
+            principal_id: None,
+            organization_id: None,
+            application_id: None,
+            signup_session_id: None,
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal("application_client_context"))?;
+    let candidate_rows = sqlx::query_as::<_, ClientSecretRow>(
+        r"
             WITH supplied_digest (key_version, digest) AS (
                 SELECT * FROM unnest($1::smallint[], $2::bytea[])
             )
@@ -260,89 +288,106 @@ impl FromRequestParts<ApiState> for ApplicationClient {
                OR (secret.status = 'retiring' AND secret.retires_at > transaction_timestamp())
             FOR UPDATE OF secret
             ",
-        )
-        .bind(versions)
-        .bind(digests)
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(|_| ApiError::internal("application_secret_lookup"))?;
+    )
+    .bind(versions)
+    .bind(digests)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_secret_lookup"))?;
 
-        for candidate in candidate_rows {
-            let Some(expected) =
-                SecretDigest::from_parts(candidate.pepper_key_version, &candidate.secret_digest)
-            else {
-                continue;
-            };
-            if !state
-                .crypto
-                .verify_secret(DigestPurpose::ApplicationSecret, &supplied, expected)
-                .map_err(|_| ApiError::internal("application_secret_verify"))?
-            {
-                continue;
-            }
-            sqlx::query(
-                r"
+    for candidate in candidate_rows {
+        let Some(expected) =
+            SecretDigest::from_parts(candidate.pepper_key_version, &candidate.secret_digest)
+        else {
+            continue;
+        };
+        if !state
+            .crypto
+            .verify_secret(DigestPurpose::ApplicationSecret, &supplied, expected)
+            .map_err(|_| ApiError::internal("application_secret_verify"))?
+        {
+            continue;
+        }
+        sqlx::query(
+            r"
                 SELECT set_config('iam.principal_id', $1, true),
                        set_config('iam.application_id', $1, true)
                 ",
-            )
-            .bind(candidate.application_id.to_string())
-            .execute(&mut *transaction)
-            .await
-            .map_err(|_| ApiError::internal("application_client_rls_context"))?;
-            let resolved = sqlx::query_as::<_, (Uuid, String, Uuid, i64)>(
-                r"
+        )
+        .bind(candidate.application_id.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiError::internal("application_client_rls_context"))?;
+        let resolved = sqlx::query_as::<_, (Uuid, String, Uuid, i64)>(
+            r"
                 SELECT application_id, app_id, organization_id, auth_epoch
                 FROM iam_private.resolve_application_client($1, $2, $3, $4)
                 ",
-            )
-            .bind(candidate.application_id)
-            .bind(&app_id)
-            .bind(candidate.pepper_key_version)
-            .bind(&candidate.secret_digest)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|_| ApiError::internal("application_client_read"))?;
-            let Some((application_id, app_id, organization_id, auth_epoch)) = resolved else {
-                transaction
-                    .rollback()
-                    .await
-                    .map_err(|_| ApiError::internal("application_client_rollback"))?;
-                return Err(ApiError::invalid_client());
-            };
-            sqlx::query(
-                r"
+        )
+        .bind(candidate.application_id)
+        .bind(&app_id)
+        .bind(candidate.pepper_key_version)
+        .bind(&candidate.secret_digest)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|_| ApiError::internal("application_client_read"))?;
+        let Some((application_id, app_id, organization_id, auth_epoch)) = resolved else {
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| ApiError::internal("application_client_rollback"))?;
+            if account_scoped {
+                enforce_request_rate_limit(
+                    state,
+                    "applications_client_authentication_failure",
+                    SecretString::from(format!("application:{app_id}:{}", parts.uri.path())),
+                    120,
+                )
+                .await?;
+            }
+            return Err(ApiError::invalid_client());
+        };
+        sqlx::query(
+            r"
                 UPDATE iam.application_secrets
                 SET last_used_at = transaction_timestamp()
                 WHERE application_id = $1
                   AND pepper_key_version = $2
                   AND secret_digest = $3
                 ",
-            )
-            .bind(application_id)
-            .bind(candidate.pepper_key_version)
-            .bind(candidate.secret_digest)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|_| ApiError::internal("application_secret_touch"))?;
-            transaction
-                .commit()
-                .await
-                .map_err(|_| ApiError::internal("application_client_commit"))?;
-            return Ok(Self {
-                application_id,
-                app_id,
-                organization_id,
-                auth_epoch,
-                authenticated_secret: supplied,
-            });
-        }
+        )
+        .bind(application_id)
+        .bind(candidate.pepper_key_version)
+        .bind(candidate.secret_digest)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiError::internal("application_secret_touch"))?;
         transaction
-            .rollback()
+            .commit()
             .await
-            .map_err(|_| ApiError::internal("application_client_reject_rollback"))?;
-        Err(ApiError::invalid_client())
+            .map_err(|_| ApiError::internal("application_client_commit"))?;
+        return Ok(ApplicationClient {
+            application_id,
+            app_id,
+            organization_id,
+            auth_epoch,
+            authenticated_secret: supplied,
+        });
     }
+    transaction
+        .rollback()
+        .await
+        .map_err(|_| ApiError::internal("application_client_reject_rollback"))?;
+    if account_scoped {
+        enforce_request_rate_limit(
+            state,
+            "applications_client_authentication_failure",
+            SecretString::from(format!("application:{app_id}:{}", parts.uri.path())),
+            120,
+        )
+        .await?;
+    }
+    Err(ApiError::invalid_client())
 }
 
 async fn enforce_request_rate_limit(
@@ -351,11 +396,21 @@ async fn enforce_request_rate_limit(
     scope: SecretString,
     maximum: u32,
 ) -> Result<(), ApiError> {
+    enforce_rate_limit(state.db(), &state.crypto, name, scope, maximum).await
+}
+
+async fn enforce_rate_limit(
+    pool: &PgPool,
+    crypto: &CryptoService,
+    name: &'static str,
+    scope: SecretString,
+    maximum: u32,
+) -> Result<(), ApiError> {
     let maximum = NonZeroU32::new(maximum)
         .ok_or_else(|| ApiError::internal("application_rate_limit_policy"))?;
     let policy = RateLimitPolicy::new(maximum, Duration::from_secs(60), Duration::from_secs(60))
         .map_err(|_| ApiError::internal("application_rate_limit_policy"))?;
-    match rate_limit::enforce(state.db(), &state.crypto, name, &scope, policy).await {
+    match rate_limit::enforce(pool, crypto, name, &scope, policy).await {
         Ok(_) => Ok(()),
         Err(crate::error::AppError::RateLimited {
             limit,
@@ -370,6 +425,35 @@ async fn enforce_request_rate_limit(
         )),
         Err(_) => Err(ApiError::internal("application_rate_limit")),
     }
+}
+
+pub(super) const ACCOUNT_INTROSPECTION_LIMIT: u32 = 200;
+
+pub(super) fn account_introspection_scope(actor_type: &str, principal_id: Uuid) -> SecretString {
+    SecretString::from(format!("account:{actor_type}:{principal_id}"))
+}
+
+pub(super) async fn enforce_introspection_limit(
+    pool: &PgPool,
+    crypto: &CryptoService,
+    application_id: Uuid,
+    account: Option<(&str, Uuid)>,
+) -> Result<(), ApiError> {
+    let (name, scope, maximum) = match account {
+        Some((actor_type, principal_id)) => (
+            "applications_introspection_account",
+            account_introspection_scope(actor_type, principal_id),
+            ACCOUNT_INTROSPECTION_LIMIT,
+        ),
+        // No authenticated account exists for unknown, invalid, or foreign
+        // tokens. Keep their abuse budget separate from valid account traffic.
+        None => (
+            "applications_introspection_unresolved",
+            SecretString::from(format!("application:{application_id}")),
+            120,
+        ),
+    };
+    enforce_rate_limit(pool, crypto, name, scope, maximum).await
 }
 
 pub(super) fn require_carbon(access: &AccessContext) -> Result<Uuid, ApiError> {
@@ -573,5 +657,116 @@ mod tests {
         let mut missing_scope = direct_carbon_access();
         missing_scope.scopes.clear();
         assert!(require_carbon(&missing_scope).is_err());
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_tests {
+    use super::*;
+    use crate::config::{KeyringSettings, SecuritySettings};
+    use axum::{http::StatusCode, response::IntoResponse as _};
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use sqlx::postgres::PgPoolOptions;
+    use std::collections::BTreeMap;
+    use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
+    use testcontainers_modules::postgres::Postgres as PostgresImage;
+
+    fn crypto() -> CryptoService {
+        let keyring = |byte| KeyringSettings {
+            current_version: 1,
+            keys: BTreeMap::from([(1, SecretString::from(URL_SAFE_NO_PAD.encode([byte; 32])))]),
+        };
+        let settings = SecuritySettings {
+            token_peppers: keyring(11),
+            blind_index_keys: keyring(21),
+            encryption_keys: keyring(31),
+            cookie_key: SecretString::from(URL_SAFE_NO_PAD.encode([41_u8; 32])),
+            access_token_ttl: Duration::from_mins(30),
+            refresh_family_ttl: Duration::from_hours(2_160),
+            authorization_code_ttl: Duration::from_mins(2),
+            otp_ttl: Duration::from_mins(10),
+            otp_max_attempts: 10,
+        };
+        let Ok(crypto) = CryptoService::from_settings(&settings) else {
+            panic!("valid test keyrings must initialize");
+        };
+        crypto
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Docker daemon"]
+    async fn introspection_accounts_get_independent_two_hundred_request_budgets()
+    -> anyhow::Result<()> {
+        let container = PostgresImage::default()
+            .with_tag("16-alpine")
+            .start()
+            .await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(5432).await?;
+        let pool = PgPoolOptions::new()
+            .connect(&format!(
+                "postgres://postgres:postgres@{host}:{port}/postgres"
+            ))
+            .await?;
+        crate::infrastructure::postgres::migrate(&pool).await?;
+        let crypto = crypto();
+        // Keep the assertions within one wall-clock window.
+        let seconds_left: i64 =
+            sqlx::query_scalar("SELECT (60 - EXTRACT(SECOND FROM clock_timestamp()))::bigint")
+                .fetch_one(&pool)
+                .await?;
+        if seconds_left < 10 {
+            tokio::time::sleep(Duration::from_secs(u64::try_from(seconds_left.max(0))? + 1)).await;
+        }
+        let account = Uuid::now_v7();
+        let app_one = Uuid::now_v7();
+        let app_two = Uuid::now_v7();
+        for request in 0..200 {
+            // Rotating application credentials must not grant a fresh account quota.
+            let app = if request % 2 == 0 { app_one } else { app_two };
+            enforce_introspection_limit(&pool, &crypto, app, Some(("silicon", account)))
+                .await
+                .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        }
+        let error =
+            enforce_introspection_limit(&pool, &crypto, app_two, Some(("silicon", account)))
+                .await
+                .err()
+                .ok_or_else(|| anyhow::anyhow!("201st request must fail"))?
+                .into_response();
+        assert_eq!(error.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error.headers()["ratelimit-limit"], "200");
+        assert_eq!(error.headers()["ratelimit-remaining"], "0");
+        assert!(error.headers().contains_key("retry-after"));
+        enforce_introspection_limit(&pool, &crypto, app_one, Some(("silicon", Uuid::now_v7())))
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        enforce_introspection_limit(&pool, &crypto, app_one, Some(("carbon", account)))
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        // Unresolved tokens have a separate application abuse budget.
+        for _ in 0..120 {
+            enforce_introspection_limit(&pool, &crypto, app_one, None)
+                .await
+                .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        }
+        assert_eq!(
+            enforce_introspection_limit(&pool, &crypto, app_one, None)
+                .await
+                .err()
+                .ok_or_else(|| anyhow::anyhow!("unresolved budget must be bounded"))?
+                .into_response()
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        enforce_introspection_limit(&pool, &crypto, app_one, Some(("carbon", account)))
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        // Move existing buckets into the previous window: the next minute resets the quota.
+        sqlx::query("UPDATE iam.rate_limit_buckets SET window_started_at = window_started_at - interval '60 seconds'").execute(&pool).await?;
+        enforce_introspection_limit(&pool, &crypto, app_one, Some(("silicon", account)))
+            .await
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        Ok(())
     }
 }

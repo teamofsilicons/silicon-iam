@@ -81,7 +81,7 @@ pub(super) static DOCUMENTS: &[Document] = &[
         topic: "api",
         title: "Complete HTTP API reference",
         source: "docs/API_DOCS.md",
-        source_sha256: "ca0672dc15cc22d29d42f4f84169024c414bff4aa3bc7fb2e3966c1ffd46054d",
+        source_sha256: "8592422bfbcde89c3d630fc8e3daaf3a3ed45e08a597e59770840c8723e66d47",
         format: "markdown",
         aliases: &["http"],
         content: include_str!("manual_assets/api.md"),

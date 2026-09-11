@@ -35,7 +35,10 @@ use super::{
         AppTokenForm, IntrospectionResponse, LoginQuery, LoginStatusQuery, PublicActor,
         ShortLivedTokenRequest, ShortLivedTokenResponse, TokenInput, TokenResponse,
     },
-    security::{ApplicationClient, Bearer, BrowserSession, MaybeBrowserSession},
+    security::{
+        ApplicationClient, Bearer, BrowserSession, IntrospectionClient, MaybeBrowserSession,
+        enforce_introspection_limit,
+    },
     validation,
 };
 
@@ -897,6 +900,32 @@ pub(super) async fn app_tokens(
 }
 
 pub(super) async fn introspect(
+    State(state): State<ApiState>,
+    IntrospectionClient(client): IntrospectionClient,
+    headers: HeaderMap,
+    Form(input): Form<TokenInput>,
+) -> Result<Json<IntrospectionResponse>, ApiError> {
+    let application_id = client.application_id;
+    let result = introspect_token(State(state.clone()), client, headers, Form(input)).await;
+    let account = match &result {
+        Ok(Json(response)) if response.active => Some((
+            response
+                .actor_type
+                .as_deref()
+                .ok_or_else(|| ApiError::internal("introspection_account_type"))?,
+            response
+                .principal_id
+                .ok_or_else(|| ApiError::internal("introspection_account_id"))?,
+        )),
+        _ => None,
+    };
+    // Token and application validation finish before the account is charged.
+    // All read transactions are released before obtaining the bucket connection.
+    enforce_introspection_limit(state.db(), &state.crypto, application_id, account).await?;
+    result
+}
+
+async fn introspect_token(
     State(state): State<ApiState>,
     client: ApplicationClient,
     headers: HeaderMap,
