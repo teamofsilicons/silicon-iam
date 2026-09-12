@@ -86,17 +86,34 @@ impl Applications<'_> {
             .await
     }
 
-    /// Lists active test environments linked to this production application and its organization.
+    /// Lists test environments linked to this production application and its organization.
+    /// `can_manage` identifies environments this app created and can manage with
+    /// the same credential through `client.environments()`.
     ///
     /// # Errors
     /// Fails when the requesting application cannot authenticate.
     pub async fn testing_environments(
         &self,
+        status: Option<&str>,
         paging: &Paging,
     ) -> Result<models::ApplicationTestingEnvironmentPage> {
+        let mut query = paging.query();
+        if let Some(status) = status {
+            query.push(("status", status.to_owned()));
+        }
         self.0
-            .get_with(&["application", "testing-environments"], &paging.query())
+            .get_with(&["application", "testing-environments"], &query)
             .await
+    }
+
+    /// Authenticates this application's test credential in the selected environment.
+    /// Use a test `Credential::Application` together with `Client::with_environment`.
+    /// The response contains no secrets and grants no production authority.
+    ///
+    /// # Errors
+    /// Fails for missing/invalid environment keys, production secrets, or another app's secret.
+    pub async fn testing_context(&self) -> Result<models::ApplicationTestingContext> {
+        self.0.get(&["application", "testing-context"]).await
     }
 
     /// One application.

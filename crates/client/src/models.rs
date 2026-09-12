@@ -176,6 +176,20 @@ pub enum ApplicationStatus {
 /// Closed vocabulary from the contract.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ApplicationTestingEnvironmentStatus {
+    /// `active`
+    Active,
+    /// `deleted`
+    Deleted,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ApplicationWebhookScope {
     /// `full`
     Full,
@@ -1489,6 +1503,15 @@ pub struct ApplicationSecretRotated {
     pub secret_replay_expires_at: OffsetDateTime,
 }
 
+/// Contract type `ApplicationTestingContext`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApplicationTestingContext {
+    /// The contract's `environment_id`.
+    pub environment_id: Uuid,
+    /// The contract's `application`.
+    pub application: TestingApplicationView,
+}
+
 /// Contract type `ApplicationTestingEnvironment`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApplicationTestingEnvironment {
@@ -1506,6 +1529,19 @@ pub struct ApplicationTestingEnvironment {
     pub last_activity_at: OffsetDateTime,
     /// The contract's `retention_days`.
     pub retention_days: i64,
+    /// The contract's `status`.
+    pub status: ApplicationTestingEnvironmentStatus,
+    /// The contract's `purge_after`.
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub purge_after: Option<OffsetDateTime>,
+    /// The contract's `version`.
+    pub version: i64,
+    /// True only for the application that created this environment.
+    pub can_manage: bool,
 }
 
 /// Contract type `ApplicationTestingEnvironmentCreate`.
@@ -3265,6 +3301,27 @@ pub struct TestingApplicationImported {
     /// The contract's `secret_replay_expires_at`.
     #[serde(with = "time::serde::rfc3339")]
     pub secret_replay_expires_at: OffsetDateTime,
+}
+
+/// Contract type `TestingApplicationView`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TestingApplicationView {
+    /// The contract's `app_id`.
+    pub app_id: AppId,
+    /// The contract's `app_name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    /// The contract's `app_logo`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_logo: Option<String>,
+    /// The contract's `base_url`.
+    pub base_url: String,
+    /// The contract's `app_scope`.
+    pub app_scope: ApplicationScope,
+    /// The contract's `webhook_scope`.
+    pub webhook_scope: Vec<String>,
+    /// The contract's `testing_idle_days`.
+    pub testing_idle_days: i64,
 }
 
 /// Contract type `TestingEnvironment`.

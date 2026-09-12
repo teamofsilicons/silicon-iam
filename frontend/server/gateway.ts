@@ -1,3 +1,4 @@
+import { testApplicationView } from "./test-view.ts";
 import {
   apiHeaders,
   fail,
@@ -238,6 +239,31 @@ export async function gateway(
         changed,
       );
     }
+  }
+  if (path === "/api/test-application-view") {
+    if (request.method !== "POST")
+      return finish(
+        fail("method_not_allowed", "Unsupported method.", 405),
+        config,
+        changed,
+      );
+    if (!session)
+      return finish(
+        fail("sign_in_required", "Sign in to continue.", 401),
+        config,
+        changed,
+      );
+    let input: Uint8Array<ArrayBuffer>;
+    try {
+      input = await boundedBody(request);
+    } catch {
+      return finish(
+        fail("request_too_large", "Request exceeds the size limit.", 413),
+        config,
+        changed,
+      );
+    }
+    return finish(await testApplicationView(input, config), config, changed);
   }
   if (
     !path.startsWith("/api/v1/") ||

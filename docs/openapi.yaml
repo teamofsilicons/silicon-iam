@@ -2539,7 +2539,7 @@ paths:
     get:
       tags: [Testing environments]
       operationId: getTestingEnvironment
-      security: [{ iamBearer: [] }]
+      security: [{ iamBearer: [] }, { applicationBasic: [] }]
       responses:
         '200':
           description: Environment.
@@ -2554,8 +2554,8 @@ paths:
     patch:
       tags: [Testing environments]
       operationId: updateTestingEnvironment
-      security: [{ iamBearer: [] }]
-      description: Renames or re-describes a live environment. Restricted to its creator and to organization owners and admins.
+      security: [{ iamBearer: [] }, { applicationBasic: [] }]
+      description: Renames or re-describes a live environment. Restricted to its creator, organization owners/admins, or the production application that created it.
       parameters:
         - { $ref: '#/components/parameters/IfMatch' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
@@ -2584,7 +2584,7 @@ paths:
     delete:
       tags: [Testing environments]
       operationId: deleteTestingEnvironment
-      security: [{ iamBearer: [] }]
+      security: [{ iamBearer: [] }, { applicationBasic: [] }]
       description: >-
         Retires the environment. Nothing is erased yet: the record survives with
         a `purge_after` deadline and can be restored until it passes, after
@@ -2613,10 +2613,10 @@ paths:
     get:
       tags: [Testing environments]
       operationId: getTestingEnvironmentKey
-      security: [{ iamBearer: [] }]
+      security: [{ iamBearer: [] }, { applicationBasic: [] }]
       description: >-
         Returns the current environment key. Restricted to the environment's
-        creator and to organization owners and admins, and audited on every
+        creator, organization owners/admins, or its creating production application, and audited on every
         read.
       responses:
         '200':
@@ -2636,7 +2636,7 @@ paths:
     post:
       tags: [Testing environments]
       operationId: rotateTestingEnvironmentKey
-      security: [{ iamBearer: [] }]
+      security: [{ iamBearer: [] }, { applicationBasic: [] }]
       description: Issues a new key and invalidates the previous one immediately.
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
@@ -2662,7 +2662,7 @@ paths:
     post:
       tags: [Testing environments]
       operationId: cleanTestingEnvironment
-      security: [{ iamBearer: [] }]
+      security: [{ iamBearer: [] }, { applicationBasic: [] }]
       description: >-
         Deletes every row the environment holds while keeping the environment
         itself. The key is unchanged and the environment stays usable.
@@ -2689,7 +2689,7 @@ paths:
     post:
       tags: [Testing environments]
       operationId: restoreTestingEnvironment
-      security: [{ iamBearer: [] }]
+      security: [{ iamBearer: [] }, { applicationBasic: [] }]
       description: >-
         Brings a retired environment back before its `purge_after` deadline.
         Conflicts when the name has been taken by another environment in the
@@ -3922,17 +3922,39 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/application/testing-context:
+    get:
+      tags: [Testing environments]
+      operationId: getApplicationTestingContext
+      summary: Authenticate and inspect this application in the selected testing environment
+      description: Requires its test app_secret and X-Testing-Environment-Key. Production credentials do not authenticate in a testing environment. No secret is returned.
+      security: [{ applicationBasic: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+      responses:
+        '200':
+          description: Selected test application configuration.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationTestingContext' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/application/testing-environments:
     parameters:
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
     get:
       tags: [Applications]
       operationId: listApplicationTestingEnvironments
-      summary: List active environments for the authenticated production application
+      summary: List environments for the authenticated production application
       security: [{ applicationBasic: [] }]
       parameters:
         - { $ref: '#/components/parameters/Cursor' }
         - { $ref: '#/components/parameters/Limit' }
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, deleted, all], default: active }
       responses:
         '200':
           description: Successful operation.
@@ -6221,6 +6243,23 @@ components:
       properties:
         decision: { type: string, enum: [approve, deny] }
         reason: { type: string, maxLength: 10000, description: Required and nonempty when denying a request. }
+    ApplicationTestingContext:
+      type: object
+      required: [environment_id, application]
+      properties:
+        environment_id: { type: string, format: uuid }
+        application: { $ref: '#/components/schemas/TestingApplicationView' }
+    TestingApplicationView:
+      type: object
+      required: [app_id, base_url, app_scope, webhook_scope, testing_idle_days]
+      properties:
+        app_id: { $ref: '#/components/schemas/AppId' }
+        app_name: { type: [string, 'null'] }
+        app_logo: { type: [string, 'null'], format: uri }
+        base_url: { type: string, format: uri }
+        app_scope: { $ref: '#/components/schemas/ApplicationScope' }
+        webhook_scope: { type: array, items: { type: string } }
+        testing_idle_days: { type: integer, minimum: 1 }
     ApplicationTestingEnvironmentCreate:
       type: object
       required: [name]
@@ -6244,7 +6283,7 @@ components:
         secret_replay_expires_at: { type: string, format: date-time }
     ApplicationTestingEnvironment:
       type: object
-      required: [environment_id, org_id, name, last_activity_at, retention_days]
+      required: [environment_id, org_id, name, last_activity_at, retention_days, status, version, can_manage]
       properties:
         environment_id: { type: string, format: uuid }
         org_id: { $ref: '#/components/schemas/OrgId' }
@@ -6252,6 +6291,10 @@ components:
         description: { type: [string, 'null'] }
         last_activity_at: { type: string, format: date-time }
         retention_days: { type: integer, minimum: 1 }
+        status: { type: string, enum: [active, deleted] }
+        purge_after: { type: [string, 'null'], format: date-time }
+        version: { type: integer, format: int64 }
+        can_manage: { type: boolean, description: True only for the application that created this environment. }
     ApplicationTestingEnvironmentPage:
       type: object
       required: [items, page]

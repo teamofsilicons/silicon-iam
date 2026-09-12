@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.0
+
+- Added authenticated test configuration inspection with `applications().testing_context()`.
+- Application environment listing now accepts a status filter and reports lifecycle ownership, state, version, and recovery deadline.
+- Existing environment lifecycle methods accept the creating production application credential.
+
 ## 1.6.0
 
 - Added `bundles().availability(org_id)` for derived bundle configuration availability.

@@ -513,6 +513,8 @@ DECLARE
         'create_application_testing_environment',
         'link_application_testing_environment',
         'list_application_testing_environments',
+        'is_application_testing_environment_administrator',
+        'testing_environment_organization_handle',
         'touch_application_testing_environment',
         'lock_application_testing_environment',
         'touch_testing_application',

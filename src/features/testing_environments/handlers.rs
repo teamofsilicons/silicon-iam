@@ -20,6 +20,7 @@ use crate::{
 
 use super::{
     key::EnvironmentKeyHolder,
+    manager::EnvironmentManager,
     model::{
         CleaningResult, EnvironmentCreate, EnvironmentKey, EnvironmentPage, EnvironmentPatch,
         EnvironmentResponse, EnvironmentSelfView, EnvironmentWithKey, PageInfo, PageQuery,
@@ -74,7 +75,7 @@ const LIST_ENVIRONMENTS_QUERY: &str = r"
 const GET_ENVIRONMENT_QUERY: &str = r"
     SELECT
         environment.id,
-        organization.org_id,
+        iam_private.testing_environment_organization_handle(environment.organization_id) AS org_id,
         environment.name,
         environment.description,
         environment.status,
@@ -89,15 +90,13 @@ const GET_ENVIRONMENT_QUERY: &str = r"
         environment.created_at,
         environment.updated_at
     FROM iam.testing_environments AS environment
-    JOIN iam.organizations AS organization
-      ON organization.id = environment.organization_id
     WHERE environment.id = $1
 ";
 
 const GET_ORGANIZATION_ENVIRONMENT_QUERY: &str = r"
     SELECT
         environment.id,
-        organization.org_id,
+        iam_private.testing_environment_organization_handle(environment.organization_id) AS org_id,
         environment.name,
         environment.description,
         environment.status,
@@ -112,8 +111,6 @@ const GET_ORGANIZATION_ENVIRONMENT_QUERY: &str = r"
         environment.created_at,
         environment.updated_at
     FROM iam.testing_environments AS environment
-    JOIN iam.organizations AS organization
-      ON organization.id = environment.organization_id
     WHERE environment.id = $1 AND environment.organization_id = $2
 ";
 
@@ -197,7 +194,7 @@ pub(super) async fn create_environment(
     let lease = match support::claim(
         &mut scope.transaction,
         &state,
-        &authenticated,
+        actor(&authenticated),
         &headers,
         CREATE_ROUTE,
         "collection",
@@ -309,14 +306,14 @@ pub(super) async fn create_environment(
 
 pub(super) async fn get_environment(
     State(state): State<ApiState>,
-    authenticated: Authenticated,
+    authenticated: EnvironmentManager,
     Path((org_id, environment_id)): Path<(String, Uuid)>,
 ) -> Result<Response, AppError> {
     support::plane(&state)?;
-    let mut scope = organizations::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = authenticated.begin(&state, &org_id).await?;
     let environment = fetch_in_organization(
         &mut scope.transaction,
-        scope.access.organization_id,
+        scope.organization_id,
         environment_id,
     )
     .await?;
@@ -330,7 +327,7 @@ pub(super) async fn get_environment(
 
 pub(super) async fn update_environment(
     State(state): State<ApiState>,
-    authenticated: Authenticated,
+    authenticated: EnvironmentManager,
     Path((org_id, environment_id)): Path<(String, Uuid)>,
     headers: HeaderMap,
     Json(mut input): Json<EnvironmentPatch>,
@@ -339,11 +336,11 @@ pub(super) async fn update_environment(
     validation::patch(&mut input)?;
     let expected_version = support::expected_version(&headers)?;
 
-    let mut scope = organizations::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = authenticated.begin(&state, &org_id).await?;
     let lease = match support::claim(
         &mut scope.transaction,
         &state,
-        &authenticated,
+        authenticated.actor(),
         &headers,
         UPDATE_ROUTE,
         &environment_id.to_string(),
@@ -358,7 +355,7 @@ pub(super) async fn update_environment(
 
     let before = fetch_in_organization(
         &mut scope.transaction,
-        scope.access.organization_id,
+        scope.organization_id,
         environment_id,
     )
     .await?;
@@ -391,7 +388,7 @@ pub(super) async fn update_environment(
     .rows_affected();
     ensure_environment_updated(
         &mut scope.transaction,
-        scope.access.organization_id,
+        scope.organization_id,
         environment_id,
         expected_version,
         affected,
@@ -402,9 +399,9 @@ pub(super) async fn update_environment(
     support::record_audit(
         &mut scope.transaction,
         support::AuditEvent {
-            actor: Some(actor(&authenticated)),
-            authentication_session_id: Some(authenticated.0.authentication_session_id),
-            organization_id: scope.access.organization_id,
+            actor: Some(authenticated.actor()),
+            authentication_session_id: authenticated.session_id(),
+            organization_id: scope.organization_id,
             action: "testing_environment.updated",
             environment_id,
             version: after.version,
@@ -461,17 +458,17 @@ async fn ensure_environment_updated(
 /// ticket.
 pub(super) async fn delete_environment(
     State(state): State<ApiState>,
-    authenticated: Authenticated,
+    authenticated: EnvironmentManager,
     Path((org_id, environment_id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let plane = support::plane(&state)?;
     let recovery_days = i32::from(plane.settings.recovery_days);
-    let mut scope = organizations::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = authenticated.begin(&state, &org_id).await?;
     let lease = match support::claim(
         &mut scope.transaction,
         &state,
-        &authenticated,
+        authenticated.actor(),
         &headers,
         DELETE_ROUTE,
         &environment_id.to_string(),
@@ -486,7 +483,7 @@ pub(super) async fn delete_environment(
 
     let before = fetch_in_organization(
         &mut scope.transaction,
-        scope.access.organization_id,
+        scope.organization_id,
         environment_id,
     )
     .await?;
@@ -515,9 +512,9 @@ pub(super) async fn delete_environment(
     support::record_audit(
         &mut scope.transaction,
         support::AuditEvent {
-            actor: Some(actor(&authenticated)),
-            authentication_session_id: Some(authenticated.0.authentication_session_id),
-            organization_id: scope.access.organization_id,
+            actor: Some(authenticated.actor()),
+            authentication_session_id: authenticated.session_id(),
+            organization_id: scope.organization_id,
             action: "testing_environment.deleted",
             environment_id,
             version: after.version,
@@ -548,16 +545,16 @@ pub(super) async fn delete_environment(
 /// Brings a deleted environment back inside its recovery window.
 pub(super) async fn restore_environment(
     State(state): State<ApiState>,
-    authenticated: Authenticated,
+    authenticated: EnvironmentManager,
     Path((org_id, environment_id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     support::plane(&state)?;
-    let mut scope = organizations::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = authenticated.begin(&state, &org_id).await?;
     let lease = match support::claim(
         &mut scope.transaction,
         &state,
-        &authenticated,
+        authenticated.actor(),
         &headers,
         RESTORE_ROUTE,
         &environment_id.to_string(),
@@ -572,7 +569,7 @@ pub(super) async fn restore_environment(
 
     let before = fetch_in_organization(
         &mut scope.transaction,
-        scope.access.organization_id,
+        scope.organization_id,
         environment_id,
     )
     .await?;
@@ -612,9 +609,9 @@ pub(super) async fn restore_environment(
     support::record_audit(
         &mut scope.transaction,
         support::AuditEvent {
-            actor: Some(actor(&authenticated)),
-            authentication_session_id: Some(authenticated.0.authentication_session_id),
-            organization_id: scope.access.organization_id,
+            actor: Some(authenticated.actor()),
+            authentication_session_id: authenticated.session_id(),
+            organization_id: scope.organization_id,
             action: "testing_environment.restored",
             environment_id,
             version: after.version,
@@ -649,39 +646,30 @@ pub(super) async fn restore_environment(
 /// inside an environment.
 pub(super) async fn get_environment_key(
     State(state): State<ApiState>,
-    authenticated: Authenticated,
+    authenticated: EnvironmentManager,
     Path((org_id, environment_id)): Path<(String, Uuid)>,
 ) -> Result<Response, AppError> {
     support::plane(&state)?;
-    let mut scope = organizations::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = authenticated.begin(&state, &org_id).await?;
     let environment = fetch_in_organization(
         &mut scope.transaction,
-        scope.access.organization_id,
+        scope.organization_id,
         environment_id,
     )
     .await?;
     require_live(&environment)?;
-    support::require_administrator(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        environment.created_by_membership_id,
-        authenticated.0.subject.id,
-    )
-    .await?;
+    authenticated
+        .require_administrator(&mut scope.transaction, scope.organization_id, &environment)
+        .await?;
 
     let stored = fetch_key(&mut scope.transaction, environment_id).await?;
-    let key = support::read_key(
-        &state,
-        scope.access.organization_id,
-        environment_id,
-        &stored,
-    )?;
+    let key = support::read_key(&state, scope.organization_id, environment_id, &stored)?;
     support::record_audit(
         &mut scope.transaction,
         support::AuditEvent {
-            actor: Some(actor(&authenticated)),
-            authentication_session_id: Some(authenticated.0.authentication_session_id),
-            organization_id: scope.access.organization_id,
+            actor: Some(authenticated.actor()),
+            authentication_session_id: authenticated.session_id(),
+            organization_id: scope.organization_id,
             action: "testing_environment.key_read",
             environment_id,
             version: environment.version,
@@ -716,16 +704,16 @@ pub(super) async fn get_environment_key(
 )]
 pub(super) async fn rotate_environment_key(
     State(state): State<ApiState>,
-    authenticated: Authenticated,
+    authenticated: EnvironmentManager,
     Path((org_id, environment_id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     support::plane(&state)?;
-    let mut scope = organizations::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = authenticated.begin(&state, &org_id).await?;
     let lease = match support::claim(
         &mut scope.transaction,
         &state,
-        &authenticated,
+        authenticated.actor(),
         &headers,
         ROTATE_ROUTE,
         &environment_id.to_string(),
@@ -740,18 +728,14 @@ pub(super) async fn rotate_environment_key(
 
     let before = fetch_in_organization(
         &mut scope.transaction,
-        scope.access.organization_id,
+        scope.organization_id,
         environment_id,
     )
     .await?;
     require_live(&before)?;
-    support::require_administrator(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        before.created_by_membership_id,
-        authenticated.0.subject.id,
-    )
-    .await?;
+    authenticated
+        .require_administrator(&mut scope.transaction, scope.organization_id, &before)
+        .await?;
 
     let key = state
         .crypto
@@ -759,7 +743,7 @@ pub(super) async fn rotate_environment_key(
         .map_err(|_| AppError::Internal {
             category: "testing_environment_key_generate",
         })?;
-    let stored = support::store_key(&state, scope.access.organization_id, environment_id, &key)?;
+    let stored = support::store_key(&state, scope.organization_id, environment_id, &key)?;
     let affected = sqlx::query(
         r"
         UPDATE iam.testing_environments
@@ -791,9 +775,9 @@ pub(super) async fn rotate_environment_key(
     support::record_audit(
         &mut scope.transaction,
         support::AuditEvent {
-            actor: Some(actor(&authenticated)),
-            authentication_session_id: Some(authenticated.0.authentication_session_id),
-            organization_id: scope.access.organization_id,
+            actor: Some(authenticated.actor()),
+            authentication_session_id: authenticated.session_id(),
+            organization_id: scope.organization_id,
             action: "testing_environment.key_rotated",
             environment_id,
             version: after.version,
@@ -806,12 +790,7 @@ pub(super) async fn rotate_environment_key(
 
     let response = EnvironmentWithKey {
         environment: after,
-        key: support::read_key(
-            &state,
-            scope.access.organization_id,
-            environment_id,
-            &stored,
-        )?,
+        key: support::read_key(&state, scope.organization_id, environment_id, &stored)?,
     };
     let body = support::finish(
         &mut scope.transaction,
@@ -838,16 +817,16 @@ pub(super) async fn rotate_environment_key(
 /// Empties an environment without retiring it, for an administrator.
 pub(super) async fn clean_environment(
     State(state): State<ApiState>,
-    authenticated: Authenticated,
+    authenticated: EnvironmentManager,
     Path((org_id, environment_id)): Path<(String, Uuid)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     support::plane(&state)?;
-    let mut scope = organizations::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = authenticated.begin(&state, &org_id).await?;
     let lease = match support::claim(
         &mut scope.transaction,
         &state,
-        &authenticated,
+        authenticated.actor(),
         &headers,
         CLEAN_ROUTE,
         &environment_id.to_string(),
@@ -862,26 +841,22 @@ pub(super) async fn clean_environment(
 
     let environment = fetch_in_organization(
         &mut scope.transaction,
-        scope.access.organization_id,
+        scope.organization_id,
         environment_id,
     )
     .await?;
     require_live(&environment)?;
-    support::require_administrator(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        environment.created_by_membership_id,
-        authenticated.0.subject.id,
-    )
-    .await?;
+    authenticated
+        .require_administrator(&mut scope.transaction, scope.organization_id, &environment)
+        .await?;
 
     let result = erase(&state, environment_id).await?;
     support::record_audit(
         &mut scope.transaction,
         support::AuditEvent {
-            actor: Some(actor(&authenticated)),
-            authentication_session_id: Some(authenticated.0.authentication_session_id),
-            organization_id: scope.access.organization_id,
+            actor: Some(authenticated.actor()),
+            authentication_session_id: authenticated.session_id(),
+            organization_id: scope.organization_id,
             action: "testing_environment.cleaned",
             environment_id,
             version: environment.version,

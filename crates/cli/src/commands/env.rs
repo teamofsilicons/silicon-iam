@@ -60,6 +60,17 @@ pub async fn run(context: &Context, command: EnvCommand) -> Result<()> {
 
     let client = context.authenticated().await?;
     let org = context.organization()?;
+    run_with_client(context, command, &client, org).await
+}
+
+/// Shares the exact lifecycle commands and output with application authentication.
+#[allow(clippy::too_many_lines)]
+pub(super) async fn run_with_client(
+    context: &Context,
+    command: EnvCommand,
+    client: &silicon_iam_client::Client,
+    org: &str,
+) -> Result<()> {
     match command {
         EnvCommand::Current
         | EnvCommand::Clean {

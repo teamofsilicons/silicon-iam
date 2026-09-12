@@ -48,6 +48,10 @@ let created_app = carbon.applications().create(
         webhook_secret: "test-webhook-secret-with-32-characters".to_owned(),
         base_url: "http://127.0.0.1:4100".to_owned(),
         obo_endpoints: None,
+        app_scope: None,
+        webhook_scope: None,
+        obo_review_message: None,
+        testing_idle_days: Some(30),
     },
     &Mutation::new(),
 ).await?;
@@ -147,3 +151,36 @@ IAM imports the caller plus every transitive external dependency into the same t
 **A received app_secret indicates test mode.** If a request to your application includes `app_secret` in the request itself, it is using the application testing protocol. Validate the secret with IAM, resolve its IAM test environment, and use only that environment's isolated application data. Every downstream dependency shares that same IAM environment. Never route data from an unauthenticated test flag.
 
 Use the ordinary SDK methods with `with_environment(EnvironmentKey::new(key)?)` and the test application credential. Exercise login consent, token exchange, cross-app OBO, webhooks, invalid keys, and production/test credential rejection. An inactive application test environment expires after 30 days by default; configure `testing_idle_days` on the app.
+
+## Manage from your application server
+
+A client authenticated with the production app credential can use every `environments()` lifecycle method for environments that application created. Dependency membership alone does not grant this authority.
+
+```
+let production_app = Client::new("https://backend.iam.teamofsilicons.com")?
+    .with_credential(Credential::application(app_id, production_app_secret));
+let environments = production_app.applications()
+    .testing_environments(Some("all"), &silicon_iam_client::Paging::new()).await?;
+// Check can_manage before showing lifecycle controls.
+let environment = production_app.environments().get(&org_id, environment_id).await?;
+let key = production_app.environments().key(&org_id, environment_id).await?;
+// update(org_id, environment_id, version, patch, mutation)
+// rotate_key(org_id, environment_id, mutation)
+// clean(org_id, environment_id, mutation)
+// delete(org_id, environment_id, mutation)
+// restore(org_id, environment_id, mutation)
+```
+
+## Validate a test-view session
+
+```
+let test_app = Client::new("https://backend.iam.teamofsilicons.com")?
+    .with_environment(EnvironmentKey::new(iam_test_key)?)
+    .with_credential(Credential::application(expected_app_id, test_app_secret));
+let context = test_app.applications().testing_context().await?;
+// Only after successful authentication, select your own isolated storage
+// using context.environment_id. Keep test credentials on your server.
+// Use test_app for later IAM calls; never fall back to a production client.
+```
+
+IAM’s context endpoint returns only the authenticated application’s test configuration. User data still requires a test user’s login and authorization. Cleaning removes test apps and their credentials; rotation invalidates the old environment key; deletion makes the environment unavailable until recovery.

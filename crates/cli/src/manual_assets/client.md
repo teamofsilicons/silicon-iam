@@ -14,7 +14,7 @@ provider callbacks, and browser navigations remain outside this crate.
 
 ```toml
 [dependencies]
-silicon-iam-client = "1.6.0"
+silicon-iam-client = "1.7.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -704,13 +704,13 @@ reuses that exact IAM test environment; an invalid supplied key fails; omitting 
 new environment. IAM imports the app and all transitive declared external dependencies into
 that environment, including cyclic/shared dependency graphs without duplicating apps.
 Only the calling application's test secret is returned; dependency secrets remain inside IAM.
-`applications().testing_environments(&paging)` lists active links for the app and organization.
+`applications().testing_environments(Some("all"), &paging)` lists active and deleted links, including `can_manage`, status, version, and purge deadline. The creating production application can use `environments().get/update/key/rotate_key/clean/delete/restore` for that environment with its production app credential. Imported dependencies do not inherit control-plane authority.
 
 Use the returned `iam_test_key` with `Client::with_environment` and the returned test
 `app_secret` for subsequent application API calls. The same production routes operate on
 isolated data, and verification uses `000000`. Production and test credentials never mix.
 For an application receiving a request, the presence of **`app_secret` in the request itself
-indicates test mode**: validate it through IAM and route to the matching IAM environment's
+requests test mode**: call `applications().testing_context()` with the test credential and environment key to validate it through IAM and route to the matching IAM environment's
 isolated application data. Do not select a test database from an unvalidated user flag.
 All transitive app calls remain in that IAM environment. Inactivity retention defaults to
 30 days and is configurable per app through `testing_idle_days`.

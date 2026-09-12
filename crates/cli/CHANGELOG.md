@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.0
+
+- Added `app testing manage` for reading, editing, cleaning, deleting, restoring, revealing, and rotating keys for application-owned environments.
+- Added `app testing view` with secure prompts for test credentials.
+- Added active/deleted/all filters and lifecycle ownership to application environment listings.
+- Updated the SDK and embedded documentation to 1.7.0.
+
 ## 1.6.0
 
 - Added `iam app bundle availability` for the selected organization.

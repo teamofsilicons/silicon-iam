@@ -1159,7 +1159,7 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
     assert_eq!(created.app_secret, reused.app_secret);
     let listed = app
         .applications()
-        .testing_environments(&Paging::new().limit(1))
+        .testing_environments(None, &Paging::new().limit(1))
         .await
         .expect("application environment list");
     assert_eq!(listed.items[0].environment_id, created.environment_id);
@@ -1190,6 +1190,40 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
         created.app_id.clone(),
         created.app_secret.clone(),
     ));
+    let viewed = caller
+        .applications()
+        .testing_context()
+        .await
+        .expect("test credential selects own context");
+    assert_eq!(viewed.environment_id, created.environment_id);
+    assert_eq!(viewed.application.app_id, created.app_id);
+    assert!(
+        app.applications().testing_context().await.is_err(),
+        "no test view in production"
+    );
+    assert!(
+        app.with_environment(key.clone())
+            .applications()
+            .testing_context()
+            .await
+            .is_err(),
+        "production secret cannot enter testing"
+    );
+    assert!(
+        wrong_owner
+            .environments()
+            .key(&orgs[0], created.environment_id)
+            .await
+            .is_err()
+    );
+    assert!(
+        caller
+            .environments()
+            .delete(&orgs[0], created.environment_id, &Mutation::new())
+            .await
+            .is_err(),
+        "test credentials cannot delete a production control record"
+    );
     let catalog = caller
         .obo()
         .endpoints(&apps[1].application.app_id)
@@ -1338,7 +1372,7 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
         .await
         .expect("human-owned environment");
     let human_key =
-        silicon_iam_client::EnvironmentKey::new(human_environment.key).expect("human key");
+        silicon_iam_client::EnvironmentKey::new(human_environment.key.clone()).expect("human key");
     let human = enrol(
         &anonymous.with_environment(human_key),
         &unique("humanimport"),
@@ -1393,4 +1427,162 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
         .expect("re-import replay");
     assert_eq!(replayed.app_secret, rotated.app_secret);
     assert_eq!(replayed.application.version, rotated.application_version);
+
+    app.applications()
+        .create_testing_environment(
+            &models::ApplicationTestingEnvironmentCreate {
+                name: "Attach human environment".to_owned(),
+                description: None,
+                iam_test_key: Some(human_environment.key.clone()),
+            },
+            &Mutation::new(),
+        )
+        .await
+        .expect("app attaches using explicit human environment key");
+    let attached = app
+        .applications()
+        .testing_environments(Some("all"), &Paging::new())
+        .await
+        .expect("human-owned links remain readable");
+    assert!(
+        !attached
+            .items
+            .iter()
+            .find(|item| item.environment_id == human_environment.id)
+            .expect("human link")
+            .can_manage
+    );
+
+    // Application control uses production credentials and the shared lifecycle.
+    assert!(listed.items[0].can_manage);
+    assert!(
+        app.environments()
+            .key(&orgs[0], human_environment.id)
+            .await
+            .is_err(),
+        "application cannot take over a human-created environment"
+    );
+    let environment_record = app
+        .environments()
+        .get(&orgs[0], created.environment_id)
+        .await
+        .expect("owner app reads environment");
+    let patch = models::TestingEnvironmentPatch {
+        name: Some("Renamed app environment".to_owned()),
+        description: Some(Some("SDK lifecycle".to_owned())),
+    };
+    let edited = app
+        .environments()
+        .update(
+            &orgs[0],
+            created.environment_id,
+            environment_record.version,
+            &patch,
+            &Mutation::new(),
+        )
+        .await
+        .expect("owner app edits environment");
+    assert_eq!(edited.name, "Renamed app environment");
+    assert!(
+        app.environments()
+            .update(
+                &orgs[0],
+                created.environment_id,
+                environment_record.version,
+                &patch,
+                &Mutation::new()
+            )
+            .await
+            .is_err(),
+        "stale version rejected"
+    );
+    let revealed = app
+        .environments()
+        .key(&orgs[0], created.environment_id)
+        .await
+        .expect("owner retrieves key");
+    assert_eq!(revealed.key, created.iam_test_key);
+    let rotate = Mutation::new();
+    let new_key = app
+        .environments()
+        .rotate_key(&orgs[0], created.environment_id, &rotate)
+        .await
+        .expect("owner rotates key");
+    let replay = app
+        .environments()
+        .rotate_key(&orgs[0], created.environment_id, &rotate)
+        .await
+        .expect("rotation replay");
+    assert_eq!(new_key.key, replay.key);
+    assert_ne!(new_key.key, created.iam_test_key);
+    assert!(
+        caller.applications().testing_context().await.is_err(),
+        "old root key invalidated"
+    );
+    let next = caller.with_environment(
+        silicon_iam_client::EnvironmentKey::new(new_key.key.clone()).expect("new key"),
+    );
+    next.applications()
+        .testing_context()
+        .await
+        .expect("rotated key retains test data");
+    let deleted = app
+        .environments()
+        .delete(&orgs[0], created.environment_id, &Mutation::new())
+        .await
+        .expect("owner deletes environment");
+    assert!(deleted.purge_after.is_some());
+    assert!(
+        next.applications().testing_context().await.is_err(),
+        "deleted environment unavailable"
+    );
+    let retired = app
+        .applications()
+        .testing_environments(Some("deleted"), &Paging::new().limit(1))
+        .await
+        .expect("deleted environments discoverable");
+    assert_eq!(retired.items[0].environment_id, created.environment_id);
+    app.environments()
+        .restore(&orgs[0], created.environment_id, &Mutation::new())
+        .await
+        .expect("owner restores environment");
+    next.applications()
+        .testing_context()
+        .await
+        .expect("restore preserves test application");
+    let clean = Mutation::new();
+    let cleaned = app
+        .environments()
+        .clean(&orgs[0], created.environment_id, &clean)
+        .await
+        .expect("owner cleans entire environment");
+    assert!(cleaned.erased_rows > 0);
+    let replay = app
+        .environments()
+        .clean(&orgs[0], created.environment_id, &clean)
+        .await
+        .expect("clean replay");
+    assert_eq!(cleaned.erased_rows, replay.erased_rows);
+    assert!(
+        next.applications().testing_context().await.is_err(),
+        "clean removed imported app"
+    );
+    assert_eq!(
+        app.environments()
+            .key(&orgs[0], created.environment_id)
+            .await
+            .expect("clean retains key")
+            .key,
+        new_key.key
+    );
+    human
+        .applications()
+        .get(&created.app_id)
+        .await
+        .expect("other environment untouched");
+    owner
+        .applications()
+        .get(&created.app_id)
+        .await
+        .expect("production application untouched");
 }

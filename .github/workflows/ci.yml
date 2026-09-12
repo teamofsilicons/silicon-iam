@@ -102,7 +102,16 @@ jobs:
           POSTGRES_USER: postgres
         run: ./deploy/postgres/init-runtime-roles.sh
 
+      - name: Create the isolated testing database
+        env:
+          PGHOST: 127.0.0.1
+          PGPASSWORD: postgres
+          PGUSER: postgres
+        run: createdb silicon_iam_testing
+
       - name: Apply fresh PostgreSQL migrations
+        env:
+          IAM_TESTING_MIGRATOR_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/silicon_iam_testing
         run: cargo run --locked --bin iam-migrate
 
       - name: Exercise one-time platform-administrator bootstrap
@@ -204,7 +213,9 @@ jobs:
           PGHOST: 127.0.0.1
           PGPASSWORD: postgres
           PGUSER: postgres
-        run: psql --set=ON_ERROR_STOP=1 --file=deploy/postgres/runtime-grants.sql
+        run: |
+          psql --set=ON_ERROR_STOP=1 --file=deploy/postgres/runtime-grants.sql
+          PGDATABASE=silicon_iam_testing psql --set=ON_ERROR_STOP=1 --file=deploy/postgres/runtime-grants.sql
 
       - name: Smoke-test worker through the restricted role
         env:
@@ -246,6 +257,7 @@ jobs:
         env:
           IAM_EXPOSE_LOCAL_OTPS: "true"
           SILICON_IAM_LIVE_URL: http://127.0.0.1:8080
+          IAM_TESTING_DATABASE_URL: postgres://silicon_iam_api_runtime:api-test-password@127.0.0.1:5432/silicon_iam_testing
         run: |
           cargo run --locked --bin iam-api >/tmp/silicon-iam-api.log 2>&1 &
           api_pid=$!
@@ -274,6 +286,12 @@ jobs:
             -- --ignored --exact --test-threads=1
           cargo test -p silicon-iam-client --features cli-session --test live --locked \
             batch_login_is_atomic_and_application_bound \
+            -- --ignored --exact --test-threads=1
+          cargo test -p silicon-iam-client --features cli-session --test live --locked \
+            application_testing_imports_cycles_and_preserves_obo_authority \
+            -- --ignored --exact --test-threads=1
+          cargo test -p silicon-iam-client --features cli-session --test live --locked \
+            a_testing_environment_is_the_same_api_against_its_own_data \
             -- --ignored --exact --test-threads=1
           kill -TERM "${api_pid}"
           wait "${api_pid}"

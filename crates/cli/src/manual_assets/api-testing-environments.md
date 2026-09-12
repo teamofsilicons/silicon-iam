@@ -34,7 +34,7 @@ The response includes `environment_id`, `org_id`, name and description, `iam_tes
 
 IAM follows declared external scopes recursively, including dependencies of dependencies. It deduplicates applications and handles cycles so a dependency is prepared once per environment. Every dependency shares the same environment key. Application-owned organizations may differ; each is represented within the isolated environment.
 
-`GET /api/v1/application/testing-environments` lists active linked environments in the calling application's owning-organization context, with `cursor` and `limit`. Each item exposes the environment UUID, organization, name, description, last activity, and retention days. Credentials are not included in the list.
+`GET /api/v1/application/testing-environments` lists linked environments in the calling application's owning-organization context, with `cursor`, `limit`, and `status=active|deleted|all` (default active). Each item exposes the environment UUID, organization, name, description, status, version, purge deadline, last activity, retention days, and `can_manage`. Credentials are not included in the list.
 
 ## Recognize and authenticate test requests
 
@@ -44,7 +44,7 @@ For an OBO request, IAM may return a `testing_context` containing the recipient'
 
 ## IAM environment lifecycle
 
-A direct production Carbon or Silicon member can create an environment through the organization lifecycle API. The creator and current owning-organization owners/admins can administer it. These routes operate on the environment's production control record; they do not enter its test data plane.
+A direct production Carbon or Silicon member can create an environment through the organization lifecycle API. The creator and current owning-organization owners/admins can administer it. A production application can also perform every lifecycle operation on environments it created, using HTTP Basic with its production app ID and secret. Use the organization and environment IDs returned by creation. App clients list through `/application/testing-environments` and create through that same application route; the individual environment routes below accept either authorized IAM bearers or the creating application’s Basic credential. These routes operate on the environment's production control record; they do not enter its test data plane.
 
 | Method | Route under /api/v1 | Purpose |
 | --- | --- | --- |
@@ -123,3 +123,23 @@ IAM environments also default to soft deletion after 30 idle days, followed by a
 6. Clean for another run or retire the environment. Discard erased credentials and imported app secrets.
 
 See the Rust testing guide (`iam docs client/testing-environments`) and [CLI guide](https://docs.iam.teamofsilicons.com/cli/) for typed and command-line workflows.
+
+## Application lifecycle authority
+
+`can_manage=true` means the authenticated production application created that environment. It can read, edit, clean, delete, restore, reveal the key, and rotate the key. Importing a dependency or attaching another application does not transfer lifecycle ownership. Linked applications with `can_manage=false` cannot retrieve the root key or manage the control record using their production app secret. Authorized organization administrators retain their existing controls.
+
+Edits require the current `If-Match` ETag. All mutations require `Idempotency-Key`. Clean permanently erases the entire selected IAM environment, including every imported application and test identity, while retaining its key. Recreate/import the application before using its test secret again. Delete disables the environment and key until restored; recovery is available only until `purge_after`. Rotation invalidates the previous key immediately. These actions do not delete your application’s own database: apply your own environment cleanup policy there.
+
+## Build a test-view switch in your application
+
+1. Ask for the test `app_secret` and `iam_test_key` over your own HTTPS form. Fix the app ID on your server to your application’s configured ID.
+
+2. From your server, call `GET /api/v1/application/testing-context` with HTTP Basic `app_id:app_secret` and `X-Testing-Environment-Key: iam_test_key`.
+
+3. On success, IAM returns `environment_id` and the authenticated application’s test configuration. Match the app ID, select storage by that environment UUID, and visibly identify test mode. This endpoint returns no credentials.
+
+4. Keep credentials server-side in a short-lived session or secret store. Revalidate them before privileged work and clear the session when IAM rejects a deleted environment, rotated key, or retired test app. Never fall back to production after a failed test request.
+
+5. Use the same environment key and test app secret for subsequent IAM calls. Apply ordinary user login, consent, and authorization inside the test environment when accessing user data. An app secret does not identify an end user.
+
+The IAM console’s application Testing tab offers a read-only configuration view using this same endpoint. It clears submitted credentials after every request. It does not open an external application’s UI or convert a production console session into a test administrator.

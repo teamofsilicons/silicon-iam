@@ -12,10 +12,12 @@
 //! cannot create or destroy environments.
 
 mod application_layer;
+mod application_view;
 mod graph;
 mod handlers;
 mod imports;
 mod key;
+mod manager;
 mod model;
 mod support;
 mod validation;
@@ -81,8 +83,13 @@ pub fn router() -> Router<ApiState> {
 
 /// Builds routes that exist only inside an already-selected testing plane.
 pub fn data_plane_router() -> Router<ApiState> {
-    Router::new().route(
-        "/api/v1/testing-environment/applications/imports",
-        post(imports::import_application),
-    )
+    Router::new()
+        .route(
+            "/api/v1/application/testing-context",
+            get(application_view::get),
+        )
+        .route(
+            "/api/v1/testing-environment/applications/imports",
+            post(imports::import_application),
+        )
 }

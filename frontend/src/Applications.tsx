@@ -1,3 +1,4 @@
+import { ApplicationTestView } from "./ApplicationTestView";
 import {
   createMemo,
   createSignal,
@@ -502,6 +503,7 @@ function ApplicationDetail(props: { appId: string; config: Configuration }) {
               <Endpoints app={app()!} refresh={refetch} />
             </Match>
             <Match when={tab() === "Testing"}>
+              <ApplicationTestView appId={app()!.app_id} />
               <section class="panel padded stack">
                 <h2>Test this application</h2>
                 <p>

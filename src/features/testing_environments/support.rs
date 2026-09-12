@@ -11,7 +11,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
-    api::{ApiState, TestingPlane, authentication::Authenticated},
+    api::{ApiState, TestingPlane},
     domain::actor::ActorRef,
     error::AppError,
     infrastructure::{
@@ -233,7 +233,7 @@ pub(super) async fn require_administrator(
 pub(super) async fn claim<T: Serialize>(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    authenticated: &Authenticated,
+    actor: ActorRef,
     headers: &HeaderMap,
     route: &'static str,
     resource_scope: &str,
@@ -252,8 +252,8 @@ pub(super) async fn claim<T: Serialize>(
     })?;
     let caller_scope = SecretString::from(format!(
         "testing_environment:{}:{}:{resource_scope}",
-        authenticated.0.subject.actor_type.as_str(),
-        authenticated.0.subject.id,
+        actor.actor_type.as_str(),
+        actor.id,
     ));
     let request_payload =
         SecretString::from(

@@ -1599,8 +1599,11 @@ pub enum AppTestingCommand {
         #[arg(long)]
         app_secret: Option<String>,
     },
-    /// List active environments linked to the production application and its organization.
+    /// List linked environments, including deleted environments available for recovery.
     List {
+        /// Filter active (default), deleted, or all environments.
+        #[arg(long, value_parser = ["active", "deleted", "all"])]
+        status: Option<String>,
         /// Local or canonical production app ID.
         app_id: String,
         /// Production application secret; securely prompted when omitted.
@@ -1609,6 +1612,83 @@ pub enum AppTestingCommand {
         /// Pagination.
         #[command(flatten)]
         page: PageArgs,
+    },
+    /// Manage an environment created by this production application.
+    Manage {
+        /// Local or canonical production app ID.
+        app_id: String,
+        /// Production secret; securely prompted when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+        /// Lifecycle operation.
+        #[command(subcommand)]
+        command: AppEnvironmentCommand,
+    },
+    /// Authenticate and inspect this application's isolated testing configuration.
+    View {
+        /// Local or canonical app ID.
+        app_id: String,
+        /// Test secret; securely prompted when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+        /// IAM test key; securely prompted when omitted. Never a production secret.
+        #[arg(long)]
+        iam_test_key: Option<String>,
+    },
+}
+
+/// Application-owned environment lifecycle.
+#[derive(Debug, Subcommand)]
+pub enum AppEnvironmentCommand {
+    /// Show one environment.
+    Show {
+        /// Environment identifier.
+        environment_id: Uuid,
+    },
+    /// Rename or re-describe an environment.
+    #[command(group(
+        clap::ArgGroup::new("changes")
+            .args(["name", "description", "clear_description"])
+            .required(true)
+            .multiple(true)
+    ))]
+    Update {
+        /// Environment identifier.
+        environment_id: Uuid,
+        /// New name.
+        #[arg(long)]
+        name: Option<String>,
+        /// New description.
+        #[arg(long)]
+        description: Option<String>,
+        /// Remove the current description.
+        #[arg(long, conflicts_with = "description")]
+        clear_description: bool,
+    },
+    /// Retire an environment, keeping it recoverable.
+    Delete {
+        /// Environment identifier.
+        environment_id: Uuid,
+    },
+    /// Bring a retired environment back.
+    Restore {
+        /// Environment identifier.
+        environment_id: Uuid,
+    },
+    /// Show an environment's key.
+    Key {
+        /// Environment identifier.
+        environment_id: Uuid,
+    },
+    /// Issue a new key, invalidating the old one.
+    RotateKey {
+        /// Environment identifier.
+        environment_id: Uuid,
+    },
+    /// Erase all IAM data in this environment, including imported dependencies.
+    Clean {
+        /// Environment identifier.
+        environment_id: Uuid,
     },
 }
 

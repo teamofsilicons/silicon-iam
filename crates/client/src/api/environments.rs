@@ -1,5 +1,10 @@
 //! Testing environments: disposable replicas of the whole service.
 //!
+//! Individual environment lifecycle methods also accept the production
+//! application credential when that application created the environment.
+//! App clients create/list via `applications()`; imported dependencies cannot
+//! manage another application's control record.
+//!
 //! An environment is this same API against a separate database, starting
 //! empty. Manage them here, then move a client onto one with
 //! [`Client::with_environment`] and use every

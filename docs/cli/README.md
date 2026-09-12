@@ -1125,3 +1125,28 @@ not to a command-line caller.
 Licensed under the Apache License, Version 2.0. See `LICENSE`.
 
 Copyright 2026 Team of Silicons.
+
+## Manage application-owned testing environments
+
+Production application secrets are securely prompted when omitted. Lifecycle management runs outside `--test` and is restricted to environments created by that application.
+
+```sh
+iam app testing list 'acme>checkout' --status all
+iam app testing manage 'acme>checkout' show ENVIRONMENT_UUID
+iam app testing manage 'acme>checkout' update ENVIRONMENT_UUID --name 'Checkout test'
+iam app testing manage 'acme>checkout' key ENVIRONMENT_UUID
+iam app testing manage 'acme>checkout' rotate-key ENVIRONMENT_UUID
+iam app testing manage 'acme>checkout' clean ENVIRONMENT_UUID
+iam app testing manage 'acme>checkout' delete ENVIRONMENT_UUID
+iam app testing manage 'acme>checkout' restore ENVIRONMENT_UUID
+```
+
+Clean permanently erases every IAM row in the selected environment, including imported dependencies, and retains its key. Delete disables the environment; restore is available until the returned purge deadline. Key rotation invalidates the previous key immediately. These commands do not clean external application databases.
+
+To authenticate and inspect a test application, securely enter its test secret and IAM test key at the prompts:
+
+```sh
+iam app testing view 'acme>checkout'
+```
+
+This returns the environment UUID and test configuration without returning credentials. The `view` command does not grant a production IAM session or user-data authority.

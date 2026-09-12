@@ -109,7 +109,7 @@ pub(super) async fn import_application(
     let lease = match support::claim(
         &mut transaction,
         &state,
-        &authenticated,
+        authenticated.0.subject,
         &headers,
         IMPORT_ROUTE,
         &import_scope,

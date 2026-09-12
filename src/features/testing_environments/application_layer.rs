@@ -65,6 +65,11 @@ struct ApplicationEnvironment {
     #[serde(with = "time::serde::rfc3339")]
     last_activity_at: OffsetDateTime,
     retention_days: i32,
+    status: String,
+    #[serde(with = "time::serde::rfc3339::option")]
+    purge_after: Option<OffsetDateTime>,
+    version: i64,
+    can_manage: bool,
 }
 
 #[derive(Serialize)]
@@ -80,18 +85,13 @@ pub(super) async fn list(
 ) -> Result<Response, AppError> {
     support::plane(&state)?;
     let (cursor, limit, status) = validation::page(&query)?;
-    if status.as_deref() != Some("active") {
-        return Err(validation::field(
-            "status",
-            "only active application environments can be listed",
-        ));
-    }
     let mut transaction = begin(&state, &client).await?;
     let mut items = sqlx::query_as::<_, ApplicationEnvironment>(
-        "SELECT * FROM iam_private.list_application_testing_environments($1,$2)",
+        "SELECT * FROM iam_private.list_application_testing_environments($1,$2,$3)",
     )
     .bind(cursor)
     .bind(i32::try_from(limit + 1).unwrap_or(101))
+    .bind(status)
     .fetch_all(&mut *transaction)
     .await
     .map_err(support::database)?;

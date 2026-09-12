@@ -213,12 +213,34 @@ DO $$ DECLARE created_org text; BEGIN
 SELECT iam_private.create_application_testing_environment('00000000-0000-0000-0000-00000000a006','Application sandbox',NULL,decode(repeat('61',32),'hex'),1::smallint,decode(repeat('62',17),'hex'),decode(repeat('63',12),'hex'),1::smallint,10) INTO created_org;
 IF created_org <> 'test_org' THEN RAISE EXCEPTION 'application environment owner mismatch'; END IF;
 PERFORM iam_private.link_application_testing_environment('00000000-0000-0000-0000-00000000a006','00000000-0000-0000-0000-000000000011','00000000-0000-0000-0000-00000000b006');
-IF (SELECT count(*) FROM iam_private.list_application_testing_environments(NULL,25))<>1 THEN RAISE EXCEPTION 'app environment not listed'; END IF;
+IF (SELECT count(*) FROM iam_private.list_application_testing_environments(NULL,25,'active'))<>1 THEN RAISE EXCEPTION 'app environment not listed'; END IF;
 IF (SELECT version FROM iam_private.lock_application_testing_environment('00000000-0000-0000-0000-00000000a006'))<>1 THEN RAISE EXCEPTION 'environment not reusable'; END IF;
 END $$;
 SELECT set_config('iam.principal_id','00000000-0000-0000-0000-000000000013',true),set_config('iam.application_id','00000000-0000-0000-0000-000000000013',true);
 DO $$ BEGIN
-IF EXISTS(SELECT * FROM iam_private.list_application_testing_environments(NULL,25)) THEN RAISE EXCEPTION 'application environment leaked across organizations'; END IF;
+IF EXISTS(SELECT * FROM iam_private.list_application_testing_environments(NULL,25,'active')) THEN RAISE EXCEPTION 'application environment leaked across organizations'; END IF;
 IF EXISTS(SELECT * FROM iam_private.lock_application_testing_environment('00000000-0000-0000-0000-00000000a006')) THEN RAISE EXCEPTION 'cross organization environment reuse accepted'; END IF;
 END $$;
+
+RESET ROLE;
+SELECT set_config('iam.principal_id','00000000-0000-0000-0000-000000000011',true),
+       set_config('iam.application_id','00000000-0000-0000-0000-000000000011',true),
+       set_config('iam.organization_id','00000000-0000-0000-0000-000000000021',true);
+SET LOCAL ROLE silicon_iam_api;
+SELECT iam_private.create_application_testing_environment('00000000-0000-0000-0000-000000000991','Owner lifecycle',NULL,decode(repeat('91',32),'hex'),1::smallint,decode(repeat('92',32),'hex'),decode(repeat('93',12),'hex'),1::smallint,10);
+SELECT iam_private.link_application_testing_environment('00000000-0000-0000-0000-000000000991','00000000-0000-0000-0000-000000000012','00000000-0000-0000-0000-000000000992');
+DO $$ BEGIN
+ IF NOT iam_private.is_application_testing_environment_administrator('00000000-0000-0000-0000-000000000991') THEN RAISE EXCEPTION 'creator not authorized'; END IF;
+ IF (SELECT count(*) FROM iam.testing_environments WHERE id='00000000-0000-0000-0000-000000000991') <> 1 THEN RAISE EXCEPTION 'owner cannot read'; END IF;
+END $$;
+SELECT set_config('iam.principal_id','00000000-0000-0000-0000-000000000012',true),
+       set_config('iam.application_id','00000000-0000-0000-0000-000000000012',true);
+DO $$ BEGIN
+ IF iam_private.is_application_testing_environment_administrator('00000000-0000-0000-0000-000000000991') THEN RAISE EXCEPTION 'dependency gained authority'; END IF;
+ IF EXISTS(SELECT 1 FROM iam.testing_environments WHERE id='00000000-0000-0000-0000-000000000991') THEN RAISE EXCEPTION 'dependency can read secret-bearing row'; END IF;
+ UPDATE iam.testing_environments SET name='Compromised' WHERE id='00000000-0000-0000-0000-000000000991';
+ IF FOUND THEN RAISE EXCEPTION 'dependency can mutate'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM iam_private.list_application_testing_environments(NULL,10,'active') WHERE environment_id='00000000-0000-0000-0000-000000000991' AND can_manage=false) THEN RAISE EXCEPTION 'linked environment incorrectly listed'; END IF;
+END $$;
+RESET ROLE;
 ROLLBACK;
