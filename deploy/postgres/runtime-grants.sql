@@ -618,6 +618,7 @@ DECLARE
         'mutate_application_scope_request',
         'application_token_allows_external_scope',
         'application_bundle_view',
+        'application_bundle_availability',
         'application_bundle_management_organization',
         'mutate_application_bundle',
         'record_contract_request',

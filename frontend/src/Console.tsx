@@ -22,6 +22,7 @@ import {
 import Applications, { Activity } from "./Applications";
 import ScopeReviews from "./ScopeReviews";
 import Bundles from "./Bundles";
+import { bundleAccessAllowed, type BundleAvailability } from "./bundle-model";
 import { OperationForm, type Operation } from "./forms";
 import {
   Badge,
@@ -58,6 +59,27 @@ export default function Console(props: {
     [join, setJoin] = createSignal(page === "join");
   const selectedOrg = () =>
     org() || organizations.data()?.items[0]?.org_id || "";
+  const [bundleAvailability, { refetch: refreshBundleAvailability }] =
+    createResource(
+      () => selectedOrg() || undefined,
+      async (orgId): Promise<BundleAvailability> => {
+        const result = await request<{ available: boolean }>(
+          `${orgPath(orgId)}/application-bundle-availability`,
+        );
+        if (typeof result.available !== "boolean")
+          throw new Error(
+            "Bundle availability could not be confirmed. Please retry.",
+          );
+        return { orgId, available: result.available };
+      },
+    );
+  const bundlesAvailable = () =>
+    bundleAccessAllowed(
+      selectedOrg(),
+      bundleAvailability(),
+      bundleAvailability.loading,
+      bundleAvailability.error,
+    );
   const navigation = [
     { href: "/", id: "overview", title: "Overview", icon: "◫" },
     {
@@ -97,6 +119,8 @@ export default function Console(props: {
       icon: "⎔",
     },
   ];
+  const visibleNavigation = () =>
+    navigation.filter((item) => item.id !== "bundles" || bundlesAvailable());
   const send = mutation();
   async function logout() {
     setBusy(true);
@@ -165,7 +189,9 @@ export default function Console(props: {
         additionalProperties: false,
       },
       execute: async (input: { section: string }) => {
-        const item = navigation.find((item) => item.id === input.section);
+        const item = visibleNavigation().find(
+          (item) => item.id === input.section,
+        );
         if (!item && input.section !== "account")
           throw new Error("Unknown section");
         location.assign(href(item?.href || "/account"));
@@ -237,7 +263,7 @@ export default function Console(props: {
           </Show>
         </div>
         <nav aria-label="Main navigation">
-          <For each={navigation}>
+          <For each={visibleNavigation()}>
             {(item) => (
               <a
                 class={page === item.id ? "active" : ""}
@@ -302,11 +328,43 @@ export default function Console(props: {
               <ScopeReviews />
             </Match>
             <Match when={page === "bundles"}>
-              <Bundles
-                config={props.config}
-                orgs={organizations.data()?.items || []}
-                selectedOrg={selectedOrg()}
-              />
+              <Show
+                when={bundlesAvailable() && selectedOrg()}
+                keyed
+                fallback={
+                  <Show
+                    when={!bundleAvailability.loading}
+                    fallback={<Loading />}
+                  >
+                    <Empty title="Application bundles unavailable">
+                      {selectedOrg()
+                        ? "Application bundles are not available for the selected organization. Choose another organization to continue."
+                        : "Choose an organization to continue."}
+                    </Empty>
+                    <Show when={bundleAvailability.error}>
+                      <ErrorBox
+                        error={
+                          new Error(
+                            "Bundle availability could not be confirmed. Please retry.",
+                          )
+                        }
+                        retry={refreshBundleAvailability}
+                      />
+                    </Show>
+                  </Show>
+                }
+              >
+                {(orgId) => (
+                  <Bundles
+                    config={props.config}
+                    organization={organizations
+                      .data()
+                      ?.items.find((item) => item.org_id === orgId)}
+                    selectedOrg={orgId}
+                    refreshAvailability={refreshBundleAvailability}
+                  />
+                )}
+              </Show>
             </Match>
             <Match when={page === "applications"}>
               <Applications

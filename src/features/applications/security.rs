@@ -397,6 +397,26 @@ pub(super) fn require_carbon(access: &AccessContext) -> Result<Uuid, ApiError> {
     Ok(access.subject.id)
 }
 
+/// Resolve an explicit list filter through the caller's normal organization RLS.
+pub(super) async fn organization_filter(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: Option<&str>,
+) -> Result<Option<Uuid>, ApiError> {
+    let Some(org_id) = org_id else {
+        return Ok(None);
+    };
+    validation::org_id(org_id)?;
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM iam.organizations WHERE org_id=$1 AND status='active'",
+    )
+    .bind(org_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| ApiError::internal("application_list_organization"))?
+    .map(Some)
+    .ok_or_else(ApiError::not_found)
+}
+
 /// Takes the actor lock before any application, manager, or reviewer locks.
 /// Step-up consumption later needs this same exclusive principal lock; using
 /// one order across privileged application mutations avoids shared-lock

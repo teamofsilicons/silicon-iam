@@ -953,8 +953,36 @@ pub(super) async fn login_history(
         .await
         .map_err(|_| ApiError::internal("login_history_context"))?;
     let app = resolve_readable_app(&mut transaction, carbon_id, &path.app_id, false).await?;
+    let mut items = login_history_items(&mut transaction, app.id, cursor, limit).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("login_history_commit"))?;
+    let next_cursor = if i64::try_from(items.len()).unwrap_or(i64::MAX) > limit {
+        items.pop();
+        items
+            .last()
+            .map(|item| cursor::encode(item.occurred_at, item.id))
+            .transpose()?
+    } else {
+        None
+    };
+    Ok(Json(LoginEventPage {
+        items,
+        page: PageInfo::from_next_cursor(next_cursor),
+    }))
+}
+
+/// Keep inaccessible directory handles nullable without losing the audit event.
+/// The caller first resolves application read authority in this transaction.
+pub(super) async fn login_history_items(
+    transaction: &mut Transaction<'_, Postgres>,
+    application_id: Uuid,
+    cursor: Option<cursor::Cursor>,
+    limit: i64,
+) -> Result<Vec<LoginEventView>, ApiError> {
     let (at, id) = cursor.map_or((None, None), |cursor| (Some(cursor.at), Some(cursor.id)));
-    let mut items = sqlx::query_as::<_, LoginEventView>(
+    let items = sqlx::query_as::<_, LoginEventView>(
         r"
         SELECT event.id,
                event.subject_principal_id AS principal_id,
@@ -996,30 +1024,14 @@ pub(super) async fn login_history(
         LIMIT $4
         ",
     )
-    .bind(app.id)
+    .bind(application_id)
     .bind(at)
     .bind(id)
     .bind(limit + 1)
-    .fetch_all(&mut *transaction)
+    .fetch_all(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("login_history"))?;
-    transaction
-        .commit()
-        .await
-        .map_err(|_| ApiError::internal("login_history_commit"))?;
-    let next_cursor = if i64::try_from(items.len()).unwrap_or(i64::MAX) > limit {
-        items.pop();
-        items
-            .last()
-            .map(|item| cursor::encode(item.occurred_at, item.id))
-            .transpose()?
-    } else {
-        None
-    };
-    Ok(Json(LoginEventPage {
-        items,
-        page: PageInfo::from_next_cursor(next_cursor),
-    }))
+    Ok(items)
 }
 
 async fn current_application_replay_target(

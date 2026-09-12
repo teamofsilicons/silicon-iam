@@ -6,7 +6,7 @@ use crate::{
     cli::AppBundleCommand,
     context::Context,
     error::Result,
-    output::{Format, Table, json},
+    output::{Format, Table, json, next_cursor},
 };
 
 /// Runs one application bundle operation.
@@ -20,8 +20,32 @@ use crate::{
 pub async fn run(context: &Context, command: AppBundleCommand) -> Result<()> {
     let client = context.authenticated().await?;
     match command {
-        AppBundleCommand::List => {
-            let bundles = client.bundles().list().await?;
+        AppBundleCommand::Availability => {
+            let availability = client
+                .bundles()
+                .availability(context.organization()?)
+                .await?;
+            match context.format {
+                Format::Json => json(&availability),
+                Format::Text => {
+                    println!(
+                        "available: {}",
+                        if availability.available { "yes" } else { "no" }
+                    );
+                    Ok(())
+                }
+            }
+        }
+        AppBundleCommand::List { page } => {
+            let bundles = match context.organization_if_set() {
+                Some(org_id) => {
+                    client
+                        .bundles()
+                        .list_for_organization(org_id, &page.paging())
+                        .await?
+                }
+                None => client.bundles().list_page(&page.paging()).await?,
+            };
             match context.format {
                 Format::Json => json(&bundles),
                 Format::Text => {
@@ -35,6 +59,7 @@ pub async fn run(context: &Context, command: AppBundleCommand) -> Result<()> {
                         ]);
                     }
                     table.print();
+                    next_cursor(bundles.page.has_more, bundles.page.next_cursor.as_deref());
                     Ok(())
                 }
             }
@@ -70,6 +95,7 @@ pub async fn run(context: &Context, command: AppBundleCommand) -> Result<()> {
             app_ids,
             name,
             logo,
+            clear_logo,
         } => {
             let bundle_id = context.application_id(&bundle_id)?;
             let current = client.bundles().get(&bundle_id).await?;
@@ -81,7 +107,11 @@ pub async fn run(context: &Context, command: AppBundleCommand) -> Result<()> {
                         current.version,
                         &models::ApplicationBundlePatch {
                             app_name: name.map(Some),
-                            app_logo: logo.map(Some),
+                            app_logo: if clear_logo {
+                                Some(None)
+                            } else {
+                                logo.map(Some)
+                            },
                             app_ids,
                         },
                         &context.mutation(),

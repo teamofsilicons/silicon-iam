@@ -8,18 +8,25 @@ import {
 } from "./login-flow";
 import { ErrorBox } from "./ui";
 import { ScopeList } from "./Scopes";
+import { BundleLogo } from "./BundleLogo";
 import { validateConsent, type ScopeDescriptor } from "./scope-model";
 
 type Organization = { org_id: string; name: string; authorized: boolean };
 type Choices = {
   app_id: string;
   app_name?: string;
+  app_logo?: string | null;
   items: Organization[];
   consent_required: boolean;
   scope_version: number;
   scopes: ScopeDescriptor[];
 };
-type Bundle = { bundle_id: string; app_name?: string; app_ids: string[] };
+type Bundle = {
+  bundle_id: string;
+  app_name?: string;
+  app_logo?: string | null;
+  app_ids: string[];
+};
 
 /** One IAM session approves independent, explicitly selected grants per app. */
 export default function ApplicationLogin() {
@@ -111,6 +118,7 @@ export default function ApplicationLogin() {
             ...choices()[0],
             app_id: bundle()!.bundle_id,
             app_name: bundle()!.app_name,
+            app_logo: bundle()!.app_logo,
             items: choices()[0]
               .items.filter((org) =>
                 choices().every((app) =>
@@ -145,6 +153,7 @@ export default function ApplicationLogin() {
           {
             app_id: bundle()!.bundle_id,
             app_name: bundle()!.app_name,
+            app_logo: bundle()!.app_logo,
             scopes: [
               ...new Map(
                 choices()
@@ -252,6 +261,7 @@ export default function ApplicationLogin() {
                         {
                           app_id: bundle()!.bundle_id,
                           app_name: bundle()!.app_name,
+                          app_logo: bundle()!.app_logo,
                         },
                       ]
                     : choices()
@@ -259,8 +269,13 @@ export default function ApplicationLogin() {
               >
                 {(app) => (
                   <li>
-                    <strong>{app.app_name || app.app_id}</strong>
-                    <small> · {app.app_id}</small>
+                    <div class="actions">
+                      <BundleLogo url={app.app_logo} />
+                      <div>
+                        <strong>{app.app_name || app.app_id}</strong>
+                        <small> · {app.app_id}</small>
+                      </div>
+                    </div>
                   </li>
                 )}
               </For>
@@ -286,7 +301,10 @@ export default function ApplicationLogin() {
           <For each={consentGroups()}>
             {(app) => (
               <section class="stack">
-                <h3>{app.app_name || app.app_id}</h3>
+                <div class="actions">
+                  <BundleLogo url={app.app_logo} />
+                  <h3>{app.app_name || app.app_id}</h3>
+                </div>
                 <ScopeList items={app.scopes} />
               </section>
             )}
@@ -331,6 +349,7 @@ export default function ApplicationLogin() {
                 class="stack organization-consent"
               >
                 <legend>{app.app_name || app.app_id}</legend>
+                <BundleLogo url={app.app_logo} />
                 <small>{app.app_id}</small>
                 <Show
                   when={app.items.length}

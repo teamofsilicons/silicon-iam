@@ -2949,6 +2949,10 @@ paths:
         - { $ref: '#/components/parameters/Cursor' }
         - { $ref: '#/components/parameters/Limit' }
         - { name: status, in: query, schema: { $ref: '#/components/schemas/ApplicationStatus' } }
+        - name: org_id
+          in: query
+          description: Filter to one organization before cursor pagination. Unknown organizations and organizations without active caller membership return 404.
+          schema: { $ref: '#/components/schemas/OrgId' }
       responses:
         '200':
           description: Applications owned by organizations in which the authenticated Carbon is a current active owner/admin.
@@ -3722,6 +3726,32 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/organizations/{org_id}/application-bundle-availability:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+      - { $ref: '#/components/parameters/OrgIdPath' }
+    get:
+      tags: [Applications]
+      operationId: getApplicationBundleAvailability
+      summary: Check bundle configuration availability in an organization
+      description: >-
+        Requires a direct Carbon IAM bearer and active membership in the selected
+        organization. Returns only whether bundle configuration is available to
+        that caller. Ordinary members and members of inactive organizations receive
+        available=false. Application-delegated tokens and Silicon credentials are
+        forbidden. Unknown organizations and organizations without active caller
+        membership return 404. This read does not expose organization policy settings.
+      security: [{ iamBearer: [] }]
+      responses:
+        '200':
+          description: Derived availability for the authenticated Carbon in this organization.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationBundleAvailability' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
   /api/v1/application-bundles:
     parameters:
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
@@ -3730,6 +3760,13 @@ paths:
       operationId: listApplicationBundles
       summary: List bundles you administer
       security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+        - name: org_id
+          in: query
+          description: Filter to one organization before cursor pagination. Unknown organizations and organizations without active caller membership return 404.
+          schema: { $ref: '#/components/schemas/OrgId' }
       responses:
         '200':
           description: Successful operation.
@@ -4647,12 +4684,22 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/Session' } }
         page: { $ref: '#/components/schemas/PageInfo' }
+    LoginEventActor:
+      type: object
+      required: [principal_id, type, public_id]
+      additionalProperties: false
+      properties:
+        principal_id: { type: string, format: uuid }
+        type: { type: string, enum: [carbon, silicon, application] }
+        public_id:
+          type: [string, 'null']
+          description: Public actor identifier, or null when directory access does not permit resolving it. The event remains visible to authorized history readers.
     LoginEvent:
       type: object
       required: [id, actor, event_type, occurred_at, success, request_id]
       properties:
         id: { type: string, format: uuid }
-        actor: { $ref: '#/components/schemas/ActorRef' }
+        actor: { $ref: '#/components/schemas/LoginEventActor' }
         app_id: { type: [string, 'null'] }
         org_id: { type: [string, 'null'] }
         event_type: { type: string, enum: [login_challenge, login_success, login_failure, oauth_authorization, oauth_token_exchange, logout, refresh_replay] }
@@ -6244,6 +6291,14 @@ components:
       required: [items]
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/ApplicationScopeRequest' } }
+    ApplicationBundleAvailability:
+      type: object
+      additionalProperties: false
+      required: [available]
+      properties:
+        available:
+          type: boolean
+          description: Whether the authenticated Carbon can configure application bundles in the selected organization.
     ApplicationBundleCreate:
       type: object
       required: [org_id, app_id, app_ids]
@@ -6252,7 +6307,7 @@ components:
         org_id: { $ref: '#/components/schemas/OrgId' }
         app_id: { $ref: '#/components/schemas/ApplicationHandle' }
         app_name: { type: string, maxLength: 200 }
-        app_logo: { type: string, format: uri, maxLength: 2048 }
+        app_logo: { type: string, format: uri, maxLength: 2048, description: Optional HTTPS logo URL. }
         app_ids: { type: array, minItems: 1, maxItems: 100, uniqueItems: true, items: { $ref: '#/components/schemas/AppId' } }
     ApplicationBundlePatch:
       type: object
@@ -6260,7 +6315,7 @@ components:
       additionalProperties: false
       properties:
         app_name: { type: [string, 'null'], maxLength: 200 }
-        app_logo: { type: [string, 'null'], format: uri, maxLength: 2048 }
+        app_logo: { type: [string, 'null'], format: uri, maxLength: 2048, description: HTTPS logo URL. Omit to preserve the current logo; send null to remove it. }
         app_ids: { type: array, minItems: 1, maxItems: 100, uniqueItems: true, items: { $ref: '#/components/schemas/AppId' } }
     ApplicationBundle:
       type: object
@@ -6277,9 +6332,10 @@ components:
         updated_at: { type: string, format: date-time }
     ApplicationBundleList:
       type: object
-      required: [items]
+      required: [items, page]
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/ApplicationBundle' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
     ApplicationBundleLoginOrganizations:
       type: object
       required: [bundle, items]

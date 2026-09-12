@@ -11,7 +11,9 @@ WORKER_BINARY_PATH = "src/bin/iam_worker.rs"
 # These files contain database setup or live-database tests, not production API
 # queries. Inline `mod tests` modules are removed separately below.
 EXCLUDED_TEST_PATHS = %w[
+  src/features/applications/bundle_availability_tests.rs
   src/features/applications/live_tests.rs
+  src/features/applications/login_history_tests.rs
   src/features/applications/scope_catalog_tests.rs
   src/infrastructure/postgres/key_rotation_tests.rs
 ].freeze

@@ -964,6 +964,19 @@ function Endpoints(props: { app: RecordValue; refresh: () => unknown }) {
     </section>
   );
 }
+export function activityActorLabel(actor: {
+  type?: string;
+  public_id?: string | null;
+}): string {
+  const type =
+    actor.type === "silicon"
+      ? "Silicon"
+      : actor.type === "carbon"
+        ? "Carbon"
+        : "Actor";
+  return `${type} · ${actor.public_id?.trim() || "ID unavailable"}`;
+}
+
 export function Activity(props: {
   path: string;
   title: string;
@@ -1013,6 +1026,19 @@ export function Activity(props: {
                           event.last_attempt_at,
                       )}
                     </small>
+                    <Show when={event.actor}>
+                      <small>{activityActorLabel(event.actor)}</small>
+                    </Show>
+                    <Show
+                      when={event.outcome && (event.event_type || event.status)}
+                    >
+                      <small>Outcome: {event.outcome}</small>
+                    </Show>
+                    <Show when={event.request_id}>
+                      <small>
+                        Request: <code>{event.request_id}</code>
+                      </small>
+                    </Show>
                     <JsonDetails value={event} />
                   </div>
                   <Show when={props.replay}>

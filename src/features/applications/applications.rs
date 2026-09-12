@@ -33,12 +33,12 @@ use super::{
     model::{
         AppPath, ApplicationAdminDecision, ApplicationCreate, ApplicationCreated,
         ApplicationDetail, ApplicationDirectoryEntry, ApplicationOboEndpoint, ApplicationPage,
-        ApplicationPatch, ApplicationSecretRotated, ApplicationView, PageInfo, PageQuery,
-        PublicActor,
+        ApplicationPatch, ApplicationSecretRotated, ApplicationView, OrganizationPageQuery,
+        PageInfo, PageQuery, PublicActor,
     },
     security::{
-        ApplicationClient, Bearer, expected_version, lock_step_up_actor, require_carbon,
-        require_platform_capability, require_step_up,
+        ApplicationClient, Bearer, expected_version, lock_step_up_actor, organization_filter,
+        require_carbon, require_platform_capability, require_step_up,
     },
     validation,
 };
@@ -60,6 +60,26 @@ pub(super) const REVOKE_ACCESS_TOKENS_FOR_REMOVED_SCOPES_QUERY: &str = r"
     ";
 
 const CLIENT_SECRET_ROTATION_STEP_UP_ACTION: &str = "application.client_secret.rotate";
+
+pub(super) const APPLICATION_LIST_QUERY: &str = r"
+    SELECT
+        application.id, application.app_id, application.organization_id,
+        organization.org_id, application.created_by_carbon_id,
+        application.app_name, application.app_logo_uri, application.base_url,
+        application.review_status, application.version,
+        application.created_at, application.updated_at
+    FROM iam.applications AS application
+    JOIN LATERAL iam_private.resolve_authorized_application_organization(
+        application.id
+    ) AS organization ON TRUE
+    WHERE application.deleted_at IS NULL
+      AND iam_private.can_read_application(application.id, $1)
+      AND ($2::text IS NULL OR application.review_status = $2)
+      AND ($6::uuid IS NULL OR application.organization_id = $6)
+      AND ($3::timestamptz IS NULL OR (application.created_at, application.id) < ($3, $4))
+    ORDER BY application.created_at DESC, application.id DESC
+    LIMIT $5
+";
 
 async fn resolve_creation_organization(
     transaction: &mut Transaction<'_, Postgres>,
@@ -131,8 +151,12 @@ pub(super) async fn lock_current_application_manager(
 pub(super) async fn list(
     State(state): State<ApiState>,
     Bearer(access): Bearer,
-    Query(query): Query<PageQuery>,
+    Query(query): Query<OrganizationPageQuery>,
 ) -> Result<Json<ApplicationPage>, ApiError> {
+    let OrganizationPageQuery {
+        page: query,
+        org_id,
+    } = query;
     let carbon_id = require_carbon(&access)?;
     let cursor = cursor::decode(query.cursor.as_deref())?;
     let limit = cursor::limit(query.limit);
@@ -147,39 +171,19 @@ pub(super) async fn list(
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_list_context"))?;
+    let organization_id = organization_filter(&mut transaction, org_id.as_deref()).await?;
     let (cursor_at, cursor_id) =
         cursor.map_or((None, None), |cursor| (Some(cursor.at), Some(cursor.id)));
-    let mut rows = sqlx::query_as::<_, ApplicationView>(
-        r"
-        SELECT
-            application.id, application.app_id, application.organization_id,
-            organization.org_id, application.created_by_carbon_id,
-            application.app_name, application.app_logo_uri, application.base_url,
-            application.review_status, application.version,
-            application.created_at, application.updated_at
-        FROM iam.applications AS application
-        JOIN LATERAL iam_private.resolve_authorized_application_organization(
-            application.id
-        ) AS organization ON TRUE
-        WHERE application.deleted_at IS NULL
-          AND iam_private.can_read_application(application.id, $1)
-          AND ($2::text IS NULL OR application.review_status = $2)
-          AND (
-              $3::timestamptz IS NULL
-              OR (application.created_at, application.id) < ($3, $4)
-          )
-        ORDER BY application.created_at DESC, application.id DESC
-        LIMIT $5
-        ",
-    )
-    .bind(carbon_id)
-    .bind(query.status)
-    .bind(cursor_at)
-    .bind(cursor_id)
-    .bind(limit + 1)
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("application_list"))?;
+    let mut rows = sqlx::query_as::<_, ApplicationView>(APPLICATION_LIST_QUERY)
+        .bind(carbon_id)
+        .bind(query.status)
+        .bind(cursor_at)
+        .bind(cursor_id)
+        .bind(limit + 1)
+        .bind(organization_id)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(|_| ApiError::internal("application_list"))?;
     let next_cursor = if i64::try_from(rows.len()).unwrap_or(i64::MAX) > limit {
         rows.pop();
         rows.last()

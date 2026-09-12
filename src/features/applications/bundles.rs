@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse as _, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -16,9 +16,9 @@ use super::{
     applications, batch_login, cursor,
     error::ApiError,
     idempotency::{self, Claim},
-    model::{BatchLoginRequest, PageQuery},
+    model::{BatchLoginRequest, OrganizationPageQuery},
     oauth,
-    security::{Bearer, expected_version, require_carbon},
+    security::{Bearer, expected_version, organization_filter, require_carbon},
     validation,
 };
 use crate::{
@@ -33,6 +33,55 @@ use crate::{
 #[derive(Deserialize)]
 pub(super) struct BundlePath {
     bundle_id: String,
+}
+
+#[derive(Deserialize)]
+pub(super) struct AvailabilityPath {
+    org_id: String,
+}
+
+#[derive(Serialize)]
+struct Availability {
+    available: bool,
+}
+
+pub(super) const BUNDLE_AVAILABILITY_QUERY: &str =
+    "SELECT iam_private.application_bundle_availability($1)";
+
+pub(super) const BUNDLE_LIST_QUERY: &str = r"
+    SELECT id, created_at, bundle_id
+    FROM iam.application_bundles
+    WHERE deleted_at IS NULL
+      AND ($4::uuid IS NULL OR organization_id = $4)
+      AND ($1::timestamptz IS NULL OR (created_at, id) < ($1, $2))
+    ORDER BY created_at DESC, id DESC
+    LIMIT $3
+";
+
+pub(super) async fn availability(
+    State(state): State<ApiState>,
+    Bearer(access): Bearer,
+    Path(path): Path<AvailabilityPath>,
+) -> Result<Response, ApiError> {
+    let actor = require_carbon(&access)?;
+    validation::org_id(&path.org_id)?;
+    let mut tx = context::begin(state.db(), DatabaseContext::principal(actor))
+        .await
+        .map_err(|_| ApiError::internal("bundle_availability_context"))?;
+    let available = sqlx::query_scalar::<_, Option<bool>>(BUNDLE_AVAILABILITY_QUERY)
+        .bind(path.org_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal("bundle_availability"))?
+        .ok_or_else(ApiError::not_found)?;
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("bundle_availability_commit"))?;
+    let mut response = Json(Availability { available }).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
 }
 
 #[derive(Deserialize, Serialize)]
@@ -165,8 +214,12 @@ fn selections(expected: &[String], input: &BatchLoginRequest) -> Result<(), ApiE
 pub(super) async fn list(
     State(state): State<ApiState>,
     Bearer(access): Bearer,
-    Query(query): Query<PageQuery>,
+    Query(query): Query<OrganizationPageQuery>,
 ) -> Result<Json<Value>, ApiError> {
+    let OrganizationPageQuery {
+        page: query,
+        org_id,
+    } = query;
     let actor = require_carbon(&access)?;
     let cursor = cursor::decode(query.cursor.as_deref())?;
     let (at, id) = cursor.map_or((None, None), |value| (Some(value.at), Some(value.id)));
@@ -174,8 +227,15 @@ pub(super) async fn list(
     let mut tx = context::begin(state.db(), DatabaseContext::principal(actor))
         .await
         .map_err(|_| ApiError::internal("bundle_context"))?;
-    let mut rows=sqlx::query_as::<_,(Uuid,time::OffsetDateTime,String)>("SELECT id,created_at,bundle_id FROM iam.application_bundles WHERE deleted_at IS NULL AND ($1::timestamptz IS NULL OR (created_at,id)<($1,$2)) ORDER BY created_at DESC,id DESC LIMIT $3")
-        .bind(at).bind(id).bind(limit+1).fetch_all(&mut *tx).await.map_err(|error|database_error(&error))?;
+    let organization_id = organization_filter(&mut tx, org_id.as_deref()).await?;
+    let mut rows = sqlx::query_as::<_, (Uuid, time::OffsetDateTime, String)>(BUNDLE_LIST_QUERY)
+        .bind(at)
+        .bind(id)
+        .bind(limit + 1)
+        .bind(organization_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|error| database_error(&error))?;
     let more = i64::try_from(rows.len()).unwrap_or(i64::MAX) > limit;
     if more {
         rows.pop();
@@ -572,5 +632,20 @@ mod tests {
         assert!(metadata(Some("  "), None).is_err());
         assert!(metadata(None, Some("javascript:alert(1)")).is_err());
         assert!(metadata(None, Some("https://secret@example.com/icon.svg")).is_err());
+        assert!(metadata(None, Some("https://cdn.example/icon.png?version=2")).is_ok());
+        assert!(metadata(None, Some("http://example.com/icon.png")).is_err());
+    }
+    #[test]
+    fn bundle_logo_clear_and_omission_have_distinct_wire_meanings() -> anyhow::Result<()> {
+        let unchanged: Patch = serde_json::from_value(json!({"app_name":"Workspace"}))?;
+        assert_eq!(unchanged.app_logo, None);
+        let cleared: Patch = serde_json::from_value(json!({"app_logo":null}))?;
+        assert_eq!(cleared.app_logo, Some(None));
+        assert_eq!(serde_json::to_value(cleared)?, json!({"app_logo":null}));
+        assert_eq!(
+            serde_json::to_value(Availability { available: false })?,
+            json!({"available":false})
+        );
+        Ok(())
     }
 }

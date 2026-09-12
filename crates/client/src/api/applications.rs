@@ -19,7 +19,32 @@ impl Applications<'_> {
         status: Option<&str>,
         paging: &Paging,
     ) -> Result<models::ApplicationPage> {
+        self.list_filtered(None, status, paging).await
+    }
+
+    /// Lists applications in one organization, filtering before pagination.
+    ///
+    /// # Errors
+    /// Returns an error when the organization is unavailable or a filter is invalid.
+    pub async fn list_for_organization(
+        &self,
+        org_id: &str,
+        status: Option<&str>,
+        paging: &Paging,
+    ) -> Result<models::ApplicationPage> {
+        self.list_filtered(Some(org_id), status, paging).await
+    }
+
+    async fn list_filtered(
+        &self,
+        org_id: Option<&str>,
+        status: Option<&str>,
+        paging: &Paging,
+    ) -> Result<models::ApplicationPage> {
         let mut query = paging.query();
+        if let Some(org_id) = org_id {
+            query.push(("org_id", org_id.to_owned()));
+        }
         if let Some(status) = status {
             query.push(("status", status.to_owned()));
         }

@@ -10,11 +10,21 @@ Create and manage bundles in the IAM console’s **App bundles** section, or use
 current organization owner or administrator can manage a bundle when bundle
 creation is available for that organization.
 
+The console shows **App bundles** only when the selected organization and your
+current membership allow it. Switching organizations reloads that availability
+and the organization's bundles. A direct link cannot open the creation form for
+an unavailable organization. Integrations can read
+`GET /api/v1/organizations/{org_id}/application-bundle-availability`, which returns
+`{"available": true}` or `{"available": false}` for a current member. Unknown
+organizations and organizations you do not belong to return 404. This read does
+not reserve access; creation and updates check authorization again.
+
 ```json
 {
   "org_id": "tos",
   "app_id": "workspace",
   "app_name": "Workspace",
+  "app_logo": "https://workspace.example/images/logo.png",
   "app_ids": ["tos>notes", "tos>files"]
 }
 ```
@@ -25,12 +35,23 @@ ID. Members must be distinct, active, approved applications in the same
 organization. There are 1–100 members, and bundles cannot contain other bundles.
 A bundle has no secret of its own.
 
+**Bundle logo URL** is optional in both creation and editing. Supply an HTTPS
+image link, including its path and any query parameters; URLs with embedded
+credentials are rejected. The logo appears on the bundle card and its login
+identity. Clear the field to remove the logo. In the API, omit `app_logo` from a
+patch to preserve it, provide a new URL to replace it, or send `"app_logo": null`
+to remove it. An unavailable image falls back to the bundle's name.
+
 Use `GET /api/v1/application-bundles` to list managed bundles and
 `GET /api/v1/application-bundles/{bundle_id}` for one bundle. `PATCH` on that
 resource changes its name, logo, or the full `app_ids` list; `DELETE` retires it.
 Mutations require an idempotency key. Updates and deletion also require the
 current version in `If-Match`. Deleting the bundle leaves its member
 applications intact.
+
+Pass `?org_id=tos` when listing bundles or applications to select one
+organization before pagination. Continue with that same filter when supplying
+the next page's cursor.
 
 ## Browser login
 

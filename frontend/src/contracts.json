@@ -897,6 +897,36 @@
       }
     }
   },
+  "LoginEventActor": {
+    "type": "object",
+    "required": [
+      "principal_id",
+      "type",
+      "public_id"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "principal_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "carbon",
+          "silicon",
+          "application"
+        ]
+      },
+      "public_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "description": "Public actor identifier, or null when directory access does not permit resolving it. The event remains visible to authorized history readers."
+      }
+    }
+  },
   "LoginEvent": {
     "type": "object",
     "required": [
@@ -913,7 +943,7 @@
         "format": "uuid"
       },
       "actor": {
-        "$ref": "#/components/schemas/ActorRef"
+        "$ref": "#/components/schemas/LoginEventActor"
       },
       "app_id": {
         "type": [
@@ -5433,6 +5463,19 @@
       }
     }
   },
+  "ApplicationBundleAvailability": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "available"
+    ],
+    "properties": {
+      "available": {
+        "type": "boolean",
+        "description": "Whether the authenticated Carbon can configure application bundles in the selected organization."
+      }
+    }
+  },
   "ApplicationBundleCreate": {
     "type": "object",
     "required": [
@@ -5455,7 +5498,8 @@
       "app_logo": {
         "type": "string",
         "format": "uri",
-        "maxLength": 2048
+        "maxLength": 2048,
+        "description": "Optional HTTPS logo URL."
       },
       "app_ids": {
         "type": "array",
@@ -5486,7 +5530,8 @@
           "null"
         ],
         "format": "uri",
-        "maxLength": 2048
+        "maxLength": 2048,
+        "description": "HTTPS logo URL. Omit to preserve the current logo; send null to remove it."
       },
       "app_ids": {
         "type": "array",
@@ -5557,7 +5602,8 @@
   "ApplicationBundleList": {
     "type": "object",
     "required": [
-      "items"
+      "items",
+      "page"
     ],
     "properties": {
       "items": {
@@ -5565,6 +5611,9 @@
         "items": {
           "$ref": "#/components/schemas/ApplicationBundle"
         }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
       }
     }
   },

@@ -10,6 +10,13 @@ pub(super) struct PageQuery {
     pub(super) status: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub(super) struct OrganizationPageQuery {
+    #[serde(flatten)]
+    pub(super) page: PageQuery,
+    pub(super) org_id: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct PageInfo {
     pub(super) next_cursor: Option<String>,
@@ -300,10 +307,19 @@ pub(super) struct PublicActor {
 }
 
 #[derive(Clone, Debug, Serialize, sqlx::FromRow)]
+pub(super) struct LoginEventActor {
+    pub(super) principal_id: Uuid,
+    #[serde(rename = "type")]
+    pub(super) actor_type: String,
+    // History remains readable when directory RLS withholds an actor's handle.
+    pub(super) public_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, sqlx::FromRow)]
 pub(super) struct LoginEventView {
     pub(super) id: Uuid,
     #[sqlx(flatten)]
-    pub(super) actor: PublicActor,
+    pub(super) actor: LoginEventActor,
     pub(super) app_id: Option<String>,
     pub(super) org_id: Option<String>,
     pub(super) event_type: String,
@@ -671,7 +687,11 @@ mod tests {
     fn login_history_projection_contains_actor_and_request_outcome() {
         let value = serde_json::to_value(LoginEventView {
             id: Uuid::nil(),
-            actor: actor(),
+            actor: LoginEventActor {
+                principal_id: Uuid::nil(),
+                actor_type: "silicon".to_owned(),
+                public_id: None,
+            },
             app_id: Some("example>app".to_owned()),
             org_id: None,
             event_type: "oauth_token_exchange".to_owned(),
@@ -694,6 +714,7 @@ mod tests {
             ],
         );
         assert_nested_required(&value, "actor", &["principal_id", "type", "public_id"]);
+        assert!(value["actor"]["public_id"].is_null());
         assert_rfc3339(&value, "occurred_at");
     }
 

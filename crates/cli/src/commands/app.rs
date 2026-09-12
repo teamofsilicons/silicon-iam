@@ -72,10 +72,20 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
     let client = context.authenticated().await?;
     match command {
         AppCommand::List { status, page } => {
-            let listed = client
-                .applications()
-                .list(status.as_deref(), &page.paging())
-                .await?;
+            let listed = match context.organization_if_set() {
+                Some(org_id) => {
+                    client
+                        .applications()
+                        .list_for_organization(org_id, status.as_deref(), &page.paging())
+                        .await?
+                }
+                None => {
+                    client
+                        .applications()
+                        .list(status.as_deref(), &page.paging())
+                        .await?
+                }
+            };
             match context.format {
                 Format::Json => json(&listed),
                 Format::Text => {
@@ -357,7 +367,11 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                         table.row([
                             timestamp(event.occurred_at),
                             label(&event.event_type),
-                            event.actor.public_id.clone(),
+                            event
+                                .actor
+                                .public_id
+                                .clone()
+                                .unwrap_or_else(|| "Unavailable".to_owned()),
                             if event.success { "success" } else { "failed" }.to_owned(),
                         ]);
                     }

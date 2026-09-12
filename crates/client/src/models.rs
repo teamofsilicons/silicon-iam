@@ -326,6 +326,22 @@ pub enum InviteStatus {
 /// Closed vocabulary from the contract.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum LoginEventActorType {
+    /// `carbon`
+    Carbon,
+    /// `silicon`
+    Silicon,
+    /// `application`
+    Application,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LoginEventEventType {
     /// `login_challenge`
     LoginChallenge,
@@ -1130,6 +1146,14 @@ pub struct ApplicationBundle {
     pub updated_at: OffsetDateTime,
 }
 
+/// Contract type `ApplicationBundleAvailability`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApplicationBundleAvailability {
+    /// Whether the authenticated Carbon can configure application bundles in
+    /// the selected organization.
+    pub available: bool,
+}
+
 /// Contract type `ApplicationBundleCreate`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApplicationBundleCreate {
@@ -1140,7 +1164,7 @@ pub struct ApplicationBundleCreate {
     /// The contract's `app_name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_name: Option<String>,
-    /// The contract's `app_logo`.
+    /// Optional HTTPS logo URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_logo: Option<String>,
     /// The contract's `app_ids`.
@@ -1152,6 +1176,8 @@ pub struct ApplicationBundleCreate {
 pub struct ApplicationBundleList {
     /// The contract's `items`.
     pub items: Vec<ApplicationBundle>,
+    /// The contract's `page`.
+    pub page: PageInfo,
 }
 
 /// Contract type `ApplicationBundleLoginOrganizations`.
@@ -1178,7 +1204,8 @@ pub struct ApplicationBundlePatch {
         skip_serializing_if = "Option::is_none"
     )]
     pub app_name: Option<Option<String>>,
-    /// The contract's `app_logo`.
+    /// HTTPS logo URL. Omit to preserve the current logo; send null to remove
+    /// it.
     /// `None` omits this field; `Some(None)` sends JSON null to clear it.
     #[serde(
         with = "serde_with::rust::double_option",
@@ -2141,7 +2168,7 @@ pub struct LoginEvent {
     /// The contract's `id`.
     pub id: Uuid,
     /// The contract's `actor`.
-    pub actor: ActorRef,
+    pub actor: LoginEventActor,
     /// The contract's `app_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
@@ -2163,6 +2190,19 @@ pub struct LoginEvent {
     /// The contract's `occurred_at`.
     #[serde(with = "time::serde::rfc3339")]
     pub occurred_at: OffsetDateTime,
+}
+
+/// Contract type `LoginEventActor`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LoginEventActor {
+    /// The contract's `principal_id`.
+    pub principal_id: Uuid,
+    /// The contract's `type`.
+    #[serde(rename = "type")]
+    pub type_field: LoginEventActorType,
+    /// Public actor identifier, or null when directory access does not permit
+    /// resolving it. The event remains visible to authorized history readers.
+    pub public_id: Option<String>,
 }
 
 /// Contract type `LoginEventPage`.

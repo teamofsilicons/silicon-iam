@@ -14,7 +14,7 @@ provider callbacks, and browser navigations remain outside this crate.
 
 ```toml
 [dependencies]
-silicon-iam-client = "1.5.0"
+silicon-iam-client = "1.6.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -674,9 +674,23 @@ No token receives an unapproved scope, and existing user consent never silently 
 
 ## Application bundles
 
+`bundles().availability(org_id)` reads whether bundle configuration is available to the
+signed-in Carbon in that organization. It returns only `available`; it does not expose
+organization policy settings. Use a direct Carbon IAM credential and an active membership.
+A successful `false` response means bundle configuration is unavailable for this caller.
+
 `bundles().list/create/get/update/delete` manage named groups of applications in one
-organization. Bundle creation must be available for that organization; unavailable operations
-return a permission error. Each member remains independently registered, with its own secret.
+organization. Use `list_page(&paging)` for all administered organizations or
+`list_for_organization(org_id, &paging)` to apply the organization filter before pagination.
+Both return `items` and `page`, including the continuation cursor. Application lists provide
+`applications().list_for_organization(org_id, status, &paging)` for the same purpose.
+Unavailable organizations return 404. Each member remains independently registered, with its
+own secret.
+
+`ApplicationBundleCreate.app_logo` accepts an optional HTTPS image URL.
+For `ApplicationBundlePatch.app_logo`, `None` preserves the current logo,
+`Some(Some(url))` replaces it, and `Some(None)` removes it. Read the saved logo from
+`ApplicationBundle.app_logo`; omitting the URL never uploads or invents an image.
 `auth().bundle_login_organizations` returns the bundle and member consent views.
 `auth().bundle_short_lived_tokens` accepts the complete list of approved member selections and
 returns one independent SLT per app atomically. Each target exchanges its own SLT normally.

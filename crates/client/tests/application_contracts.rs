@@ -236,3 +236,148 @@ async fn contract_version_discovery_is_available_without_a_credential() {
     assert!(!headers.to_ascii_lowercase().contains("authorization:"));
     server.join().expect("mock completed");
 }
+
+#[tokio::test]
+async fn bundle_availability_is_an_authenticated_organization_read() {
+    let (client, capture, server) = service(json!({"available": false}));
+    let client = client.with_credential(Credential::bearer("cat_direct_session"));
+    let availability = client
+        .bundles()
+        .availability("acme")
+        .await
+        .expect("unavailable is a successful derived response");
+    assert!(!availability.available);
+    let (headers, body) = capture.recv().expect("captured availability request");
+    assert!(headers.starts_with("GET /api/v1/organizations/acme/application-bundle-availability "));
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer cat_direct_session\r\n")
+    );
+    assert_eq!(body, Value::Null);
+    server.join().expect("mock completed");
+}
+
+#[tokio::test]
+async fn organization_filtered_lists_preserve_pagination_and_return_the_next_cursor() {
+    for bundles in [false, true] {
+        let (client, capture, server) = service(json!({
+            "items": [], "page": {"has_more": true, "next_cursor": "next-page"}
+        }));
+        let paging = silicon_iam_client::Paging::new().after("page+/=").limit(2);
+        let page = if bundles {
+            client
+                .bundles()
+                .list_for_organization("acme", &paging)
+                .await
+                .expect("organization bundle page")
+                .page
+        } else {
+            client
+                .applications()
+                .list_for_organization("acme", Some("verified"), &paging)
+                .await
+                .expect("organization application page")
+                .page
+        };
+        assert!(page.has_more);
+        assert_eq!(page.next_cursor.as_deref(), Some("next-page"));
+        let (headers, _) = capture.recv().expect("captured list request");
+        let route = headers
+            .split_whitespace()
+            .nth(1)
+            .expect("HTTP request target");
+        let url = url::Url::parse(&format!("http://localhost{route}")).expect("request URL");
+        let endpoint = if bundles {
+            "application-bundles"
+        } else {
+            "applications"
+        };
+        assert_eq!(url.path(), format!("/api/v1/{endpoint}"));
+        let query: std::collections::HashMap<_, _> = url.query_pairs().collect();
+        assert_eq!(
+            query.get("org_id").map(std::borrow::Cow::as_ref),
+            Some("acme")
+        );
+        assert_eq!(
+            query.get("cursor").map(std::borrow::Cow::as_ref),
+            Some("page+/=")
+        );
+        assert_eq!(query.get("limit").map(std::borrow::Cow::as_ref), Some("2"));
+        if !bundles {
+            assert_eq!(
+                query.get("status").map(std::borrow::Cow::as_ref),
+                Some("verified")
+            );
+        }
+        server.join().expect("mock completed");
+    }
+}
+
+#[tokio::test]
+async fn bundle_logo_updates_distinguish_preserving_setting_and_clearing() {
+    let original = "https://example.test/original.svg";
+    let replacement = "https://example.test/replacement.svg";
+    for (patch, expected) in [
+        (None, Some(original)),
+        (Some(Some(replacement.to_owned())), Some(replacement)),
+        (Some(None), None),
+    ] {
+        let (client, capture, server) = service(json!({
+            "id": Uuid::from_u128(17), "bundle_id": "acme>workspace", "org_id": "acme",
+            "app_name": "Workspace", "app_logo": expected, "app_ids": ["acme>billing"],
+            "version": 5, "created_at": "2026-09-12T00:00:00Z", "updated_at": "2026-09-12T01:00:00Z"
+        }));
+        let updated = client
+            .bundles()
+            .update(
+                "acme>workspace",
+                4,
+                &models::ApplicationBundlePatch {
+                    app_name: Some(Some("Workspace".to_owned())),
+                    app_logo: patch.clone(),
+                    app_ids: None,
+                },
+                &Mutation::new(),
+            )
+            .await
+            .expect("bundle presentation update");
+        assert_eq!(updated.app_logo.as_deref(), expected);
+        let (headers, body) = capture.recv().expect("captured bundle patch");
+        assert!(headers.starts_with("PATCH /api/v1/application-bundles/acme%3Eworkspace "));
+        assert!(headers.to_ascii_lowercase().contains("if-match: \"4\"\r\n"));
+        match patch {
+            None => assert!(body.get("app_logo").is_none()),
+            Some(None) => assert_eq!(body["app_logo"], Value::Null),
+            Some(Some(logo)) => assert_eq!(body["app_logo"], logo),
+        }
+        server.join().expect("mock completed");
+    }
+}
+
+#[tokio::test]
+async fn application_login_history_preserves_events_with_private_actor_identifiers() {
+    let principal_id = Uuid::from_u128(23);
+    let (client, capture, server) = service(json!({
+        "items": [{
+            "id": Uuid::from_u128(24),
+            "actor": {"principal_id": principal_id, "type": "silicon", "public_id": null},
+            "app_id": "acme>workspace", "org_id": "customer",
+            "event_type": "oauth_token_exchange", "success": true,
+            "request_id": "history-private-actor", "occurred_at": "2026-09-12T00:00:00Z"
+        }],
+        "page": {"has_more": false, "next_cursor": null}
+    }));
+    let history = client
+        .applications()
+        .login_history("acme>workspace", &silicon_iam_client::Paging::new())
+        .await
+        .expect("private actor identifier must not invalidate the history page");
+    assert_eq!(history.items.len(), 1);
+    assert_eq!(history.items[0].actor.principal_id, principal_id);
+    assert!(history.items[0].actor.public_id.is_none());
+    assert!(history.items[0].success);
+    let (headers, _) = capture.recv().expect("captured history request");
+    assert!(headers.starts_with("GET /api/v1/applications/acme%3Eworkspace/login-history "));
+    server.join().expect("mock completed");
+}

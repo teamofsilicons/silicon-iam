@@ -158,9 +158,14 @@ a reason. Messages render as plain text. Replies and decisions notify the other
 participants by email through IAM.
 
 App bundles groups same-organization applications behind one login identity.
+Its navigation and creation controls appear only when available to your current
+membership in the selected organization. Direct page links use the same check,
+and switching organizations clears the previous organization's form and list.
 Create or manage a bundle in the console and use
 `/login?bundle_id=org%3Ebundle`. The backend determines whether a bundle can be
-created. Users see the bundle’s identity and choose organizations once; the
+created. An optional **Bundle logo URL** accepts an HTTPS image link for the
+bundle card and login identity; editing can replace or clear it. Users see the
+bundle’s identity and choose organizations once; the
 callback receives individual application SLTs in the same `#slts=` encoding as
 batch login. Every member must exchange its own token using its own secret.
 

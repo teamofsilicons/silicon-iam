@@ -1,5 +1,17 @@
 import { createSignal, For, Show } from "solid-js";
-import { mutation, segment, type Configuration, type RecordValue } from "./api";
+import {
+  ApiError,
+  mutation,
+  segment,
+  type Configuration,
+  type RecordValue,
+} from "./api";
+import { BundleLogo } from "./BundleLogo";
+import {
+  bundleFormPayload,
+  displayLogoUrl,
+  type BundleFields,
+} from "./bundle-model";
 import {
   Empty,
   ErrorBox,
@@ -13,10 +25,13 @@ import {
 
 export default function Bundles(props: {
   config: Configuration;
-  orgs: RecordValue[];
+  organization?: RecordValue;
   selectedOrg: string;
+  refreshAvailability: () => unknown;
 }) {
-  const page = usePage(() => "/api/v1/application-bundles");
+  const page = usePage(
+    () => `/api/v1/application-bundles?org_id=${segment(props.selectedOrg)}`,
+  );
   const [editing, setEditing] = createSignal<RecordValue>(),
     [creating, setCreating] = createSignal(false);
   const link = (bundle: RecordValue) => {
@@ -47,14 +62,23 @@ export default function Bundles(props: {
             }
           >
             <div class="event-list">
-              <For each={page.data()?.items}>
+              <For
+                each={page
+                  .data()
+                  ?.items.filter(
+                    (bundle) => bundle.org_id === props.selectedOrg,
+                  )}
+              >
                 {(bundle) => (
                   <article>
-                    <div>
-                      <strong>{bundle.app_name || bundle.bundle_id}</strong>
-                      <small>{bundle.bundle_id}</small>
-                      <p>{bundle.app_ids.length} applications</p>
-                      <a href={link(bundle)}>Open bundle login →</a>
+                    <div class="actions">
+                      <BundleLogo url={bundle.app_logo} />
+                      <div>
+                        <strong>{bundle.app_name || bundle.bundle_id}</strong>
+                        <small>{bundle.bundle_id}</small>
+                        <p>{bundle.app_ids.length} applications</p>
+                        <a href={link(bundle)}>Open bundle login →</a>
+                      </div>
                     </div>
                     <button
                       class="button small"
@@ -90,20 +114,23 @@ export default function Bundles(props: {
 }
 
 function BundleForm(props: {
-  orgs: RecordValue[];
+  organization?: RecordValue;
   selectedOrg: string;
+  refreshAvailability: () => unknown;
   value?: RecordValue;
   close: () => void;
   saved: () => void;
 }) {
-  const [org, setOrg] = createSignal(props.value?.org_id || props.selectedOrg),
-    [handle, setHandle] = createSignal(""),
+  const [handle, setHandle] = createSignal(""),
     [name, setName] = createSignal(props.value?.app_name || ""),
-    [ids, setIds] = createSignal<string[]>(props.value?.app_ids || []),
+    [logo, setLogo] = createSignal(props.value?.app_logo || ""),
+    [ids, setIds] = createSignal<string[]>([...(props.value?.app_ids || [])]),
     [busy, setBusy] = createSignal(false),
     [error, setError] = createSignal<unknown>(),
     [removing, setRemoving] = createSignal(false);
-  const apps = usePage(() => "/api/v1/applications");
+  const apps = usePage(
+    () => `/api/v1/applications?org_id=${segment(props.selectedOrg)}`,
+  );
   const send = mutation();
   async function submit(event: SubmitEvent) {
     event.preventDefault();
@@ -111,21 +138,35 @@ function BundleForm(props: {
     setBusy(true);
     setError();
     try {
+      if (
+        !props.selectedOrg ||
+        (props.value && props.value.org_id !== props.selectedOrg)
+      )
+        throw new Error("Select the bundle’s organization before saving.");
+      const fields = bundleFormPayload(
+        { name: name(), logo: logo(), appIds: ids() },
+        props.value as BundleFields | undefined,
+      );
+      if (props.value && !Object.keys(fields).length)
+        throw new Error("Change at least one value to save.");
       await send(
         props.value ? "PATCH" : "POST",
         props.value
           ? `/api/v1/application-bundles/${segment(props.value.bundle_id)}`
           : "/api/v1/application-bundles",
         {
-          ...(props.value ? {} : { org_id: org(), app_id: handle() }),
-          app_name: name().trim() || null,
-          app_ids: ids(),
+          ...(props.value
+            ? {}
+            : { org_id: props.selectedOrg, app_id: handle() }),
+          ...fields,
         },
         { version: props.value?.version },
       );
       props.saved();
     } catch (cause) {
       setError(cause);
+      if (cause instanceof ApiError && [403, 404].includes(cause.status))
+        void props.refreshAvailability();
     } finally {
       setBusy(false);
     }
@@ -144,6 +185,8 @@ function BundleForm(props: {
       props.saved();
     } catch (cause) {
       setError(cause);
+      if (cause instanceof ApiError && [403, 404].includes(cause.status))
+        void props.refreshAvailability();
     } finally {
       setBusy(false);
     }
@@ -160,22 +203,17 @@ function BundleForm(props: {
           token with its own secret. Bundle members must belong to the same
           organization.
         </p>
+        <Field name="Organization">
+          <input
+            readonly
+            value={
+              props.organization?.name
+                ? `${props.organization.name} (${props.selectedOrg})`
+                : props.selectedOrg
+            }
+          />
+        </Field>
         <Show when={!props.value}>
-          <Field name="Organization" required>
-            <select
-              required
-              value={org()}
-              onChange={(e) => {
-                setOrg(e.currentTarget.value);
-                setIds([]);
-              }}
-            >
-              <option value="">Choose an organization</option>
-              <For each={props.orgs}>
-                {(item) => <option value={item.org_id}>{item.name}</option>}
-              </For>
-            </select>
-          </Field>
           <Field
             name="Bundle handle"
             required
@@ -197,10 +235,44 @@ function BundleForm(props: {
             onInput={(e) => setName(e.currentTarget.value)}
           />
         </Field>
+        <Field
+          name="Bundle logo URL"
+          hint="Optional HTTPS image URL. Leave blank to remove the current logo."
+        >
+          <input
+            type="url"
+            maxlength={2048}
+            value={logo()}
+            placeholder="https://example.com/images/bundle.png"
+            onInput={(event) => setLogo(event.currentTarget.value)}
+          />
+        </Field>
+        <Show when={displayLogoUrl(logo())}>
+          <BundleLogo
+            url={logo()}
+            alt="Bundle logo preview"
+            fallback={
+              <p class="muted" role="status">
+                Image preview unavailable. Check the URL.
+              </p>
+            }
+          />
+        </Show>
         <fieldset disabled={busy()} class="stack">
           <legend>Member applications</legend>
           <ErrorBox error={apps.data.error} retry={apps.refresh} />
-          <For each={apps.data()?.items.filter((app) => app.org_id === org())}>
+          <Show when={apps.data.loading}>
+            <Loading />
+          </Show>
+          <For
+            each={
+              !apps.data.loading
+                ? apps
+                    .data()
+                    ?.items.filter((app) => app.org_id === props.selectedOrg)
+                : []
+            }
+          >
             {(app) => (
               <label class="organization-choice">
                 <input
@@ -209,7 +281,7 @@ function BundleForm(props: {
                   onChange={(e) =>
                     setIds((values) =>
                       e.currentTarget.checked
-                        ? [...values, app.app_id]
+                        ? [...new Set([...values, app.app_id])]
                         : values.filter((id) => id !== app.app_id),
                     )
                   }
@@ -221,7 +293,9 @@ function BundleForm(props: {
               </label>
             )}
           </For>
-          <PageFooter page={apps} />
+          <Show when={!apps.data.loading}>
+            <PageFooter page={apps} />
+          </Show>
         </fieldset>
         <Show when={props.value}>
           <Show

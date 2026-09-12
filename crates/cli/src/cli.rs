@@ -1514,8 +1514,14 @@ pub enum AppScopesCommand {
 /// Bundle configuration and login commands.
 #[derive(Debug, Subcommand)]
 pub enum AppBundleCommand {
-    /// List bundles you administer.
-    List,
+    /// Check whether bundle configuration is available in the selected organization.
+    Availability,
+    /// List bundles you administer, using the selected organization when configured.
+    List {
+        /// Pagination.
+        #[command(flatten)]
+        page: PageArgs,
+    },
     /// Create a bundle containing applications from one organization.
     Create {
         /// Local handle or canonical organization-qualified bundle ID.
@@ -1526,7 +1532,7 @@ pub enum AppBundleCommand {
         /// Display name.
         #[arg(long)]
         name: Option<String>,
-        /// Logo URL.
+        /// Optional HTTPS logo URL.
         #[arg(long)]
         logo: Option<String>,
     },
@@ -1536,16 +1542,19 @@ pub enum AppBundleCommand {
         bundle_id: String,
     },
     /// Change a bundle's presentation or replace its complete application list.
-    #[command(group(clap::ArgGroup::new("changes").args(["name", "logo", "app_ids"]).required(true).multiple(true)))]
+    #[command(group(clap::ArgGroup::new("changes").args(["name", "logo", "clear_logo", "app_ids"]).required(true).multiple(true)))]
     Update {
         /// Local or canonical bundle ID.
         bundle_id: String,
         /// New display name.
         #[arg(long)]
         name: Option<String>,
-        /// New logo URL.
+        /// New HTTPS logo URL; omission preserves the current logo.
         #[arg(long)]
         logo: Option<String>,
+        /// Remove the current logo.
+        #[arg(long, conflicts_with = "logo")]
+        clear_logo: bool,
         /// Complete replacement list (repeat or comma-separate).
         #[arg(long = "app-id", value_delimiter = ',')]
         app_ids: Option<Vec<String>>,
@@ -2035,6 +2044,73 @@ mod tests {
     fn the_grammar_is_internally_consistent() {
         Cli::command().debug_assert();
         assert_eq!(Cli::command().get_name(), "iam");
+    }
+
+    #[test]
+    fn bundle_logo_clear_is_explicit_and_conflicts_with_replacement() {
+        use clap::Parser as _;
+
+        let parsed = Cli::try_parse_from([
+            "iam",
+            "app",
+            "bundle",
+            "update",
+            "acme>workspace",
+            "--clear-logo",
+        ]);
+        assert!(matches!(
+            parsed,
+            Ok(Cli {
+                command: super::Command::App(super::AppCommand::Bundle(
+                    super::AppBundleCommand::Update {
+                        clear_logo: true,
+                        logo: None,
+                        ..
+                    }
+                )),
+                ..
+            })
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "app",
+                "bundle",
+                "update",
+                "acme>workspace",
+                "--clear-logo",
+                "--logo",
+                "https://example.test/logo.svg"
+            ])
+            .is_err()
+        );
+        assert!(Cli::try_parse_from(["iam", "app", "bundle", "update", "acme>workspace"]).is_err());
+    }
+
+    #[test]
+    fn bundle_availability_and_pagination_use_the_global_organization() {
+        use clap::Parser as _;
+
+        for arguments in [
+            vec!["iam", "app", "bundle", "availability", "--org", "acme"],
+            vec![
+                "iam",
+                "app",
+                "bundle",
+                "list",
+                "--org",
+                "acme",
+                "--limit",
+                "2",
+                "--cursor",
+                "next-page",
+            ],
+        ] {
+            let parsed = Cli::try_parse_from(arguments);
+            assert!(parsed.is_ok(), "{parsed:?}");
+            let Ok(cli) = parsed else { return };
+            assert_eq!(cli.global.org.as_deref(), Some("acme"));
+        }
     }
 
     #[test]

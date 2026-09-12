@@ -1,17 +1,63 @@
 //! Application bundles retain independent applications and credentials.
 
-use crate::{Client, Mutation, Result, models};
+use crate::{Client, Mutation, Paging, Result, models};
 
 /// Organization-administered application bundle configuration.
 pub struct Bundles<'a>(pub(super) &'a Client);
 
 impl Bundles<'_> {
+    /// Whether bundle configuration is available to the signed-in Carbon in an organization.
+    /// The response describes this operation's availability without disclosing organization policy.
+    ///
+    /// # Errors
+    /// Fails for non-Carbon or delegated credentials, or when the caller is not an active member.
+    pub async fn availability(
+        &self,
+        org_id: &str,
+    ) -> Result<models::ApplicationBundleAvailability> {
+        self.0
+            .get(&["organizations", org_id, "application-bundle-availability"])
+            .await
+    }
+
     /// Lists bundles the signed-in Carbon may administer.
     ///
     /// # Errors
     /// Fails when the caller is not authenticated.
     pub async fn list(&self) -> Result<models::ApplicationBundleList> {
-        self.0.get(&["application-bundles"]).await
+        self.list_page(&Paging::new()).await
+    }
+
+    /// Lists one page of bundles the signed-in Carbon may administer.
+    ///
+    /// # Errors
+    /// Fails when the caller is not authenticated or pagination is invalid.
+    pub async fn list_page(&self, paging: &Paging) -> Result<models::ApplicationBundleList> {
+        self.list_filtered(None, paging).await
+    }
+
+    /// Lists bundles in one organization, filtering before pagination.
+    ///
+    /// # Errors
+    /// Fails when the organization is unknown or unavailable to the caller, or pagination is invalid.
+    pub async fn list_for_organization(
+        &self,
+        org_id: &str,
+        paging: &Paging,
+    ) -> Result<models::ApplicationBundleList> {
+        self.list_filtered(Some(org_id), paging).await
+    }
+
+    async fn list_filtered(
+        &self,
+        org_id: Option<&str>,
+        paging: &Paging,
+    ) -> Result<models::ApplicationBundleList> {
+        let mut query = paging.query();
+        if let Some(org_id) = org_id {
+            query.push(("org_id", org_id.to_owned()));
+        }
+        self.0.get_with(&["application-bundles"], &query).await
     }
 
     /// Creates a bundle whose members belong to the same organization.

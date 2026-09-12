@@ -22,7 +22,11 @@ pub(crate) use applications::{load_detail, webhook_secret_fingerprint};
 pub(crate) use model::ApplicationDetail;
 
 #[cfg(test)]
+mod bundle_availability_tests;
+#[cfg(test)]
 mod live_tests;
+#[cfg(test)]
+mod login_history_tests;
 #[cfg(test)]
 mod scope_catalog_tests;
 #[cfg(test)]
@@ -143,6 +147,10 @@ pub fn router() -> Router<ApiState> {
 
 fn bundle_router() -> Router<ApiState> {
     Router::new()
+        .route(
+            "/api/v1/organizations/{org_id}/application-bundle-availability",
+            get(bundles::availability),
+        )
         .route(
             "/api/v1/application-bundles",
             get(bundles::list).post(bundles::create),

@@ -1022,17 +1022,31 @@ token reaches several. The subject token must belong to the calling app and stil
 ## Application bundles
 
 ```sh
+iam app bundle availability --org acme
 iam app bundle create workspace --org acme --name Workspace \
-  --app-id 'acme>checkout,acme>billing'
-iam app bundle list
+  --logo https://example.com/workspace.svg --app-id 'acme>checkout,acme>billing'
+iam app bundle list --org acme --limit 25
 iam app bundle show 'acme>workspace'
 iam app bundle update 'acme>workspace' --name 'Acme Workspace'
+iam app bundle update 'acme>workspace' --clear-logo
 iam app bundle login 'acme>workspace' --grant-org customer --approve-scopes
 iam app bundle delete 'acme>workspace'
 ```
 
-Bundle configuration must be available for the organization. All members belong to that
-organization and remain independently usable. Login shows the bundle and issues a distinct
+`iam app bundle availability` reports whether the signed-in Carbon can configure bundles in
+the selected organization. It returns a derived yes/no result, without exposing organization
+policy settings. Use `--org` or the configured organization; a direct Carbon IAM session and
+active membership are required.
+
+`iam app bundle list` and `iam app list` filter by the selected organization before applying
+`--cursor` and `--limit`. Use `--no-org` to list across administered organizations. Both show
+a continuation cursor when another page is available.
+
+Bundle creation accepts an optional HTTPS `--logo` URL. During an update, omit `--logo` to
+keep the existing image, pass a new URL to replace it, or use `--clear-logo` to remove it.
+`--logo` and `--clear-logo` cannot be combined.
+
+All members belong to the bundle's organization and remain independently usable. Login shows the bundle and issues a distinct
 SLT for every member atomically; exchange each with that app's own secret. Deleting a bundle
 keeps every member application. `iam batch-login` remains available for an explicitly
 selected ad hoc list; it also supports `--approve-scopes` and per-app permission review.
