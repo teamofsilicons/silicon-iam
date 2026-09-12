@@ -905,7 +905,7 @@ function Endpoints(props: { app: RecordValue; refresh: () => unknown }) {
                     />
                   </Field>
                 </div>
-                <label class="checkbox">
+                <label class="check">
                   <input
                     type="checkbox"
                     checked={item().critical === true}

@@ -287,7 +287,7 @@ export function WebhookScopePicker(props: {
       </p>
       <For each={options}>
         {([value, name]) => (
-          <label class="checkbox">
+          <label class="check">
             <input
               type="checkbox"
               checked={props.value.includes(value)}
