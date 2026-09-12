@@ -153,10 +153,6 @@ pub(super) async fn list(
     Bearer(access): Bearer,
     Query(query): Query<OrganizationPageQuery>,
 ) -> Result<Json<ApplicationPage>, ApiError> {
-    let OrganizationPageQuery {
-        page: query,
-        org_id,
-    } = query;
     let carbon_id = require_carbon(&access)?;
     let cursor = cursor::decode(query.cursor.as_deref())?;
     let limit = cursor::limit(query.limit);
@@ -171,7 +167,7 @@ pub(super) async fn list(
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| ApiError::internal("application_list_context"))?;
-    let organization_id = organization_filter(&mut transaction, org_id.as_deref()).await?;
+    let organization_id = organization_filter(&mut transaction, query.org_id.as_deref()).await?;
     let (cursor_at, cursor_id) =
         cursor.map_or((None, None), |cursor| (Some(cursor.at), Some(cursor.id)));
     let mut rows = sqlx::query_as::<_, ApplicationView>(APPLICATION_LIST_QUERY)

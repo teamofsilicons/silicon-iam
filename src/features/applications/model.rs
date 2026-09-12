@@ -12,8 +12,9 @@ pub(super) struct PageQuery {
 
 #[derive(Clone, Debug, Deserialize)]
 pub(super) struct OrganizationPageQuery {
-    #[serde(flatten)]
-    pub(super) page: PageQuery,
+    pub(super) cursor: Option<String>,
+    pub(super) limit: Option<u16>,
+    pub(super) status: Option<String>,
     pub(super) org_id: Option<String>,
 }
 
@@ -567,6 +568,42 @@ mod tests {
     use time::{OffsetDateTime, format_description::well_known::Rfc3339, macros::datetime};
 
     use super::*;
+
+    #[test]
+    fn organization_page_query_parses_urlencoded_numeric_limits() -> anyhow::Result<()> {
+        for path in ["/api/v1/applications", "/api/v1/application-bundles"] {
+            let uri = format!("{path}?limit=10").parse()?;
+            let axum::extract::Query(query) =
+                axum::extract::Query::<super::OrganizationPageQuery>::try_from_uri(&uri)?;
+            assert_eq!(query.limit, Some(10));
+            assert_eq!(query.org_id, None);
+            let uri =
+                format!("{path}?org_id=test_org&limit=25&cursor=next%2Bpage%2F%3D&status=verified")
+                    .parse()?;
+            let axum::extract::Query(query) =
+                axum::extract::Query::<super::OrganizationPageQuery>::try_from_uri(&uri)?;
+            assert_eq!(query.limit, Some(25));
+            assert_eq!(query.org_id.as_deref(), Some("test_org"));
+            assert_eq!(query.cursor.as_deref(), Some("next+page/="));
+            assert_eq!(query.status.as_deref(), Some("verified"));
+            let axum::extract::Query(query) =
+                axum::extract::Query::<super::OrganizationPageQuery>::try_from_uri(&path.parse()?)?;
+            assert_eq!(
+                (query.cursor, query.limit, query.status, query.org_id),
+                (None, None, None, None)
+            );
+            for limit in ["invalid", "-1", "65536", ""] {
+                let uri = format!("{path}?org_id=test_org&limit={limit}").parse()?;
+                let Err(error) =
+                    axum::extract::Query::<super::OrganizationPageQuery>::try_from_uri(&uri)
+                else {
+                    anyhow::bail!("invalid numeric limits must be rejected");
+                };
+                assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+            }
+        }
+        Ok(())
+    }
 
     fn actor() -> PublicActor {
         PublicActor {

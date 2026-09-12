@@ -216,10 +216,6 @@ pub(super) async fn list(
     Bearer(access): Bearer,
     Query(query): Query<OrganizationPageQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let OrganizationPageQuery {
-        page: query,
-        org_id,
-    } = query;
     let actor = require_carbon(&access)?;
     let cursor = cursor::decode(query.cursor.as_deref())?;
     let (at, id) = cursor.map_or((None, None), |value| (Some(value.at), Some(value.id)));
@@ -227,7 +223,7 @@ pub(super) async fn list(
     let mut tx = context::begin(state.db(), DatabaseContext::principal(actor))
         .await
         .map_err(|_| ApiError::internal("bundle_context"))?;
-    let organization_id = organization_filter(&mut tx, org_id.as_deref()).await?;
+    let organization_id = organization_filter(&mut tx, query.org_id.as_deref()).await?;
     let mut rows = sqlx::query_as::<_, (Uuid, time::OffsetDateTime, String)>(BUNDLE_LIST_QUERY)
         .bind(at)
         .bind(id)

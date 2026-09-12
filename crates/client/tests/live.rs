@@ -291,6 +291,29 @@ async fn the_client_speaks_the_contract_end_to_end() {
         .expect("the application is present in its owner's list");
     assert_eq!(listed_application.id, created_application.application.id);
 
+    // These list routes share the organization-filtered HTTP query parser.
+    // Exercise numeric pagination through the real API, not just a mock server.
+    let filtered = client
+        .applications()
+        .list_for_organization(&org_id, None, &Paging::new().limit(10))
+        .await
+        .expect("application organization filtering accepts numeric pagination");
+    assert_eq!(filtered.items.len(), 1);
+    assert_eq!(filtered.items[0].id, created_application.application.id);
+    let availability = client
+        .bundles()
+        .availability(&org_id)
+        .await
+        .expect("a current organization owner can read bundle availability");
+    assert!(!availability.available);
+    let bundles = client
+        .bundles()
+        .list_for_organization(&org_id, &Paging::new().limit(10))
+        .await
+        .expect("bundle organization filtering accepts numeric pagination");
+    assert!(bundles.items.is_empty());
+    assert!(!bundles.page.has_more);
+
     let fetched_application = client
         .applications()
         .get(&qualified_app_id)
