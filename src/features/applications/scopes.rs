@@ -172,17 +172,46 @@ pub(super) async fn catalog(
     )
     .await
     .map_err(|_| ApiError::internal("scope_catalog_context"))?;
-    let items = sqlx::query_as::<_, ScopeDefinition>(
-        "SELECT * FROM iam_private.application_scope_catalog($1) ORDER BY scope",
-    )
-    .bind(query.app_id)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(|_| ApiError::internal("scope_catalog"))?;
+    let items = catalog_items(&mut tx, query.app_id.as_deref()).await?;
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("scope_catalog_commit"))?;
     Ok(Json(Catalog { items }))
+}
+
+/// Resolves public scope descriptors and target visibility in the same snapshot.
+/// An empty published catalog is distinct from an unavailable application.
+pub(super) async fn catalog_items(
+    tx: &mut Transaction<'_, Postgres>,
+    app_id: Option<&str>,
+) -> Result<Vec<ScopeDefinition>, ApiError> {
+    sqlx::query_scalar::<_, Option<SqlJson<Vec<ScopeDefinition>>>>(
+        r"
+        SELECT CASE WHEN $1::text IS NULL THEN (
+            SELECT COALESCE(jsonb_agg(to_jsonb(catalog) ORDER BY catalog.scope), '[]'::jsonb)
+            FROM iam_private.iam_scope_catalog() AS catalog
+        ) WHEN EXISTS (
+            SELECT 1
+            FROM iam.applications AS application
+            JOIN iam.principals AS principal
+              ON principal.id = application.id
+             AND principal.kind = 'application'
+             AND principal.status = 'active'
+            WHERE application.app_id = $1
+              AND application.review_status = 'verified'
+              AND application.deleted_at IS NULL
+        ) THEN (
+            SELECT COALESCE(jsonb_agg(to_jsonb(catalog) ORDER BY catalog.scope), '[]'::jsonb)
+            FROM iam_private.application_scope_catalog($1) AS catalog
+        ) END
+        ",
+    )
+    .bind(app_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|_| ApiError::internal("scope_catalog"))?
+    .map(|items| items.0)
+    .ok_or_else(ApiError::not_found)
 }
 pub(super) fn database_error(error: &sqlx::Error) -> ApiError {
     match error

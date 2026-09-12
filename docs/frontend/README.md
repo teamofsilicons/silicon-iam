@@ -137,8 +137,13 @@ Built with [SolidJS](https://docs.solidjs.com/), TypeScript and Vite. The mark a
 Creation distinguishes `app_scope` (data and delegated access) from
 `webhook_scope` (event subscriptions). Identity and profile permissions start
 selected. The permission catalog includes published endpoints from other
-applications, including applications in other organizations. Each permission
-shows its provider and whether it requires critical-scope review.
+applications, including applications in other organizations. All IAM permissions
+are listed as checkboxes. To select external permissions, enter the provider's
+full `app_id` (`org>app`) and load its published scopes, then check the endpoints
+your application needs. An invalid or unavailable ID displays `app_id invalid`;
+an available application with no published endpoints shows an empty-state
+message. Critical permissions say “This would require approval from IAM” or
+name the receiving application's ID. Webhook subscriptions also use checkboxes.
 
 The Permissions tab shows the currently usable scope set alongside the requested
 set. Save non-critical additions or removals directly. For critical additions,

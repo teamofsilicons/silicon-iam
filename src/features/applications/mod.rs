@@ -24,6 +24,8 @@ pub(crate) use model::ApplicationDetail;
 #[cfg(test)]
 mod live_tests;
 #[cfg(test)]
+mod scope_catalog_tests;
+#[cfg(test)]
 mod scope_tests;
 
 use axum::{

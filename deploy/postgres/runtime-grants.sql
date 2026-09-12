@@ -606,6 +606,7 @@ DECLARE
         'set_organization_admin_role',
         'touch_testing_environment',
         'application_scope_names',
+        'iam_scope_catalog',
         'application_scope_catalog',
         'configure_application_scopes',
         'application_login_scope_policy',

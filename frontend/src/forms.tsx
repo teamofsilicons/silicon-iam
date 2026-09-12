@@ -9,6 +9,8 @@ import {
   type RecordValue,
 } from "./api";
 import { ErrorBox, Field, Modal, StepUp } from "./ui";
+import { ScopePicker, WebhookScopePicker } from "./Scopes";
+import { defaultAppScope } from "./scope-model";
 type Schema = RecordValue;
 export function schema(name: string): Schema {
   return resolve((contracts as RecordValue)[name]);
@@ -64,6 +66,26 @@ export function SchemaFields(props: {
           const name = () => `${props.prefix || ""}${label(key)}`;
           const set = (value: unknown) =>
             props.change({ ...props.values, [key]: value });
+          if (key === "app_scope")
+            return (
+              <fieldset>
+                <legend>Application scopes</legend>
+                <ScopePicker
+                  value={props.values[key] ?? defaultAppScope()}
+                  change={set}
+                />
+              </fieldset>
+            );
+          if (key === "webhook_scope")
+            return (
+              <fieldset>
+                <legend>Webhook subscriptions</legend>
+                <WebhookScopePicker
+                  value={props.values[key] ?? ["full"]}
+                  change={set}
+                />
+              </fieldset>
+            );
           return (
             <Show
               when={type === "object" && definition.properties}
@@ -230,7 +252,7 @@ export function SchemaFields(props: {
     </div>
   );
 }
-function inputValues(
+export function inputValues(
   definition: Schema,
   initial: RecordValue = {},
 ): RecordValue {
@@ -242,18 +264,20 @@ function inputValues(
           value = initial[key];
         return [
           key,
-          kind(s) === "object" && s.properties
-            ? inputValues(s, value)
-            : typeof value === "object"
-              ? Array.isArray(value) && kind(resolve(s.items)) !== "object"
-                ? value.join("\n")
-                : JSON.stringify(value, null, 2)
-              : value,
+          key === "app_scope" || key === "webhook_scope"
+            ? structuredClone(value)
+            : kind(s) === "object" && s.properties
+              ? inputValues(s, value)
+              : typeof value === "object"
+                ? Array.isArray(value) && kind(resolve(s.items)) !== "object"
+                  ? value.join("\n")
+                  : JSON.stringify(value, null, 2)
+                : value,
         ];
       }),
   );
 }
-function outputValues(
+export function outputValues(
   definition: Schema,
   values: RecordValue,
   initial: RecordValue = {},
@@ -286,9 +310,10 @@ function outputValues(
         throw new Error(`${label(key)} must be a JSON object.`);
       result[key] = parsed;
     } else if (kind(s) === "array") {
-      const items =
-        kind(resolve(s.items)) === "object" ||
-        String(value).trim().startsWith("[")
+      const items = Array.isArray(value)
+        ? value
+        : kind(resolve(s.items)) === "object" ||
+            String(value).trim().startsWith("[")
           ? JSON.parse(value)
           : String(value)
               .split(/[,\n]/)

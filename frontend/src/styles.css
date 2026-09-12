@@ -11,23 +11,16 @@
 }
 :root {
   font-family: Plex, system-ui, sans-serif;
-  color: #14120f;
-  background: #f4f1e8;
+  color: #17191d;
+  background: #f7f8fa;
   font-synthesis: none;
   color-scheme: light;
-  /* Palette sampled from the Silicon board's light-ground pins:
-     warm paper, near-black ink, red-orange heat, ESA blue. */
-  --ink: #14120f;
-  --muted: #5f594f;
-  --line: #e0dace;
-  --paper: #f4f1e8;
-  --surface: #fbf9f4;
-  --orange: #cf3f18;
-  --orange-raw: #d9451c;
-  --teal: #186078;
-  --blue: #0048c0;
+  --ink: #17191d;
+  --muted: #646c77;
+  --line: #dce0e6;
+  --blue: #1f5fb8;
+  --surface: #fff;
   --radius: 8px;
-  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='5' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   font-size: 16px;
 }
 * {
@@ -57,7 +50,7 @@ textarea {
   touch-action: manipulation;
 }
 :focus-visible {
-  outline: 3px solid var(--orange);
+  outline: 3px solid #649bee;
   outline-offset: 3px;
 }
 button {
@@ -168,148 +161,15 @@ p {
 .auth-brand {
   position: relative;
   overflow: hidden;
-  background:
-    radial-gradient(
-      ellipse 38% 28% at 94% 6%,
-      rgba(12, 92, 116, 0.34) 0%,
-      rgba(46, 148, 158, 0.13) 42%,
-      transparent 68%
-    ),
-    var(--paper);
+  background: #eef1f5;
   border-right: 1px solid var(--line);
   padding: 40px 48px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
 }
-.auth-brand::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image: var(--grain);
-  opacity: 0.2;
-  mix-blend-mode: multiply;
-  pointer-events: none;
-}
-.auth-brand > :not(.auth-plate) {
-  position: relative;
-  z-index: 1;
-}
-
-/* Decorative plate: technical grid, thermal disc, halftone dissolve,
-   registration marks and corner microtype - after the board's poster pins. */
 .auth-plate {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  overflow: hidden;
-  pointer-events: none;
-}
-.plate-grid {
-  position: absolute;
-  inset: 0;
-  background-image:
-    repeating-linear-gradient(
-      to right,
-      rgba(20, 18, 15, 0.055) 0 1px,
-      transparent 1px 72px
-    ),
-    repeating-linear-gradient(
-      to bottom,
-      rgba(20, 18, 15, 0.055) 0 1px,
-      transparent 1px 72px
-    );
-}
-.plate-disc {
-  position: absolute;
-  right: -196px;
-  bottom: -268px;
-  width: 560px;
-  height: 560px;
-  border-radius: 50%;
-  background: radial-gradient(
-    circle at 34% 28%,
-    #f7c65c 0%,
-    #f09030 24%,
-    #e2571a 52%,
-    #c22f0c 78%,
-    #9d200a 100%
-  );
-}
-.plate-dither {
-  position: absolute;
-  inset: 0;
-  background-image: radial-gradient(
-    circle at center,
-    rgba(20, 18, 15, 0.92) 40%,
-    transparent 42%
-  );
-  background-size: 7px 7px;
-  -webkit-mask-image: radial-gradient(
-    ellipse 74% 52% at 84% 100%,
-    #000 6%,
-    rgba(0, 0, 0, 0.62) 26%,
-    rgba(0, 0, 0, 0.22) 44%,
-    transparent 62%
-  );
-  mask-image: radial-gradient(
-    ellipse 74% 52% at 84% 100%,
-    #000 6%,
-    rgba(0, 0, 0, 0.62) 26%,
-    rgba(0, 0, 0, 0.22) 44%,
-    transparent 62%
-  );
-  opacity: 0.55;
-}
-.plate-cross {
-  position: absolute;
-  width: 11px;
-  height: 11px;
-  background-image:
-    linear-gradient(var(--ink), var(--ink)),
-    linear-gradient(var(--ink), var(--ink));
-  background-size:
-    100% 1px,
-    1px 100%;
-  background-position: center;
-  background-repeat: no-repeat;
-  opacity: 0.42;
-}
-.plate-cross-a {
-  top: 116px;
-  right: 48px;
-}
-.plate-cross-b {
-  bottom: 118px;
-  left: 48px;
-}
-.plate-rule {
-  position: absolute;
-  top: 104px;
-  left: 48px;
-  right: 48px;
-  height: 1px;
-  background: var(--ink);
-  opacity: 0.16;
-}
-.plate-index,
-.plate-seq {
-  position: absolute;
-  right: 48px;
-  font:
-    500 0.6875rem PlexMono,
-    monospace;
-  letter-spacing: 0.18em;
-  color: var(--ink);
-  opacity: 0.5;
-}
-.plate-index {
-  top: 52px;
-}
-.plate-seq {
-  bottom: 40px;
-  color: var(--paper);
-  opacity: 0.86;
+  display: none;
 }
 .auth-statement {
   max-width: 350px;
@@ -327,7 +187,7 @@ p {
 }
 .auth-foot {
   font-size: 0.875rem;
-  color: var(--ink);
+  color: var(--muted);
   display: flex;
   gap: 10px;
   align-items: center;
@@ -337,7 +197,7 @@ p {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--orange);
+  background: var(--blue);
 }
 .auth-panel {
   position: relative;
@@ -345,7 +205,7 @@ p {
   align-items: center;
   justify-content: center;
   padding: 80px 48px;
-  background: var(--surface);
+  background: white;
   min-height: 100dvh;
 }
 .auth-card {
@@ -372,10 +232,10 @@ input,
 select,
 textarea {
   min-height: 46px;
-  border: 1px solid #d5cec0;
+  border: 1px solid #c9cfd8;
   border-radius: 6px;
   padding: 11px 13px;
-  background: #fff;
+  background: white;
   color: var(--ink);
   width: 100%;
   font-size: 1rem;
@@ -385,12 +245,12 @@ textarea {
   resize: vertical;
 }
 input::placeholder {
-  color: #a29a8c;
+  color: #949aa3;
 }
 input:focus,
 select:focus,
 textarea:focus {
-  border-color: var(--orange);
+  border-color: var(--blue);
 }
 .button {
   display: inline-flex;
@@ -403,13 +263,13 @@ textarea:focus {
   border: 1px solid var(--line);
   font-size: 0.875rem;
   font-weight: 500;
-  background: #fff;
+  background: white;
   color: var(--ink);
 }
 .button.primary {
-  background: var(--orange);
-  border-color: var(--orange);
-  color: #fff;
+  background: var(--blue);
+  border-color: var(--blue);
+  color: white;
 }
 .auth-card .button {
   justify-content: space-between;
@@ -471,11 +331,6 @@ textarea:focus {
   }
   .auth-statement,
   .auth-foot {
-    display: none;
-  }
-  /* The poster plate needs the full-height panel; the collapsed
-     header bar is too short to hold the disc or its microtype. */
-  .auth-plate {
     display: none;
   }
   .auth-panel {
@@ -1550,7 +1405,7 @@ legend {
   justify-content: space-between;
   gap: 1rem;
   padding: 1rem 0;
-  border-bottom: 1px solid var(--line, #deddd5);
+  border-bottom: 1px solid var(--line, #dce0e6);
 }
 .scope-list li > div {
   display: grid;
@@ -1564,19 +1419,19 @@ legend {
   font-size: 0.8rem;
 }
 .scope-critical {
-  background: #fff0d0;
-  color: #78480a;
+  background: #fff2ef;
+  color: #983f31;
   white-space: nowrap;
 }
 .scope-standard {
-  background: #edf2ec;
-  color: #36563b;
+  background: #f0f7f2;
+  color: #326342;
   white-space: nowrap;
 }
 .scope-picker {
   max-height: 24rem;
   overflow-y: auto;
-  border: 1px solid var(--line, #deddd5);
+  border: 1px solid var(--line, #dce0e6);
   border-radius: 0.4rem;
 }
 .scope-picker .organization-choice {
@@ -1597,13 +1452,13 @@ legend {
   padding: 1rem;
   text-align: left;
   border: 0;
-  border-top: 1px solid var(--line, #deddd5);
+  border-top: 1px solid var(--line, #dce0e6);
   background: transparent;
   cursor: pointer;
 }
 .review-inbox-item.selected {
-  background: #f1f0e9;
-  box-shadow: inset 3px 0 #444a32;
+  background: #e2eaf6;
+  box-shadow: inset 3px 0 var(--blue);
 }
 .review-thread {
   display: grid;
@@ -1611,7 +1466,7 @@ legend {
 }
 .review-thread article {
   padding: 1rem;
-  background: #f7f6f0;
+  background: #f7f8fb;
   border-radius: 0.4rem;
   overflow-wrap: anywhere;
 }

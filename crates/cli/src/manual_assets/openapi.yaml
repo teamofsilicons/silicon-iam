@@ -3564,6 +3564,13 @@ paths:
       tags: [Applications]
       operationId: listApplicationScopes
       summary: Discover IAM or audience endpoint scopes
+      description: >-
+        Without app_id, returns only IAM permissions. With a qualified app_id,
+        returns that verified, active application's published endpoint permissions,
+        including both critical and noncritical permissions. A valid application
+        with no published endpoints returns an empty items array. Unknown,
+        unavailable, or inaccessible applications return 404; malformed IDs return
+        422. Discovery remains isolated to the selected testing environment.
       security: [{ iamBearer: [] }]
       parameters:
         - { name: app_id, in: query, schema: { type: string } }

@@ -1,11 +1,21 @@
-import { createSignal, For, Show } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  Show,
+} from "solid-js";
 import { createResource } from "./resource";
-import { mutation, request, segment, type RecordValue } from "./api";
+import { ApiError, mutation, request, segment, type RecordValue } from "./api";
 import { ErrorBox, Field, Loading } from "./ui";
 import {
+  createScopeLookup,
   defaultAppScope,
+  scopeApprovalLabel,
+  scopeCatalog,
   scopeNames,
-  selectedScope,
+  toggleScope,
   type AppScope,
   type ScopeDescriptor,
 } from "./scope-model";
@@ -33,79 +43,268 @@ export function ScopeList(props: { items: ScopeDescriptor[] }) {
   );
 }
 
+type ExternalCatalog = {
+  appId: string;
+  items: ScopeDescriptor[];
+  loading: boolean;
+  error?: unknown;
+};
+
 export function ScopePicker(props: {
   value: AppScope;
   change: (scope: AppScope) => void;
 }) {
-  const [catalog, { refetch }] = createResource(() =>
-    request<{ items: ScopeDescriptor[] }>("/api/v1/application-scopes"),
-  );
-  const [query, setQuery] = createSignal(""),
+  const [catalog, { refetch }] = createResource(async () => {
+    const result = await request<{ items: ScopeDescriptor[] }>(
+      "/api/v1/application-scopes",
+    );
+    return scopeCatalog(result.items, null);
+  });
+  const [appId, setAppId] = createSignal(""),
+    [lookupBusy, setLookupBusy] = createSignal(false),
+    [lookupError, setLookupError] = createSignal<unknown>(),
+    [external, setExternal] = createSignal<ExternalCatalog[]>([]),
     [error, setError] = createSignal<unknown>();
-  const toggle = (name: string, checked: boolean) => {
+  const selected = createMemo(() => new Set(scopeNames(props.value)));
+  const inFlight = new Map<string, Promise<ScopeDescriptor[]>>();
+  let disposed = false;
+  const loadApp = (id: string) => {
+    const pending = inFlight.get(id);
+    if (pending) return pending;
+    const promise = request<{ items: ScopeDescriptor[] }>(
+      `/api/v1/application-scopes?app_id=${segment(id)}`,
+    )
+      .then((result) => scopeCatalog(result.items, id))
+      .finally(() => inFlight.delete(id));
+    inFlight.set(id, promise);
+    return promise;
+  };
+  const lookup = createScopeLookup(loadApp);
+  const updateCatalog = (entry: ExternalCatalog) => {
+    if (disposed) return;
+    setExternal((current) =>
+      current.some((item) => item.appId === entry.appId)
+        ? current.map((item) => (item.appId === entry.appId ? entry : item))
+        : [...current, entry],
+    );
+  };
+  async function hydrate(id: string) {
+    updateCatalog({ appId: id, items: [], loading: true });
     try {
-      const names = scopeNames(props.value);
-      props.change(
-        selectedScope(
-          checked ? [...names, name] : names.filter((item) => item !== name),
-          catalog()?.items || [],
-        ),
+      updateCatalog({ appId: id, items: await loadApp(id), loading: false });
+    } catch (error) {
+      updateCatalog({ appId: id, items: [], loading: false, error });
+    }
+  }
+  createEffect(() => {
+    for (const id of new Set(props.value.external.map((item) => item.app_id)))
+      if (!external().some((item) => item.appId === id)) void hydrate(id);
+  });
+  onCleanup(() => {
+    disposed = true;
+    lookup.invalidate();
+  });
+  async function findApp() {
+    if (lookupBusy()) return;
+    const id = appId().trim();
+    setLookupError();
+    if (!id) {
+      setLookupError(new Error("app_id invalid"));
+      return;
+    }
+    setLookupBusy(true);
+    try {
+      const items = await lookup.run(id);
+      if (!items) return;
+      updateCatalog({ appId: id, items, loading: false });
+      setLookupBusy(false);
+    } catch (error) {
+      setLookupError(
+        error instanceof ApiError && [404, 422].includes(error.status)
+          ? new Error("app_id invalid")
+          : error,
       );
+      setLookupBusy(false);
+    }
+  }
+  const toggle = (scope: ScopeDescriptor, checked: boolean) => {
+    try {
+      props.change(toggleScope(props.value, scope, checked));
       setError();
     } catch (cause) {
       setError(cause);
     }
   };
+  const choices = (items: ScopeDescriptor[]) => (
+    <div class="scope-picker">
+      <For each={items}>
+        {(scope) => (
+          <label class="organization-choice">
+            <input
+              type="checkbox"
+              checked={selected().has(scope.scope)}
+              onChange={(event) => toggle(scope, event.currentTarget.checked)}
+            />
+            <span>
+              <strong>{scope.description || scope.scope}</strong>
+              <code>{scope.scope}</code>
+              <small>{scopeApprovalLabel(scope)}</small>
+            </span>
+          </label>
+        )}
+      </For>
+    </div>
+  );
+  return (
+    <div class="stack">
+      <section class="stack" aria-label="IAM scopes">
+        <h3>IAM scopes</h3>
+        <p class="muted">Select the IAM data your application needs.</p>
+        <ErrorBox error={catalog.error || error()} retry={refetch} />
+        <Show when={!catalog.loading} fallback={<Loading />}>
+          {choices(catalog() || [])}
+        </Show>
+      </section>
+      <section class="stack" aria-label="External application scopes">
+        <h3>External application scopes</h3>
+        <p class="muted">
+          Look up an application to select the scopes it exposes.
+        </p>
+        <Field
+          name="External app_id"
+          hint="Enter the full application ID, including its organization prefix."
+        >
+          <input
+            value={appId()}
+            placeholder="organization>application"
+            onInput={(event) => {
+              lookup.invalidate();
+              setAppId(event.currentTarget.value);
+              setLookupBusy(false);
+              setLookupError();
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void findApp();
+              }
+            }}
+          />
+        </Field>
+        <div class="actions">
+          <button
+            class="button"
+            type="button"
+            disabled={lookupBusy()}
+            onClick={() => void findApp()}
+          >
+            {lookupBusy() ? "Looking up…" : "Find scopes"}
+          </button>
+        </div>
+        <ErrorBox error={lookupError()} />
+        <For each={external()}>
+          {(group) => (
+            <fieldset class="stack">
+              <legend>{group.appId}</legend>
+              <Show when={group.loading}>
+                <Loading />
+              </Show>
+              <ErrorBox
+                error={group.error}
+                retry={() => void hydrate(group.appId)}
+              />
+              {choices(group.items)}
+              <Show
+                when={!group.loading && !group.error && !group.items.length}
+              >
+                <p>This application has no exposed scopes.</p>
+              </Show>
+              <For
+                each={props.value.external.filter(
+                  (item) =>
+                    item.app_id === group.appId &&
+                    !group.items.some(
+                      (scope) =>
+                        scope.scope ===
+                        `obo:${item.app_id}:${item.endpoint_id}`,
+                    ),
+                )}
+              >
+                {(item) => (
+                  <label class="organization-choice">
+                    <input
+                      type="checkbox"
+                      checked
+                      onChange={() =>
+                        props.change({
+                          iam: [...props.value.iam],
+                          external: props.value.external.filter(
+                            (current) =>
+                              current.app_id !== item.app_id ||
+                              current.endpoint_id !== item.endpoint_id,
+                          ),
+                        })
+                      }
+                    />
+                    <span>
+                      <strong>{item.endpoint_id}</strong>
+                      <code>{`obo:${item.app_id}:${item.endpoint_id}`}</code>
+                      <small>
+                        {group.loading
+                          ? "Loading scope details…"
+                          : group.error
+                            ? "Saved selection. Scope details are unavailable; retry the lookup or uncheck to remove."
+                            : "This scope is no longer exposed. Uncheck it before saving."}
+                      </small>
+                    </span>
+                  </label>
+                )}
+              </For>
+            </fieldset>
+          )}
+        </For>
+      </section>
+      <small>{selected().size} scopes selected</small>
+    </div>
+  );
+}
+
+export function WebhookScopePicker(props: {
+  value: string[];
+  change: (scope: string[]) => void;
+}) {
+  const options = [
+    ["full", "All authorized updates"],
+    ["membership", "Membership updates"],
+    ["updates", "Profile and organization updates"],
+    ["trust", "Trust updates"],
+  ];
   return (
     <div class="stack">
       <p class="muted">
-        Choose what your application may read and which external endpoints it
-        may call. Critical permissions require approval from IAM or the
-        receiving application.
+        Choose which updates IAM delivers. These subscriptions do not grant
+        access to data.
       </p>
-      <ErrorBox error={catalog.error || error()} retry={refetch} />
-      <Show when={!catalog.loading} fallback={<Loading />}>
-        <input
-          class="search"
-          aria-label="Filter permissions"
-          placeholder="Filter by application or permission…"
-          value={query()}
-          onInput={(e) => setQuery(e.currentTarget.value)}
-        />
-        <div class="scope-picker">
-          <For
-            each={catalog()?.items.filter((item) =>
-              `${item.scope} ${item.description} ${item.app_id || "IAM"}`
-                .toLowerCase()
-                .includes(query().toLowerCase()),
-            )}
-          >
-            {(scope) => (
-              <label class="organization-choice">
-                <input
-                  type="checkbox"
-                  checked={scopeNames(props.value).includes(scope.scope)}
-                  onChange={(e) => toggle(scope.scope, e.currentTarget.checked)}
-                />
-                <span>
-                  <strong>{scope.description || scope.scope}</strong>
-                  <code>{scope.scope}</code>
-                  <small>
-                    {scope.app_id || "Silicon IAM"} ·{" "}
-                    {scope.critical
-                      ? "Critical — approval required"
-                      : "Non-critical"}
-                  </small>
-                </span>
-              </label>
-            )}
-          </For>
-        </div>
-        <Show when={catalog() && !catalog()!.items.length}>
-          <p>No permissions are currently published.</p>
-        </Show>
-      </Show>
-      <small>{scopeNames(props.value).length} permissions selected</small>
+      <For each={options}>
+        {([value, name]) => (
+          <label class="checkbox">
+            <input
+              type="checkbox"
+              checked={props.value.includes(value)}
+              onChange={(event) =>
+                props.change(
+                  event.currentTarget.checked
+                    ? [...new Set([...props.value, value])]
+                    : props.value.filter((item) => item !== value),
+                )
+              }
+            />
+            <span>
+              {name} <code>{value}</code>
+            </span>
+          </label>
+        )}
+      </For>
     </div>
   );
 }

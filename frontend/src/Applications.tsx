@@ -19,7 +19,7 @@ import {
   type RecordValue,
 } from "./api";
 import { OperationForm, type Operation } from "./forms";
-import { ApplicationScopes, ScopePicker } from "./Scopes";
+import { ApplicationScopes, ScopePicker, WebhookScopePicker } from "./Scopes";
 import { defaultAppScope } from "./scope-model";
 import {
   Badge,
@@ -198,28 +198,7 @@ export function ApplicationCreate(props: {
         </fieldset>
         <fieldset class="stack">
           <legend>Webhook subscriptions</legend>
-          <p class="muted">
-            Choose which updates IAM delivers. These subscriptions do not grant
-            access to data.
-          </p>
-          <For each={["full", "membership", "updates", "trust"]}>
-            {(item) => (
-              <label class="checkbox">
-                <input
-                  type="checkbox"
-                  checked={webhookScope().includes(item)}
-                  onChange={(e) =>
-                    setWebhookScope((current) =>
-                      e.currentTarget.checked
-                        ? [...current, item]
-                        : current.filter((value) => value !== item),
-                    )
-                  }
-                />
-                {item === "full" ? "All authorized updates" : item}
-              </label>
-            )}
-          </For>
+          <WebhookScopePicker value={webhookScope()} change={setWebhookScope} />
         </fieldset>
         <div class="notice">
           After creating the app, save its client secret. The initial webhook
@@ -560,8 +539,10 @@ function ApplicationDetail(props: { appId: string; config: Configuration }) {
               <section class="panel padded stack">
                 <h2>Webhook delivery</h2>
                 <p class="muted">
-                  IAM delivers signed events and authorization snapshots limited by your effective scopes and user consent to this
-                  endpoint. Production destinations need approval; testing destinations activate immediately.
+                  IAM delivers signed events and authorization snapshots limited
+                  by your effective scopes and user consent to this endpoint.
+                  Production destinations need approval; testing destinations
+                  activate immediately.
                 </p>
                 <RecordDetails value={app()!.webhook || {}} />
                 <div class="actions">

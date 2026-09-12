@@ -35,7 +35,9 @@ Content-Type: application/json
 
 `app_scope` has two parts. `iam` lists IAM permission names. `external` lists `{app_id, endpoint_id}` pairs from other applications, including applications owned by other organizations. `webhook_scope` independently subscribes to event categories: `full`, `membership`, `updates`, or `trust`. A webhook subscription never grants access to data.
 
-Identity and profile permissions are selected by default. Request only the additional information the application uses. `GET /api/v1/application-scopes` returns `items` containing `scope`, `description`, `critical`, and provider `app_id` (null for IAM). The catalog includes published external OBO endpoints; `app_id` can filter an external provider. Use the returned descriptions and critical labels in permission pickers.
+Identity and profile permissions are selected by default. Request only the additional information the application uses. `GET /api/v1/application-scopes` lists IAM permissions as `items` containing `scope`, `description`, `critical`, and provider `app_id` (null for IAM). Supply `?app_id=org%3Eapp` to list one external application's published OBO endpoints. A valid, available application with no published endpoints returns an empty list; an unavailable application returns 404, and a malformed ID returns 422.
+
+The console lists IAM permissions as checkboxes. Enter an external application's full ID to load and select its scopes; an invalid or unavailable ID displays `app_id invalid`. Every critical permission identifies its approver: “This would require approval from IAM” or the receiving application's ID. Webhook subscriptions are selected separately with checkboxes.
 
 | Permission family | Access |
 | --- | --- |

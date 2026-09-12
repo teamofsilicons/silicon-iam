@@ -18,6 +18,84 @@ export const scopeNames = (scope: AppScope): string[] => [
   ...scope.external.map((item) => `obo:${item.app_id}:${item.endpoint_id}`),
 ];
 
+export const scopeApprovalLabel = (scope: ScopeDescriptor): string =>
+  scope.critical
+    ? `This would require approval from ${scope.app_id || "IAM"}`
+    : "Non-critical";
+
+/** Changing one checkbox must preserve selections whose catalogs are not loaded. */
+export function toggleScope(
+  value: AppScope,
+  descriptor: ScopeDescriptor,
+  checked: boolean,
+): AppScope {
+  const selected = selectedScope([descriptor.scope], [descriptor]);
+  if (!descriptor.app_id)
+    return {
+      iam: checked
+        ? [...new Set([...value.iam, descriptor.scope])]
+        : value.iam.filter((name) => name !== descriptor.scope),
+      external: value.external.map((item) => ({ ...item })),
+    };
+  const endpoint = selected.external[0];
+  const external = value.external.filter(
+    (item) =>
+      item.app_id !== endpoint.app_id ||
+      item.endpoint_id !== endpoint.endpoint_id,
+  );
+  return {
+    iam: [...value.iam],
+    external: checked ? [...external, endpoint] : external,
+  };
+}
+
+export function scopeCatalog(
+  items: ScopeDescriptor[],
+  appId: string | null,
+): ScopeDescriptor[] {
+  if (
+    !Array.isArray(items) ||
+    items.some(
+      (item) =>
+        !item ||
+        typeof item.scope !== "string" ||
+        !item.scope ||
+        typeof item.description !== "string" ||
+        typeof item.critical !== "boolean" ||
+        item.app_id !== appId,
+    ) ||
+    new Set(items.map((item) => item.scope)).size !== items.length
+  )
+    throw new Error("IAM returned an invalid scope catalog. Please retry.");
+  selectedScope(
+    items.map((item) => item.scope),
+    items,
+  );
+  return items;
+}
+
+/** A changed app ID or unmounted picker invalidates both late success and failure. */
+export function createScopeLookup(
+  load: (appId: string) => Promise<ScopeDescriptor[]>,
+) {
+  let generation = 0;
+  return {
+    invalidate: () => {
+      generation += 1;
+    },
+    async run(appId: string) {
+      const current = ++generation;
+      try {
+        const items = await load(appId);
+        return current === generation ? items : undefined;
+      } catch (error) {
+        if (current === generation) throw error;
+        return undefined;
+      }
+    },
+  };
+}
+
 /** External scope strings are an API identifier, never a display label. */
 export function selectedScope(
   names: string[],
