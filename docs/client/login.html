@@ -1,7 +1,7 @@
 <p class="lede">
   A login produces one short-lived token. The application sends somebody to IAM, gets that token
   back, and trades it — together with its own secret — for a session. The IAM SLT exchange
-  has no PKCE verifier or consent screen. Your application must still bind the callback to
+  has no PKCE verifier; IAM collects explicit permission and organization consent. Your application must still bind the callback to
   the browser's initiated login attempt; this protocol is not a substitute for callback CSRF protection.
 </p>
 
@@ -24,7 +24,7 @@
 <p>
   For an external-app walkthrough using example ID <code>tos&gt;briefcase</code> and callback
   <code>https://briefcase.teamofsilicons.com/auth/callback</code>, see
-  <a href="/docs/api/applications#briefcase-login-example">the Briefcase login example</a>.
+  <a href="https://docs.iam.teamofsilicons.com/api/applications#briefcase-login-example">the Briefcase login example</a>.
   Use your actual registered ID and implemented callback route; keep the app secret server-side.
 </p>
 
@@ -39,7 +39,7 @@ login.query_pairs_mut()
   ordinary Silicon IAM login and no token is minted. <code>redirect_uri</code> is optional and
   decides delivery only — give one and the token comes back on it, omit it and IAM shows the
   token to the person instead. Applications must not supply <code>org_id</code>.
-  IAM validates the app and asks the user to select at least one organization.
+  IAM validates the app, displays its critical and noncritical IAM and external permissions, then asks the user to select at least one organization.
   Only the selected active memberships are disclosed, never future memberships automatically.
 </p>
 
@@ -91,22 +91,61 @@ let tokens = application
 </p>
 
 <pre><code>let choices = signed_in.auth().login_organizations("acme&gt;your-app").await?;
-// Present choices.items in IAM; obtain the user's explicit selection.
+// Display choices.scopes, obtain permission consent, then select organizations.
+let approved = choices.scopes.iter().map(|scope| scope.scope.clone()).collect::&lt;Vec&lt;_&gt;&gt;();
 let slt = signed_in.auth().short_lived_token_for_organizations(
-    "acme&gt;your-app", &amp;["acme".to_owned()], &amp;Mutation::new(),
+    "acme&gt;your-app", &amp;["acme".to_owned()], choices.scope_version,
+    &amp;approved, &amp;Mutation::new(),
 ).await?;</code></pre>
 
 <p>
   Only direct IAM credentials can submit this choice. Existing grants on the same
   parent IAM login are preserved when adding organizations; other sessions remain
-  independent. Apps get no list of unselected organizations. OBO requires the
-  calling app's organization to be selected and the membership to remain active.
+  independent. Apps get no list of unselected organizations. OBO uses an explicitly selected
+  organization of the user; the calling and audience apps may belong to other organizations.
 </p>
 
 <h2>Scope</h2>
 
 <p>
-  There is none to request. A login carries the whole catalogue. An application's
-  <code>scope</code> is the <em>webhook's</em> scope — which changes you are told about — and has
-  nothing to do with what a session may read.
+  <code>app_scope</code> declares IAM permissions and exact external OBO endpoint permissions.
+  A token carries only the application's effective, user-approved scope set within the user's selected
+  organizations. <code>webhook_scope</code> independently chooses event categories.
+  The defaults are <code>self.identity.read</code> and <code>self.profile.read</code>; email,
+  phone, directory data, and external endpoints require explicit declarations. New critical
+  scopes require review before they become usable. An upgrade awaiting review keeps the prior
+  approved version working. Every direct login submission supplies the reviewed
+  <code>scope_version</code> and complete <code>approved_scopes</code> list. Stale views fail;
+  reload and show the new permissions before retrying.
 </p>
+
+<h2>Batch login</h2>
+<p>Use <code>/login?app_ids=tos%3Ebriefcase,tos%3Edm</code> to authenticate once
+for 1–100 distinct applications. IAM collects organization consent separately
+for each app, reviews its permissions, and creates all SLTs atomically. A callback receives
+<code>#slts=</code> with a URL-encoded JSON array of objects containing
+<code>app_id</code>, <code>slt</code>, <code>expires_in</code>,
+<code>expires_at</code> and <code>request_id</code>. Read it in browser JavaScript,
+verify your login state and expected app IDs, clear the fragment, then send
+each SLT to its own app backend for the existing secret-authenticated exchange.</p>
+<p>The direct-IAM endpoints are
+<code>GET /api/v1/app-auth/batch/organizations?app_ids=...</code> and
+<code>POST /api/v1/app-auth/batch/short-lived-tokens</code>. The POST takes
+<code>{"applications":[{"app_id":"tos&gt;briefcase","org_ids":["tos"],"scope_version":1,"approved_scopes":["self.identity.read","self.profile.read"]}]}</code>
+and an idempotency key, returning <code>{"items":[...]}</code>.
+The Rust client exposes <code>auth().batch_login_organizations(...)</code>
+and <code>auth().batch_short_lived_tokens(...)</code>.
+The CLI exposes <code>iam batch-login --app-id</code> with repeatable app IDs.
+See <code>iam docs batch-login</code> for the complete guide. Use the matching API, CLI, and frontend contract together.</p>
+
+<h2>Bundle login</h2>
+<p>A configured bundle presents one application identity while preserving a separate credential
+and token exchange for every member. Start with <code>/login?bundle_id=acme%3Eworkspace</code>.
+The callback uses the same <code>#slts=</code> result shape as batch login. Each member app
+receives only its own SLT and exchanges it with its own secret. Bundle membership is confined
+to one organization; existing member apps remain independently usable.</p>
+<p>For direct IAM clients, call <code>auth().bundle_login_organizations(bundle_id)</code>,
+review the bundle and current member scope versions, then call
+<code>auth().bundle_short_lived_tokens(bundle_id, &amp;request, &amp;mutation)</code>.
+The submitted member list must match the current complete bundle. A stale or invalid member
+prevents all token issuance.</p>

@@ -1,3 +1,4 @@
+use super::application_reads::{self, ReadScopes};
 use std::collections::BTreeMap;
 
 use axum::{
@@ -55,6 +56,49 @@ impl DirectoryFields {
             };
         }
         Ok(Self(fields))
+    }
+
+    fn restricted(self, scopes: ReadScopes<'_>, is_self: bool) -> Self {
+        let profile = scopes.has(if is_self {
+            "self.profile.read"
+        } else {
+            "directory.profiles.read"
+        });
+        let membership = scopes.has(if is_self {
+            "self.membership.read"
+        } else {
+            "directory.memberships.read"
+        });
+        let job = scopes.has(if is_self {
+            "self.job_role.read"
+        } else {
+            "directory.job_roles.read"
+        });
+        let tags = scopes.has(if is_self {
+            "self.tags.read"
+        } else {
+            "directory.tags.read"
+        });
+        let mut allowed = 0;
+        if profile {
+            allowed |= FIELD_NAME;
+        }
+        if !is_self || scopes.has("self.identity.read") {
+            allowed |= FIELD_ID;
+        }
+        if membership || job {
+            allowed |= FIELD_ROLE;
+        }
+        if scopes.has("self.organizations.read") {
+            allowed |= FIELD_ORG;
+        }
+        if tags {
+            allowed |= FIELD_TAGS;
+        }
+        if scopes.has("self.trust.read") {
+            allowed |= FIELD_TRUST;
+        }
+        Self(self.0 & allowed)
     }
 
     const fn contains(self, field: u8) -> bool {
@@ -216,7 +260,8 @@ pub(super) async fn get_self(
     Query(query): Query<DirectoryQuery>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let fields = DirectoryFields::parse(query.fields.as_deref())?;
+    let scopes = ReadScopes::for_actor(&authenticated);
+    let fields = DirectoryFields::parse(query.fields.as_deref())?.restricted(scopes, true);
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let row = fetch_directory_member(
         &mut scope.transaction,
@@ -240,7 +285,11 @@ pub(super) async fn get_self(
         .commit()
         .await
         .map_err(support::database)?;
-    support::json(StatusCode::OK, &member, None)
+    support::json(
+        StatusCode::OK,
+        &scopes.directory(application_reads::value(&member)?, true),
+        None,
+    )
 }
 
 pub(super) async fn get_member(
@@ -250,8 +299,11 @@ pub(super) async fn get_member(
     Query(query): Query<DirectoryQuery>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let fields = DirectoryFields::parse(query.fields.as_deref())?;
+    let scopes = ReadScopes::for_actor(&authenticated);
+    let requested_fields = DirectoryFields::parse(query.fields.as_deref())?;
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
+    let is_self = membership_id == scope.access.membership_id;
+    let fields = requested_fields.restricted(scopes, is_self);
     let row = fetch_directory_member(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -259,6 +311,9 @@ pub(super) async fn get_member(
         fields,
     )
     .await?;
+    if !is_self {
+        scopes.require_actor(&row.principal_kind)?;
+    }
     let mut trust = evaluate_directory_trust(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -274,7 +329,11 @@ pub(super) async fn get_member(
         .commit()
         .await
         .map_err(support::database)?;
-    support::json(StatusCode::OK, &member, None)
+    support::json(
+        StatusCode::OK,
+        &scopes.directory(application_reads::value(&member)?, is_self),
+        None,
+    )
 }
 
 pub(super) async fn list_members(
@@ -284,7 +343,9 @@ pub(super) async fn list_members(
     Query(query): Query<DirectoryPageQuery>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let fields = DirectoryFields::parse(query.fields.as_deref())?;
+    let scopes = ReadScopes::for_actor(&authenticated);
+    let actor_filter = scopes.actor_filter(None)?;
+    let fields = DirectoryFields::parse(query.fields.as_deref())?.restricted(scopes, false);
     let (cursor, limit) = validation::page_parts(query.cursor.as_deref(), query.limit)?;
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let mut rows = list_directory_members(
@@ -293,6 +354,7 @@ pub(super) async fn list_members(
         cursor,
         limit + 1,
         fields,
+        actor_filter,
     )
     .await?;
     let page = take_page(&mut rows, limit)?;
@@ -317,7 +379,9 @@ pub(super) async fn list_members(
         .commit()
         .await
         .map_err(support::database)?;
-    support::json(StatusCode::OK, &DirectoryPage { items, page }, None)
+    application_reads::page_json(&DirectoryPage { items, page }, |item| {
+        scopes.directory(item, false)
+    })
 }
 
 async fn fetch_directory_member(
@@ -347,12 +411,18 @@ async fn list_directory_members(
     cursor: Option<Uuid>,
     limit: i64,
     fields: DirectoryFields,
+    actor_filter: Option<&str>,
 ) -> Result<Vec<DirectoryRow>, AppError> {
     let mut statement = directory_statement(fields);
     statement
         .push(" WHERE membership.organization_id = ")
         .push_bind(organization_id)
         .push(" AND membership.status = 'active'");
+    if let Some(kind) = actor_filter {
+        statement
+            .push(" AND membership.principal_kind = ")
+            .push_bind(kind);
+    }
     if let Some(cursor) = cursor {
         statement.push(" AND membership.id > ").push_bind(cursor);
     }
@@ -469,6 +539,77 @@ async fn evaluate_directory_trust(
         );
     }
     Ok(evaluated)
+}
+
+/// Captures effective trust from each represented subject toward active Silicons.
+/// All subjects share two batched reads; rule identifiers never leave this module.
+pub(super) async fn effective_trust_for_subjects(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    subjects: &[Uuid],
+) -> Result<BTreeMap<Uuid, serde_json::Value>, AppError> {
+    #[derive(sqlx::FromRow)]
+    struct SubjectMatch {
+        subject_membership_id: Uuid,
+        #[sqlx(flatten)]
+        matched: DirectoryTrustMatchRow,
+    }
+    if subjects.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let targets = sqlx::query_scalar::<_, Uuid>(
+        "SELECT membership.id FROM iam.organization_memberships membership JOIN iam.silicons silicon ON silicon.membership_id=membership.id AND silicon.organization_id=membership.organization_id JOIN iam.principals principal ON principal.id=silicon.id AND principal.status='active' WHERE membership.organization_id=$1 AND membership.status='active' AND silicon.provisioning_status='active' ORDER BY membership.id"
+    ).bind(organization_id).fetch_all(&mut **transaction).await.map_err(support::database)?;
+    let defaults = sqlx::query_as::<_, DirectoryTrustDefaultRow>(DIRECTORY_TRUST_DEFAULT_SQL)
+        .bind(organization_id)
+        .bind(subjects)
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(support::database)?;
+    let mut pair_subjects = Vec::new();
+    let mut pair_targets = Vec::new();
+    for default in &defaults {
+        for target in &targets {
+            pair_subjects.push(default.subject_membership_id);
+            pair_targets.push(*target);
+        }
+    }
+    let mut matches = BTreeMap::<(Uuid, Uuid), Vec<trust::MatchRow>>::new();
+    if !pair_subjects.is_empty() {
+        let rows = sqlx::query_as::<_, SubjectMatch>(DIRECTORY_TRUST_MATCH_SQL)
+            .bind(organization_id)
+            .bind(&pair_targets)
+            .bind(&pair_subjects)
+            .bind(&pair_targets)
+            .fetch_all(&mut **transaction)
+            .await
+            .map_err(support::database)?;
+        for row in rows {
+            let (target, candidate) = row.matched.into_parts();
+            matches
+                .entry((row.subject_membership_id, target))
+                .or_default()
+                .push(candidate);
+        }
+    }
+    let mut result = BTreeMap::new();
+    for default in defaults {
+        let mut effective = Vec::with_capacity(targets.len());
+        for target in &targets {
+            let candidates = matches
+                .get(&(default.subject_membership_id, *target))
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let evaluated = trust::evaluate_matches(
+                &default.default_trust_boundary,
+                &default.default_trust_level,
+                candidates,
+            )?;
+            effective.push(serde_json::json!({"target_silicon_membership_id":target,"trust":evaluated.trust,"advisory":evaluated.advisory}));
+        }
+        result.insert(default.subject_membership_id, serde_json::json!(effective));
+    }
+    Ok(result)
 }
 
 fn trust_target(
@@ -598,6 +739,7 @@ const DIRECTORY_TRUST_MATCH_SQL: &str = r"
     )
     SELECT
         evaluation_target.directory_membership_id,
+        evaluation_target.subject_membership_id,
         rule.id,
         rule.subject_kind,
         rule.target_kind,

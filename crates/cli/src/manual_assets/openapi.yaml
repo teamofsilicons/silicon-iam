@@ -356,6 +356,7 @@ paths:
         was supplied. Selections are additive on the same parent IAM session.
       security: [{ sessionCookie: [] }]
       parameters:
+        - { name: app_ids, in: query, schema: { type: string }, description: Comma-separated canonical app IDs for batch login; 1–100 unique apps. Mutually exclusive with app_id. Batch callbacks use a JSON slts array in the URL fragment. }
         - { name: app_id, in: query, schema: { $ref: '#/components/schemas/AppId' } }
         - { name: redirect_uri, in: query, schema: { type: string, format: uri, maxLength: 2048 } }
       responses:
@@ -438,6 +439,56 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/app-auth/batch/organizations:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    get:
+      tags: [Login]
+      operationId: listBatchLoginOrganizations
+      summary: Validate 1–100 apps and list the IAM user's organization choices for each.
+      description: Direct IAM Carbon/Silicon session only. Rejects unknown, unverified, duplicate or malformed apps as a whole. Does not grant consent or mint tokens.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: app_ids, in: query, required: true, schema: { type: string }, description: Comma-separated canonical app IDs; 1–100 unique apps. }
+      responses:
+        '200':
+          description: Verified apps in requested order, each with organization choices.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BatchLoginOrganizations' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/app-auth/batch/short-lived-tokens:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    post:
+      tags: [Login]
+      operationId: issueBatchShortLivedTokens
+      summary: Atomically authorize 1–100 applications from one direct IAM session.
+      description: Each app receives independent additive organization consent and a two-minute single-use SLT. Every selection must be explicit and active. Any failure rolls back the whole batch. Replay is bound to the exact request and parent IAM session; it never extends token expiry. Applications exchange only their own SLT with their own secret at the existing token endpoint.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BatchLoginRequest' }
+      responses:
+        '201':
+          description: Separate SLTs in the requested application order.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BatchLoginTokens' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/app-auth/short-lived-tokens:
     parameters:
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
@@ -713,7 +764,7 @@ paths:
           headers: { ETag: { $ref: '#/components/headers/ETag' } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/CarbonSelf' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/CarbonSelf' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
     patch:
       tags: [Carbon account]
@@ -858,7 +909,7 @@ paths:
           description: Organizations for the authenticated Carbon; Silicons are forbidden.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/OrganizationPage' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/OrganizationPage' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
@@ -898,7 +949,7 @@ paths:
           headers: { ETag: { $ref: '#/components/headers/ETag' } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Organization' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/Organization' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -983,7 +1034,7 @@ paths:
           description: Typed membership directory page.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/MembershipPage' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/MembershipPage' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1002,7 +1053,7 @@ paths:
           headers: { ETag: { $ref: '#/components/headers/ETag' } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Membership' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/Membership' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1073,7 +1124,7 @@ paths:
           headers: { ETag: { $ref: '#/components/headers/ETag' } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/MembershipAuthorization' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/MembershipAuthorization' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1186,7 +1237,7 @@ paths:
           description: The requester's active organization-directory projection. Trust is evaluated only for Carbon-to-Silicon or Silicon-to-Silicon and is null for rows with no defined direction.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DirectoryMember' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/DirectoryMember' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1212,7 +1263,7 @@ paths:
           description: Active team members projected from the requester's point of view; trust is null for Carbon rows because Carbon-to-Carbon and Silicon-to-Carbon are undefined.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DirectoryPage' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/DirectoryPage' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1237,7 +1288,7 @@ paths:
           description: One active team member projected from the requester's point of view; trust is null when the requester-to-row direction is undefined.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DirectoryMember' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/DirectoryMember' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1423,7 +1474,7 @@ paths:
           description: Active Silicons in the organization.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/SiliconPage' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/SiliconPage' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1471,7 +1522,7 @@ paths:
           headers: { ETag: { $ref: '#/components/headers/ETag' } }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Silicon' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/Silicon' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1954,7 +2005,7 @@ paths:
           description: Carbon and Silicon memberships assigned to the tag.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/MembershipPage' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/MembershipPage' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -2144,7 +2195,7 @@ paths:
           description: Advisory value and matching-rule explanation; never an authorization decision.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/TrustEvaluation' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/TrustEvaluation' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -3506,6 +3557,396 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
+  /api/v1/application-scopes:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    get:
+      tags: [Applications]
+      operationId: listApplicationScopes
+      summary: Discover IAM or audience endpoint scopes
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { name: app_id, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationScopeCatalog' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/application-scope-requests:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    get:
+      tags: [Applications]
+      operationId: listApplicationScopeRequests
+      summary: List critical scope review discussions
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationScopeRequestList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/applications/{app_id}/scope-requests:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+      - { name: app_id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Applications]
+      operationId: createApplicationScopeRequests
+      summary: Request critical scope approval with an initial message
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApplicationScopeRequestCreate' }
+      responses:
+        '201':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationScopeRequestList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/application-scope-requests/{request_id}:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+      - { name: request_id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [Applications]
+      operationId: getApplicationScopeRequest
+      summary: Read a critical scope discussion
+      security: [{ iamBearer: [] }]
+      responses:
+        '200':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationScopeRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/application-scope-requests/{request_id}/messages:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+      - { name: request_id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Applications]
+      operationId: replyApplicationScopeRequest
+      summary: Reply to a critical scope discussion
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApplicationScopeMessageCreate' }
+      responses:
+        '200':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationScopeRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/application-scope-requests/{request_id}/decisions:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+      - { name: request_id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Applications]
+      operationId: decideApplicationScopeRequest
+      summary: Approve or deny a critical scope request
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApplicationScopeDecision' }
+      responses:
+        '200':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationScopeRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/application-bundles:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    get:
+      tags: [Applications]
+      operationId: listApplicationBundles
+      summary: List bundles you administer
+      security: [{ iamBearer: [] }]
+      responses:
+        '200':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationBundleList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+    post:
+      tags: [Applications]
+      operationId: createApplicationBundle
+      summary: Create a bundle of applications in your organization
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApplicationBundleCreate' }
+      responses:
+        '201':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationBundle' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/application-bundles/{bundle_id}:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+      - { name: bundle_id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [Applications]
+      operationId: getApplicationBundle
+      summary: Read an application bundle
+      security: [{ iamBearer: [] }]
+      responses:
+        '200':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationBundle' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+    patch:
+      tags: [Applications]
+      operationId: updateApplicationBundle
+      summary: Update a bundle
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApplicationBundlePatch' }
+      responses:
+        '200':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationBundle' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+    delete:
+      tags: [Applications]
+      operationId: deleteApplicationBundle
+      summary: Delete a bundle while keeping its applications
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      responses:
+        '204':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/app-auth/bundles/{bundle_id}/organizations:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+      - { name: bundle_id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [Applications]
+      operationId: getBundleLoginOrganizations
+      summary: Review a bundle before selecting organizations
+      security: [{ iamBearer: [] }]
+      responses:
+        '200':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationBundleLoginOrganizations' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/app-auth/bundles/{bundle_id}/short-lived-tokens:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+      - { name: bundle_id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Applications]
+      operationId: issueBundleShortLivedTokens
+      summary: Issue separate tokens atomically for the complete bundle
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BatchLoginRequest' }
+      responses:
+        '200':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BatchLoginTokens' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/application/testing-environments:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    get:
+      tags: [Applications]
+      operationId: listApplicationTestingEnvironments
+      summary: List active environments for the authenticated production application
+      security: [{ applicationBasic: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationTestingEnvironmentPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+    post:
+      tags: [Applications]
+      operationId: createApplicationTestingEnvironment
+      summary: Prepare an isolated environment with all transitive application dependencies
+      security: [{ applicationBasic: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApplicationTestingEnvironmentCreate' }
+      responses:
+        '201':
+          description: Successful operation.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApplicationTestingEnvironmentCreated' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /api/v1/contracts:
+    get:
+      tags: [System]
+      operationId: listContractVersions
+      summary: List contract lifecycle states and compatibility policy
+      security: []
+      responses:
+        '200':
+          description: Current and retired contracts with idle sunset policy.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, policy]
+                properties:
+                  items: { type: array, items: { type: object, additionalProperties: true } }
+                  policy: { type: object, additionalProperties: true }
+
+
 webhooks:
   applicationEvent:
     post:
@@ -4154,7 +4595,7 @@ components:
         organization, environment or effective scope set. Never fill undisclosed
         fields from a broader cached token. Introspect current bearer tokens again
         before relying on cached authority; a consumed OBO proof is single-use.
-      required: [principal_id, actor_type, public_id, organization_id, org_id, membership_id, membership_version, authorization_epoch, audience, testing_environment_id, scopes, org_role, tags]
+      required: [principal_id, organization_id, org_id, membership_id, membership_version, authorization_epoch, audience, testing_environment_id, scopes, org_role, tags]
       properties:
         principal_id: { type: string, format: uuid }
         actor_type: { type: string, enum: [carbon, silicon] }
@@ -4226,11 +4667,65 @@ components:
       properties:
         silicon_id: { $ref: '#/components/schemas/SiliconGlobalId' }
         silicon_token: { type: string, pattern: '^stk-[a-f0-9]{32}$' }
+    BatchLoginSelection:
+      type: object
+      additionalProperties: false
+      required: [app_id, org_ids, scope_version, approved_scopes]
+      properties:
+        scope_version: { type: integer, minimum: 1, description: Version of the consent view the user reviewed. }
+        approved_scopes: { type: array, uniqueItems: true, items: { type: string }, description: "Explicitly approved full effective scope set; external entries use obo:{app_id}:{endpoint_id}." }
+        app_id: { $ref: '#/components/schemas/AppId' }
+        org_ids:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/OrgId' }
+          description: Explicit user selection for this app; existing grants are preserved.
+    BatchLoginRequest:
+      type: object
+      additionalProperties: false
+      required: [applications]
+      properties:
+        applications:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/BatchLoginSelection' }
+          description: Unique app IDs, each with its own organization selection.
+        redirect_uri: { type: string, format: uri, maxLength: 2048 }
+    BatchLoginOrganizations:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/LoginOrganizations' }
+    BatchLoginToken:
+      type: object
+      required: [app_id, slt, expires_in, expires_at]
+      properties:
+        app_id: { $ref: '#/components/schemas/AppId' }
+        slt: { type: string }
+        expires_in: { type: integer }
+        expires_at: { type: string, format: date-time, description: Absolute token expiry; unchanged by an idempotent replay. }
+        request_id: { type: string, format: uuid }
+    BatchLoginTokens:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/BatchLoginToken' }
     ShortLivedTokenRequest:
       type: object
-      required: [app_id, org_ids]
+      required: [app_id, org_ids, scope_version, approved_scopes]
       additionalProperties: false
       properties:
+        scope_version: { type: integer, minimum: 1, description: Version of the consent view the user reviewed. }
+        approved_scopes: { type: array, uniqueItems: true, items: { type: string }, description: "Explicitly approved full effective scope set; external entries use obo:{app_id}:{endpoint_id}." }
         app_id: { $ref: '#/components/schemas/AppId' }
         org_ids:
           type: array
@@ -4249,8 +4744,11 @@ components:
         authorized: { type: boolean }
     LoginOrganizations:
       type: object
-      required: [app_id, items]
+      required: [app_id, items, scope_version, consent_required, scopes]
       properties:
+        scope_version: { type: integer, minimum: 1 }
+        consent_required: { type: boolean }
+        scopes: { type: array, items: { $ref: '#/components/schemas/ApplicationConsentScope' } }
         app_id: { $ref: '#/components/schemas/AppId' }
         app_name: { type: string }
         items:
@@ -4276,7 +4774,7 @@ components:
         refresh_token: { type: string, minLength: 32, maxLength: 512 }
     OAuthTokenResponse:
       type: object
-      required: [access_token, refresh_token, token_type, expires_in, scope, actor]
+      required: [access_token, refresh_token, token_type, expires_in, scope]
       properties:
         access_token: { type: string, pattern: '^oat_[A-Za-z0-9_-]{43}$' }
         refresh_token: { type: string, pattern: '^ort_[A-Za-z0-9_-]{43}$' }
@@ -5111,6 +5609,10 @@ components:
       additionalProperties: false
       description: Requires the authenticated Carbon to be a current active owner/admin of org_id.
       properties:
+        app_scope: { $ref: '#/components/schemas/ApplicationScope' }
+        webhook_scope: { type: array, uniqueItems: true, items: { $ref: '#/components/schemas/ApplicationWebhookScope' } }
+        obo_review_message: { type: string, maxLength: 10000 }
+        testing_idle_days: { type: integer, minimum: 1, maximum: 3650, default: 30 }
         app_id: { $ref: '#/components/schemas/ApplicationHandle' }
         org_id: { $ref: '#/components/schemas/OrgId' }
         app_name: { type: [string, 'null'], maxLength: 200 }
@@ -5135,6 +5637,10 @@ components:
       minProperties: 1
       additionalProperties: false
       properties:
+        app_scope: { $ref: '#/components/schemas/ApplicationScope' }
+        webhook_scope: { type: array, uniqueItems: true, items: { $ref: '#/components/schemas/ApplicationWebhookScope' } }
+        obo_review_message: { type: string, maxLength: 10000 }
+        testing_idle_days: { type: integer, minimum: 1, maximum: 3650, default: 30 }
         app_name: { type: [string, 'null'], maxLength: 200 }
         app_logo: { type: [string, 'null'], format: uri, maxLength: 2048 }
         base_url:
@@ -5151,9 +5657,15 @@ components:
           items: { $ref: '#/components/schemas/ApplicationOboEndpoint' }
     Application:
       type: object
-      required: [id, app_id, org_id, created_by, base_url, requested_scopes, approved_scopes, obo_endpoints, status, webhook, has_pending_changes, version, created_at, updated_at]
+      required: [id, app_id, org_id, created_by, base_url, requested_scopes, approved_scopes, obo_endpoints, status, webhook, has_pending_changes, version, created_at, updated_at, app_scope, effective_app_scope, webhook_scope, scope_version, testing_idle_days]
       description: Organization-owned Application. created_by is immutable provenance and does not confer management authority.
       properties:
+        app_scope: { $ref: '#/components/schemas/ApplicationScope' }
+        webhook_scope: { type: array, uniqueItems: true, items: { $ref: '#/components/schemas/ApplicationWebhookScope' } }
+        obo_review_message: { type: string, maxLength: 10000 }
+        testing_idle_days: { type: integer, minimum: 1, maximum: 3650, default: 30 }
+        effective_app_scope: { $ref: '#/components/schemas/ApplicationScope' }
+        scope_version: { type: integer, minimum: 1 }
         id: { type: string, format: uuid }
         app_id: { $ref: '#/components/schemas/AppId' }
         org_id: { $ref: '#/components/schemas/OrgId' }
@@ -5240,7 +5752,7 @@ components:
         application_id:
           type: [string, 'null']
           format: uuid
-          description: Internal Application UUID for binding webhook-approval step-up. Present on current reads and new mutation responses; optional for compatibility with older persisted idempotency responses.
+          description: Internal Application UUID for binding webhook-approval step-up. Returned on webhook configuration reads and mutations.
         active_url:
           type: [string, 'null']
           format: uri
@@ -5266,10 +5778,10 @@ components:
       additionalProperties: false
       description: >-
         Replaces only the reviewed destination candidate. It normally reuses
-        the existing encrypted signing secret. An imported test Application
-        still on its inherited production key must provide a new test-only
-        secret. Supplying a secret for any replacement installs it for the new
-        endpoint.
+        the existing encrypted signing secret in production. Testing URL replacements
+        install a supplied test-only secret or generate one when omitted and return
+        webhook_signing_secret with its replay expiry. Supplying a secret for any
+        replacement installs it for the new endpoint.
       properties:
         url: { type: string, format: uri, pattern: '^https://', maxLength: 2048 }
         webhook_secret: { $ref: '#/components/schemas/ApplicationWebhookSecret' }
@@ -5280,8 +5792,8 @@ components:
       pattern: '^[!-~]+$'
       description: >-
         Caller-chosen Application webhook signing secret containing only
-        non-whitespace ASCII characters. IAM encrypts it at rest and never
-        generates it.
+        non-whitespace ASCII characters. IAM encrypts it at rest. Testing webhook
+        URL replacement may generate a fresh secret when one is not supplied.
     ApplicationWebhookSecretRotate:
       type: object
       required: [webhook_secret]
@@ -5359,29 +5871,29 @@ components:
           type: object
           additionalProperties: true
           description: >-
-            Event-type-specific authorized projection; never contains credentials or raw provider records.
-            For carbon.updated.v1, changed_fields and the complete current state are captured at the
-            aggregate version and filtered per Application by its effective after-change profile, email,
-            and phone consent scopes. The recipient union is authorized Applications immediately before
-            or after the change, so a before-only recipient receives no fields it can no longer read.
-            For the closed organization-member Application vocabulary (organization/ownership, tag,
-            trust, membership/directory/authorization, and Silicon lifecycle or completed credential
-            rotation events), recipient union, complete current state, and exact changed_fields are frozen
-            in the domain transaction and filtered by profile, organizations.read, memberships.read,
-            roles.read, and Carbon-only email/phone scopes. Member events always use
-            current.members as an array; organization.updated uses current.organization and requires
-            organizations.read; tag and trust events use current.resource plus current.members so their
-            independently versioned aggregate is retained. Before-only recipients keep union-scope-filtered
-            changed_fields but receive only stable resource/version authorization tombstones. Workers never
-            hydrate these events from later state. An affected resource is an Application-readable principal
-            or organization projection with an effective data scope; invitations, SSO/webhook configuration,
-            administrative/protocol controls, and an unassigned tag creation have no Application projection.
-            organization.membership.profile_updated.v1 and
-            rotation-request, configuration, subscription, and protocol/control events are excluded from
-            this Application projection vocabulary.
-            organization.membership.profile_updated.v1 is the organization-bound Silicon projection of
-            that mutation: it contains the changed non-contact profile fields, complete current membership
-            state, and before/after affected tags captured at the same Carbon version.
+            Event-type-specific authorized projection. Application delivery requires effective declared
+            app scopes, user consent, selected active memberships, and matching webhook event categories.
+            Application recipient unions, payloads, changed_fields, and resource versions are captured
+            in the domain transaction; workers do not hydrate historical events from later state.
+            self.profile.read exposes only display_name, profile_photo, description, and timezone;
+            identity, contacts, membership status, and other data have separate scopes.
+            self.organizations.read exposes organization identifiers, name, logo, description, and
+            resource version, never SSO or administrative/security configuration.
+            Member events use current.members; organization updates use current.organization.
+            Captured invitation, governance, and tag-creation snapshots use current.resource and require
+            organization.invitations.read, organization.governance.read, and organization.tags.read,
+            respectively. Tag/trust changes may include current.resource plus current.members.
+            Raw trust configuration requires organization.trust.read. self.trust.read exposes only
+            membership.effective_trust from the user's perspective, with target_silicon_membership_id,
+            trust, and advisory, and no raw defaults, rules, overrides, or rule identifiers.
+            Before-only recipients receive stable resource/version authorization tombstones, not
+            removed private fields. Application payloads never include credentials or raw provider
+            records, SSO events, or Silicon credential-management and webhook/subscription configuration.
+            A completed Silicon credential rotation may expose only its permitted authorization-epoch
+            and access projection. Silicon subscriptions retain their separate event vocabulary.
+            Applications receive carbon.updated.v1 with scope-filtered fields;
+            organization.membership.profile_updated.v1 is the organization-bound Silicon notification
+            of that profile mutation, not a second Application event.
     TestingWebhookEvent:
       type: object
       required: [test]
@@ -5485,10 +5997,11 @@ components:
         reason: { type: [string, 'null'], maxLength: 2000 }
     ApplicationOboEndpoint:
       type: object
-      required: [endpoint_id, path, metadata]
+      required: [endpoint_id, path, metadata, critical]
       additionalProperties: false
       description: Callable endpoint definition configurable only by a current owner/admin of the Application's organization.
       properties:
+        critical: { type: boolean, description: Whether calling this endpoint requires approval from the audience application. }
         endpoint_id:
           type: string
           minLength: 3
@@ -5564,8 +6077,9 @@ components:
       type: object
       required: [subject_token, audience, endpoint_id, metadata, request]
       additionalProperties: false
-      description: Organization is derived from App A and App B; org_id and X-Org-ID are not accepted.
+      description: Delegates as the same user to any declared and consented audience; org_id selects a user-authorized organization when more than one is available.
       properties:
+        org_id: { $ref: '#/components/schemas/OrgId' }
         subject_token: { type: string, minLength: 32, maxLength: 4096, description: Actor-bound application access token issued to the calling app. }
         audience: { $ref: '#/components/schemas/AppId' }
         endpoint_id: { type: string, minLength: 3, maxLength: 128, pattern: '^[a-z][a-z0-9_.:-]{2,127}$' }
@@ -5580,6 +6094,7 @@ components:
       additionalProperties: false
       description: The idempotency replay envelope for this secret response expires no later than expires_at.
       properties:
+        testing_context: { $ref: '#/components/schemas/OboTestingContext' }
         access_proof: { type: string, pattern: '^obo_[A-Za-z0-9_-]{43}$' }
         proof_id: { type: string, format: uuid }
         expires_in: { type: integer, minimum: 1, maximum: 60, default: 60 }
@@ -5607,3 +6122,184 @@ components:
         metadata: { type: object, additionalProperties: true }
         expires_at: { type: string, format: date-time }
         consumed_at: { type: string, format: date-time }
+
+    ApplicationScope:
+      type: object
+      required: [iam, external]
+      additionalProperties: false
+      properties:
+        iam: { type: array, uniqueItems: true, items: { type: string }, description: IAM permissions; defaults to self.identity.read and self.profile.read on creation. }
+        external: { type: array, items: { $ref: '#/components/schemas/ApplicationExternalScope' } }
+    ApplicationExternalScope:
+      type: object
+      required: [app_id, endpoint_id]
+      additionalProperties: false
+      properties:
+        app_id: { $ref: '#/components/schemas/AppId' }
+        endpoint_id: { type: string }
+    ApplicationConsentScope:
+      type: object
+      required: [scope, description, critical]
+      properties:
+        scope: { type: string }
+        description: { type: string }
+        critical: { type: boolean }
+        app_id: { type: [string, 'null'] }
+    ApplicationScopeRequestCreate:
+      type: object
+      required: [app_scope, message]
+      additionalProperties: false
+      properties:
+        app_scope: { $ref: '#/components/schemas/ApplicationScope' }
+        message: { type: string, minLength: 1, maxLength: 10000 }
+    ApplicationScopeMessageCreate:
+      type: object
+      required: [message]
+      additionalProperties: false
+      properties:
+        message: { type: string, minLength: 1, maxLength: 10000 }
+    ApplicationScopeDecision:
+      type: object
+      required: [decision]
+      additionalProperties: false
+      properties:
+        decision: { type: string, enum: [approve, deny] }
+        reason: { type: string, maxLength: 10000, description: Required and nonempty when denying a request. }
+    ApplicationTestingEnvironmentCreate:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        iam_test_key: { type: string, description: Existing IAM testing key; absent creates a new environment, invalid is rejected. }
+    ApplicationTestingEnvironmentCreated:
+      type: object
+      required: [environment_id, org_id, name, iam_test_key, app_id, app_secret, dependencies, secret_replay_expires_at]
+      properties:
+        environment_id: { type: string, format: uuid }
+        org_id: { $ref: '#/components/schemas/OrgId' }
+        name: { type: string }
+        description: { type: [string, 'null'] }
+        iam_test_key: { type: string }
+        app_id: { $ref: '#/components/schemas/AppId' }
+        app_secret: { type: string }
+        dependencies: { type: array, items: { $ref: '#/components/schemas/AppId' } }
+        secret_replay_expires_at: { type: string, format: date-time }
+    ApplicationTestingEnvironment:
+      type: object
+      required: [environment_id, org_id, name, last_activity_at, retention_days]
+      properties:
+        environment_id: { type: string, format: uuid }
+        org_id: { $ref: '#/components/schemas/OrgId' }
+        name: { type: string }
+        description: { type: [string, 'null'] }
+        last_activity_at: { type: string, format: date-time }
+        retention_days: { type: integer, minimum: 1 }
+    ApplicationTestingEnvironmentPage:
+      type: object
+      required: [items, page]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ApplicationTestingEnvironment' } }
+        page: { $ref: '#/components/schemas/PageInfo' }
+
+    ApplicationScopeCatalog:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ApplicationConsentScope' } }
+    ApplicationScopeMessage:
+      type: object
+      required: [id, author, message, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        author: { $ref: '#/components/schemas/ApplicationScopeMessageAuthor' }
+        message: { type: string }
+        created_at: { type: string, format: date-time }
+    ApplicationScopeRequest:
+      type: object
+      required: [id, app_id, scopes, status, version, created_at, updated_at, messages, can_decide]
+      properties:
+        id: { type: string, format: uuid }
+        app_id: { $ref: '#/components/schemas/AppId' }
+        target_app_id: { type: [string, 'null'] }
+        scopes: { type: array, items: { type: string } }
+        status: { type: string, enum: [pending, approved, denied, superseded] }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        messages: { type: array, items: { $ref: '#/components/schemas/ApplicationScopeMessage' } }
+        can_decide: { type: boolean }
+    ApplicationScopeRequestList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ApplicationScopeRequest' } }
+    ApplicationBundleCreate:
+      type: object
+      required: [org_id, app_id, app_ids]
+      additionalProperties: false
+      properties:
+        org_id: { $ref: '#/components/schemas/OrgId' }
+        app_id: { $ref: '#/components/schemas/ApplicationHandle' }
+        app_name: { type: string, maxLength: 200 }
+        app_logo: { type: string, format: uri, maxLength: 2048 }
+        app_ids: { type: array, minItems: 1, maxItems: 100, uniqueItems: true, items: { $ref: '#/components/schemas/AppId' } }
+    ApplicationBundlePatch:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        app_name: { type: [string, 'null'], maxLength: 200 }
+        app_logo: { type: [string, 'null'], format: uri, maxLength: 2048 }
+        app_ids: { type: array, minItems: 1, maxItems: 100, uniqueItems: true, items: { $ref: '#/components/schemas/AppId' } }
+    ApplicationBundle:
+      type: object
+      required: [id, bundle_id, org_id, app_ids, version, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        bundle_id: { $ref: '#/components/schemas/AppId' }
+        org_id: { $ref: '#/components/schemas/OrgId' }
+        app_name: { type: [string, 'null'] }
+        app_logo: { type: [string, 'null'], format: uri }
+        app_ids: { type: array, items: { $ref: '#/components/schemas/AppId' } }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ApplicationBundleList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ApplicationBundle' } }
+    ApplicationBundleLoginOrganizations:
+      type: object
+      required: [bundle, items]
+      properties:
+        bundle: { $ref: '#/components/schemas/ApplicationBundle' }
+        items: { type: array, items: { $ref: '#/components/schemas/LoginOrganizations' } }
+
+    ApplicationWebhookScope:
+      type: string
+      enum: [full, membership, updates, trust]
+
+    ApplicationScopeMessageAuthor:
+      type: object
+      required: [principal_id, type, public_id]
+      properties:
+        principal_id: { type: string, format: uuid }
+        type: { type: string, enum: [carbon, silicon, system] }
+        public_id: { type: string }
+
+    OboTestingContext:
+      type: object
+      required: [app_id, app_secret, iam_test_key]
+      additionalProperties: false
+      properties:
+        app_id: { $ref: '#/components/schemas/AppId' }
+        app_secret: { type: string, description: Audience test credential forwarded only for this isolated downstream request. }
+        iam_test_key: { type: string }
+
+    ApplicationReadObject:
+      type: object
+      additionalProperties: true
+      description: Scope-filtered application bearer response. Fields absent from approved user scopes are omitted. An omitted field is undisclosed and grants no authority.

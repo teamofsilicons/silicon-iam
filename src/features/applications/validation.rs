@@ -65,6 +65,17 @@ pub(super) fn application_create(input: &model::ApplicationCreate) -> Result<(),
     webhook_url(&input.webhook_url)?;
     webhook_secret(input.webhook_secret.expose_secret())?;
     obo_endpoints(&input.obo_endpoints)?;
+    super::scopes::validate(&input.app_scope)?;
+    super::scopes::validate_webhook(&input.webhook_scope)?;
+    optional_text(
+        "obo_review_message",
+        input.obo_review_message.as_deref(),
+        1,
+        10000,
+    )?;
+    if !(1..=36500).contains(&input.testing_idle_days) {
+        return Err(ApiError::validation("testing_idle_days", "must be 1-36500"));
+    }
     Ok(())
 }
 
@@ -73,6 +84,10 @@ pub(super) fn application_patch(input: &model::ApplicationPatch) -> Result<(), A
         && input.app_name.is_none()
         && input.app_logo_uri.is_none()
         && input.obo_endpoints.is_none()
+        && input.app_scope.is_none()
+        && input.webhook_scope.is_none()
+        && input.obo_review_message.is_none()
+        && input.testing_idle_days.is_none()
     {
         return Err(ApiError::validation(
             "body",
@@ -94,6 +109,24 @@ pub(super) fn application_patch(input: &model::ApplicationPatch) -> Result<(), A
     }
     if let Some(values) = &input.obo_endpoints {
         obo_endpoints(values)?;
+    }
+    if let Some(scope) = &input.app_scope {
+        super::scopes::validate(scope)?;
+    }
+    if let Some(scope) = &input.webhook_scope {
+        super::scopes::validate_webhook(scope)?;
+    }
+    optional_text(
+        "obo_review_message",
+        input.obo_review_message.as_deref(),
+        1,
+        10000,
+    )?;
+    if input
+        .testing_idle_days
+        .is_some_and(|days| !(1..=36500).contains(&days))
+    {
+        return Err(ApiError::validation("testing_idle_days", "must be 1-36500"));
     }
     Ok(())
 }
@@ -230,19 +263,39 @@ pub(super) fn scopes(values: &[String]) -> Result<(), ApiError> {
 
 /// Checks a login query.
 ///
-/// Both parameters are optional and mean different things by their absence:
-/// no `app_id` is an ordinary Silicon IAM login rather than an application's,
-/// and no `redirect_uri` means the short-lived token is shown rather than
-/// delivered. There is nothing else to validate -- the login grants the whole
-/// scope catalogue, so there are no scopes to parse or approve.
+/// Application, batch and bundle targets are exclusive. The user chooses
+/// organizations and approves the active permission set on the IAM surface.
 pub(super) fn login(query: &model::LoginQuery) -> Result<(), ApiError> {
-    if query.app_id.is_some() && query.org_id.is_some() {
+    if (query.app_id.is_some() || query.app_ids.is_some() || query.bundle_id.is_some())
+        && query.org_id.is_some()
+    {
         return Err(ApiError::bad_request(
             "organization_selection_required",
             "Applications cannot choose org_id. Start login without it; the user selects organizations in IAM.",
         ));
     }
+    if [
+        query.app_id.is_some(),
+        query.app_ids.is_some(),
+        query.bundle_id.is_some(),
+    ]
+    .into_iter()
+    .filter(|value| *value)
+    .count()
+        > 1
+    {
+        return Err(ApiError::validation(
+            "app_ids",
+            "use exactly one of app_id, app_ids or bundle_id",
+        ));
+    }
+    if let Some(value) = &query.app_ids {
+        batch_app_ids(value.split(','))?;
+    }
     if let Some(value) = &query.app_id {
+        app_id(value)?;
+    }
+    if let Some(value) = &query.bundle_id {
         app_id(value)?;
     }
     if let Some(value) = &query.redirect_uri {
@@ -497,6 +550,28 @@ fn optional_https_uri(
     Ok(())
 }
 
+/// Validate the bounded, unambiguous target set before accessing local state.
+pub(super) fn batch_app_ids<'a>(ids: impl IntoIterator<Item = &'a str>) -> Result<(), ApiError> {
+    let ids = ids.into_iter().collect::<Vec<_>>();
+    if ids.is_empty() || ids.len() > 100 {
+        return Err(ApiError::validation(
+            "app_ids",
+            "select between 1 and 100 applications",
+        ));
+    }
+    let mut unique = std::collections::BTreeSet::new();
+    for id in ids {
+        app_id(id)?;
+        if !unique.insert(id) {
+            return Err(ApiError::validation(
+                "app_ids",
+                "must not contain duplicates",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -572,6 +647,7 @@ mod tests {
     #[test]
     fn obo_endpoint_registry_requires_unique_stable_absolute_paths() {
         let endpoint = ApplicationOboEndpoint {
+            critical: false,
             endpoint_id: "documents.read".to_owned(),
             path: "/v1/documents/read".to_owned(),
             metadata: json!({ "document_id": { "type": "string" } }),
@@ -580,6 +656,7 @@ mod tests {
         assert!(obo_endpoints(&[endpoint.clone(), endpoint.clone()]).is_err());
         assert!(
             obo_endpoints(&[ApplicationOboEndpoint {
+                critical: false,
                 path: "/v1/../admin".to_owned(),
                 ..endpoint
             }])
@@ -641,6 +718,7 @@ mod tests {
     #[test]
     fn obo_endpoint_registry_rejects_invalid_declared_types() {
         let endpoint = ApplicationOboEndpoint {
+            critical: false,
             endpoint_id: "documents.read".to_owned(),
             path: "/v1/documents/read".to_owned(),
             metadata: json!({ "document_id": { "type": "uuid" } }),

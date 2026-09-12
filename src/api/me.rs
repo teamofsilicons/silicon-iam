@@ -116,7 +116,22 @@ pub(super) async fn get(
     State(state): State<ApiState>,
     authenticated: Authenticated,
 ) -> Result<Response, AppError> {
-    let carbon_id = require_self_service(&authenticated)?;
+    use crate::features::organizations::application_reads::{self, ReadScopes};
+    let scopes = ReadScopes::for_actor(&authenticated);
+    if authenticated.0.subject.actor_type == ActorType::Silicon {
+        return application_reads::self_silicon(state, authenticated).await;
+    }
+    let carbon_id = if scopes.is_application() {
+        scopes.require_any(&[
+            "self.identity.read",
+            "self.profile.read",
+            "self.email.read",
+            "self.phone.read",
+        ])?;
+        authenticated.0.subject.id
+    } else {
+        require_self_service(&authenticated)?
+    };
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
         .map_err(|_| internal("carbon_profile_context"))?;
@@ -125,7 +140,15 @@ pub(super) async fn get(
         .commit()
         .await
         .map_err(|_| internal("carbon_profile_commit"))?;
-    json_with_etag(StatusCode::OK, &profile, profile.version)
+    let mut projected = application_reads::value(&profile)?;
+    if scopes.is_application() {
+        projected["type"] = json!("carbon");
+    }
+    json_with_etag(
+        StatusCode::OK,
+        &scopes.profile(projected, true),
+        profile.version,
+    )
 }
 
 #[allow(
@@ -737,29 +760,26 @@ fn profile_webhook_payload(
         }
     }
 
-    let has_profile = effective_scopes.contains("profile");
+    let has_profile = effective_scopes.contains("self.profile.read")
+        || effective_scopes.contains("directory.profiles.read");
+    if effective_scopes.contains("self.identity.read")
+        || effective_scopes.contains("directory.carbons.read")
+    {
+        current.insert("carbon_id".into(), json!(after.carbon_id));
+    }
     if has_profile {
-        for field in [
-            "carbon_id",
-            "display_name",
-            "timezone",
-            "description",
-            "profile_photo",
-            "status",
-            "created_at",
-            "updated_at",
-        ] {
+        for field in ["display_name", "timezone", "description", "profile_photo"] {
             if let Some(value) = source.get(field) {
                 current.insert(field.to_owned(), value.clone());
             }
         }
     }
-    if effective_scopes.contains("email")
+    if effective_scopes.contains("self.email.read")
         && let Some(value) = source.get("email")
     {
         current.insert("email".to_owned(), value.clone());
     }
-    if effective_scopes.contains("phone")
+    if effective_scopes.contains("self.phone.read")
         && let Some(value) = source.get("phone_number")
     {
         current.insert("phone_number".to_owned(), value.clone());
@@ -960,7 +980,7 @@ mod tests {
         let Ok(profile_and_email) = profile_webhook_payload(
             &before,
             &after,
-            &BTreeSet::from(["profile".to_owned(), "email".to_owned()]),
+            &BTreeSet::from(["self.profile.read".to_owned(), "self.email.read".to_owned()]),
         ) else {
             panic!("valid profiles must project");
         };
@@ -980,7 +1000,7 @@ mod tests {
         let Ok(payload) = profile_webhook_payload(
             &before,
             &after,
-            &BTreeSet::from(["profile".to_owned(), "email".to_owned()]),
+            &BTreeSet::from(["self.profile.read".to_owned(), "self.email.read".to_owned()]),
         ) else {
             panic!("valid profiles must project");
         };
@@ -995,10 +1015,12 @@ mod tests {
         let after_only_application = Uuid::from_u128(3);
         let before_authorizations = BTreeMap::from([(
             before_only_application,
-            BTreeSet::from(["profile".to_owned()]),
+            BTreeSet::from(["self.profile.read".to_owned()]),
         )]);
-        let after_authorizations =
-            BTreeMap::from([(after_only_application, BTreeSet::from(["email".to_owned()]))]);
+        let after_authorizations = BTreeMap::from([(
+            after_only_application,
+            BTreeSet::from(["self.email.read".to_owned()]),
+        )]);
         assert_eq!(
             profile_webhook_recipient_application_ids(
                 &before_authorizations,
@@ -1105,15 +1127,15 @@ mod tests {
                '{organization_id}', '{carbon_id}', 'verified',
                'https://before.example.test/api');
             INSERT INTO iam.application_requested_scopes (application_id, scope) VALUES
-              ('{retained_application_id}', 'profile'),
-              ('{retained_application_id}', 'email'),
-              ('{before_only_application_id}', 'phone');
+              ('{retained_application_id}', 'self.profile.read'),
+              ('{retained_application_id}', 'self.email.read'),
+              ('{before_only_application_id}', 'self.phone.read');
             INSERT INTO iam.application_approved_scopes (
                 application_id, scope, approved_by_carbon_id
             ) VALUES
-              ('{retained_application_id}', 'profile', '{carbon_id}'),
-              ('{retained_application_id}', 'email', '{carbon_id}'),
-              ('{before_only_application_id}', 'phone', '{carbon_id}');
+              ('{retained_application_id}', 'self.profile.read', '{carbon_id}'),
+              ('{retained_application_id}', 'self.email.read', '{carbon_id}'),
+              ('{before_only_application_id}', 'self.phone.read', '{carbon_id}');
             INSERT INTO iam.oauth_consent_grants (
                 id, application_id, subject_principal_id, subject_kind,
                 parent_authentication_session_id
@@ -1123,9 +1145,9 @@ mod tests {
               ('{before_only_consent_id}', '{before_only_application_id}', '{carbon_id}', 'carbon',
                '{session_id}');
             INSERT INTO iam.oauth_consent_grant_scopes (consent_grant_id, scope) VALUES
-              ('{retained_consent_id}', 'profile'),
-              ('{retained_consent_id}', 'email'),
-              ('{before_only_consent_id}', 'phone');
+              ('{retained_consent_id}', 'self.profile.read'),
+              ('{retained_consent_id}', 'self.email.read'),
+              ('{before_only_consent_id}', 'self.phone.read');
             INSERT INTO iam.carbon_membership_settings (
                 organization_id, membership_id, carbon_id
             ) VALUES ('{organization_id}', '{carbon_membership_id}', '{carbon_id}');

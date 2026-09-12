@@ -1,5 +1,7 @@
 #![allow(clippy::too_many_lines)]
 
+use super::application_reads::{self, ReadScopes};
+
 use std::{borrow::Cow, collections::BTreeMap};
 
 use axum::{
@@ -49,6 +51,11 @@ pub(super) async fn list_silicons(
     Path(org_id): Path<String>,
     Query(query): Query<SiliconQuery>,
 ) -> Result<Response, AppError> {
+    let scopes = ReadScopes::for_actor(&authenticated);
+    scopes.require("directory.silicons.read")?;
+    if query.tag_id.is_some() {
+        scopes.require("directory.tags.read")?;
+    }
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page_parts(query.cursor.as_deref(), query.limit)?;
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
@@ -68,7 +75,9 @@ pub(super) async fn list_silicons(
         .await
         .map_err(support::database)?;
     let page = take_page(&mut items, limit)?;
-    support::json(StatusCode::OK, &SiliconPage { items, page }, None)
+    application_reads::page_json(&SiliconPage { items, page }, |item| {
+        scopes.silicon(item, false)
+    })
 }
 
 pub(super) async fn create_silicon(
@@ -268,12 +277,21 @@ pub(super) async fn get_silicon(
         &silicon_profile_base(&state)?,
     )
     .await?;
+    let scopes = ReadScopes::for_actor(&authenticated);
+    let is_self = silicon.principal_id == authenticated.0.subject.id;
+    if !is_self {
+        scopes.require("directory.silicons.read")?;
+    }
     scope
         .transaction
         .commit()
         .await
         .map_err(support::database)?;
-    support::json(StatusCode::OK, &silicon, Some(silicon.version))
+    support::json(
+        StatusCode::OK,
+        &scopes.silicon(application_reads::value(&silicon)?, is_self),
+        Some(silicon.version),
+    )
 }
 
 pub(super) async fn update_silicon(

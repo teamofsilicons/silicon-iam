@@ -15,6 +15,7 @@ use crate::{
 pub async fn run(context: &Context, command: SystemCommand) -> Result<()> {
     match command {
         SystemCommand::Version => version(context).await,
+        SystemCommand::Contracts => json(&context.anonymous().system().contracts().await?),
         SystemCommand::Update => update(context).await,
         SystemCommand::Health => health(context).await,
     }

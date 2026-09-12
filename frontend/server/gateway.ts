@@ -170,11 +170,24 @@ export async function gateway(
   }
   if (path === "/auth/continue") {
     const target = new URL("/login", config.auth);
-    for (const key of ["app_id", "redirect_uri", "org_id", "next"]) {
-      const value = url.searchParams.get(key);
-      if (value) target.searchParams.set(key, value);
+    for (const key of [
+      "app_id",
+      "app_ids",
+      "bundle_id",
+      "redirect_uri",
+      "org_id",
+      "org_ids",
+      "next",
+    ]) {
+      for (const value of url.searchParams.getAll(key))
+        target.searchParams.append(key, value);
     }
-    if (session && !target.searchParams.has("app_id")) {
+    if (
+      session &&
+      !target.searchParams.has("app_id") &&
+      !target.searchParams.has("app_ids") &&
+      !target.searchParams.has("bundle_id")
+    ) {
       // Only an explicit internal destination is accepted; never an arbitrary URL.
       const destination = new URL(
         url.searchParams.get("next") === "join" ? "/join" : "/",
@@ -242,9 +255,16 @@ export async function gateway(
   if (!session && !isPublic(path, request.method)) {
     if (navigation) {
       const login = new URL("/login", config.auth);
-      for (const key of ["app_id", "redirect_uri", "org_id"]) {
-        const value = url.searchParams.get(key);
-        if (value) login.searchParams.set(key, value);
+      for (const key of [
+        "app_id",
+        "app_ids",
+        "bundle_id",
+        "redirect_uri",
+        "org_id",
+        "org_ids",
+      ]) {
+        for (const value of url.searchParams.getAll(key))
+          login.searchParams.append(key, value);
       }
       return finish(Response.redirect(login, 303), config, null);
     }
@@ -349,9 +369,16 @@ export async function gateway(
         /* Keep a generic non-sensitive error code. */
       }
       const target = new URL("/login", config.auth);
-      for (const key of ["app_id", "redirect_uri", "org_id"]) {
-        const value = url.searchParams.get(key);
-        if (value) target.searchParams.set(key, value);
+      for (const key of [
+        "app_id",
+        "app_ids",
+        "bundle_id",
+        "redirect_uri",
+        "org_id",
+        "org_ids",
+      ]) {
+        for (const value of url.searchParams.getAll(key))
+          target.searchParams.append(key, value);
       }
       target.searchParams.set("auth_error", code);
       return finish(

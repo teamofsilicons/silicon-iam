@@ -72,7 +72,7 @@ store_test_secret(imported.app_secret);
 
 The import method fails locally when the client has no environment key. On success IAM copies the production canonical ID, base URL, webhook URL, and OBO registry. It creates the test organization with the requesting test Carbon as owner when necessary and returns a fresh test-only client secret. Its no-store response can be recovered for ten minutes only by repeating the exact request with the same `Mutation`.
 
-The production webhook secret is inherited but not revealed. To point the import at a dedicated test receiver, call `replace_webhook` with a caller-chosen `webhook_secret`. It is required for that first replacement. The v1 response echoes it as `webhook_signing_secret`; ordinary replacements may omit the secret and reuse the current key. Use `rotate_webhook_secret` with another caller-chosen secret for a later rotation.
+The production webhook secret is inherited but not revealed. A testing `replace_webhook` call installs a supplied test-only `webhook_secret`, or generates one when omitted. Store `webhook_signing_secret` from the response. Use `rotate_webhook_secret` with an explicit successor for a later rotation.
 
 ## Discover a base URL
 
@@ -88,7 +88,7 @@ let drive = app.applications()
 assert_eq!(drive.app_id, "google>drive");
 ```
 
-Any Application may discover any verified target, even across organizations. With an environment key on the client, requester and target both resolve only there. IAM will not use a production credential or fall through to a production target. OBO discovery remains a separate, same-organization operation.
+Any Application may discover any verified target, even across organizations. With an environment key on the client, requester and target both resolve only there. IAM will not use a production credential or fall through to a production target. OBO discovery remains a separate, scope-authorized operation across application-owning organizations.
 
 ## Receive a test webhook
 
@@ -128,7 +128,7 @@ let event = verified.event();
 
 3. Create or import the Application and persist every one-time test secret.
 
-4. Mint the SLT with `short_lived_token_in_organization`, give the Application client only that SLT, complete `OAuth::login`, and introspect it with the matching organization in the same plane. Use `short_lived_token_for_organizations` with explicit selections; test selected and unselected organizations separately.
+4. Mint the SLT with explicit `scope_version`, `approved_scopes`, and `org_ids`, give the Application client only that SLT, complete `OAuth::login`, and introspect it with the matching organization in the same plane. Use `short_lived_token_for_organizations` with explicit selections; test selected and unselected organizations separately.
 
 5. Prove production credentials fail inside the environment and test credentials fail without it.
 
@@ -136,4 +136,14 @@ let event = verified.event();
 
 7. Call `clean_current` with the key when the run finishes, or retire it from production.
 
-Never construct a second set of test endpoint paths. If a test can pass only through a mock-only route, it is not proving the production integration. The [manual CLI walkthrough](https://github.com/teamofsilicons/silicon-iam/tree/main/docs/cli#end-to-end-application-proof-in-a-test-environment) exercises this sequence and lists the negative cases to verify before production.
+Never construct a second set of test endpoint paths. If a test can pass only through a mock-only route, it is not proving the production integration. The [manual CLI walkthrough](https://docs.iam.teamofsilicons.com/cli#end-to-end-application-proof-in-a-test-environment) exercises this sequence and lists the negative cases to verify before production.
+
+## Provision testing from your application
+
+Applications support test mode by default. Call `applications().create_testing_environment(&ApplicationTestingEnvironmentCreate, &mutation)` using the production application's credential. Supply a name and optional description. An optional valid `iam_test_key` attaches to that environment; an invalid provided key fails instead of creating another environment. Without a key, IAM creates a new environment.
+
+IAM imports the caller plus every transitive external dependency into the same test layer. The result includes the environment ID, IAM key, caller's new test app secret, and dependency IDs. Only IAM handles dependency credentials. Use `applications().testing_environments` to list active environments for the application and its organization.
+
+**A received app_secret indicates test mode.** If a request to your application includes `app_secret` in the request itself, it is using the application testing protocol. Validate the secret with IAM, resolve its IAM test environment, and use only that environment's isolated application data. Every downstream dependency shares that same IAM environment. Never route data from an unauthenticated test flag.
+
+Use the ordinary SDK methods with `with_environment(EnvironmentKey::new(key)?)` and the test application credential. Exercise login consent, token exchange, cross-app OBO, webhooks, invalid keys, and production/test credential rejection. An inactive application test environment expires after 30 days by default; configure `testing_idle_days` on the app.

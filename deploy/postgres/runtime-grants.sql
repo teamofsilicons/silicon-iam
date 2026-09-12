@@ -91,7 +91,6 @@ DECLARE
         'oauth_consent_grant_scopes',
         'oauth_consent_grants',
         'oauth_refresh_family_scopes',
-        'oauth_scope_catalog',
         'obo_proofs',
         'organization_capability_catalog',
         'organization_capability_grants',
@@ -136,7 +135,9 @@ DECLARE
         'tag_change_requests',
         'testing_environments',
         'trust_rules',
-        'webhook_deliveries'
+        'webhook_deliveries',
+        'application_scope_requests',
+        'application_bundles'
     ];
     insert_table_names text[] := ARRAY[
         'access_token_scopes',
@@ -268,6 +269,8 @@ DECLARE
         'silicon_webhook_subscriptions'
     ];
     denied_table_names text[] := ARRAY[
+        'application_testing_environments',
+        'testing_application_imports',
         'contact_blind_indexes',
         'cryptographic_key_versions',
         'external_webhook_receipts',
@@ -278,7 +281,11 @@ DECLARE
         'runtime_key_activations',
         'silicon_hooks',
         'sso_identities',
-        'webhook_delivery_attempts'
+        'webhook_delivery_attempts',
+        'application_scope_messages',
+        'application_bundle_members',
+        'contract_versions',
+        'oauth_scope_catalog'
     ];
 BEGIN
     IF pg_catalog.cardinality(select_table_names) <> (
@@ -496,6 +503,23 @@ DECLARE
     matched_function_count integer;
     function_record record;
     api_function_names text[] := ARRAY[
+        'discover_application_obo_endpoints',
+        'resolve_application_obo_memberships',
+        'lookup_application_obo_proof',
+        'application_obo_exchange_replay_is_live',
+        'application_obo_load_current_context',
+        'get_testing_application_secret',
+        'import_testing_application_configuration',
+        'activate_testing_application_scopes',
+        'create_application_testing_environment',
+        'link_application_testing_environment',
+        'list_application_testing_environments',
+        'touch_application_testing_environment',
+        'lock_application_testing_environment',
+        'touch_testing_application',
+        'update_testing_application_secret',
+        'get_testing_environment_obo_key',
+
         'active_organization_membership_id',
         'apply_approved_tag_change',
         'application_token_allows_membership',
@@ -528,6 +552,7 @@ DECLARE
         'get_current_application_authorization',
         'get_organization_invitation_destination',
         'get_testing_application_import',
+        'get_testing_application_import_v1',
         'grant_application_scope_catalogue',
         'has_organization_capability',
         'has_platform_capability',
@@ -580,9 +605,34 @@ DECLARE
         'resolve_silicon_webhook_replay_target',
         'resolve_testing_environment',
         'set_organization_admin_role',
-        'touch_testing_environment'
+        'touch_testing_environment',
+        'application_scope_names',
+        'application_scope_catalog',
+        'configure_application_scopes',
+        'application_login_scope_policy',
+        'current_application_resource_scopes',
+        'list_organization_webhook_scope_authorizations',
+        'application_scope_request_view',
+        'application_scope_request_context',
+        'submit_application_scope_requests',
+        'mutate_application_scope_request',
+        'application_token_allows_external_scope',
+        'application_bundle_view',
+        'application_bundle_management_organization',
+        'mutate_application_bundle',
+        'record_contract_request',
+        'list_contract_versions',
+        'application_webhook_accepts_event',
+        'application_webhook_event_scope',
+        'application_webhook_has_event_scope'
     ];
     non_api_definer_names text[] := ARRAY[
+        'list_testing_application_orphan_candidates',
+        'testing_environment_record_exists',
+        'list_idle_application_testing_candidates',
+        'retire_idle_testing_application',
+        'record_application_testing_maintenance',
+
         'activate_runtime_key_version',
         'assert_active_carbon_contacts',
         'assert_active_principal_subtype',
@@ -625,7 +675,12 @@ DECLARE
         'reject_audit_mutation',
         'reject_immutable_history_mutation',
         'run_worker_ephemeral_maintenance',
-        'run_worker_retention_maintenance'
+        'run_worker_retention_maintenance',
+        'can_review_application_scopes',
+        'enqueue_application_scope_notice',
+        'get_worker_application_scope_notice',
+        'invalidate_upgraded_obo_endpoint_scope',
+        'sunset_idle_contract_versions'
     ];
 BEGIN
     FOREACH allowed_function_name IN ARRAY api_function_names
@@ -725,6 +780,12 @@ DECLARE
     matched_function_count integer;
     function_record record;
     worker_function_names text[] := ARRAY[
+        'list_testing_application_orphan_candidates',
+        'testing_environment_record_exists',
+        'list_idle_application_testing_candidates',
+        'retire_idle_testing_application',
+        'record_application_testing_maintenance',
+
         'expire_idle_testing_environments',
         'get_worker_application_webhook_material',
         'get_worker_application_webhook_event_projection',
@@ -741,7 +802,12 @@ DECLARE
         'purge_testing_environment',
         'reconcile_worker_contact_aead_keyring',
         'run_worker_ephemeral_maintenance',
-        'run_worker_retention_maintenance'
+        'run_worker_retention_maintenance',
+        'get_worker_application_scope_notice',
+        'sunset_idle_contract_versions',
+        'application_webhook_accepts_event',
+        'application_webhook_event_scope',
+        'application_webhook_has_event_scope'
     ];
 BEGIN
     FOREACH allowed_function_name IN ARRAY worker_function_names

@@ -280,7 +280,14 @@ pub(super) async fn claim<T: Serialize>(
             let status = StatusCode::from_u16(replay.status).map_err(|_| AppError::Internal {
                 category: "testing_environment_replay_status",
             })?;
-            let mut response = json_response(status, replay.body, None, contains_key)?;
+            let version = serde_json::from_slice::<serde_json::Value>(&replay.body)
+                .ok()
+                .and_then(|body| {
+                    body.get("version")
+                        .or_else(|| body.pointer("/application/version"))
+                        .and_then(serde_json::Value::as_i64)
+                });
+            let mut response = json_response(status, replay.body, version, contains_key)?;
             response.headers_mut().insert(
                 http::HeaderName::from_static("idempotency-replayed"),
                 HeaderValue::from_static("true"),

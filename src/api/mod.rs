@@ -1,6 +1,7 @@
 //! HTTP composition root and process lifecycle.
 
 pub(crate) mod authentication;
+mod contracts;
 pub(crate) mod me;
 
 use std::{future::IntoFuture as _, sync::Arc, time::Instant};
@@ -292,8 +293,13 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
         .route("/readyz", get(readiness))
         .route("/api/version", get(negotiate_api_version))
         .route("/api/v1/version", get(version))
+        .route("/api/v1/contracts", get(contracts::list))
         .merge(planed)
         .merge(crate::features::testing_environments::router())
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            contracts::govern,
+        ))
         .layer(middleware::from_fn(normalize_errors))
         .layer(SetResponseHeaderLayer::if_not_present(
             http::header::CACHE_CONTROL,

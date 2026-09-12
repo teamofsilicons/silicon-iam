@@ -54,6 +54,7 @@ pub async fn login(context: &Context, args: LoginArgs) -> Result<()> {
                 app_id,
                 &args.grant_orgs,
                 args.all_orgs,
+                args.approve_scopes,
             )
             .await;
         }
@@ -109,6 +110,7 @@ pub async fn login(context: &Context, args: LoginArgs) -> Result<()> {
             app_id,
             &args.grant_orgs,
             args.all_orgs,
+            args.approve_scopes,
         )
         .await;
     }
@@ -153,6 +155,7 @@ pub async fn silicon_login(context: &Context, args: SiliconLoginArgs) -> Result<
             app_id,
             &args.grant_orgs,
             args.all_orgs,
+            args.approve_scopes,
         )
         .await;
     }
@@ -199,6 +202,7 @@ pub async fn silicon_login(context: &Context, args: SiliconLoginArgs) -> Result<
             app_id,
             &args.grant_orgs,
             args.all_orgs,
+            args.approve_scopes,
         )
         .await;
     }
@@ -227,9 +231,41 @@ async fn report_short_lived_token(
     app_id: &str,
     requested: &[String],
     all_orgs: bool,
+    approve_scopes: bool,
 ) -> Result<()> {
     let app_id = context.application_id(app_id)?;
     let choices = client.auth().login_organizations(&app_id).await?;
+    let consented = approve_login_scopes(&choices, approve_scopes)?;
+    let org_ids = select_login_organizations(&choices, requested, all_orgs)?;
+    let issued = client
+        .auth()
+        .short_lived_token_for_organizations(
+            &app_id,
+            &org_ids,
+            choices.scope_version,
+            &consented,
+            &context.mutation(),
+        )
+        .await?;
+    match context.format {
+        Format::Json => json(&issued),
+        Format::Text => {
+            println!("Short-lived token for {app_id}: {}", issued.slt);
+            println!(
+                "It is good for {} seconds and one exchange.",
+                issued.expires_in
+            );
+            Ok(())
+        }
+    }
+}
+
+fn select_login_organizations(
+    choices: &models::LoginOrganizations,
+    requested: &[String],
+    all_orgs: bool,
+) -> Result<Vec<String>> {
+    let app_id = &choices.app_id;
     let org_ids = if all_orgs {
         choices
             .items
@@ -246,7 +282,7 @@ async fn report_short_lived_token(
         }
         eprintln!(
             "Verified application: {} ({app_id})",
-            choices.app_name.as_deref().unwrap_or(&app_id)
+            choices.app_name.as_deref().unwrap_or(app_id)
         );
         eprintln!(
             "Choose which organizations to share. Existing grants are kept; future memberships are not included."
@@ -284,18 +320,127 @@ async fn report_short_lived_token(
                 .to_owned(),
         ));
     }
-    let issued = client
+    Ok(org_ids)
+}
+
+/// Authorizes multiple apps atomically, retaining their separate credentials.
+///
+/// # Errors
+/// Requires a stored direct IAM login, valid targets and explicit organization selection.
+pub async fn batch_login(context: &Context, args: crate::cli::BatchLoginArgs) -> Result<()> {
+    if args.app_ids.is_empty()
+        || args.app_ids.len() > 100
+        || args
+            .app_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != args.app_ids.len()
+    {
+        return Err(CliError::Usage(
+            "Select 1–100 unique canonical app IDs using --app-id.".to_owned(),
+        ));
+    }
+    let client = context.authenticated().await?;
+    let choices = client
         .auth()
-        .short_lived_token_for_organizations(&app_id, &org_ids, &context.mutation())
+        .batch_login_organizations(&args.app_ids)
         .await?;
-    match context.format {
-        Format::Json => json(&issued),
-        Format::Text => {
-            println!("Short-lived token for {app_id}: {}", issued.slt);
-            println!(
-                "It is good for {} seconds and one exchange.",
-                issued.expires_in
+    let applications = select_batch_applications(
+        &choices.items,
+        &args.grant_orgs,
+        args.all_orgs,
+        args.approve_scopes,
+    )?;
+    let response = client
+        .auth()
+        .batch_short_lived_tokens(
+            &models::BatchLoginRequest {
+                applications,
+                redirect_uri: None,
+            },
+            &context.mutation(),
+        )
+        .await?;
+    report_batch_tokens(context, &response)
+}
+
+/// Reviews scopes before selecting organizations for every app in a batch.
+pub(super) fn select_batch_applications(
+    choices: &[models::LoginOrganizations],
+    requested: &[String],
+    all_orgs: bool,
+    approve_scopes: bool,
+) -> Result<Vec<models::BatchLoginSelection>> {
+    choices
+        .iter()
+        .map(|app| {
+            let consented = approve_login_scopes(app, approve_scopes)?;
+            Ok(models::BatchLoginSelection {
+                app_id: app.app_id.clone(),
+                scope_version: app.scope_version,
+                approved_scopes: consented,
+                org_ids: select_login_organizations(app, requested, all_orgs)?,
+            })
+        })
+        .collect()
+}
+
+fn approve_login_scopes(
+    choices: &models::LoginOrganizations,
+    approve_scopes: bool,
+) -> Result<Vec<String>> {
+    if choices.consent_required {
+        eprintln!(
+            "Permissions requested by {}:",
+            choices.app_name.as_deref().unwrap_or(&choices.app_id)
+        );
+        for scope in &choices.scopes {
+            eprintln!(
+                "  [{}] {} — {}",
+                if scope.critical {
+                    "critical"
+                } else {
+                    "noncritical"
+                },
+                scope.scope,
+                scope.description
             );
+        }
+        if !approve_scopes {
+            let answer = prompt(
+                "Approve these permissions? [yes/no]: ",
+                "Review the requested permissions, then pass --approve-scopes to authorize them in noninteractive use.",
+            )?;
+            if !matches!(answer.trim().to_ascii_lowercase().as_str(), "yes" | "y") {
+                return Err(CliError::Usage(
+                    "Application scope consent was declined; no application tokens were issued."
+                        .to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(choices
+        .scopes
+        .iter()
+        .map(|scope| scope.scope.clone())
+        .collect())
+}
+
+/// Prints the distinct SLTs without combining application credentials.
+pub(super) fn report_batch_tokens(
+    context: &Context,
+    response: &models::BatchLoginTokens,
+) -> Result<()> {
+    match context.format {
+        Format::Json => json(response),
+        Format::Text => {
+            for item in &response.items {
+                println!(
+                    "{}: {} ({} seconds, one exchange)",
+                    item.app_id, item.slt, item.expires_in
+                );
+            }
             Ok(())
         }
     }

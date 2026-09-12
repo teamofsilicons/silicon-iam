@@ -325,10 +325,22 @@ impl FromRequestParts<ApiState> for ApplicationClient {
             .execute(&mut *transaction)
             .await
             .map_err(|_| ApiError::internal("application_secret_touch"))?;
+            if crate::infrastructure::testing_plane::is_active() {
+                sqlx::query("SELECT iam_private.touch_testing_application($1)")
+                    .bind(application_id)
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(|_| ApiError::internal("testing_application_activity"))?;
+            }
             transaction
                 .commit()
                 .await
                 .map_err(|_| ApiError::internal("application_client_commit"))?;
+            crate::features::testing_environments::touch_application_activity(
+                state,
+                application_id,
+            )
+            .await;
             return Ok(Self {
                 application_id,
                 app_id,

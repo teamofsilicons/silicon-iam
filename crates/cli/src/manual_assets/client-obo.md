@@ -1,8 +1,16 @@
 # Rust client OBO signing and verification
 
-On-behalf-of (OBO) lets one Application call a registered endpoint on another Application in the same organization. IAM mints a proof for one exact downstream request; the audience authenticates and consumes it before doing the work.
+On-behalf-of (OBO) lets one Application call a registered endpoint on another Application, including one owned by a different organization. IAM mints a proof for one exact downstream request; the audience authenticates and consumes it before doing the work.
 
-**Start with an organization-bound Application login.** Mint the SLT with `auth().short_lived_token_in_organization(app_id, Some("acme"), mutation)`, then exchange it through `oauth().login`. IAM requires the actor's membership to be active. An access token from an unscoped login also works: IAM resolves the membership in the calling Application's own organization, so the proof stays inside it either way.
+**Start with a valid token issued to the calling application.** The caller must declare the exact audience and endpoint in its `app_scope.external`, and the user must approve that permission during IAM login. Critical endpoints additionally require the audience application's approval. The subject remains the same user throughout the exchange. Set `org_id` to one of the user's selected active organizations when more than one is available; application ownership does not choose the user's organization.
+
+## Declare and classify endpoints
+
+Every exposed endpoint must include a required boolean `critical` alongside `endpoint_id`, `path`, and `metadata`. Discover any audience's catalog with `obo().endpoints(app_id)`. Its organization owner/admin controls that catalog and the initial `obo_review_message`. For critical scope discussions, use `application_scopes().request`, `get`, `reply`, and `decide`. A denial requires a reason; request and reply notifications reach the relevant administrators.
+
+```
+{"endpoint_id":"invoices.create","path":"/v1/invoices","critical":true,"metadata":{"reason":{"type":"string"}}}
+```
 
 ## Discover, hash, sign, then exchange
 
@@ -17,6 +25,7 @@ let exchanging = Mutation::new();
 
 let request = models::OboExchangeRequest {
     subject_token: subject_access_token.to_owned(),
+    org_id: Some("customer".to_owned()),
     audience: "acme>billing".to_owned(),
     endpoint_id: "invoices.create".to_owned(),
     metadata: serde_json::json!({ "reason": "checkout" }),
@@ -62,7 +71,7 @@ let verified = audience.obo().verify(
 // `verified.authorization` is the current delegated membership binding.
 ```
 
-`verified.authorization` binds the represented actor to the current membership ID/version, authorization epoch, organization, audience and testing environment. Its role/tag disclosure is limited to the intersection of the parent token's scopes and the recipient's currently approved scopes: `roles.read` reveals `org_role` and `memberships.read` reveals `tags`. Null means undisclosed, not baseline member or empty tags. Apply your application's authorization policy to this binding for this exact verified endpoint/request only. Never fill undisclosed fields from a broader cached scope set, promote the actor from an unbound cached role, or reuse a consumed proof's binding on another request.
+`verified.authorization` binds the represented actor to the current membership ID/version, authorization epoch, organization, audience and testing environment. Its role/tag disclosure is limited to the intersection of the parent token's scopes and the recipient's currently approved scopes: `self.membership.read` reveals `org_role` and `self.tags.read` reveals `tags`. Null means undisclosed, not baseline member or empty tags. Apply your application's authorization policy to this binding for this exact verified endpoint/request only. Never fill undisclosed fields from a broader cached scope set, promote the actor from an unbound cached role, or reuse a consumed proof's binding on another request.
 
 **Verification is single-use and must never be retried.** It accepts no idempotency key. If the call returns a transport or decode error, the proof may already have been consumed; fail the downstream request and mint a fresh proof for a new attempt. A second verification returns `409`.
 
@@ -79,8 +88,8 @@ IAM does not prescribe a downstream proof header or body field. The two Applicat
 | Condition | Meaning | Do |
 | --- | --- | --- |
 | `401` | The Application Basic credential or exchange HMAC is invalid. | Correct the credential, canonical string, clock, or signature. Do not retry unchanged. |
-| `403` | The subject token belongs to a different organization, its subject is not an active member of the caller's organization, or it no longer has the required current authority. | Re-check the actor's active membership in the calling Application's organization and the caller's OBO scope. |
-| `404 not_found` | The target is nonexistent, invisible, or outside the caller's organization; those cases are intentionally indistinguishable. | Correct the audience or organization. Do not retry unchanged. |
+| `403` | The endpoint was not declared or consented, a critical grant is missing, or the subject token no longer authorizes the selected organization. | Re-check the selected user organization, current membership, app declaration, critical approval, and user consent. |
+| `404 not_found` | The target or endpoint is nonexistent or unavailable in this production/testing environment. | Correct the audience and environment. Do not retry unchanged. |
 | `409` | The proof was consumed, or an idempotency key was reused with different exchange input. | Do not retry verification. For an exchange conflict, recover the original input or use a new key for a genuinely new operation. |
 | `410 proof_expired` | The proof's 60-second life elapsed. | Exchange a new proof for a new downstream attempt. |
 | `422` | The metadata or presented request binding does not satisfy the registered contract. | Re-read the catalog and compare the actual request. |

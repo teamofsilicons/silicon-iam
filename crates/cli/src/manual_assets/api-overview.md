@@ -1,8 +1,8 @@
 # API overview
 
-Silicon IAM is the identity and access layer for every Silicon application. It authenticates people and machines, holds the authoritative directory for each organization, and tells registered applications the moment anything about that directory changes.
+Silicon IAM is the identity and access layer for every Silicon application. It authenticates people and machines, holds the authoritative directory for each organization, and tells registered applications about changes they are permitted and subscribed to receive.
 
-Membership here is the real thing. Remove somebody from an organization in Silicon IAM and they lose access in every application at once — no application keeps its own copy of who belongs where.
+IAM is authoritative for membership. Removing someone invalidates their organization authority in subsequent IAM checks. Applications may cache scope-filtered projections, but must enforce revocations and verify current access for protected actions.
 
 ## Three kinds of principal
 
@@ -28,15 +28,24 @@ A typed `principal_id` prevents collisions between a Carbon and a Silicon whose 
 
 Read Authentication (`iam docs api/authentication`) and Request conventions (`iam docs api/conventions`) first. Between them they cover the rules that apply to every call in the contract, and almost every integration problem traces back to one of the two.
 
-If you are integrating an Application in Rust, the official client (`iam docs client/`) provides typed API calls and models, explicit version negotiation, credential transports, and webhook verification. Your application still owns credential persistence, refresh coordination, OBO request signing, and retry decisions. These pages explain the contract behind those calls.
+If you are integrating an Application in Rust, the official client (`iam docs client`) provides typed API calls and models, explicit version negotiation, credential transports, and webhook verification. Your application still owns credential persistence, refresh coordination, OBO request signing, and retry decisions. These pages explain the contract behind those calls.
 
 ## Environments
 
 | Surface | URL |
 | --- | --- |
+| Documentation | `https://docs.iam.teamofsilicons.com` |
 | API | `https://backend.iam.teamofsilicons.com` |
 | Sign-in and signup | `https://auth.iam.teamofsilicons.com` |
 | Management console | `https://iam.teamofsilicons.com` |
 | Platform administration | `https://backend.iam.teamofsilicons.com/admin` |
 
 Timestamps are UTC RFC 3339. Request and response bodies are JSON unless an endpoint says otherwise; the OAuth token, introspection and revocation endpoints take `application/x-www-form-urlencoded`, as the OAuth specifications require.
+
+## Application authority in v1
+
+Applications declare `app_scope` separately from their `webhook_scope` subscriptions. Critical permissions go through IAM or external-provider review. Users approve effective permissions and choose organizations before IAM hands the application a short-lived token. Apps never receive IAM credentials or verification codes.
+
+External OBO can connect applications owned by different organizations while preserving the user's selected membership context. Bundles offer one displayed login identity for same-organization applications; tokens remain individually bound. Application testing environments reproduce the same contract with isolated credentials, recursively imported dependencies, fixed test OTPs, and configurable inactivity retention.
+
+`GET /api/v1/contracts` describes the first official `v1` contract and the current/deprecated/sunset lifecycle. Read Request conventions (`iam docs api/conventions`) for negotiation and retirement rules.

@@ -20,6 +20,14 @@ pub fn uses_captured_application_webhook_projection(event_type: &str) -> bool {
     matches!(
         event_type,
         "carbon.updated.v1"
+            | "organization.created.v1"
+            | "organization.tag_created.v1"
+            | "organization.invitation.created.v1"
+            | "organization.invitation.accepted.v1"
+            | "organization.invitation.revoked.v1"
+            | "organization.role_change.requested.v1"
+            | "organization.tag_change.requested.v1"
+            | "organization.approval.decided.v1"
             | "organization.updated.v1"
             | "organization.ownership_transferred.v1"
             | "organization.tag_updated.v1"

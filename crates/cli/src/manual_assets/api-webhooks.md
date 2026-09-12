@@ -1,16 +1,37 @@
 # Signed webhook delivery and verification
 
-Silicon IAM pushes directory changes to every application that was authorized for the affected resource, and to every Silicon subscribed to them. Events are written in the same transaction as the change and delivered at least once.
+Silicon IAM delivers scope-filtered changes to authorized applications and separately routes organization events to subscribed Silicons. Events are written in the same transaction as the change and delivered at least once.
 
 ## The delivery guarantee, precisely
 
-A change is delivered to every application for which the user was authorized **immediately before or immediately after** it. The "before" half is what makes removal and revocation events arrive at all — an application that only heard about people it currently sees would never learn that somebody left.
+Within its `webhook_scope` event subscription and effective consented `app_scope`, a change is delivered to an application for which the user was authorized **immediately before or immediately after** it. The "before" half is what makes removal and revocation events arrive at all — an application that only heard about people it currently sees would never learn that somebody left.
 
-Each event carries the changed fields and the complete current authorized state of the affected resource, excluding tokens, OTPs, credentials, signing secrets and any other secret material.
+Application events carry changed fields and the affected resource state captured at that version, limited to the recipient’s approved and consented scopes. Production event data excludes tokens, OTPs, credentials, signing secrets, and other secret material. Test envelopes additionally carry the environment root key as described below.
 
 **Deduplicate on `event_id`; order by the resource version.** Delivery is at least once, so a duplicate is normal rather than exceptional. Arrival order is not guaranteed, and the aggregate version is the only reliable sequencing signal.
 
 Webhooks are a notification channel, never an authorization one. When an application needs a current answer it calls introspection (`iam docs api/applications`).
+
+## Application event and field boundaries
+
+`webhook_scope` chooses event categories within an application's existing authority. Even `full` does not grant access to the complete IAM event catalog. Every application delivery needs effective `app_scope`, user consent, and an authorized selected organization. Event recipients and their per-application payloads are captured in the domain transaction; workers do not reconstruct historical data from later records.
+
+| Information | Required permission and permitted content |
+| --- | --- |
+| Own profile | `self.profile.read` exposes display name, photo, description, and timezone. It does not expose contact details, account status, or creation/update timestamps. Identity, contacts, and membership fields have separate permissions. |
+| Organization profile | `self.organizations.read` exposes identifiers, name, logo, description, and the resource version. It does not disclose SSO, security, or administrative configuration. |
+| Other members | Matching `directory.*.read` permissions separately authorize listings, profile fields, membership, capabilities, tags, job roles, and Silicon relationships. Directory access never includes credential or webhook management configuration. |
+| Own effective trust | `self.trust.read` exposes `membership.effective_trust` from that user's perspective: target Silicon membership ID, effective trust, and its advisory flag. It does not expose defaults, rules, overrides, or rule identifiers. |
+| Organization trust configuration | `organization.trust.read` is required for raw trust configuration and its aggregate events, including `membership.trust` where disclosed. |
+| Invitations | `organization.invitations.read` authorizes immutable invitation lifecycle snapshots captured at the mutation. |
+| Governance | `organization.governance.read` authorizes captured role/tag requests and approval decisions. It does not grant access to SSO or Silicon credential/webhook administration. |
+| Organization tag definitions | `organization.tags.read` authorizes captured tag creation, update, and archive aggregates. A tag need not already be assigned to a member to have a definition event. |
+
+Member snapshots use `current.members`; organization updates use `current.organization`. Invitation, governance, and tag-creation snapshots use `current.resource`; tag/trust changes may include both their independently versioned resource and affected members. A recipient authorized only before a removal receives a stable identity/version tombstone rather than the removed private fields. Missing fields are undisclosed and must never be filled from a broader cached credential.
+
+Each captured application projection has a 1 MiB plaintext limit. A mutation whose complete authorized projection exceeds that limit fails atomically. Directory and effective-trust snapshots can grow with organization size, so deployments must account for this limit when sizing large organization changes.
+
+Applications do not receive raw SSO events, Silicon webhook destination/subscription configuration, or credential-management requests. A completed Silicon credential rotation may produce only its permitted authorization-epoch/access projection, never the credential or management configuration. The larger event vocabulary below remains available to Silicon subscriptions according to their own routing and subscription rules.
 
 ## Verifying a delivery
 
@@ -35,7 +56,7 @@ To verify:
 
 `X-Silicon-IAM-Key-Version` exists so rotation is not an outage: keep the previous secret accepted for a window and select by version rather than trying each in turn.
 
-Organization administrators rotate an Application signing key independently with `POST /api/v1/applications/{app_id}/webhook-secret-rotations`, supplying the successor as `webhook_secret`. IAM never generates it. New deliveries switch immediately; already persisted in-flight deliveries retain their original bytes and key version, so consumers keep old versions until that retry window closes.
+Organization administrators rotate an Application signing key independently with `POST /api/v1/applications/{app_id}/webhook-secret-rotations`, supplying the successor as `webhook_secret`. Normal key rotation uses that supplied secret. New deliveries switch immediately; already persisted in-flight deliveries retain their original bytes and key version, so consumers keep old versions until that retry window closes.
 
 ## Testing-environment deliveries
 
@@ -43,7 +64,7 @@ A test environment delivers a visibly different signed JSON shape. Instead of pr
 
 **The test key in that envelope remains root authority.** Compare it to the expected environment key without timing leakage, use it only to route the event to its isolated run, then redact it. Never write it to request logs, traces, analytics, dead-letter payload views, or your event table.
 
-Imported Applications initially inherit their production signing key without exposing it. The first webhook URL replacement in the test environment requires the caller to supply a test-only `webhook_secret`; IAM switches to and echoes that value but never generates it. Ordinary URL changes reuse the current key. The complete flow is in Testing environments (`iam docs api/testing-environments`).
+Imported Applications initially inherit their production signing key without exposing it. The webhook URL replacement in a test environment creates and returns a fresh test-only `webhook_signing_secret` when no `webhook_secret` was supplied. An explicit supplied replacement is also accepted. The endpoint activates immediately, and the secret response can be replayed for ten minutes. Every test destination replacement installs a supplied or newly generated test-only key. Production URL changes reuse the current key. The complete flow is in Testing environments (`iam docs api/testing-environments`).
 
 Respond `2xx` quickly and do the work asynchronously. A slow endpoint becomes a retrying endpoint, and a retrying endpoint becomes a dead-lettered one.
 
@@ -76,7 +97,13 @@ Delivery goes to the **currently configured** URL, signed with the **current** s
 
 Batches are capped at 100, replayed in their original order, require an `Idempotency-Key`, and record who requested them.
 
-## Event catalogue
+## Event catalogue by recipient
+
+This is the broader IAM event vocabulary used by Silicon subscriptions. Application consumers receive only the approved projections described above; entries marked Silicon-only are not application events. In every case, subscription and routing rules still apply.
+
+### Carbon profile changes
+
+Applications receive `carbon.updated.v1` with independently filtered profile, identity, and contact fields. `organization.membership.profile_updated.v1` is the organization-bound Silicon notification; applications do not receive that second form.
 
 ### Membership lifecycle
 
@@ -103,6 +130,8 @@ Batches are capped at 100, replayed in their original order, require an `Idempot
 
 ### Trust configuration
 
+Application aggregate disclosure requires `organization.trust.read`. `self.trust.read` permits only the user’s effective perspective, not these raw configuration records.
+
 | Event | Meaning |
 | --- | --- |
 | `organization.trust.default_updated.v1` | Default trust changed |
@@ -112,6 +141,8 @@ Batches are capped at 100, replayed in their original order, require an `Idempot
 
 ### Organization, invitations and governance
 
+Application delivery uses the specific organization-profile, invitation, tag, or governance permission listed above and a captured resource snapshot. One category does not imply authority over another.
+
 | Event | Meaning |
 | --- | --- |
 | `organization.created.v1` · `organization.updated.v1` · `organization.tag_created.v1` | Organization-level changes |
@@ -120,13 +151,17 @@ Batches are capped at 100, replayed in their original order, require an `Idempot
 
 ### Silicon credentials and webhooks
 
+Management request, configuration, and subscription events in this group are Silicon-only. The completed `credential_rotated` event has a separate scope-filtered application authorization projection with no credential or configuration data.
+
 | Event | Meaning |
 | --- | --- |
 | `organization.silicon.rotation_requested.v1` · `organization.silicon.credential_rotated.v1` | Credential rotation |
 | `organization.silicon.webhook.configured.v1` · `…webhook.deleted.v1` | Endpoint configuration |
 | `organization.silicon.webhook_subscription.updated.v1` · `…deleted.v1` | Subscription changes |
 
-### SSO
+### SSO — Silicon subscriptions only
+
+Application scopes do not expose this SSO event payload or its provider and security configuration.
 
 | Event | Meaning |
 | --- | --- |

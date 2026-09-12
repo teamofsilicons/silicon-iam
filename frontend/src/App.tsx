@@ -16,6 +16,8 @@ export default function App() {
   const authPage = () =>
     ["/login", "/signup", "/sso/complete"].includes(location.pathname) ||
     new URL(location.href).searchParams.has("app_id") ||
+    new URL(location.href).searchParams.has("app_ids") ||
+    new URL(location.href).searchParams.has("bundle_id") ||
     (!!config() &&
       location.origin === config()!.authOrigin &&
       config()!.authOrigin !== config()!.consoleOrigin);

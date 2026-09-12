@@ -283,6 +283,9 @@ fn notes(path: &str) -> String {
         "iam commands" => {
             "Examples:\n  iam commands\n  iam -o json commands\n\nJSON includes full help and argument metadata for every public command.\nThe usage/help fields also describe required argument groups and conditional requirements."
         }
+        "iam batch-login" => {
+            "Examples:\n  iam batch-login --app-id 'tos>briefcase' --app-id 'tos>dm'\n  iam -o json batch-login --app-id 'tos>briefcase,tos>dm' --grant-org tos\n\nRequires an existing direct IAM login. Select 1–100 unique canonical app IDs.\nWithout organization flags, choose organizations for each app at the prompts.\n--grant-org and --all-orgs apply explicitly to every listed app. The whole batch\nis atomic; each resulting SLT is exchanged only by its own Application.\nRead `iam docs batch-login` for browser and API integration examples."
+        }
         "iam login" => {
             "Examples:\n  iam login --email you@example.com\n  iam login --app-id 'tos>space-station' --grant-org tos\n\nDirect IAM Carbon login verifies a channel. With --app-id and no identity flags,\nreuse the stored session and return a single-use SLT. Give only that SLT to the\nApplication, never your IAM verification code or credential. Exchange the SLT promptly.\nChoose the organizations to share with --grant-org <org>[,<org>...] or --all-orgs.\nWithout those flags, IAM prompts in an interactive terminal. Existing grants are\nkept; future memberships and --org/stored defaults never imply consent. Non-interactive verification needs --code."
         }

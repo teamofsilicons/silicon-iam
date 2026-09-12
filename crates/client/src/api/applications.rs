@@ -26,7 +26,8 @@ impl Applications<'_> {
         self.0.get_with(&["applications"], &query).await
     }
 
-    /// Registers an immediately usable application.
+    /// Registers an application with separate login and webhook scopes.
+    /// New critical permissions remain unavailable until their reviewers approve.
     ///
     /// In production, only the submitted webhook destination remains pending
     /// approval by an owning-organization owner/admin or IAM reviewer. A testing environment activates it immediately because
@@ -42,6 +43,35 @@ impl Applications<'_> {
         mutation: &Mutation,
     ) -> Result<models::ApplicationCreated> {
         self.0.post(&["applications"], input, mutation).await
+    }
+
+    /// Creates or reuses an IAM test environment and imports this application's dependencies.
+    /// Authenticate with the production application's own credential. Dependency
+    /// credentials are kept by IAM; only this application's test secret is returned.
+    ///
+    /// # Errors
+    /// Fails when the application credential or supplied existing test key is invalid.
+    pub async fn create_testing_environment(
+        &self,
+        input: &models::ApplicationTestingEnvironmentCreate,
+        mutation: &Mutation,
+    ) -> Result<models::ApplicationTestingEnvironmentCreated> {
+        self.0
+            .post(&["application", "testing-environments"], input, mutation)
+            .await
+    }
+
+    /// Lists active test environments linked to this production application and its organization.
+    ///
+    /// # Errors
+    /// Fails when the requesting application cannot authenticate.
+    pub async fn testing_environments(
+        &self,
+        paging: &Paging,
+    ) -> Result<models::ApplicationTestingEnvironmentPage> {
+        self.0
+            .get_with(&["application", "testing-environments"], &paging.query())
+            .await
     }
 
     /// One application.
@@ -187,9 +217,9 @@ impl Applications<'_> {
     /// owner/admin or IAM reviewer; a testing environment
     /// activates it immediately because that isolated plane has no reviewer.
     ///
-    /// The request may also install a caller-supplied secret. It is required
-    /// for the first URL replacement of an imported test application still
-    /// using an inherited production key.
+    /// A production replacement reuses its signing key unless a successor is
+    /// supplied. A testing replacement installs the supplied test-only secret
+    /// or generates one, returning it in `webhook_signing_secret`.
     ///
     /// # Errors
     ///

@@ -1,8 +1,13 @@
 <p class="lede">
-  Silicon IAM pushes directory changes to every Application authorized for the affected resource.
+  Silicon IAM sends applications only the event categories and data covered by their current approved scopes, user consent, and selected memberships.
   The SDK verifies the signature over the exact bytes and hands you a parsed event; deduplication
   is yours, because only your database can do it durably.
 </p>
+
+<h2>Interpret application payloads by scope</h2>
+<p>The event model also represents Silicon subscription events; being able to parse an event does not mean an application is entitled to receive it. Applications receive immutable recipient-specific projections captured when the change commits. Invitation, governance, and tag-definition events require <code>organization.invitations.read</code>, <code>organization.governance.read</code>, and <code>organization.tags.read</code>, respectively.</p>
+<p><code>self.profile.read</code> discloses only display name, photo, description, and timezone. <code>self.organizations.read</code> discloses organization identifiers, name, logo, description, and version. <code>self.trust.read</code> exposes effective trust from the user’s perspective, not rules, defaults, or overrides. Raw trust configuration requires <code>organization.trust.read</code>.</p>
+<p>Application directory/governance scopes do not expose raw SSO events or Silicon credential-management and webhook/subscription configuration. A completed credential rotation can still notify an application of permitted authorization-epoch/access changes without exposing credentials. Silicon subscriptions use their separate event vocabulary and routing rules. Consult the <a href="https://docs.iam.teamofsilicons.com/api/webhooks/">webhook contract</a> before assuming an event or field is available, and never replace undisclosed fields from a broader cached token.</p>
 
 <h2>Verifying a delivery</h2>
 
@@ -45,8 +50,8 @@ let event = verified.event();</code></pre>
 <h2>Approve a pending destination</h2>
 
 <p>
-  Client 1.2.1 adds <code>applications().approve_webhook(app_id, version, &amp;mutation)</code>.
-  It activates a verified Application's pending first or replacement endpoint without changing
+  Use <code>applications().approve_webhook(app_id, version, &amp;mutation)</code>.
+  It activates an under-review or verified application's pending first or replacement endpoint without changing
   Application status or scopes. The current owning organization's Carbon owner/admin or an IAM
   platform administrator with <code>applications.review</code> may call it. The creator field is
   audit metadata, not separate authority; legacy Applications still under platform review cannot
@@ -75,17 +80,16 @@ let webhook = client.applications()
 <p>
   The Application supplies its initial secret during registration. Explicit
   <code>rotate_webhook_secret</code> accepts a caller-chosen successor and immediately uses it for
-  new deliveries. IAM never generates Application webhook secrets. Rotation requires the current Application version and a verified-channel
+  new deliveries. Rotation requires the current Application version and a verified-channel
   step-up assertion for <code>application.webhook_secret.rotate</code>.
 </p>
 
 <p>
-  Replacing the webhook URL normally does <strong>not</strong> rotate the key: IAM rebinds the same
-  secret under an incremented version. The exception is an imported test Application still using
-  an inherited production key. Its first test URL replacement must supply a test-only
-  <code>webhook_secret</code>; the v1 response echoes it as <code>webhook_signing_secret</code> with
-  <code>secret_replay_expires_at</code>. Those optional fields
-  are absent from ordinary replacement responses.
+  Replacing a production webhook URL rebinds its existing secret under an incremented version
+  unless the request supplies a successor. In a testing environment, a URL replacement installs
+  the supplied test-only <code>webhook_secret</code>, or generates one when omitted.
+  The response returns <code>webhook_signing_secret</code> and
+  <code>secret_replay_expires_at</code> whenever it installs a new secret.
 </p>
 
 <p>
@@ -145,7 +149,7 @@ let event = verified.event();</code></pre>
 
 <p>
   The complete setup, import, login, negative-boundary assertions, and cleanup sequence is in
-  <a href="/docs/client/testing-environments">Testing environments</a>.
+  <a href="https://docs.iam.teamofsilicons.com/client/testing-environments">Testing environments</a>.
 </p>
 
 <table>
@@ -177,5 +181,5 @@ let event = verified.event();</code></pre>
   Anything that exhausts its retry cycle is dead-lettered and stays readable and replayable
   through the API. Replays preserve the original event ID, so your existing deduplication table
   handles them without any special case — see
-  <a href="/docs/api/webhooks">the contract's webhook section</a> for the replay semantics.
+  <a href="https://docs.iam.teamofsilicons.com/api/webhooks">the contract's webhook section</a> for the replay semantics.
 </p>

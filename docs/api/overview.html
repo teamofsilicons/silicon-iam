@@ -1,13 +1,11 @@
 <p class="lede">
   Silicon IAM is the identity and access layer for every Silicon application. It authenticates
   people and machines, holds the authoritative directory for each organization, and tells
-  registered applications the moment anything about that directory changes.
+  registered applications about changes they are permitted and subscribed to receive.
 </p>
 
 <p>
-  Membership here is the real thing. Remove somebody from an organization in Silicon IAM and
-  they lose access in every application at once — no application keeps its own copy of who
-  belongs where.
+  IAM is authoritative for membership. Removing someone invalidates their organization authority in subsequent IAM checks. Applications may cache scope-filtered projections, but must enforce revocations and verify current access for protected actions.
 </p>
 
 <h2>Three kinds of principal</h2>
@@ -74,15 +72,15 @@
 </p>
 
 <p>
-  Read <a href="/docs/api/authentication">Authentication</a> and
-  <a href="/docs/api/conventions">Request conventions</a> first. Between them they cover the
+  Read <a href="https://docs.iam.teamofsilicons.com/api/authentication">Authentication</a> and
+  <a href="https://docs.iam.teamofsilicons.com/api/conventions">Request conventions</a> first. Between them they cover the
   rules that apply to every call in the contract, and almost every integration problem traces
   back to one of the two.
 </p>
 
 <p>
   If you are integrating an Application in Rust, the
-  <a href="/docs/client/">official client</a> provides typed API calls and models, explicit version
+  <a href="https://docs.iam.teamofsilicons.com/client/">official client</a> provides typed API calls and models, explicit version
   negotiation, credential transports, and webhook verification. Your application still owns
   credential persistence, refresh coordination, OBO request signing, and retry decisions. These
   pages explain the contract behind those calls.
@@ -93,6 +91,7 @@
 <table>
   <thead><tr><th>Surface</th><th>URL</th></tr></thead>
   <tbody>
+    <tr><td>Documentation</td><td><code>https://docs.iam.teamofsilicons.com</code></td></tr>
     <tr><td>API</td><td><code>https://backend.iam.teamofsilicons.com</code></td></tr>
     <tr><td>Sign-in and signup</td><td><code>https://auth.iam.teamofsilicons.com</code></td></tr>
     <tr><td>Management console</td><td><code>https://iam.teamofsilicons.com</code></td></tr>
@@ -105,3 +104,8 @@
   otherwise; the OAuth token, introspection and revocation endpoints take
   <code>application/x-www-form-urlencoded</code>, as the OAuth specifications require.
 </p>
+
+<h2>Application authority in v1</h2>
+<p>Applications declare <code>app_scope</code> separately from their <code>webhook_scope</code> subscriptions. Critical permissions go through IAM or external-provider review. Users approve effective permissions and choose organizations before IAM hands the application a short-lived token. Apps never receive IAM credentials or verification codes.</p>
+<p>External OBO can connect applications owned by different organizations while preserving the user's selected membership context. Bundles offer one displayed login identity for same-organization applications; tokens remain individually bound. Application testing environments reproduce the same contract with isolated credentials, recursively imported dependencies, fixed test OTPs, and configurable inactivity retention.</p>
+<p><code>GET /api/v1/contracts</code> describes the first official <code>v1</code> contract and the current/deprecated/sunset lifecycle. Read <a href="https://docs.iam.teamofsilicons.com/api/conventions/">Request conventions</a> for negotiation and retirement rules.</p>

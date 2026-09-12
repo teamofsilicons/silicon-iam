@@ -349,9 +349,22 @@ pub(super) async fn login_organizations(
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(access.subject.id))
         .await
         .map_err(|_| ApiError::internal("login_choices_context"))?;
+    let response = login_choices(&mut transaction, &access, &query.app_id).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("login_choices_commit"))?;
+    Ok(Json(response).into_response())
+}
+
+pub(super) async fn login_choices(
+    transaction: &mut Transaction<'_, Postgres>,
+    access: &tokens::AccessContext,
+    app_id: &str,
+) -> Result<super::model::LoginOrganizationsResponse, ApiError> {
     let app = sqlx::query_as::<_, AuthorizeApplicationRow>(
         "SELECT a.id, a.app_id, a.app_name FROM iam.applications a JOIN iam.principals p ON p.id = a.id WHERE a.app_id = $1 AND a.review_status = 'verified' AND a.deleted_at IS NULL AND p.status = 'active'",
-    ).bind(&query.app_id).fetch_optional(&mut *transaction).await
+    ).bind(app_id).fetch_optional(&mut **transaction).await
         .map_err(|_| ApiError::internal("login_choices_application"))?
         .ok_or_else(|| ApiError::bad_request("invalid_request", "The application is unknown or not verified."))?;
     let items = sqlx::query_as::<_, super::model::LoginOrganization>(
@@ -371,20 +384,21 @@ pub(super) async fn login_organizations(
     .bind(access.subject.id)
     .bind(app.id)
     .bind(access.authentication_session_id)
-    .fetch_all(&mut *transaction)
+    .fetch_all(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("login_choices"))?;
-    transaction
-        .commit()
-        .await
-        .map_err(|_| ApiError::internal("login_choices_commit"))?;
-    Ok(
-        Json(json!({"app_id": app.app_id, "app_name": app.app_name, "items": items}))
-            .into_response(),
-    )
+    let policy = super::scopes::policy(transaction, app.id).await?;
+    Ok(super::model::LoginOrganizationsResponse {
+        scope_version: policy.scope_version,
+        consent_required: policy.consent_required,
+        scopes: policy.scopes,
+        app_id: app.app_id,
+        app_name: app.app_name,
+        items,
+    })
 }
 
-fn require_direct_login(access: &tokens::AccessContext) -> Result<(), ApiError> {
+pub(super) fn require_direct_login(access: &tokens::AccessContext) -> Result<(), ApiError> {
     if access.client_application_id.is_some()
         || access.audience_application_id.is_some()
         || access.audience != "silicon-iam"
@@ -514,9 +528,14 @@ pub(super) async fn issue_short_lived_token(
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(access.subject.id))
         .await
         .map_err(|_| ApiError::internal("short_lived_token_context"))?;
-    let caller_scope = format!("{subject_kind}:{}", access.subject.id);
+    let caller_scope = format!(
+        "{subject_kind}:{}:{}",
+        access.subject.id, access.authentication_session_id
+    );
     let canonical = serde_json::to_vec(&json!({
         "app_id": input.app_id,
+        "scope_version": input.scope_version,
+        "approved_scopes": input.approved_scopes,
         "org_ids": input.org_ids,
         "redirect_uri": input.redirect_uri,
     }))
@@ -543,6 +562,34 @@ pub(super) async fn issue_short_lived_token(
     let Claim::Acquired(idempotency_id) = claim else {
         return Err(ApiError::internal("short_lived_token_idempotency"));
     };
+    let response = issue_for_selection(&mut transaction, &state, &access, &input).await?;
+    idempotency::complete(
+        &mut transaction,
+        &state.crypto,
+        idempotency_id,
+        201,
+        &response,
+        true,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("short_lived_token_commit"))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+pub(super) async fn issue_for_selection(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    access: &tokens::AccessContext,
+    input: &ShortLivedTokenRequest,
+) -> Result<ShortLivedTokenResponse, ApiError> {
+    let subject_kind = match access.subject.actor_type {
+        ActorType::Carbon => "carbon",
+        ActorType::Silicon => "silicon",
+        _ => return Err(ApiError::forbidden("direct_iam_login_required")),
+    };
     let app = sqlx::query_as::<_, AuthorizeApplicationRow>(
         r"
         SELECT application.id, application.app_id, application.app_name
@@ -557,15 +604,13 @@ pub(super) async fn issue_short_lived_token(
         ",
     )
     .bind(&input.app_id)
-    .fetch_optional(&mut *transaction)
+    .fetch_optional(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("short_lived_token_application"))?
     .ok_or_else(|| ApiError::bad_request("invalid_request", "The application is unknown."))?;
+    let policy = super::scopes::policy(transaction, app.id).await?;
     let scopes =
-        sqlx::query_scalar::<_, String>("SELECT scope FROM iam.oauth_scope_catalog ORDER BY scope")
-            .fetch_all(&mut *transaction)
-            .await
-            .map_err(|_| ApiError::internal("short_lived_token_scopes"))?;
+        super::scopes::validate_consent(&policy, input.scope_version, &input.approved_scopes)?;
     let requested = input
         .org_ids
         .iter()
@@ -583,15 +628,15 @@ pub(super) async fn issue_short_lived_token(
     .bind(access.subject.id)
     .bind(access.authentication_session_id)
     .bind(requested.iter().cloned().collect::<Vec<_>>())
-    .fetch_one(&mut *transaction)
+    .fetch_one(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("login_selection"))?;
     if selected_membership_ids.len() != requested.len() {
         return Err(ApiError::forbidden("organization_context_forbidden"));
     }
     let (request_id, token) = mint_short_lived_token(
-        &mut transaction,
-        &state,
+        transaction,
+        state,
         MintSubject {
             application_id: app.id,
             session_id: access.authentication_session_id,
@@ -613,7 +658,7 @@ pub(super) async fn issue_short_lived_token(
         request_id: Some(request_id),
     };
     events::authentication_event(
-        &mut transaction,
+        transaction,
         app.id,
         Some(access.subject.id),
         Some(subject_kind),
@@ -624,20 +669,7 @@ pub(super) async fn issue_short_lived_token(
         json!({ "delivered": false, "scope_count": scopes.len(), "selected_org_ids": input.org_ids }),
     )
     .await?;
-    idempotency::complete(
-        &mut transaction,
-        &state.crypto,
-        idempotency_id,
-        201,
-        &response,
-        true,
-    )
-    .await?;
-    transaction
-        .commit()
-        .await
-        .map_err(|_| ApiError::internal("short_lived_token_commit"))?;
-    Ok((StatusCode::CREATED, Json(response)).into_response())
+    Ok(response)
 }
 
 /// Where to send somebody who has to sign in first.
@@ -656,6 +688,12 @@ fn sign_in_location(state: &ApiState, query: &LoginQuery) -> Result<String, ApiE
         let mut pairs = location.query_pairs_mut();
         if let Some(app_id) = &query.app_id {
             pairs.append_pair("app_id", app_id);
+        }
+        if let Some(bundle_id) = &query.bundle_id {
+            pairs.append_pair("bundle_id", bundle_id);
+        }
+        if let Some(app_ids) = &query.app_ids {
+            pairs.append_pair("app_ids", app_ids);
         }
         if let Some(redirect_uri) = &query.redirect_uri {
             pairs.append_pair("redirect_uri", redirect_uri);
@@ -1110,7 +1148,11 @@ pub(super) async fn introspect(
     Ok(Json(IntrospectionResponse {
         active: true,
         principal_id: Some(access.subject.id),
-        actor_type: Some(access.subject.actor_type.as_str().to_owned()),
+        actor_type: access
+            .scopes
+            .iter()
+            .any(|scope| scope == "self.identity.read")
+            .then(|| access.subject.actor_type.as_str().to_owned()),
         client_id: Some(metadata.app_id),
         org_id,
         membership_id,
@@ -1264,7 +1306,10 @@ async fn introspect_refresh_token(
     Ok(Json(IntrospectionResponse {
         active: true,
         principal_id: Some(candidate.subject_principal_id),
-        actor_type: Some(candidate.subject_kind),
+        actor_type: scopes
+            .iter()
+            .any(|scope| scope == "self.identity.read")
+            .then_some(candidate.subject_kind),
         client_id: Some(client.app_id.clone()),
         org_id: authority.org_id,
         membership_id: candidate.membership_id,
@@ -1485,7 +1530,10 @@ async fn exchange_authorization_code(
         transaction,
         client.application_id,
         Some(row.subject_principal_id),
-        Some(response.actor.actor_type.as_str()),
+        response
+            .actor
+            .as_ref()
+            .map(|actor| actor.actor_type.as_str()),
         Some(row.authentication_session_id),
         "oauth.token_exchange",
         "success",
@@ -1682,7 +1730,10 @@ async fn exchange_refresh_token(
         transaction,
         client.application_id,
         Some(candidate.subject_principal_id),
-        Some(response.actor.actor_type.as_str()),
+        response
+            .actor
+            .as_ref()
+            .map(|actor| actor.actor_type.as_str()),
         Some(candidate.authentication_session_id),
         "oauth.token_exchange",
         "success",
@@ -1942,11 +1993,14 @@ async fn issue_tokens(
         expires_in: u64::try_from(access_seconds).unwrap_or(1_800),
         scope: scopes.join(" "),
         refresh_token,
-        actor: PublicActor {
-            principal_id: subject.principal_id,
-            actor_type: actor_type.as_str().to_owned(),
-            public_id: subject.subject_public_id,
-        },
+        actor: scopes
+            .iter()
+            .any(|scope| scope == "self.identity.read")
+            .then_some(PublicActor {
+                principal_id: subject.principal_id,
+                actor_type: actor_type.as_str().to_owned(),
+                public_id: subject.subject_public_id,
+            }),
         org_id: subject.org_id,
     })
 }

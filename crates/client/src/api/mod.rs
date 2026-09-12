@@ -9,8 +9,11 @@
 //! deliberately absent: they belong to the operator, to the provider and to
 //! the browser respectively, not to an API caller.
 
+pub mod application_reads;
+pub mod application_scopes;
 pub mod applications;
 pub mod auth;
+pub mod bundles;
 pub mod carbons;
 pub mod environments;
 pub mod governance;
@@ -110,7 +113,25 @@ impl Client {
         oauth::OAuth(self)
     }
 
-    /// Delegated access between applications in one organization.
+    /// Scope-projected IAM data for an application's user access token.
+    #[must_use]
+    pub const fn application_reads(&self) -> application_reads::ApplicationReads<'_> {
+        application_reads::ApplicationReads(self)
+    }
+
+    /// Application scope catalogs, approval requests, and their discussions.
+    #[must_use]
+    pub const fn application_scopes(&self) -> application_scopes::ApplicationScopes<'_> {
+        application_scopes::ApplicationScopes(self)
+    }
+
+    /// Named groups of applications that share a login journey.
+    #[must_use]
+    pub const fn bundles(&self) -> bundles::Bundles<'_> {
+        bundles::Bundles(self)
+    }
+
+    /// Delegated access between declared applications across organizations.
     #[must_use]
     pub const fn obo(&self) -> obo::Obo<'_> {
         obo::Obo(self)

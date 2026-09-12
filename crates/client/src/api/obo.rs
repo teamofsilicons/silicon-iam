@@ -1,4 +1,4 @@
-//! Delegated access between applications in one organization.
+//! Delegated access between declared applications across organizations.
 //!
 //! One application asks Silicon IAM for a single-use proof that it may call
 //! another, then the callee verifies that proof. Both ends authenticate with
@@ -30,8 +30,8 @@ impl Obo<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error when the application is outside the caller's
-    /// organization, which is answered as not-found.
+    /// Returns an error when the audience is unavailable in the selected
+    /// production or testing environment. Application ownership may differ.
     pub async fn endpoints(&self, app_id: &str) -> Result<models::OboEndpointCatalog> {
         self.0
             .get(&["obo-access", "applications", app_id, "endpoints"])

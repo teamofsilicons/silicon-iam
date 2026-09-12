@@ -1,5 +1,6 @@
 //! Organization tenancy, directory, Silicon, and governance HTTP slice.
 
+pub(crate) mod application_reads;
 mod carbon_profile_events;
 mod directory;
 mod directory_views;

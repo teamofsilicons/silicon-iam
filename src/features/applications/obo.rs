@@ -99,13 +99,13 @@ struct CanonicalRequest {
     body_sha256_hex: String,
 }
 
-#[derive(Serialize)]
+#[derive(serde::Deserialize, Serialize)]
 pub(super) struct OboEndpointCatalog {
     application: OboApplicationReference,
     endpoints: Vec<ApplicationOboEndpoint>,
 }
 
-#[derive(Serialize)]
+#[derive(serde::Deserialize, Serialize)]
 struct OboApplicationReference {
     app_id: String,
     org_id: String,
@@ -142,59 +142,19 @@ pub(super) async fn discover_endpoints(
     )
     .await
     .map_err(|_| ApiError::internal("obo_discovery_context"))?;
-    let target = sqlx::query_as::<_, (Uuid, String, String)>(
-        r"
-        SELECT application.id, application.app_id, organization.org_id
-        FROM iam.applications AS application
-        JOIN LATERAL iam_private.resolve_authorized_application_organization(
-            application.id
-        ) AS organization ON TRUE
-        JOIN iam.principals AS principal
-          ON principal.id = application.id
-         AND principal.kind = 'application'
-         AND principal.status = 'active'
-        WHERE application.app_id = $1
-          AND application.organization_id = $2
-          AND application.review_status = 'verified'
-          AND application.deleted_at IS NULL
-        ",
+    let catalog = sqlx::query_scalar::<_, sqlx::types::Json<OboEndpointCatalog>>(
+        "SELECT iam_private.discover_application_obo_endpoints($1)",
     )
     .bind(&path.app_id)
-    .bind(client.organization_id)
     .fetch_optional(&mut *transaction)
     .await
-    .map_err(|_| ApiError::internal("obo_discovery_application"))?
+    .map_err(|_| ApiError::internal("obo_discovery_endpoints"))?
     .ok_or_else(ApiError::not_found)?;
-    let endpoints = sqlx::query_as::<_, ApplicationOboEndpoint>(
-        r"
-        SELECT endpoint_id, path, metadata_definition AS metadata
-        FROM iam.application_obo_endpoints
-        WHERE organization_id = $1
-          AND application_id = $2
-          AND status = 'active'
-        ORDER BY endpoint_id
-        LIMIT 51
-        ",
-    )
-    .bind(client.organization_id)
-    .bind(target.0)
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(|_| ApiError::internal("obo_discovery_endpoints"))?;
-    if endpoints.len() > 50 {
-        return Err(ApiError::internal("obo_discovery_endpoint_limit"));
-    }
     transaction
         .commit()
         .await
         .map_err(|_| ApiError::internal("obo_discovery_commit"))?;
-    Ok(Json(OboEndpointCatalog {
-        application: OboApplicationReference {
-            app_id: target.1,
-            org_id: target.2,
-        },
-        endpoints,
-    }))
+    Ok(Json(catalog.0))
 }
 
 pub(super) async fn exchange(
@@ -243,33 +203,25 @@ pub(super) async fn exchange(
             return Err(ApiError::internal("obo_subject_actor_kind"));
         }
     };
-    if access.client_application_id != Some(client.application_id)
-        || !access.scopes.iter().any(|scope| scope == "obo.issue")
-    {
+    if access.client_application_id != Some(client.application_id) {
         return Err(ApiError::forbidden("obo_subject_token_forbidden"));
     }
-    // OBO never leaves the issuing Application's own organization. A subject
-    // token bound to a different one is refused outright; an unscoped one
-    // must resolve a selected active membership here. The authority lock
-    // rejects memberships absent from the user-controlled consent allowlist.
-    let organization_id = client.organization_id;
-    if access
-        .organization_id
-        .is_some_and(|bound| bound != organization_id)
-    {
-        return Err(ApiError::forbidden("obo_organization_mismatch"));
-    }
-    let membership_id = match access.membership_id {
-        Some(membership_id) => membership_id,
-        None => resolve_subject_membership(
-            &mut transaction,
-            organization_id,
-            access.subject.id,
-            access.subject.actor_type.as_str(),
-        )
-        .await?
-        .ok_or_else(|| ApiError::forbidden("obo_membership_required"))?,
-    };
+    // The subject chooses their organization; application ownership is not
+    // delegation authority. An omitted selection is unambiguous only when the
+    // token currently authorizes exactly one active membership.
+    let memberships = sqlx::query_as::<_, (Uuid, Uuid)>(
+        "SELECT * FROM iam_private.resolve_application_obo_memberships($1, $2, $3)",
+    )
+    .bind(access.token_id)
+    .bind(access.subject.id)
+    .bind(&input.org_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("obo_subject_membership"))?;
+    let (organization_id, membership_id) = selected_membership(&memberships)?;
+    context::select_organization(&mut transaction, organization_id)
+        .await
+        .map_err(|_| ApiError::internal("obo_subject_organization"))?;
     let authority = sqlx::query_as::<_, ExchangeAuthorityRow>(
         r"
         SELECT audience_application_id, endpoint_path, metadata_definition,
@@ -319,7 +271,7 @@ pub(super) async fn exchange(
             &mut transaction,
             response.proof_id,
             client.application_id,
-            client.organization_id,
+            organization_id,
         )
         .await?
         {
@@ -400,6 +352,12 @@ pub(super) async fn exchange(
     .await
     .map_err(|_| ApiError::internal("obo_proof_insert"))?;
     let response = OboProofResponse {
+        testing_context: crate::features::testing_environments::obo_context(
+            &state,
+            &input.audience,
+        )
+        .await
+        .map_err(|_| ApiError::internal("obo_testing_context"))?,
         access_proof: raw_proof.expose_secret().to_owned(),
         proof_id,
         expires_in: u64::try_from(PROOF_LIFETIME_SECONDS).unwrap_or(60),
@@ -494,42 +452,11 @@ pub(super) async fn verify(
     .await
     .map_err(|_| ApiError::internal("obo_verify_context"))?;
     let row = sqlx::query_as::<_, ProofRow>(
-        r"
-        WITH supplied_digest (key_version, digest) AS (
-            SELECT * FROM unnest($1::smallint[], $2::bytea[])
-        )
-        SELECT proof.id, proof.proof_digest, proof.digest_key_version,
-               proof.issuer_application_id, issuer.app_id AS issuer_app_id,
-               proof.subject_principal_id,
-               proof.subject_kind::text AS subject_kind,
-               proof.organization_id,
-               proof.membership_id, proof.parent_access_token_id, proof.endpoint_id,
-               proof.request_method, proof.request_path, proof.request_body_sha256,
-               proof.endpoint_version, proof.request_metadata,
-               proof.subject_auth_epoch, proof.membership_authz_epoch,
-               proof.issuer_auth_epoch, proof.audience_auth_epoch,
-               proof.expires_at, clock_timestamp() AS checked_at,
-               proof.consumed_at, proof.revoked_at
-        FROM supplied_digest
-        JOIN iam.obo_proofs AS proof
-          ON proof.digest_key_version = supplied_digest.key_version
-         AND proof.proof_digest = supplied_digest.digest
-        JOIN iam.applications AS issuer
-          ON issuer.organization_id = proof.organization_id
-         AND issuer.id = proof.issuer_application_id
-        JOIN iam.application_obo_endpoints AS endpoint
-          ON endpoint.organization_id = proof.organization_id
-         AND endpoint.application_id = proof.audience_application_id
-         AND endpoint.endpoint_id = proof.endpoint_id
-         AND endpoint.path = proof.request_path
-        WHERE proof.audience_application_id = $3
-          AND proof.organization_id = $4
-        ",
+        "SELECT * FROM iam_private.lookup_application_obo_proof($1, $2, $3)",
     )
     .bind(versions)
     .bind(digest_bytes)
     .bind(client.application_id)
-    .bind(client.organization_id)
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|_| ApiError::internal("obo_verify_lookup"))?
@@ -870,27 +797,15 @@ fn validate_verify(input: &OboVerifyRequest) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// The subject's active membership in the issuing Application's organization.
-///
-/// Only an unscoped subject token needs this: a bound token already carries the
-/// exact membership it was issued against. The definer helper discloses nothing
-/// but the identifier and confers no authority; the exchange authority lock
-/// rechecks the whole chain before any proof is minted.
-async fn resolve_subject_membership(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    organization_id: Uuid,
-    subject_id: Uuid,
-    subject_kind: &str,
-) -> Result<Option<Uuid>, ApiError> {
-    sqlx::query_scalar::<_, Option<Uuid>>(
-        "SELECT iam_private.current_subject_membership($1, $2, $3::iam.principal_kind)",
-    )
-    .bind(organization_id)
-    .bind(subject_id)
-    .bind(subject_kind)
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(|_| ApiError::internal("obo_subject_membership"))
+fn selected_membership(memberships: &[(Uuid, Uuid)]) -> Result<(Uuid, Uuid), ApiError> {
+    match memberships {
+        [membership] => Ok(*membership),
+        [] => Err(ApiError::forbidden("obo_organization_not_authorized")),
+        _ => Err(ApiError::validation(
+            "org_id",
+            "is required when more than one organization is authorized",
+        )),
+    }
 }
 
 async fn install_subject_context(
@@ -922,88 +837,7 @@ async fn exchange_replay_is_live(
     organization_id: Uuid,
 ) -> Result<bool, ApiError> {
     sqlx::query_scalar::<_, bool>(
-        r"
-        WITH wall_clock AS MATERIALIZED (
-            SELECT clock_timestamp() AS value
-        )
-        SELECT EXISTS (
-            SELECT 1
-            FROM wall_clock
-            JOIN iam.obo_proofs AS proof ON TRUE
-            JOIN iam.applications AS issuer_application
-              ON issuer_application.organization_id = proof.organization_id
-             AND issuer_application.id = proof.issuer_application_id
-             AND issuer_application.review_status = 'verified'
-             AND issuer_application.deleted_at IS NULL
-            JOIN iam.principals AS issuer
-              ON issuer.id = issuer_application.id
-             AND issuer.kind = 'application'
-             AND issuer.status = 'active'
-             AND issuer.auth_epoch = proof.issuer_auth_epoch
-            JOIN iam.applications AS audience_application
-              ON audience_application.organization_id = proof.organization_id
-             AND audience_application.id = proof.audience_application_id
-             AND audience_application.review_status = 'verified'
-             AND audience_application.deleted_at IS NULL
-            JOIN iam.principals AS audience
-              ON audience.id = audience_application.id
-             AND audience.kind = 'application'
-             AND audience.status = 'active'
-             AND audience.auth_epoch = proof.audience_auth_epoch
-            JOIN iam.principals AS subject
-              ON subject.id = proof.subject_principal_id
-             AND subject.kind = proof.subject_kind
-             AND subject.status = 'active'
-             AND subject.auth_epoch = proof.subject_auth_epoch
-            JOIN iam.organization_memberships AS membership
-              ON membership.organization_id = proof.organization_id
-             AND membership.id = proof.membership_id
-             AND membership.principal_id = proof.subject_principal_id
-             AND membership.principal_kind = proof.subject_kind
-             AND membership.status = 'active'
-             AND membership.authz_epoch = proof.membership_authz_epoch
-            JOIN iam.access_tokens AS parent
-              ON parent.id = proof.parent_access_token_id
-             AND parent.client_application_id = proof.issuer_application_id
-             AND parent.subject_auth_epoch = subject.auth_epoch
-             AND (
-                 (parent.organization_id = proof.organization_id
-                  AND parent.membership_id = proof.membership_id
-                  AND parent.membership_authz_epoch = membership.authz_epoch)
-                 OR (parent.organization_id IS NULL
-                     AND parent.membership_id IS NULL
-                     AND parent.membership_authz_epoch IS NULL)
-             )
-             AND iam_private.application_token_allows_membership(parent.id, membership.id)
-             AND parent.client_auth_epoch = issuer.auth_epoch
-             AND parent.revoked_at IS NULL
-             AND parent.expires_at > wall_clock.value
-            JOIN iam.authentication_sessions AS session
-             ON session.id = parent.authentication_session_id
-             AND session.status = 'active'
-             AND session.idle_expires_at > wall_clock.value
-             AND session.absolute_expires_at > wall_clock.value
-            JOIN iam.application_obo_endpoints AS endpoint
-              ON endpoint.organization_id = proof.organization_id
-             AND endpoint.application_id = proof.audience_application_id
-             AND endpoint.endpoint_id = proof.endpoint_id
-             AND endpoint.path = proof.request_path
-             AND endpoint.version = proof.endpoint_version
-             AND endpoint.status = 'active'
-            WHERE proof.id = $1
-              AND proof.issuer_application_id = $2
-              AND proof.organization_id = $3
-              AND proof.consumed_at IS NULL
-              AND proof.revoked_at IS NULL
-              AND proof.expires_at > wall_clock.value
-              AND EXISTS (
-                  SELECT 1
-                  FROM iam.access_token_scopes AS token_scope
-                  WHERE token_scope.access_token_id = parent.id
-                    AND token_scope.scope = 'obo.issue'
-              )
-        )
-        ",
+        "SELECT * FROM iam_private.application_obo_exchange_replay_is_live($1, $2, $3)",
     )
     .bind(proof_id)
     .bind(issuer_application_id)
@@ -1019,99 +853,7 @@ async fn load_current_context(
     audience_application_id: Uuid,
 ) -> Result<CurrentProofContext, ApiError> {
     sqlx::query_as::<_, CurrentProofContext>(
-        r"
-        WITH wall_clock AS MATERIALIZED (
-            SELECT clock_timestamp() AS value
-        )
-        SELECT organization.org_id,
-               COALESCE(carbon.carbon_id, silicon.global_silicon_id) AS subject_public_id,
-               subject.auth_epoch AS subject_auth_epoch,
-               membership.authz_epoch AS membership_authz_epoch,
-               issuer.auth_epoch AS issuer_auth_epoch,
-               audience.auth_epoch AS audience_auth_epoch,
-               EXISTS (
-                   SELECT 1
-                   FROM iam.access_tokens AS parent
-                   JOIN iam.authentication_sessions AS session
-                     ON session.id = parent.authentication_session_id
-                    AND session.status = 'active'
-                    AND session.idle_expires_at > wall_clock.value
-                    AND session.absolute_expires_at > wall_clock.value
-                   WHERE parent.id = $6
-                     AND parent.client_application_id = $4
-                     AND parent.subject_principal_id = $1
-                     AND parent.subject_auth_epoch = subject.auth_epoch
-                     AND (
-                         (parent.organization_id = $2
-                          AND parent.membership_id = $3
-                          AND parent.membership_authz_epoch = membership.authz_epoch)
-                         OR (parent.organization_id IS NULL
-                             AND parent.membership_id IS NULL
-                             AND parent.membership_authz_epoch IS NULL)
-                     )
-                     AND parent.client_auth_epoch = issuer.auth_epoch
-                     AND parent.revoked_at IS NULL
-                     AND parent.expires_at > wall_clock.value
-                     AND EXISTS (
-                         SELECT 1 FROM iam.access_token_scopes AS token_scope
-                         WHERE token_scope.access_token_id = parent.id
-                           AND token_scope.scope = 'obo.issue'
-                     )
-               ) AS parent_active,
-               (endpoint.path = $10 AND endpoint.version = $8
-                AND endpoint.status = 'active') AS endpoint_active
-        FROM wall_clock
-        JOIN iam.organizations AS organization ON TRUE
-        JOIN iam.organization_memberships AS membership
-          ON membership.organization_id = organization.id
-         AND membership.id = $3
-         AND membership.principal_id = $1
-         AND membership.principal_kind = $9::iam.principal_kind
-         AND membership.status = 'active'
-        JOIN iam.principals AS subject
-          ON subject.id = membership.principal_id
-         AND subject.kind = membership.principal_kind
-         AND subject.status = 'active'
-        LEFT JOIN iam.carbons AS carbon
-          ON carbon.id = subject.id
-         AND subject.kind = 'carbon'
-         AND carbon.deleted_at IS NULL
-        LEFT JOIN iam.silicons AS silicon
-          ON silicon.id = subject.id
-         AND subject.kind = 'silicon'
-         AND silicon.organization_id = organization.id
-         AND silicon.membership_id = membership.id
-         AND silicon.provisioning_status = 'active'
-         AND silicon.deleted_at IS NULL
-        JOIN iam.applications AS issuer_application
-          ON issuer_application.organization_id = organization.id
-         AND issuer_application.id = $4
-         AND issuer_application.review_status = 'verified'
-         AND issuer_application.deleted_at IS NULL
-        JOIN iam.principals AS issuer
-          ON issuer.id = issuer_application.id
-         AND issuer.kind = 'application'
-         AND issuer.status = 'active'
-        JOIN iam.applications AS audience_application
-          ON audience_application.organization_id = organization.id
-         AND audience_application.id = $5
-         AND audience_application.review_status = 'verified'
-         AND audience_application.deleted_at IS NULL
-        JOIN iam.principals AS audience
-          ON audience.id = audience_application.id
-         AND audience.kind = 'application'
-         AND audience.status = 'active'
-        JOIN iam.application_obo_endpoints AS endpoint
-          ON endpoint.organization_id = organization.id
-         AND endpoint.application_id = audience_application.id
-         AND endpoint.endpoint_id = $7
-        WHERE organization.id = $2
-          AND organization.status = 'active'
-          AND (
-              (subject.kind = 'carbon' AND carbon.id IS NOT NULL)
-              OR (subject.kind = 'silicon' AND silicon.id IS NOT NULL)
-          )
-        ",
+        "SELECT * FROM iam_private.application_obo_load_current_context($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(proof.subject_principal_id)
     .bind(proof.organization_id)
@@ -1236,6 +978,15 @@ mod tests {
         security::ApplicationClient,
     };
 
+    #[test]
+    fn subject_organization_selection_is_explicit_when_ambiguous() {
+        let first = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let second = (Uuid::from_u128(3), Uuid::from_u128(4));
+        assert_eq!(super::selected_membership(&[first]).ok(), Some(first));
+        assert!(super::selected_membership(&[]).is_err());
+        assert!(super::selected_membership(&[first, second]).is_err());
+    }
+
     const BODY_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const IDEMPOTENCY_KEY: &str = "018f47ac-75c7-7f84-a6b2-9c2a2617c155";
 
@@ -1287,6 +1038,7 @@ mod tests {
     #[test]
     fn exchange_idempotency_is_bound_to_the_exact_subject_token() {
         let request = |subject_token: &str| OboExchangeRequest {
+            org_id: None,
             subject_token: subject_token.to_owned(),
             audience: "documents".to_owned(),
             endpoint_id: "documents.read".to_owned(),

@@ -167,12 +167,6 @@ pub(super) struct MembershipResponse {
     pub(super) updated_at: OffsetDateTime,
 }
 
-#[derive(Debug, Serialize)]
-pub(super) struct MembershipPage {
-    pub(super) items: Vec<MembershipResponse>,
-    pub(super) page: PageInfo,
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(clippy::option_option)]

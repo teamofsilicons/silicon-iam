@@ -701,8 +701,6 @@
     "description": "Current active membership bound to the authenticated token or verified proof, audience, organization, principal and testing plane. Use on first login and cache misses; webhook snapshots are asynchronous updates, not prerequisites for initial access. org_role requires roles.read and tags requires memberships.read. Null means undisclosed, not member or empty tags. OBO disclosure uses the intersection of the parent token scopes and recipient application's currently approved scopes. The binding authorizes no action outside the verified proof's endpoint/request. Do not reuse it for a different principal, membership, epoch, audience, organization, environment or effective scope set. Never fill undisclosed fields from a broader cached token. Introspect current bearer tokens again before relying on cached authority; a consumed OBO proof is single-use.",
     "required": [
       "principal_id",
-      "actor_type",
-      "public_id",
       "organization_id",
       "org_id",
       "membership_id",
@@ -1000,14 +998,149 @@
       }
     }
   },
+  "BatchLoginSelection": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "app_id",
+      "org_ids",
+      "scope_version",
+      "approved_scopes"
+    ],
+    "properties": {
+      "scope_version": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Version of the consent view the user reviewed."
+      },
+      "approved_scopes": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string"
+        },
+        "description": "Explicitly approved full effective scope set; external entries use obo:{app_id}:{endpoint_id}."
+      },
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "org_ids": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 1000,
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/components/schemas/OrgId"
+        },
+        "description": "Explicit user selection for this app; existing grants are preserved."
+      }
+    }
+  },
+  "BatchLoginRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "applications"
+    ],
+    "properties": {
+      "applications": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 100,
+        "items": {
+          "$ref": "#/components/schemas/BatchLoginSelection"
+        },
+        "description": "Unique app IDs, each with its own organization selection."
+      },
+      "redirect_uri": {
+        "type": "string",
+        "format": "uri",
+        "maxLength": 2048
+      }
+    }
+  },
+  "BatchLoginOrganizations": {
+    "type": "object",
+    "required": [
+      "items"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/LoginOrganizations"
+        }
+      }
+    }
+  },
+  "BatchLoginToken": {
+    "type": "object",
+    "required": [
+      "app_id",
+      "slt",
+      "expires_in",
+      "expires_at"
+    ],
+    "properties": {
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "slt": {
+        "type": "string"
+      },
+      "expires_in": {
+        "type": "integer"
+      },
+      "expires_at": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Absolute token expiry; unchanged by an idempotent replay."
+      },
+      "request_id": {
+        "type": "string",
+        "format": "uuid"
+      }
+    }
+  },
+  "BatchLoginTokens": {
+    "type": "object",
+    "required": [
+      "items"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 100,
+        "items": {
+          "$ref": "#/components/schemas/BatchLoginToken"
+        }
+      }
+    }
+  },
   "ShortLivedTokenRequest": {
     "type": "object",
     "required": [
       "app_id",
-      "org_ids"
+      "org_ids",
+      "scope_version",
+      "approved_scopes"
     ],
     "additionalProperties": false,
     "properties": {
+      "scope_version": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Version of the consent view the user reviewed."
+      },
+      "approved_scopes": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string"
+        },
+        "description": "Explicitly approved full effective scope set; external entries use obo:{app_id}:{endpoint_id}."
+      },
       "app_id": {
         "$ref": "#/components/schemas/AppId"
       },
@@ -1051,9 +1184,25 @@
     "type": "object",
     "required": [
       "app_id",
-      "items"
+      "items",
+      "scope_version",
+      "consent_required",
+      "scopes"
     ],
     "properties": {
+      "scope_version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "consent_required": {
+        "type": "boolean"
+      },
+      "scopes": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ApplicationConsentScope"
+        }
+      },
       "app_id": {
         "$ref": "#/components/schemas/AppId"
       },
@@ -1129,8 +1278,7 @@
       "refresh_token",
       "token_type",
       "expires_in",
-      "scope",
-      "actor"
+      "scope"
     ],
     "properties": {
       "access_token": {
@@ -3722,6 +3870,26 @@
     "additionalProperties": false,
     "description": "Requires the authenticated Carbon to be a current active owner/admin of org_id.",
     "properties": {
+      "app_scope": {
+        "$ref": "#/components/schemas/ApplicationScope"
+      },
+      "webhook_scope": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/components/schemas/ApplicationWebhookScope"
+        }
+      },
+      "obo_review_message": {
+        "type": "string",
+        "maxLength": 10000
+      },
+      "testing_idle_days": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 3650,
+        "default": 30
+      },
       "app_id": {
         "$ref": "#/components/schemas/ApplicationHandle"
       },
@@ -3775,6 +3943,26 @@
     "minProperties": 1,
     "additionalProperties": false,
     "properties": {
+      "app_scope": {
+        "$ref": "#/components/schemas/ApplicationScope"
+      },
+      "webhook_scope": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/components/schemas/ApplicationWebhookScope"
+        }
+      },
+      "obo_review_message": {
+        "type": "string",
+        "maxLength": 10000
+      },
+      "testing_idle_days": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 3650,
+        "default": 30
+      },
       "app_name": {
         "type": [
           "string",
@@ -3822,10 +4010,42 @@
       "has_pending_changes",
       "version",
       "created_at",
-      "updated_at"
+      "updated_at",
+      "app_scope",
+      "effective_app_scope",
+      "webhook_scope",
+      "scope_version",
+      "testing_idle_days"
     ],
     "description": "Organization-owned Application. created_by is immutable provenance and does not confer management authority.",
     "properties": {
+      "app_scope": {
+        "$ref": "#/components/schemas/ApplicationScope"
+      },
+      "webhook_scope": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/components/schemas/ApplicationWebhookScope"
+        }
+      },
+      "obo_review_message": {
+        "type": "string",
+        "maxLength": 10000
+      },
+      "testing_idle_days": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 3650,
+        "default": 30
+      },
+      "effective_app_scope": {
+        "$ref": "#/components/schemas/ApplicationScope"
+      },
+      "scope_version": {
+        "type": "integer",
+        "minimum": 1
+      },
       "id": {
         "type": "string",
         "format": "uuid"
@@ -4077,7 +4297,7 @@
           "null"
         ],
         "format": "uuid",
-        "description": "Internal Application UUID for binding webhook-approval step-up. Present on current reads and new mutation responses; optional for compatibility with older persisted idempotency responses."
+        "description": "Internal Application UUID for binding webhook-approval step-up. Returned on webhook configuration reads and mutations."
       },
       "active_url": {
         "type": [
@@ -4129,7 +4349,7 @@
       "url"
     ],
     "additionalProperties": false,
-    "description": "Replaces only the reviewed destination candidate. It normally reuses the existing encrypted signing secret. An imported test Application still on its inherited production key must provide a new test-only secret. Supplying a secret for any replacement installs it for the new endpoint.",
+    "description": "Replaces only the reviewed destination candidate. It normally reuses the existing encrypted signing secret in production. Testing URL replacements install a supplied test-only secret or generate one when omitted and return webhook_signing_secret with its replay expiry. Supplying a secret for any replacement installs it for the new endpoint.",
     "properties": {
       "url": {
         "type": "string",
@@ -4147,7 +4367,7 @@
     "minLength": 32,
     "maxLength": 512,
     "pattern": "^[!-~]+$",
-    "description": "Caller-chosen Application webhook signing secret containing only non-whitespace ASCII characters. IAM encrypts it at rest and never generates it."
+    "description": "Caller-chosen Application webhook signing secret containing only non-whitespace ASCII characters. IAM encrypts it at rest. Testing webhook URL replacement may generate a fresh secret when one is not supplied."
   },
   "ApplicationWebhookSecretRotate": {
     "type": "object",
@@ -4372,7 +4592,7 @@
       "data": {
         "type": "object",
         "additionalProperties": true,
-        "description": "Event-type-specific authorized projection; never contains credentials or raw provider records. For carbon.updated.v1, changed_fields and the complete current state are captured at the aggregate version and filtered per Application by its effective after-change profile, email, and phone consent scopes. The recipient union is authorized Applications immediately before or after the change, so a before-only recipient receives no fields it can no longer read. For the closed organization-member Application vocabulary (organization/ownership, tag, trust, membership/directory/authorization, and Silicon lifecycle or completed credential rotation events), recipient union, complete current state, and exact changed_fields are frozen in the domain transaction and filtered by profile, organizations.read, memberships.read, roles.read, and Carbon-only email/phone scopes. Member events always use current.members as an array; organization.updated uses current.organization and requires organizations.read; tag and trust events use current.resource plus current.members so their independently versioned aggregate is retained. Before-only recipients keep union-scope-filtered changed_fields but receive only stable resource/version authorization tombstones. Workers never hydrate these events from later state. An affected resource is an Application-readable principal or organization projection with an effective data scope; invitations, SSO/webhook configuration, administrative/protocol controls, and an unassigned tag creation have no Application projection. organization.membership.profile_updated.v1 and rotation-request, configuration, subscription, and protocol/control events are excluded from this Application projection vocabulary. organization.membership.profile_updated.v1 is the organization-bound Silicon projection of that mutation: it contains the changed non-contact profile fields, complete current membership state, and before/after affected tags captured at the same Carbon version."
+        "description": "Event-type-specific authorized projection. Application delivery requires effective declared app scopes, user consent, selected active memberships, and matching webhook event categories. Application recipient unions, payloads, changed_fields, and resource versions are captured in the domain transaction; workers do not hydrate historical events from later state. self.profile.read exposes only display_name, profile_photo, description, and timezone; identity, contacts, membership status, and other data have separate scopes. self.organizations.read exposes organization identifiers, name, logo, description, and resource version, never SSO or administrative/security configuration. Member events use current.members; organization updates use current.organization. Captured invitation, governance, and tag-creation snapshots use current.resource and require organization.invitations.read, organization.governance.read, and organization.tags.read, respectively. Tag/trust changes may include current.resource plus current.members. Raw trust configuration requires organization.trust.read. self.trust.read exposes only membership.effective_trust from the user's perspective, with target_silicon_membership_id, trust, and advisory, and no raw defaults, rules, overrides, or rule identifiers. Before-only recipients receive stable resource/version authorization tombstones, not removed private fields. Application payloads never include credentials or raw provider records, SSO events, or Silicon credential-management and webhook/subscription configuration. A completed Silicon credential rotation may expose only its permitted authorization-epoch and access projection. Silicon subscriptions retain their separate event vocabulary. Applications receive carbon.updated.v1 with scope-filtered fields; organization.membership.profile_updated.v1 is the organization-bound Silicon notification of that profile mutation, not a second Application event."
       }
     }
   },
@@ -4565,11 +4785,16 @@
     "required": [
       "endpoint_id",
       "path",
-      "metadata"
+      "metadata",
+      "critical"
     ],
     "additionalProperties": false,
     "description": "Callable endpoint definition configurable only by a current owner/admin of the Application's organization.",
     "properties": {
+      "critical": {
+        "type": "boolean",
+        "description": "Whether calling this endpoint requires approval from the audience application."
+      },
       "endpoint_id": {
         "type": "string",
         "minLength": 3,
@@ -4708,8 +4933,11 @@
       "request"
     ],
     "additionalProperties": false,
-    "description": "Organization is derived from App A and App B; org_id and X-Org-ID are not accepted.",
+    "description": "Delegates as the same user to any declared and consented audience; org_id selects a user-authorized organization when more than one is available.",
     "properties": {
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
       "subject_token": {
         "type": "string",
         "minLength": 32,
@@ -4746,6 +4974,9 @@
     "additionalProperties": false,
     "description": "The idempotency replay envelope for this secret response expires no later than expires_at.",
     "properties": {
+      "testing_context": {
+        "$ref": "#/components/schemas/OboTestingContext"
+      },
       "access_proof": {
         "type": "string",
         "pattern": "^obo_[A-Za-z0-9_-]{43}$"
@@ -4838,5 +5069,581 @@
         "format": "date-time"
       }
     }
+  },
+  "ApplicationScope": {
+    "type": "object",
+    "required": [
+      "iam",
+      "external"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "iam": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string"
+        },
+        "description": "IAM permissions; defaults to self.identity.read and self.profile.read on creation."
+      },
+      "external": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ApplicationExternalScope"
+        }
+      }
+    }
+  },
+  "ApplicationExternalScope": {
+    "type": "object",
+    "required": [
+      "app_id",
+      "endpoint_id"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "endpoint_id": {
+        "type": "string"
+      }
+    }
+  },
+  "ApplicationConsentScope": {
+    "type": "object",
+    "required": [
+      "scope",
+      "description",
+      "critical"
+    ],
+    "properties": {
+      "scope": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
+      "critical": {
+        "type": "boolean"
+      },
+      "app_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    }
+  },
+  "ApplicationScopeRequestCreate": {
+    "type": "object",
+    "required": [
+      "app_scope",
+      "message"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "app_scope": {
+        "$ref": "#/components/schemas/ApplicationScope"
+      },
+      "message": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 10000
+      }
+    }
+  },
+  "ApplicationScopeMessageCreate": {
+    "type": "object",
+    "required": [
+      "message"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "message": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 10000
+      }
+    }
+  },
+  "ApplicationScopeDecision": {
+    "type": "object",
+    "required": [
+      "decision"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "decision": {
+        "type": "string",
+        "enum": [
+          "approve",
+          "deny"
+        ]
+      },
+      "reason": {
+        "type": "string",
+        "maxLength": 10000,
+        "description": "Required and nonempty when denying a request."
+      }
+    }
+  },
+  "ApplicationTestingEnvironmentCreate": {
+    "type": "object",
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "description": {
+        "type": "string",
+        "maxLength": 2000
+      },
+      "iam_test_key": {
+        "type": "string",
+        "description": "Existing IAM testing key; absent creates a new environment",
+        "invalid is rejected.": null
+      }
+    }
+  },
+  "ApplicationTestingEnvironmentCreated": {
+    "type": "object",
+    "required": [
+      "environment_id",
+      "org_id",
+      "name",
+      "iam_test_key",
+      "app_id",
+      "app_secret",
+      "dependencies",
+      "secret_replay_expires_at"
+    ],
+    "properties": {
+      "environment_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "name": {
+        "type": "string"
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "iam_test_key": {
+        "type": "string"
+      },
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "app_secret": {
+        "type": "string"
+      },
+      "dependencies": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/AppId"
+        }
+      },
+      "secret_replay_expires_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "ApplicationTestingEnvironment": {
+    "type": "object",
+    "required": [
+      "environment_id",
+      "org_id",
+      "name",
+      "last_activity_at",
+      "retention_days"
+    ],
+    "properties": {
+      "environment_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "name": {
+        "type": "string"
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "last_activity_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "retention_days": {
+        "type": "integer",
+        "minimum": 1
+      }
+    }
+  },
+  "ApplicationTestingEnvironmentPage": {
+    "type": "object",
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ApplicationTestingEnvironment"
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "ApplicationScopeCatalog": {
+    "type": "object",
+    "required": [
+      "items"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ApplicationConsentScope"
+        }
+      }
+    }
+  },
+  "ApplicationScopeMessage": {
+    "type": "object",
+    "required": [
+      "id",
+      "author",
+      "message",
+      "created_at"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "author": {
+        "$ref": "#/components/schemas/ApplicationScopeMessageAuthor"
+      },
+      "message": {
+        "type": "string"
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "ApplicationScopeRequest": {
+    "type": "object",
+    "required": [
+      "id",
+      "app_id",
+      "scopes",
+      "status",
+      "version",
+      "created_at",
+      "updated_at",
+      "messages",
+      "can_decide"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "target_app_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "scopes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "approved",
+          "denied",
+          "superseded"
+        ]
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "updated_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "messages": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ApplicationScopeMessage"
+        }
+      },
+      "can_decide": {
+        "type": "boolean"
+      }
+    }
+  },
+  "ApplicationScopeRequestList": {
+    "type": "object",
+    "required": [
+      "items"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ApplicationScopeRequest"
+        }
+      }
+    }
+  },
+  "ApplicationBundleCreate": {
+    "type": "object",
+    "required": [
+      "org_id",
+      "app_id",
+      "app_ids"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "app_id": {
+        "$ref": "#/components/schemas/ApplicationHandle"
+      },
+      "app_name": {
+        "type": "string",
+        "maxLength": 200
+      },
+      "app_logo": {
+        "type": "string",
+        "format": "uri",
+        "maxLength": 2048
+      },
+      "app_ids": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 100,
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/components/schemas/AppId"
+        }
+      }
+    }
+  },
+  "ApplicationBundlePatch": {
+    "type": "object",
+    "minProperties": 1,
+    "additionalProperties": false,
+    "properties": {
+      "app_name": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 200
+      },
+      "app_logo": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri",
+        "maxLength": 2048
+      },
+      "app_ids": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 100,
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/components/schemas/AppId"
+        }
+      }
+    }
+  },
+  "ApplicationBundle": {
+    "type": "object",
+    "required": [
+      "id",
+      "bundle_id",
+      "org_id",
+      "app_ids",
+      "version",
+      "created_at",
+      "updated_at"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "bundle_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "org_id": {
+        "$ref": "#/components/schemas/OrgId"
+      },
+      "app_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "app_logo": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri"
+      },
+      "app_ids": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/AppId"
+        }
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "updated_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "ApplicationBundleList": {
+    "type": "object",
+    "required": [
+      "items"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ApplicationBundle"
+        }
+      }
+    }
+  },
+  "ApplicationBundleLoginOrganizations": {
+    "type": "object",
+    "required": [
+      "bundle",
+      "items"
+    ],
+    "properties": {
+      "bundle": {
+        "$ref": "#/components/schemas/ApplicationBundle"
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/LoginOrganizations"
+        }
+      }
+    }
+  },
+  "ApplicationWebhookScope": {
+    "type": "string",
+    "enum": [
+      "full",
+      "membership",
+      "updates",
+      "trust"
+    ]
+  },
+  "ApplicationScopeMessageAuthor": {
+    "type": "object",
+    "required": [
+      "principal_id",
+      "type",
+      "public_id"
+    ],
+    "properties": {
+      "principal_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "carbon",
+          "silicon",
+          "system"
+        ]
+      },
+      "public_id": {
+        "type": "string"
+      }
+    }
+  },
+  "OboTestingContext": {
+    "type": "object",
+    "required": [
+      "app_id",
+      "app_secret",
+      "iam_test_key"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "app_secret": {
+        "type": "string",
+        "description": "Audience test credential forwarded only for this isolated downstream request."
+      },
+      "iam_test_key": {
+        "type": "string"
+      }
+    }
+  },
+  "ApplicationReadObject": {
+    "type": "object",
+    "additionalProperties": true,
+    "description": "Scope-filtered application bearer response. Fields absent from approved user scopes are omitted. An omitted field is undisclosed and grants no authority."
   }
 }

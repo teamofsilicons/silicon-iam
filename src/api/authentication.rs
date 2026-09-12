@@ -83,7 +83,15 @@ impl FromRequestParts<ApiState> for Authenticated {
         parts: &mut Parts,
         state: &ApiState,
     ) -> Result<Self, Self::Rejection> {
-        Ok(Self(authenticate_bearer(state, &parts.headers).await?))
+        let access = authenticate_bearer(state, &parts.headers).await?;
+        if let Some(application_id) = access.client_application_id {
+            crate::features::testing_environments::touch_application_activity(
+                state,
+                application_id,
+            )
+            .await;
+        }
+        Ok(Self(access))
     }
 }
 

@@ -1,85 +1,100 @@
 # On-behalf-of proofs and delegated authority
 
-On-behalf-of lets one application call another on a user's behalf, without either holding the other's credentials. It is strictly same-organization, and every proof is bound to one exact request.
+On-behalf-of access lets application A call a registered endpoint on application B for an authenticated user. Applications may belong to different organizations. IAM issues a short-lived, single-use proof bound to the precise downstream request.
 
-**OBO never crosses an organization.** IAM derives the organization from the two authenticated applications and refuses anything else. `X-Org-ID` is not accepted on these endpoints at all.
+## Authority before exchange
 
-**OBO never leaves the calling Application's own organization.** A subject token bound to a different organization is rejected with `403 obo_organization_mismatch`. A multi-organization subject token reaches only the user's explicitly selected active memberships. IAM resolves the calling Application's organization and refuses OBO when it is unselected or membership is inactive. The user must select that organization in IAM; Applications cannot supply `org_id` to choose it on the user's behalf.
+B publishes an `obo_endpoints` catalog. A declares each required endpoint in `app_scope.external`. Critical endpoints require B's review approval, and the user must consent to A's effective permissions and selected organizations. The subject token must be an active application access token issued to A. An IAM session token or a token issued to another application is rejected.
 
-## The shape of it
+The selected user's organization is independent of either application's owning organization. Send optional body `org_id` to choose one of the token's active, user-selected memberships. It may be omitted only when exactly one such membership is available. Selection cannot widen the grant. OBO routes reject `X-Org-ID`; use the exchange body's field instead.
 
-Application A wants to call Application B. Instead of sending B a token that would work for any request, A asks IAM for a proof that works for *exactly one* request — and B validates it with IAM before doing anything.
+## Discover, exchange, call, verify
 
-1. **Discover.** `GET /api/v1/obo-access/applications/{app_id}/endpoints` lists what B exposes and what metadata each endpoint requires.
+1. A discovers B's base URL through `GET /api/v1/application-directory/{app_id}` and endpoints through `GET /api/v1/obo-access/applications/{app_id}/endpoints`, using A's Basic credentials.
 
-2. **Exchange.** A calls `POST /api/v1/obo-access/exchanges` with the subject token, the audience, the endpoint, the metadata, and a description of the request it intends to make. IAM returns a proof token.
+2. A hashes the exact downstream body bytes and calls `POST /api/v1/obo-access/exchanges` with its Basic credentials, a signed request binding, and an idempotency key.
 
-3. **Call.** A sends B the real request — including any file bytes — with the proof attached.
+3. A sends the actual body directly to B with the returned `access_proof`. IAM receives metadata and a digest, not the uploaded file or downstream body.
 
-4. **Verify.** B calls `POST /api/v1/obo-access/verify`. IAM consumes the proof and returns the bound actor, endpoint and metadata. Only then does B execute.
+4. B calls `POST /api/v1/obo-access/verify` using B's own Basic credentials and the actual request's method, path, and body hash. IAM consumes the proof. B then applies its resource policy and executes the request.
 
 ## The exchange request
 
 ```
 {
-  "subject_token": "oat_...",
-  "audience": "application-b-id",
+  "subject_token": "oat_…",
+  "audience": "storage>drive",
   "endpoint_id": "files.upload",
-  "metadata": {
-    "filename": "report.pdf",
-    "content_type": "application/pdf"
-  },
+  "org_id": "customer",
+  "metadata": {"filename":"report.pdf", "content_type":"application/pdf"},
+  "request": {"method":"POST", "body_sha256":"<64 lowercase hexadecimal characters>"}
+}
+```
+
+The method is canonical uppercase. `body_sha256` is SHA-256 of the exact bytes A will send. The path comes from B's registered endpoint; it is not supplied as an exchange override. Metadata must match the registered schema's required keys and types.
+
+```
+X-OBO-Timestamp: <Unix seconds>
+X-OBO-Signature: <64 lowercase hexadecimal characters>
+
+signature = lowercase_hex(HMAC_SHA256(
+  app_secret,
+  timestamp + "." + method + "." + registered_path + "." + body_sha256 + "." + idempotency_key
+))
+```
+
+The OBO signature is raw lowercase hexadecimal; it does not use the webhook signature's `v1=` prefix. Use the exact `Idempotency-Key` header in the signed input. Timestamp checks reject stale signatures. A proof expires after at most 60 seconds and cannot authorize another method, path, body, subject, or audience.
+
+## Single-use verification
+
+```
+POST /api/v1/obo-access/verify
+Authorization: Basic <recipient application credentials>
+Content-Type: application/json
+
+{
+  "access_proof": "<proof from IAM>",
   "request": {
     "method": "POST",
-    "body_sha256": "hash of the exact body bytes"
+    "path": "/v1/files",
+    "body_sha256": "<hash of actual received bytes>"
   }
 }
 ```
 
-Note what the exchange does *not* carry: the file. Only its digest. The bytes travel directly from A to B, and the proof commits to what they will be.
+Verification accepts no idempotency key and must not be automatically retried. A consumed proof returns `409`; an expired proof returns `410 proof_expired`. An uncertain result is not permission to execute. Obtain a new proof for a new attempt and use the recipient's own operation-level deduplication where necessary.
 
-The request is additionally signed:
-
-```
-X-OBO-Timestamp: <unix seconds>
-X-OBO-Signature: HMAC-SHA256(
-  app_secret,
-  timestamp + "." + method + "." + path + "." + body_sha256 + "." + idempotency_key
-)
-```
-
-## Why the proof is bound to the request
-
-Because the proof commits to the method, the path, the body digest and the idempotency key, it cannot be lifted and replayed against a different call. A proof minted to upload `report.pdf` cannot be used to upload anything else, or to hit a different endpoint, even by the application that legitimately obtained it.
-
-It is valid for **one request or sixty seconds, whichever comes first**.
-
-## Verification is single-use, deliberately
-
-`POST /api/v1/obo-access/verify` accepts **no** `Idempotency-Key`, never stores or replays a successful response, and returns `409` on every attempt after the proof is consumed.
-
-This is the one endpoint in the contract that is deliberately not idempotent, and it must not be retried. If your HTTP layer retries automatically, exempt this path — a retry after a successful verification looks exactly like a replay attack and will be refused as one.
-
-The exchange itself *is* idempotent, but its replay envelope expires no later than the proof does.
+The exchange is idempotent: retry its exact payload with the original key after an uncertain response. Its stored response expires no later than the proof, and replay never extends the original deadline. If a retry needs a fresh timestamp, sign the same method, path, digest, and idempotency key again.
 
 ## Current delegated authorization
 
-Successful verification returns `authorization` alongside the actor. It is a live binding to principal, membership ID/version, authorization epoch, organization, audience and testing environment, read before consuming the proof. Role and tag disclosure requires `roles.read` and `memberships.read`, respectively, in both the parent token and the recipient's currently approved scopes. Null means undisclosed; never infer administrator authority from a missing field or an unbound cached role. This binding applies only to the verified endpoint and exact request. The audience still applies its own resource policy; proof validity alone does not grant blanket access to every resource.
+Verification rechecks the user, active membership, parent session, calling and receiving applications, endpoint configuration, current scope approvals, consent, and authorization epochs. Its response includes actor, selected `org_id`, endpoint, metadata, expiry, consumption time, and `authorization`. Optional role and tag information remains scope-filtered; an undisclosed value grants no default authority. The proof authorizes only its registered endpoint and exact request. The recipient still decides whether that user may act on the requested resource.
 
-## Exposing endpoints
+## Publishing endpoints
 
-An application declares its OBO surface through `obo_endpoints` on registration or update. Each entry has a stable `endpoint_id`, an absolute `path`, and a `metadata` schema whose top-level keys are all required at exchange time.
+```
+{
+  "endpoint_id": "files.upload",
+  "path": "/v1/files",
+  "metadata": {"filename":{"type":"string"}, "content_type":{"type":"string"}},
+  "critical": true
+}
+```
 
-An existing `endpoint_id` cannot be repointed at a different path. That would silently redirect callers who believe they are still talking to the endpoint they discovered.
+Every endpoint requires an explicit boolean `critical`. Its stable `endpoint_id` cannot be moved to another path. Metadata keys are required at exchange time. Current owning-organization owners/admins configure the catalog. Published endpoints are discoverable by verified applications across organizations. B can set `obo_review_message` to describe what applicants should explain in critical-scope review threads.
 
-Only an organization owner or administrator can configure this, and the resulting catalogue is visible to every application in the same organization.
+## OBO in application testing
 
-## Failure modes worth handling
+All participating apps, tokens, and proofs must belong to the same testing environment. Recursive dependency import prepares the external apps A declared. An exchange may include `testing_context` with the recipient's test `app_id`, `app_secret`, and `iam_test_key`. Forward this only to that recipient over its secure application transport so it can authenticate against IAM and select its isolated test storage.
 
-| Status | Means | Do |
-| --- | --- | --- |
-| `403` | The subject token belongs to a different organization, its subject is not an active member of the caller's organization, or it lacks current OBO authority | Re-check the subject's membership in the calling Application's organization and the reviewed scope. |
-| `404` `not_found` | The target does not exist or is outside the caller's organization; those cases are intentionally indistinguishable | Do not retry without correcting the target or caller context. |
-| `409` | The proof was already consumed | Do not retry. Mint a new proof for a new request. |
-| `410` `proof_expired` | More than 60 seconds elapsed | Exchange again. Consider why the gap was that long. |
-| `422` | Metadata does not satisfy the declared schema | Re-read the catalogue; the audience may have changed it. |
+The presence of `app_secret` signals a test request; it is not proof of authenticity. The recipient verifies it against IAM with the environment key before accepting test authority. Production app secrets are never shared this way. Redact test credentials and root keys from logs. See Testing environments (`iam docs api/testing-environments`).
+
+## Failures
+
+| Status | Recovery |
+| --- | --- |
+| `403` | Check current subject authority, explicit selected membership, endpoint permission, review status, and both app states. |
+| `404` | Check the qualified target and endpoint in the selected data plane. |
+| `409` | A proof may already be consumed; do not replay verification. |
+| `410` | Obtain a new proof for the intended request. |
+| `422` | Refresh endpoint discovery and correct the metadata schema. |

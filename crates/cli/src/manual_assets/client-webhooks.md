@@ -1,6 +1,14 @@
 # Rust client webhook verification
 
-Silicon IAM pushes directory changes to every Application authorized for the affected resource. The SDK verifies the signature over the exact bytes and hands you a parsed event; deduplication is yours, because only your database can do it durably.
+Silicon IAM sends applications only the event categories and data covered by their current approved scopes, user consent, and selected memberships. The SDK verifies the signature over the exact bytes and hands you a parsed event; deduplication is yours, because only your database can do it durably.
+
+## Interpret application payloads by scope
+
+The event model also represents Silicon subscription events; being able to parse an event does not mean an application is entitled to receive it. Applications receive immutable recipient-specific projections captured when the change commits. Invitation, governance, and tag-definition events require `organization.invitations.read`, `organization.governance.read`, and `organization.tags.read`, respectively.
+
+`self.profile.read` discloses only display name, photo, description, and timezone. `self.organizations.read` discloses organization identifiers, name, logo, description, and version. `self.trust.read` exposes effective trust from the user’s perspective, not rules, defaults, or overrides. Raw trust configuration requires `organization.trust.read`.
+
+Application directory/governance scopes do not expose raw SSO events or Silicon credential-management and webhook/subscription configuration. A completed credential rotation can still notify an application of permitted authorization-epoch/access changes without exposing credentials. Silicon subscriptions use their separate event vocabulary and routing rules. Consult the webhook contract (`iam docs api/webhooks`) before assuming an event or field is available, and never replace undisclosed fields from a broader cached token.
 
 ## Verifying a delivery
 
@@ -34,7 +42,7 @@ What the verifier does before you see anything:
 
 ## Approve a pending destination
 
-Client 1.2.1 adds `applications().approve_webhook(app_id, version, &mutation)`. It activates a verified Application's pending first or replacement endpoint without changing Application status or scopes. The current owning organization's Carbon owner/admin or an IAM platform administrator with `applications.review` may call it. The creator field is audit metadata, not separate authority; legacy Applications still under platform review cannot use this route to become verified.
+Use `applications().approve_webhook(app_id, version, &mutation)`. It activates an under-review or verified application's pending first or replacement endpoint without changing Application status or scopes. The current owning organization's Carbon owner/admin or an IAM platform administrator with `applications.review` may call it. The creator field is audit metadata, not separate authority; legacy Applications still under platform review cannot use this route to become verified.
 
 ```
 let app_id = "acme>checkout";
@@ -51,9 +59,9 @@ The SDK sends the current Application version, idempotency key and assertion, wi
 
 ## Secret versions
 
-The Application supplies its initial secret during registration. Explicit `rotate_webhook_secret` accepts a caller-chosen successor and immediately uses it for new deliveries. IAM never generates Application webhook secrets. Rotation requires the current Application version and a verified-channel step-up assertion for `application.webhook_secret.rotate`.
+The Application supplies its initial secret during registration. Explicit `rotate_webhook_secret` accepts a caller-chosen successor and immediately uses it for new deliveries. Rotation requires the current Application version and a verified-channel step-up assertion for `application.webhook_secret.rotate`.
 
-Replacing the webhook URL normally does **not** rotate the key: IAM rebinds the same secret under an incremented version. The exception is an imported test Application still using an inherited production key. Its first test URL replacement must supply a test-only `webhook_secret`; the v1 response echoes it as `webhook_signing_secret` with `secret_replay_expires_at`. Those optional fields are absent from ordinary replacement responses.
+Replacing a production webhook URL rebinds its existing secret under an incremented version unless the request supplies a successor. In a testing environment, a URL replacement installs the supplied test-only `webhook_secret`, or generates one when omitted. The response returns `webhook_signing_secret` and `secret_replay_expires_at` whenever it installs a new secret.
 
 Keep every version that can still have an in-flight delivery:
 

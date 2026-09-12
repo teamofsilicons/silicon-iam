@@ -1,31 +1,16 @@
 # silicon-iam-cli
 
-Silicon IAM from the command line. Installs a single binary, `iam`.
+Silicon IAM from the command line. Installs a single binary, `iam`, built only on the
+stateless `silicon-iam-client` Rust package. This guide describes the current official contract.
+The hosted manual is [docs.iam.teamofsilicons.com/cli](https://docs.iam.teamofsilicons.com/cli).
 
-Local session safety, concurrent invocations and filesystem requirements:
-see [credential storage](storage.md).
-
-## CLI 1.4.1 — 2026-09-09
-
-This release adds `SILICON_HOME` as the default home base and expands
-`iam --help` (also `iam -h`) into the complete command reference, including
-nested commands, options, requirements and examples. Subcommand help remains
-focused on that command. Help works offline without reading credentials,
-writing configuration or checking for updates. The CLI still uses Rust client
-1.4.0; no backend API or migration change is required.
-
-See [storage precedence and configuration](storage.md#version-141-storage-base-and-overrides).
+For local session safety and storage precedence, see [credential storage](storage.md).
+Use `iam --help` for the full command reference, `iam app scopes --help` for scope reviews,
+and `iam -o json commands` for machine-readable command discovery. Help and bundled docs work offline.
 
 ## Current authorization without waiting for a webhook
 
-This contract was introduced in CLI/client **1.2.0**. CLI/client **1.4.0**
-requires the matching backend with base migrations through `0073`
-and testing overlay `9003`. Deploy those migrations, runtime
-grants and backend before publishing/adopting these packages.
-Publishing a crate does not deploy the API; verify the configured backend with
-`iam system version`. Historical 1.1.1 packages do not expose this contract.
-
-After an organization-bound Application login, use its secret and access token
+After an Application login with an explicit organization selection, use its secret and access token
 to fetch current membership authority. Omit secrets from the command line to
 use hidden prompts:
 
@@ -38,10 +23,10 @@ typed snapshot; text output explains membership, epoch, audience, environment,
 role and tags. `app token introspect` also includes it. No directory edit or
 webhook arrival is required, including after losing an application's local
 projection. First select the organization with
-`iam login --app-id 'acme>checkout' --grant-org acme`, then exchange the SLT.
+`iam login --app-id 'acme>checkout' --grant-org acme --approve-scopes`, then exchange the SLT.
 
-Role disclosure requires `roles.read`; tag disclosure requires
-`memberships.read`. Missing scope means **undisclosed**, not a default role or
+Role disclosure requires `self.membership.read`; tag disclosure requires
+`self.tags.read`. Missing scope means **undisclosed**, not a default role or
 empty tags. Inactive, wrong-application and wrong-organization tokens have no
 current organization authorization. An unscoped token reaches each explicitly selected organization
 where its subject has an active membership: `iam app token authorizations` lists them and
@@ -55,50 +40,24 @@ retry it after an uncertain result.
 
 ## Organization consent
 
-Migrations 0072/0073 change multi-organization login to explicit user selection
-and preserve OBO's single-organization binding with a multi-organization parent.
+Application login reviews all requested permissions before selecting organizations.
+OBO preserves one explicitly selected user organization per operation, even when the apps
+belong to different organizations.
 Only selected active memberships are returned. See [the consent guide](../ORGANIZATION_CONSENT.md).
 
 ## Installation
 
 ```sh
-cargo install silicon-iam-cli --version 1.4.1 --locked
+cargo install silicon-iam-cli --locked
 ```
 
-Release `1.4.1` requires Rust 1.98 or newer, bundles
-`silicon-iam-client` 1.4.0, and speaks HTTP API major `v1`. The crate/CLI
-SemVer and HTTP API major are separate version lines. Check the installed
-binary with `iam --version`, and inspect/negotiate with the configured service
-using `iam system version`.
+The CLI requires Rust 1.98 or newer and speaks HTTP API major `v1`. Package
+SemVer and HTTP API versions are separate. Inspect the installed binary with
+`iam --version`, negotiate with `iam system version`, and inspect supported
+contract lifecycle states with `iam api contracts`.
 
-Release 1.4.1 is built from
-[`v1.4.1`](https://github.com/teamofsilicons/silicon-iam/tree/v1.4.1/crates/cli);
-use its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.4.1/docs/cli/README.md)
-to audit that installed version. Later changes on `main` are unreleased until
-separately published. An automatic update may install a newer release on a
-later invocation; check `iam --version` again when collecting diagnostics.
-
-Release 1.4.0 added `--grant-org` and `--all-orgs` for explicit organization consent.
-It retains `iam app token authorizations`, which lists one snapshot per
-organization an access token currently reaches: exactly one for an
-organization-bound token, one per selected active membership for a multi-organization token, and
-none when no selected membership remains active. `iam app token
-authorization` is unchanged and still answers for a single organization, with
-`--org-context` selecting one for an unscoped token. It requires backend
-migrations `0072` and `0073`; the client moves to 1.4.0 with it.
-
-It retains the [bounded Unix lock-open recovery](storage.md#version-122-bounded-unix-lock-open-recovery)
-added in 1.2.2, and the 1.2.1 `app approve-webhook` command, empty-tag confirmations,
-local-configuration warning fix, required login-input help and phase-specific
-logout failure diagnostics. Webhook approval still requires the matching
-backend deployment. See the [release notes](https://github.com/teamofsilicons/silicon-iam/blob/v1.2.2/docs/README.md#published-documentation)
-for each release's scope and verification limits.
-
-**Upgrading an older installation:** an existing Unix IAM home with mode `0755`
-is refused even if `credentials.json` is `0600`. The home must be owned by the
-current user and private (`0700`). Follow the
-[one-time permission repair](storage.md#upgrading-an-existing-iam-home) after
-verifying the exact directory and ownership; do not delete your sessions.
+The IAM home must be owned by the current user and private (`0700` on Unix).
+See [credential storage](storage.md) for its format and ownership checks.
 
 Automatic updates are on by default and run only when the CLI is used. After a
 normal command has completed and printed its result, the CLI checks crates.io
@@ -113,7 +72,7 @@ registry or unavailable Cargo executable produces only a warning on stderr;
 maintenance never replaces the completed command's output or exit status.
 The process exits after any due maintenance finishes.
 
-Since 1.2.1, a command that already failed to load or safely access
+A command that already failed to load or safely access
 local configuration/state skips post-command maintenance, so the same local
 failure is not repeated as an update warning. Authentication and service errors
 still allow the normal due update check.
@@ -244,8 +203,7 @@ metadata includes each canonical source path and its SHA-256 so an integrator
 can identify the documentation that was packaged. The content belongs to the
 installed binary's source revision; it is not fetched from GitHub or the running
 service. Compare `iam --version` and `iam system version` when investigating a
-release mismatch. A local source build can contain unreleased behavior even
-before its package version is bumped.
+service contract mismatch.
 
 For maintainers, edit the canonical files under `docs/`, then run
 `ruby scripts/generate-cli-docs.rb`. Verify with
@@ -418,7 +376,7 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | `iam app verify-webhook` | `<body-file> --event-id <id> --timestamp <value> --key-version <version> --signature <v1=hex> --webhook-secret <secret>` | Fully local verification over exact raw bytes. Use `-` for stdin. A test-wrapped event requires the matching `--test`; production/test mismatches fail. |
 | `iam app import` | `<canonical-production-app-id>` and `--test <environment-uuid>` | Signed-in test Carbon. If the target org already exists there, the Carbon must be its owner/admin; otherwise import creates the org and ownership. Returns a fresh test-only client secret once. |
 | `iam app webhook` | `<app-id>` | Current owning-org Carbon owner/admin or IAM platform administrator with `applications.review`; reads the endpoint and internal Application UUID for step-up. |
-| `iam app set-webhook` | `<app-id> --webhook-url <https-url>` | Carbon Application administrator. The first replacement of an imported test webhook also requires a caller-chosen `--webhook-secret`; test endpoints activate immediately. |
+| `iam app set-webhook` | `<app-id> --webhook-url <https-url>` | Carbon Application administrator. Test endpoints activate immediately and install the supplied `--webhook-secret` or generate a test-only secret. |
 | `iam app approve-webhook` | `<app-id> --step-up <assertion>` | Current owning-org Carbon owner/admin or IAM platform administrator with `applications.review`. Step-up action `application.webhook.approve` on the internal Application UUID. Activates only a pending endpoint of an already verified app; no Application status or scope change. |
 | `iam app dead-letters` | `<app-id>` | Carbon Application administrator; optional paging. |
 | `iam app replay` | `<app-id>` and one or more `--delivery <uuid>` | Re-queues only the named dead letters. |
@@ -522,7 +480,7 @@ iam app rotate-webhook-secret billing \
 
 `app create` and `app rotate-webhook-secret` require the caller-chosen
 `--webhook-secret`; it appears in each command's generated usage and help.
-IAM encrypts that value and never generates an Application webhook secret.
+IAM encrypts that value. Testing webhook URL replacements can generate a fresh test-only secret when none is supplied.
 
 An Application belongs to exactly one organization. With an active `--org`
 (or stored default), `app create billing` sends local handle `billing` and the
@@ -547,7 +505,7 @@ may contain a path and may end in `/`.
 
 ### Approving a production webhook
 
-A new Application is already `verified`, but its first production webhook
+An application without pending critical approvals is usable; its first production webhook
 starts pending; later URL replacements leave the old URL active until approval.
 The current owning-org Carbon owner/admin or an IAM platform administrator
 with `applications.review` can approve that pending endpoint. Being the
@@ -717,10 +675,9 @@ iam --test "$TEST_ID" -o json app import 'google>drive'
 
 To use a different test webhook URL, run `app set-webhook` inside the test
 environment. Test endpoints activate immediately because an isolated plane has
-no platform reviewer. For the first replacement of an imported app, pass
-`--webhook-secret` with the caller-chosen test secret.
-Rotate it explicitly with `app rotate-webhook-secret`; IAM never generates an
-Application webhook secret.
+no platform reviewer. IAM installs the supplied `--webhook-secret`, or generates a fresh
+test-only secret when omitted. Store `webhook_signing_secret` from the response.
+Use `app rotate-webhook-secret` with an explicit successor for later rotation.
 
 Any test application can discover another application's base URL with its own
 test-only credential:
@@ -1001,6 +958,147 @@ service also rejects a missing or mismatched assertion explicitly:
 error: A step-up assertion is required. (step_up_required)
 hint: This action needs step-up verification; re-run with --step-up.
 ```
+
+## Permission consent and scoped login
+
+Applications declare `app_scope` separately from `webhook_scope`. IAM scope names start with
+`self.`, `directory.`, or `organization.`. An external permission names one exact audience app
+and endpoint. Create defaults to `self.identity.read` and `self.profile.read`; other data
+requires explicit declaration, review where critical, and user consent.
+
+```sh
+iam app scopes catalog
+iam app scopes catalog --app-id 'vendor>drive'
+iam app create checkout --org acme --name Checkout \
+  --base-url https://checkout.example --webhook-url https://checkout.example/hooks \
+  --webhook-secret "$WEBHOOK_SECRET" \
+  --webhook-scope membership,updates \
+  --app-scope '{"iam":["self.identity.read","self.profile.read"],"external":[]}'
+iam login --app-id 'acme>checkout' --grant-org customer --approve-scopes
+iam silicon-login --app-id 'acme>checkout' --grant-org customer --approve-scopes
+```
+
+Interactive login displays the complete permission set, distinguishing critical scopes, and
+asks for approval before organization selection. Without a terminal, `--approve-scopes`
+explicitly authorizes the displayed current set. `--grant-org` or `--all-orgs` selects
+organizations independently; a default `--org` never grants access. If consent becomes stale,
+reload the application view and review again. IAM tokens, OTPs, SID/STK, and refresh credentials
+stay inside IAM: an external application asks only for its short-lived token.
+
+## Critical scope review forum
+
+```sh
+iam app scopes request 'acme>checkout' \
+  --app-scope '{"iam":["self.identity.read","directory.carbons.read"],"external":[]}' \
+  --message 'Checkout needs to list organization Carbons to assign invoice recipients.'
+iam app scopes requests --status pending
+iam app scopes show <request-uuid>
+iam app scopes reply <request-uuid> --message 'Only the selected organization is queried.'
+iam app scopes approve <request-uuid>
+iam app scopes deny <request-uuid> --reason 'Explain why individual lookup is insufficient.'
+```
+
+Requester and target organization owners/admins can read and reply to their shared discussion;
+only authorized reviewers can decide. A denial always includes a reason. IAM scope reviews
+are handled by IAM reviewers. Initial instructions appear as the first forum message, and
+requests, replies, acknowledgments, and decisions trigger the appropriate notifications.
+The CLI fetches the current version and sends it with each mutation. Pending critical scopes
+block a new app's first use; an upgrade keeps the prior approved scope set working. Remove
+permissions through `iam app update --app-scope ...` without requesting approval.
+
+When exposing OBO endpoints, every object needs `critical: true` or `false`:
+
+```sh
+iam app update 'vendor>drive' \
+  --obo-endpoints '[{"endpoint_id":"files.read","path":"/v1/files","critical":false,"metadata":{}}]' \
+  --obo-review-message 'Explain the information you need and how users control its use.'
+```
+
+OBO accepts apps from different owning organizations. The calling app must declare the exact
+endpoint, obtain critical approval if required, and hold the user's consent. Use
+`iam app obo exchange ... --org-context customer` to select the user's organization when the
+token reaches several. The subject token must belong to the calling app and still be active.
+
+## Application bundles
+
+```sh
+iam app bundle create workspace --org acme --name Workspace \
+  --app-id 'acme>checkout,acme>billing'
+iam app bundle list
+iam app bundle show 'acme>workspace'
+iam app bundle update 'acme>workspace' --name 'Acme Workspace'
+iam app bundle login 'acme>workspace' --grant-org customer --approve-scopes
+iam app bundle delete 'acme>workspace'
+```
+
+Bundle configuration must be available for the organization. All members belong to that
+organization and remain independently usable. Login shows the bundle and issues a distinct
+SLT for every member atomically; exchange each with that app's own secret. Deleting a bundle
+keeps every member application. `iam batch-login` remains available for an explicitly
+selected ad hoc list; it also supports `--approve-scopes` and per-app permission review.
+
+## One-step application test environments
+
+```sh
+iam app testing create 'acme>checkout' 'Invoice integration' --description 'Cross-app invoice flow'
+iam app testing create 'acme>checkout' 'Shared scenario' --iam-test-key "$IAM_TEST_KEY"
+iam app testing list 'acme>checkout'
+iam app update 'acme>checkout' --testing-idle-days 14
+```
+
+These commands use the production app secret, prompted securely when `--app-secret` is
+omitted. Omit `--test` on testing-management commands. A valid `--iam-test-key` attaches to
+that exact IAM environment; an invalid supplied key fails; omitting it creates a new one.
+IAM imports the caller and all transitive external dependencies into the same isolated layer.
+The response includes the environment UUID, IAM key, caller's test secret, and dependency IDs.
+Dependency secrets remain managed by IAM. The CLI securely remembers the returned IAM key,
+so subsequent ordinary commands can use `iam --test <environment-uuid> ...`.
+
+Applications receiving **`app_secret` inside a request** must treat it as the testing protocol,
+validate the secret through IAM, and resolve isolated data using its IAM test environment.
+Every dependency stays in that environment. The default inactivity retention is 30 days.
+Test IAM verification accepts `000000`; production and testing credentials reject each other.
+Test webhooks include `testing_key` and nest data/metadata under a `test` object. Verify the
+signed outer bytes and the selected environment key before applying the event.
+
+## Scoped IAM reads and API contracts
+
+An application's user access token carries only approved scopes. Organization lists include
+only explicitly selected active memberships. Directory lists require the corresponding
+`directory.carbons.read` or `directory.silicons.read`; field scopes independently control
+profiles, roles, job roles, tags, hierarchy, capabilities, and accessible Silicons.
+Self permissions never reveal those fields for other members. Email and phone are self-only.
+Absent fields mean undisclosed and must not be replaced with cached wider permissions.
+
+Rust integrations use `client.application_reads().me/organizations/organization/members/member/member_authorization/silicon/tags`
+with `Credential::bearer(application_access_token)`. These methods preserve scope-dependent
+JSON field omission. Direct IAM management methods retain their full typed response shapes.
+Use `system().contracts()` or `iam system contracts` (alias `iam api contracts`) to inspect
+contract versions and compatibility. Breaking changes receive a new major API version;
+a deprecated version can sunset after seven days without requests.
+
+## Reading disclosed application data
+
+Use an application user access token with `iam app read`. These commands print the server's
+JSON projection, preserving absent fields instead of filling in undisclosed data. Tokens are
+prompted when `--token` is omitted; they are not stored as your IAM login session.
+
+```sh
+iam app read me --token "$APP_ACCESS_TOKEN"
+iam app read organizations --token "$APP_ACCESS_TOKEN"
+iam --org customer app read member <membership-uuid> --token "$APP_ACCESS_TOKEN"
+iam --org customer app read self-directory --token "$APP_ACCESS_TOKEN"
+iam --org customer app read directory --limit 25 --token "$APP_ACCESS_TOKEN"
+iam --org customer app read authorization <membership-uuid> --token "$APP_ACCESS_TOKEN"
+iam --org customer app read silicons --token "$APP_ACCESS_TOKEN"
+iam --org customer app read tags --token "$APP_ACCESS_TOKEN"
+```
+
+`self.*` permissions disclose the represented user's fields. Directory actor scopes select
+which other actor types can be listed or looked up; directory profile, membership, capability,
+job, tag, access, and hierarchy fields each require their own scope. Every organization must
+be included in the login's active consent. The server rechecks active application approval and
+consent on every request, including when an old token is presented after scope revocation.
 
 ## What is not here
 

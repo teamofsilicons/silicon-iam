@@ -30,7 +30,13 @@ export default function Auth(props: {
     [signupId, setSignupId] = createSignal(""),
     [localCode, setLocalCode] = createSignal("");
   const send = mutation(),
-    appId = new URL(location.href).searchParams.get("app_id");
+    appId = new URL(location.href).searchParams.get("app_id"),
+    appIds = new URL(location.href).searchParams.get("app_ids"),
+    bundleId = new URL(location.href).searchParams.get("bundle_id"),
+    appLogin =
+      new URL(location.href).searchParams.has("app_id") ||
+      new URL(location.href).searchParams.has("app_ids") ||
+      new URL(location.href).searchParams.has("bundle_id");
   const [handoff, setHandoff] = createSignal<"idle" | "loading" | "ready">(
     "idle",
   );
@@ -42,7 +48,7 @@ export default function Auth(props: {
     new Promise<void>((resolve) => setTimeout(resolve, ms));
   async function continueLogin() {
     if (handoff() !== "idle") return;
-    if (appId) {
+    if (appLogin) {
       // After OTP verification reload IAM's consent surface with its new
       // HttpOnly session. Never navigate to an app until selection is approved.
       location.assign(authDestination(props.config));
@@ -147,6 +153,16 @@ export default function Auth(props: {
   return (
     <main class="auth-layout">
       <aside class="auth-brand">
+        <div class="auth-plate" aria-hidden="true">
+          <span class="plate-grid" />
+          <span class="plate-disc" />
+          <span class="plate-dither" />
+          <span class="plate-cross plate-cross-a" />
+          <span class="plate-cross plate-cross-b" />
+          <span class="plate-rule" />
+          <span class="plate-index">SIL·IAM</span>
+          <span class="plate-seq">AUTH /01</span>
+        </div>
         <Brand />
         <div class="auth-statement">
           <p class="eyebrow">IDENTITY & ACCESS</p>
@@ -182,12 +198,15 @@ export default function Auth(props: {
                       ? "Choose a permanent Carbon ID and your display name."
                       : "Both your email and phone must be verified."}
           </p>
-          <Show when={appId}>
+          <Show when={appLogin}>
             <div class="notice handoff-notice">
               <small>CONTINUING TO</small>
-              <strong>{appId}</strong>
+              <strong>
+                {bundleId ||
+                  (appIds ? `${appIds.split(",").length} applications` : appId)}
+              </strong>
               <p>
-                Your credentials stay here. The application receives a
+                Your credentials stay here. Each application receives its own
                 single-use, short-lived token.
               </p>
             </div>
@@ -208,7 +227,7 @@ export default function Auth(props: {
             when={!props.session.authenticated}
             fallback={
               <Show
-                when={appId}
+                when={appLogin}
                 fallback={
                   <div class="stack">
                     <button
@@ -257,7 +276,7 @@ export default function Auth(props: {
                   </div>
                 }
               >
-                <ApplicationLogin appId={appId!} />
+                <ApplicationLogin />
               </Show>
             }
           >

@@ -11,12 +11,21 @@
 //! deliberately not reachable from inside an environment, so an environment
 //! cannot create or destroy environments.
 
+mod application_layer;
+mod graph;
 mod handlers;
 mod imports;
 mod key;
 mod model;
 mod support;
 mod validation;
+
+#[cfg(test)]
+mod live_tests;
+
+pub(crate) use graph::{
+    obo_context, record_rotated_application_secret, touch_application_activity,
+};
 
 pub(crate) use key::{ENVIRONMENT_KEY_HEADER, select_plane};
 
@@ -30,6 +39,10 @@ use crate::api::ApiState;
 /// Builds the testing-environment control-plane router.
 pub fn router() -> Router<ApiState> {
     Router::new()
+        .route(
+            "/api/v1/application/testing-environments",
+            get(application_layer::list).post(application_layer::create),
+        )
         .route(
             "/api/v1/organizations/{org_id}/testing-environments",
             get(handlers::list_environments).post(handlers::create_environment),

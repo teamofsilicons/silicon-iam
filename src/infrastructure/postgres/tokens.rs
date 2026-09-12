@@ -178,6 +178,14 @@ pub async fn authenticate(
         .execute(&mut *transaction)
         .await?;
 
+    // Select only the application bound to this already-verified opaque token.
+    // RLS then permits reading its current approval ceiling without granting
+    // the caller authority to choose an unrelated application.
+    sqlx::query("SELECT set_config('iam.application_id', COALESCE((SELECT client_application_id::text FROM iam.access_tokens WHERE id = $1), ''), true)")
+        .bind(candidate.token_id)
+        .execute(&mut *transaction)
+        .await?;
+
     let row = sqlx::query_as::<_, AccessRow>(
         r"
         SELECT
@@ -194,6 +202,22 @@ pub async fn authenticate(
                 SELECT token_scope.scope
                 FROM iam.access_token_scopes AS token_scope
                 WHERE token_scope.access_token_id = token.id
+                  AND (token.client_application_id IS NULL OR EXISTS (
+                    SELECT 1 FROM iam.application_approved_scopes approved
+                    JOIN iam.oauth_consent_grants consent
+                      ON consent.application_id = approved.application_id
+                     AND consent.subject_principal_id = token.subject_principal_id
+                     AND consent.subject_kind = token.subject_kind
+                     AND consent.parent_authentication_session_id = token.authentication_session_id
+                     AND consent.organization_id IS NOT DISTINCT FROM token.organization_id
+                     AND consent.membership_id IS NOT DISTINCT FROM token.membership_id
+                     AND consent.status = 'active'
+                    JOIN iam.oauth_consent_grant_scopes consent_scope
+                      ON consent_scope.consent_grant_id = consent.id
+                     AND consent_scope.scope = approved.scope
+                    WHERE approved.application_id = token.client_application_id
+                      AND approved.scope = token_scope.scope AND approved.revoked_at IS NULL
+                  ))
                 ORDER BY token_scope.scope
             ) AS scopes,
             session.assurance_level
@@ -240,6 +264,21 @@ pub async fn authenticate(
               OR (
                   client_principal.status = 'active'
                   AND client_principal.auth_epoch = token.client_auth_epoch
+                  AND EXISTS (
+                    SELECT 1 FROM iam.applications application
+                    JOIN iam.oauth_consent_grants consent
+                      ON consent.application_id = application.id
+                     AND consent.subject_principal_id = token.subject_principal_id
+                     AND consent.subject_kind = token.subject_kind
+                     AND consent.parent_authentication_session_id = token.authentication_session_id
+                     AND consent.organization_id IS NOT DISTINCT FROM token.organization_id
+                     AND consent.membership_id IS NOT DISTINCT FROM token.membership_id
+                     AND consent.status = 'active'
+                    WHERE application.id = token.client_application_id
+                      AND application.id = token.audience_application_id
+                      AND application.app_id = token.audience
+                      AND application.review_status = 'verified' AND application.deleted_at IS NULL
+                  )
               )
           )
           AND (
@@ -255,6 +294,14 @@ pub async fn authenticate(
     .bind(lookup.token_class)
     .fetch_optional(&mut *transaction)
     .await?;
+    if crate::infrastructure::testing_plane::is_active()
+        && let Some(application_id) = row.as_ref().and_then(|access| access.client_application_id)
+    {
+        sqlx::query("SELECT iam_private.touch_testing_application($1)")
+            .bind(application_id)
+            .execute(&mut *transaction)
+            .await?;
+    }
     transaction.commit().await?;
     row.map(AccessContext::try_from).transpose()
 }

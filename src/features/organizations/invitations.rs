@@ -1,5 +1,7 @@
 #![allow(clippy::too_many_lines)]
 
+use super::application_reads::ReadScopes;
+
 use std::{borrow::Cow, num::NonZeroU32, time::Duration};
 
 use axum::{
@@ -172,11 +174,15 @@ pub(super) async fn list_invitations(
     Path(org_id): Path<String>,
     Query(query): Query<StatusPageQuery>,
 ) -> Result<Response, AppError> {
+    let scopes = ReadScopes::for_actor(&authenticated);
+    scopes.require("organization.invitations.read")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     validate_status(query.status.as_deref())?;
     let (cursor, limit) = validation::page_parts(query.cursor.as_deref(), query.limit)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
-    support::require_capability(&scope.access, Capability::MembersInvite)?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
+    if !scopes.is_application() {
+        support::require_capability(&scope.access, Capability::MembersInvite)?;
+    }
     let rows = sqlx::query_as::<_, InvitationRow>(INVITATION_LIST_SQL)
         .bind(scope.access.organization_id)
         .bind(cursor)
@@ -373,8 +379,14 @@ pub(super) async fn get_invitation(
     Path((org_id, invite_id)): Path<(String, Uuid)>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let (mut transaction, organization_id) =
-        begin_invitation(&state, &authenticated, &org_id, invite_id).await?;
+    let scopes = ReadScopes::for_actor(&authenticated);
+    let (mut transaction, organization_id) = if scopes.is_application() {
+        scopes.require("organization.invitations.read")?;
+        let scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
+        (scope.transaction, scope.access.organization_id)
+    } else {
+        begin_invitation(&state, &authenticated, &org_id, invite_id).await?
+    };
     let invitation = fetch_invitation(
         &mut transaction,
         &state,
@@ -1547,7 +1559,8 @@ async fn validate_invitation_references(
 fn validate_invitation(input: &mut CarbonInviteCreate) -> Result<(), AppError> {
     match (input.carbon_id.as_mut(), input.email.as_mut()) {
         (Some(carbon_id), None) => {
-            *carbon_id = CarbonId::from_lookup_str(carbon_id)
+            *carbon_id = carbon_id
+                .parse::<CarbonId>()
                 .map_err(|_| validation::field("carbon_id", "has an invalid format"))?
                 .to_string();
         }

@@ -254,6 +254,10 @@ async fn the_client_speaks_the_contract_end_to_end() {
         .applications()
         .create(
             &models::ApplicationCreate {
+                app_scope: None,
+                webhook_scope: None,
+                obo_review_message: None,
+                testing_idle_days: None,
                 app_id: application_handle,
                 org_id: org_id.clone(),
                 app_name: Some("Live Application".to_owned()),
@@ -302,11 +306,22 @@ async fn the_client_speaks_the_contract_end_to_end() {
     // IAM-issued SLT with explicit organization consent. Walk the whole token
     // lifecycle so media-type drift, application Basic auth, token RLS, retry
     // semantics, and revocation are all exercised against the real service.
+    let consent = client
+        .auth()
+        .login_organizations(&qualified_app_id)
+        .await
+        .expect("scope consent");
     let short_lived = client
         .auth()
         .short_lived_token_for_organizations(
             &qualified_app_id,
             std::slice::from_ref(&org_id),
+            consent.scope_version,
+            &consent
+                .scopes
+                .iter()
+                .map(|scope| scope.scope.clone())
+                .collect::<Vec<_>>(),
             &Mutation::new(),
         )
         .await
@@ -658,4 +673,701 @@ async fn a_testing_environment_is_the_same_api_against_its_own_data() {
         refused.is_err(),
         "a retired environment must refuse its key"
     );
+}
+
+/// Batch authorization uses the same real application secrets and token exchange
+/// as single login. Failed batches must not persist even the first app's consent.
+#[tokio::test]
+#[ignore = "needs a running disposable Silicon IAM"]
+async fn batch_login_is_atomic_and_application_bound() {
+    let Some(anonymous) = service() else {
+        return;
+    };
+    let client = enrol(&anonymous, &unique("batch"), None).await;
+    exercise_batch_login(&anonymous, &client).await;
+
+    // When the isolated test plane is configured, repeat the exact protocol
+    // there; production credentials must not authorize its batch endpoints.
+    if std::env::var("SILICON_IAM_LIVE_BATCH_TEST_PLANE").is_ok() {
+        let org = unique("batchenv");
+        client
+            .organizations()
+            .create(
+                &models::OrganizationCreate {
+                    org_id: org.clone(),
+                    name: "Batch test environment owner".to_owned(),
+                    logo: None,
+                    description: None,
+                },
+                &Mutation::new(),
+            )
+            .await
+            .expect("environment owner org");
+        let created = client
+            .environments()
+            .create(
+                &org,
+                &models::TestingEnvironmentCreate {
+                    name: "Batch isolation".to_owned(),
+                    description: None,
+                },
+                &Mutation::new(),
+            )
+            .await
+            .expect("test environment");
+        let key = silicon_iam_client::EnvironmentKey::new(created.key).expect("environment key");
+        assert!(
+            client
+                .with_environment(key.clone())
+                .auth()
+                .batch_login_organizations(&["tos>app".to_owned()])
+                .await
+                .is_err()
+        );
+        let sandbox = anonymous.with_environment(key);
+        let inside = enrol(&sandbox, &unique("batchinside"), Some("000000")).await;
+        exercise_batch_login(&sandbox, &inside).await;
+    }
+}
+
+async fn exercise_batch_login(anonymous: &Client, client: &Client) {
+    let mut orgs = Vec::new();
+    for prefix in ["batchorga", "batchorgb"] {
+        let org = unique(prefix);
+        client
+            .organizations()
+            .create(
+                &models::OrganizationCreate {
+                    org_id: org.clone(),
+                    name: "Batch organization".to_owned(),
+                    logo: None,
+                    description: None,
+                },
+                &Mutation::new(),
+            )
+            .await
+            .expect("create batch organization");
+        orgs.push(org);
+    }
+    let mut apps = Vec::new();
+    for handle in ["batch-a", "batch-b"] {
+        let created = client
+            .applications()
+            .create(
+                &models::ApplicationCreate {
+                    app_scope: Some(models::ApplicationScope {
+                        iam: vec![
+                            "self.identity.read".to_owned(),
+                            "self.organizations.read".to_owned(),
+                        ],
+                        external: vec![],
+                    }),
+                    webhook_scope: None,
+                    obo_review_message: None,
+                    testing_idle_days: None,
+                    app_id: handle.to_owned(),
+                    org_id: orgs[0].clone(),
+                    app_name: Some(handle.to_owned()),
+                    app_logo: None,
+                    webhook_url: "https://batch.example.test/hooks".to_owned(),
+                    webhook_secret: "batch-webhook-secret-at-least-32-characters".to_owned(),
+                    base_url: "https://batch.example.test".to_owned(),
+                    obo_endpoints: None,
+                },
+                &Mutation::new(),
+            )
+            .await
+            .expect("create batch application");
+        apps.push((created.application.app_id, created.app_secret));
+    }
+    let ids = apps.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+    let choices = client
+        .auth()
+        .batch_login_organizations(&ids)
+        .await
+        .expect("batch choices");
+    assert_eq!(choices.items.len(), 2);
+    assert!(
+        choices
+            .items
+            .iter()
+            .flat_map(|app| &app.items)
+            .all(|org| !org.authorized)
+    );
+    let mut input = models::BatchLoginRequest {
+        applications: vec![
+            models::BatchLoginSelection {
+                app_id: ids[0].clone(),
+                scope_version: choices.items[0].scope_version,
+                approved_scopes: choices.items[0]
+                    .scopes
+                    .iter()
+                    .map(|scope| scope.scope.clone())
+                    .collect(),
+                org_ids: vec![orgs[0].clone()],
+            },
+            models::BatchLoginSelection {
+                app_id: ids[1].clone(),
+                scope_version: choices.items[1].scope_version,
+                approved_scopes: choices.items[1]
+                    .scopes
+                    .iter()
+                    .map(|scope| scope.scope.clone())
+                    .collect(),
+                org_ids: vec!["missing-org".to_owned()],
+            },
+        ],
+        redirect_uri: None,
+    };
+    let mutation = Mutation::new();
+    assert!(
+        client
+            .auth()
+            .batch_short_lived_tokens(&input, &mutation)
+            .await
+            .is_err()
+    );
+    let choices = client
+        .auth()
+        .batch_login_organizations(&ids)
+        .await
+        .expect("choices after rollback");
+    assert!(
+        choices
+            .items
+            .iter()
+            .flat_map(|app| &app.items)
+            .all(|org| !org.authorized),
+        "failed batch persisted partial consent"
+    );
+    input.applications[1].org_ids = vec![orgs[1].clone()];
+    let result = client
+        .auth()
+        .batch_short_lived_tokens(&input, &mutation)
+        .await
+        .expect("failed batch rolled back its request key too");
+    assert_eq!(result.items.len(), 2);
+    assert_eq!(
+        result
+            .items
+            .iter()
+            .map(|item| &item.app_id)
+            .collect::<Vec<_>>(),
+        ids.iter().collect::<Vec<_>>()
+    );
+    assert_ne!(result.items[0].slt, result.items[1].slt);
+    let replay = client
+        .auth()
+        .batch_short_lived_tokens(&input, &mutation)
+        .await
+        .expect("exact batch replay");
+    assert_eq!(
+        serde_json::to_value(&result).expect("serialize batch"),
+        serde_json::to_value(&replay).expect("serialize replay")
+    );
+    let mut changed = input.clone();
+    changed.applications.reverse();
+    assert!(
+        client
+            .auth()
+            .batch_short_lived_tokens(&changed, &mutation)
+            .await
+            .is_err(),
+        "different request must not replay"
+    );
+    let choices = client
+        .auth()
+        .batch_login_organizations(&ids)
+        .await
+        .expect("selected choices");
+    for (index, app) in choices.items.iter().enumerate() {
+        assert_eq!(
+            app.items
+                .iter()
+                .filter(|org| org.authorized)
+                .map(|org| org.org_id.clone())
+                .collect::<Vec<_>>(),
+            vec![orgs[index].clone()]
+        );
+    }
+    let app_a = anonymous.with_credential(Credential::application(
+        apps[0].0.clone(),
+        apps[0].1.clone(),
+    ));
+    let app_b = anonymous.with_credential(Credential::application(
+        apps[1].0.clone(),
+        apps[1].1.clone(),
+    ));
+    assert!(
+        app_b
+            .oauth()
+            .login(&ids[1], &result.items[0].slt, &Mutation::new())
+            .await
+            .is_err(),
+        "app B must not consume app A's SLT"
+    );
+    assert!(app_a.auth().batch_login_organizations(&ids).await.is_err());
+    for (index, app) in [&app_a, &app_b].iter().enumerate() {
+        let tokens = app
+            .oauth()
+            .login(&ids[index], &result.items[index].slt, &Mutation::new())
+            .await
+            .expect("each app exchanges only its own SLT");
+        assert!(
+            app.oauth()
+                .login(&ids[index], &result.items[index].slt, &Mutation::new())
+                .await
+                .is_err(),
+            "SLT must be single use"
+        );
+        let bearer = anonymous.with_credential(Credential::bearer(tokens.access_token.clone()));
+        assert!(
+            bearer
+                .auth()
+                .batch_short_lived_tokens(&input, &Mutation::new())
+                .await
+                .is_err(),
+            "an app bearer cannot authorize more apps"
+        );
+        let authorized = bearer
+            .application_reads()
+            .organizations(&Paging::new())
+            .await
+            .expect("selected organization directory");
+        assert_eq!(
+            authorized["items"]
+                .as_array()
+                .expect("organization items")
+                .len(),
+            1
+        );
+        assert_eq!(authorized["items"][0]["org_id"], orgs[index]);
+        assert!(
+            bearer
+                .application_reads()
+                .organization(&orgs[1 - index])
+                .await
+                .is_err(),
+            "an unselected organization must stay inaccessible"
+        );
+    }
+    // A subsequent batch adds an organization without revoking the earlier grant.
+    input.applications[0].org_ids = vec![orgs[1].clone()];
+    client
+        .auth()
+        .batch_short_lived_tokens(&input, &Mutation::new())
+        .await
+        .expect("additive batch");
+    let choices = client
+        .auth()
+        .batch_login_organizations(&ids)
+        .await
+        .expect("additive choices");
+    assert_eq!(
+        choices.items[0]
+            .items
+            .iter()
+            .filter(|org| org.authorized)
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a running disposable Silicon IAM with a testing database"]
+async fn application_testing_imports_cycles_and_preserves_obo_authority() {
+    let Some(anonymous) = service() else { return };
+    let owner = enrol(&anonymous, &unique("apptest"), None).await;
+    let mut orgs = Vec::new();
+    for prefix in ["testsource", "testtarget"] {
+        let org_id = unique(prefix);
+        owner
+            .organizations()
+            .create(
+                &models::OrganizationCreate {
+                    org_id: org_id.clone(),
+                    name: "Application testing owner".to_owned(),
+                    logo: None,
+                    description: None,
+                },
+                &Mutation::new(),
+            )
+            .await
+            .expect("application owner organization");
+        orgs.push(org_id);
+    }
+    let mut apps = Vec::new();
+    for (index, org) in orgs.iter().enumerate() {
+        let app = owner
+            .applications()
+            .create(
+                &models::ApplicationCreate {
+                    app_scope: Some(models::ApplicationScope {
+                        iam: vec!["self.identity.read".to_owned()],
+                        external: vec![],
+                    }),
+                    webhook_scope: None,
+                    obo_review_message: None,
+                    testing_idle_days: Some(60),
+                    app_id: format!("service{index}"),
+                    org_id: org.clone(),
+                    app_name: Some("Imported application".to_owned()),
+                    app_logo: None,
+                    webhook_url: "https://testing.example.test/hooks".to_owned(),
+                    webhook_secret: "testing-webhook-secret-at-least-32-characters".to_owned(),
+                    base_url: "https://testing.example.test".to_owned(),
+                    obo_endpoints: Some(vec![models::ApplicationOboEndpoint {
+                        critical: true,
+                        endpoint_id: "operation".to_owned(),
+                        path: "/operation".to_owned(),
+                        metadata: serde_json::json!({}),
+                    }]),
+                },
+                &Mutation::new(),
+            )
+            .await
+            .expect("application with critical endpoint");
+        apps.push(app);
+    }
+    // Both edges are declared, producing a cycle. Approve one review and leave
+    // the other pending: test imports must use the desired configuration while
+    // production preserves the previous approved version.
+    for index in 0..2 {
+        let request = owner
+            .application_scopes()
+            .request(
+                &apps[index].application.app_id,
+                apps[index].application.version,
+                &models::ApplicationScopeRequestCreate {
+                    app_scope: models::ApplicationScope {
+                        iam: vec!["self.identity.read".to_owned()],
+                        external: vec![models::ApplicationExternalScope {
+                            app_id: apps[1 - index].application.app_id.clone(),
+                            endpoint_id: "operation".to_owned(),
+                        }],
+                    },
+                    message: "Call the related service for this user.".to_owned(),
+                },
+                &Mutation::new(),
+            )
+            .await
+            .expect("critical scope review request");
+        assert_eq!(request.items.len(), 1);
+        let discussion = owner
+            .application_scopes()
+            .get(request.items[0].id)
+            .await
+            .expect("scope discussion");
+        assert!(discussion.can_decide);
+        if index == 1 {
+            let replied = owner
+                .application_scopes()
+                .reply(
+                    discussion.id,
+                    discussion.version,
+                    &models::ApplicationScopeMessageCreate {
+                        message: "Reviewed exact endpoint.".to_owned(),
+                    },
+                    &Mutation::new(),
+                )
+                .await
+                .expect("scope discussion reply");
+            let decision = owner
+                .application_scopes()
+                .decide(
+                    replied.id,
+                    replied.version,
+                    &models::ApplicationScopeDecision {
+                        decision: models::ApplicationScopeDecisionDecision::Approve,
+                        reason: None,
+                    },
+                    &Mutation::new(),
+                )
+                .await
+                .expect("audience owner approves critical scope");
+            assert_eq!(
+                decision.status,
+                models::ApplicationScopeRequestStatus::Approved
+            );
+        }
+    }
+    let app = anonymous.with_credential(Credential::application(
+        apps[0].application.app_id.clone(),
+        apps[0].app_secret.clone(),
+    ));
+    let input = models::ApplicationTestingEnvironmentCreate {
+        name: "Recursive integration".to_owned(),
+        description: None,
+        iam_test_key: None,
+    };
+    let mutation = Mutation::new();
+    let created = app
+        .applications()
+        .create_testing_environment(&input, &mutation)
+        .await
+        .expect("application creates recursive environment");
+    assert_eq!(
+        created.dependencies,
+        vec![apps[1].application.app_id.clone()]
+    );
+    assert_ne!(created.app_secret, apps[0].app_secret);
+    let replay = app
+        .applications()
+        .create_testing_environment(&input, &mutation)
+        .await
+        .expect("exact environment creation replay");
+    assert_eq!(
+        serde_json::to_value(&created).expect("created environment"),
+        serde_json::to_value(replay).expect("replayed environment")
+    );
+    let reused = app
+        .applications()
+        .create_testing_environment(
+            &models::ApplicationTestingEnvironmentCreate {
+                name: input.name,
+                description: None,
+                iam_test_key: Some(created.iam_test_key.clone()),
+            },
+            &Mutation::new(),
+        )
+        .await
+        .expect("cyclic import reuses existing environment");
+    assert_eq!(created.environment_id, reused.environment_id);
+    assert_eq!(created.app_secret, reused.app_secret);
+    let listed = app
+        .applications()
+        .testing_environments(&Paging::new().limit(1))
+        .await
+        .expect("application environment list");
+    assert_eq!(listed.items[0].environment_id, created.environment_id);
+    assert_eq!(listed.items[0].retention_days, 60);
+    let wrong_owner = anonymous.with_credential(Credential::application(
+        apps[1].application.app_id.clone(),
+        apps[1].app_secret.clone(),
+    ));
+    assert!(
+        wrong_owner
+            .applications()
+            .create_testing_environment(
+                &models::ApplicationTestingEnvironmentCreate {
+                    name: "Wrong owner".to_owned(),
+                    description: None,
+                    iam_test_key: Some(created.iam_test_key.clone()),
+                },
+                &Mutation::new()
+            )
+            .await
+            .is_err()
+    );
+
+    let key = silicon_iam_client::EnvironmentKey::new(created.iam_test_key.clone())
+        .expect("environment key");
+    let sandbox = anonymous.with_environment(key.clone());
+    let caller = sandbox.with_credential(Credential::application(
+        created.app_id.clone(),
+        created.app_secret.clone(),
+    ));
+    let catalog = caller
+        .obo()
+        .endpoints(&apps[1].application.app_id)
+        .await
+        .expect("imported cross-organization audience");
+    assert!(catalog.endpoints[0].critical);
+    let handle = unique("testsubject");
+    let user = enrol(&sandbox, &handle, Some("000000")).await;
+    let user_org = unique("testsubjectorg");
+    user.organizations()
+        .create(
+            &models::OrganizationCreate {
+                org_id: user_org.clone(),
+                name: "Subject organization".to_owned(),
+                logo: None,
+                description: None,
+            },
+            &Mutation::new(),
+        )
+        .await
+        .expect("subject organization differs from both applications");
+    let choices = user
+        .auth()
+        .login_organizations(&created.app_id)
+        .await
+        .expect("test scopes");
+    assert!(
+        choices
+            .scopes
+            .iter()
+            .any(|scope| scope.scope.starts_with("obo:"))
+    );
+    let slt = user
+        .auth()
+        .short_lived_token_for_organizations(
+            &created.app_id,
+            std::slice::from_ref(&user_org),
+            choices.scope_version,
+            &choices
+                .scopes
+                .iter()
+                .map(|scope| scope.scope.clone())
+                .collect::<Vec<_>>(),
+            &Mutation::new(),
+        )
+        .await
+        .expect("test subject grants exact scopes");
+    let tokens = caller
+        .oauth()
+        .login(&created.app_id, &slt.slt, &Mutation::new())
+        .await
+        .expect("imported app exchanges subject SLT");
+    let bearer = sandbox.with_credential(Credential::bearer(tokens.access_token.clone()));
+    let profile = bearer
+        .application_reads()
+        .me()
+        .await
+        .expect("identity-only self read");
+    assert_eq!(profile["carbon_id"], handle);
+    for field in ["email", "phone_number", "display_name", "profile_photo"] {
+        assert!(profile.get(field).is_none(), "undeclared field {field}");
+    }
+    assert!(
+        bearer
+            .application_reads()
+            .organizations(&Paging::new())
+            .await
+            .is_err()
+    );
+    assert!(
+        bearer
+            .application_reads()
+            .members(&user_org, &Paging::new())
+            .await
+            .is_err()
+    );
+    assert!(
+        bearer
+            .application_reads()
+            .organization(&orgs[0])
+            .await
+            .is_err()
+    );
+    let digest = silicon_iam_client::api::obo::body_sha256(b"{\"operation\":1}");
+    let exchange = models::OboExchangeRequest {
+        org_id: None,
+        subject_token: tokens.access_token,
+        audience: apps[1].application.app_id.clone(),
+        endpoint_id: "operation".to_owned(),
+        metadata: serde_json::json!({}),
+        request: models::OboExchangeRequestBinding {
+            method: "POST".to_owned(),
+            body_sha256: digest.clone(),
+        },
+    };
+    let proof = caller
+        .obo()
+        .exchange_signed(&exchange, &catalog, &Mutation::new())
+        .await
+        .expect("declared and consented cross-org test OBO");
+    let context = proof.testing_context.expect("audience test credentials");
+    assert_eq!(context.app_id, apps[1].application.app_id);
+    assert_ne!(context.app_secret, apps[1].app_secret);
+    assert_eq!(context.iam_test_key, created.iam_test_key);
+    let audience =
+        sandbox.with_credential(Credential::application(context.app_id, context.app_secret));
+    let verification = models::OboVerifyRequest {
+        access_proof: proof.access_proof,
+        request: models::OboVerifyRequestBinding {
+            method: "POST".to_owned(),
+            path: "/operation".to_owned(),
+            body_sha256: digest,
+        },
+    };
+    let mut wrong_request = verification.clone();
+    wrong_request.request.path = "/different".to_owned();
+    assert!(audience.obo().verify(&wrong_request).await.is_err());
+    let verified = audience
+        .obo()
+        .verify(&verification)
+        .await
+        .expect("audience validates exact request");
+    assert_eq!(verified.org_id, user_org);
+    assert_eq!(verified.issuer_app_id, created.app_id);
+    assert_eq!(
+        verified.authorization.scopes,
+        vec![format!("obo:{}:operation", apps[1].application.app_id)]
+    );
+    assert!(
+        audience.obo().verify(&verification).await.is_err(),
+        "proof is single use"
+    );
+
+    // Human imports reuse the same graph implementation. Re-importing after
+    // a credential rotation must report and cache the current secret/version.
+    let human_environment = owner
+        .environments()
+        .create(
+            &orgs[0],
+            &models::TestingEnvironmentCreate {
+                name: "Human import".to_owned(),
+                description: None,
+            },
+            &Mutation::new(),
+        )
+        .await
+        .expect("human-owned environment");
+    let human_key =
+        silicon_iam_client::EnvironmentKey::new(human_environment.key).expect("human key");
+    let human = enrol(
+        &anonymous.with_environment(human_key),
+        &unique("humanimport"),
+        Some("000000"),
+    )
+    .await;
+    let imported = human
+        .applications()
+        .import_from_production(&created.app_id, &Mutation::new())
+        .await
+        .expect("human imports dependency cycle");
+    let challenge = human
+        .auth()
+        .start_step_up(
+            &models::StepUpChallengeCreate {
+                channel: models::StepUpChallengeCreateChannel::Email,
+                action: models::StepUpAction::ApplicationClientSecretRotate,
+                resource_id: imported.application.id,
+            },
+            &Mutation::new(),
+        )
+        .await
+        .expect("rotation step-up challenge");
+    let step_up = human
+        .auth()
+        .verify_step_up(challenge.session_id, "000000", &Mutation::new())
+        .await
+        .expect("test rotation step-up");
+    let rotated = human
+        .applications()
+        .rotate_secret(
+            &created.app_id,
+            imported.application.version,
+            &Mutation::new().step_up(step_up.step_up_token),
+        )
+        .await
+        .expect("rotate imported app secret");
+    let reimport_key = Mutation::new();
+    let reimported = human
+        .applications()
+        .import_from_production(&created.app_id, &reimport_key)
+        .await
+        .expect("human reuses import after secret rotation");
+    assert_eq!(reimported.application.id, imported.application.id);
+    assert_eq!(reimported.application.version, rotated.application_version);
+    assert_eq!(reimported.app_secret_version, rotated.app_secret_version);
+    assert_eq!(reimported.app_secret, rotated.app_secret);
+    let replayed = human
+        .applications()
+        .import_from_production(&created.app_id, &reimport_key)
+        .await
+        .expect("re-import replay");
+    assert_eq!(replayed.app_secret, rotated.app_secret);
+    assert_eq!(replayed.application.version, rotated.application_version);
 }

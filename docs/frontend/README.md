@@ -1,11 +1,13 @@
 # Silicon IAM frontend
 
+The first official v1 frontend provides application permission consent, organization selection, batch login, and application bundles. See the [batch login guide](../BATCH_LOGIN.md) and [bundle guide](../BUNDLES.md).
+
 The SolidJS frontend has two entry points in one codebase:
 
 - **Main IAM console:** `/` for applications, organizations, directory, governance, testing-environment administration, profile and sessions.
 - **IAM authentication:** `/login` and `/signup`, with `/login?app_id=org%3Eapp&redirect_uri=…` for application login. Apps must not supply organization scope; users choose it in IAM. Configure a separate auth origin when hosting.
 
-The app talks only to its same-origin session gateway. This is **not a static-only website**: deploy the gateway with the assets. Source lives in `frontend/` in the IAM repository; run the commands below there. The current consent flow requires backend migrations 0072/0073 and the matching API. See [organization consent](../ORGANIZATION_CONSENT.md).
+The app talks only to its same-origin session gateway. This is **not a static-only website**: deploy the gateway with the assets. Source lives in `frontend/` in the IAM repository; run the commands below there. Run the v1 backend with its complete production migrations, testing overlay, and runtime grants. See [organization consent](../ORGANIZATION_CONSENT.md).
 
 ## Local development
 
@@ -84,11 +86,11 @@ Signup verifies **both** email and phone, then creates a Carbon. It does not sil
 
 Successful browser login never returns bearer/refresh tokens to browser JavaScript. The gateway encrypts the upstream Carbon tokens and upstream browser-session cookie into an HttpOnly, SameSite=Lax cookie (Secure over HTTPS). Token refresh runs server-side, with deterministic refresh idempotency and in-process single-flight. Terminal refresh rejection expires the frontend session; transient failures preserve it.
 
-Application login navigates through `/auth/continue` to IAM's `/login` surface. GET never grants consent or mints a token. After verified-app confirmation, the user chooses at least one organization; existing grants stay selected and additions preserve them. The trusted IAM frontend submits `org_ids` to the direct-IAM SLT endpoint, shows loading and a success checkmark, then displays the SLT or redirects with `slt`. “Select all” includes current organizations only. Applications must protect their own callback flow/state and immediately exchange the SLT **on their server**, using application Basic credentials or the Rust client. The frontend never performs that exchange with app secrets.
+Application login navigates through `/auth/continue` to IAM's `/login` surface. GET never grants consent or mints a token. After application confirmation, IAM displays every requested IAM and external application permission, explicitly marks critical permissions, and asks the user to continue before choosing at least one organization. The backend supplies the current scope version and determines whether that permission step is required; existing grants stay selected and additions preserve them. The trusted IAM frontend submits `org_ids`, the exact displayed `approved_scopes`, and `scope_version` to the direct-IAM SLT endpoint, shows loading and a success checkmark, then displays the SLT or redirects with `slt`. “Select all” includes current organizations only. Applications must protect their own callback flow/state and immediately exchange the SLT **on their server**, using application Basic credentials or the Rust client. The frontend never performs that exchange with app secrets.
 
 The console supports app creation, detail/profile editing, webhook destinations/approval, client and webhook secret rotation, login history, failed-delivery replay, and OBO endpoint registration. App IDs are displayed canonically as `org>app`; creation asks for organization and local handle separately. Local app handles accept 1–80 lowercase ASCII letters, digits, underscores or hyphens, starting with a letter; the organization prefix is not counted. Webhook secrets are user supplied. Base URLs reject any path or trailing slash; webhook URLs may contain them.
 
-OBO proof exchange and verification remain signed **server-to-server** operations. The console manages exposed endpoints and explains the integration. It is not an OBO request simulator, and does not trust a cached role as delegated authority. Follow the [API/client integration docs](https://github.com/teamofsilicons/silicon-iam/tree/main/docs) for signed requests, snapshots, epochs, and current authorization.
+OBO proof exchange and verification remain signed **server-to-server** operations. The console manages exposed endpoints and explains the integration. It is not an OBO request simulator, and does not trust a cached role as delegated authority. Follow the [API/client integration docs](https://docs.iam.teamofsilicons.com/) for signed requests, snapshots, epochs, and current authorization.
 
 ## Organization and account coverage
 
@@ -125,6 +127,38 @@ npm run build
 
 The snapshot is a form aid, not authorization enforcement. The IAM backend remains authoritative. Review the source when OpenAPI and implementation disagree, especially step-up bindings and per-resource versions. Runtime secrets, `.vercel/`, dependencies and build output are excluded from Git.
 
-Manual QA results and unverified external-provider flows are recorded in [manual-qa.md](manual-qa.md). No new automated test suite was added.
+Repository QA evidence is retained separately from the public manual. `npm test` covers URL bounds, single/batch/bundle continuation, callback encoding, permission payload integrity, and gateway CSRF rejection.
 
 Built with [SolidJS](https://docs.solidjs.com/), TypeScript and Vite. The mark and IBM Plex font files are reused from the existing Silicon IAM backend assets; retain their upstream licensing when distributing.
+
+
+## Application permissions, reviews, and bundles
+
+Creation distinguishes `app_scope` (data and delegated access) from
+`webhook_scope` (event subscriptions). Identity and profile permissions start
+selected. The permission catalog includes published endpoints from other
+applications, including applications in other organizations. Each permission
+shows its provider and whether it requires critical-scope review.
+
+The Permissions tab shows the currently usable scope set alongside the requested
+set. Save non-critical additions or removals directly. For critical additions,
+write a review message explaining the application and every requested permission,
+then submit the review. An initial app remains unusable until approval; an
+upgrade continues using its previously approved permissions during review.
+
+Scope reviews provides one inbox for requests your applications submit and
+requests your applications can decide. Every thread preserves the reviewer’s
+initial instructions, replies, timestamps, and final decision. A denial requires
+a reason. Messages render as plain text. Replies and decisions notify the other
+participants by email through IAM.
+
+App bundles groups same-organization applications behind one login identity.
+Create or manage a bundle in the console and use
+`/login?bundle_id=org%3Ebundle`. The backend determines whether a bundle can be
+created. Users see the bundle’s identity and choose organizations once; the
+callback receives individual application SLTs in the same `#slts=` encoding as
+batch login. Every member must exchange its own token using its own secret.
+
+The frontend links to the standalone documentation site at
+https://docs.iam.teamofsilicons.com. Its static build and hosting configuration
+are in `docs-site/`; it is deployed separately from the authenticated frontend.

@@ -226,7 +226,7 @@ async fn selected_login_additions_preserve_existing_organizations(
     // OBO resolves the calling Application's own organization for an unscoped
     // parent, and refuses a subject who is not an active member of it.
     sqlx::query(
-        "INSERT INTO iam.access_token_scopes (access_token_id, scope) VALUES ($1, 'obo.issue')",
+        "INSERT INTO iam.access_token_scopes (access_token_id, scope) VALUES ($1, 'obo:test_org>app-beta:trust.manage')",
     )
     .bind(unscoped_token)
     .execute(&mut *transaction)
@@ -1273,7 +1273,7 @@ async fn application_deletion_revokes_all_client_authority(pool: &PgPool) -> any
                  FROM iam.application_secrets WHERE id = $2)
             AND (SELECT revoked_at IS NOT NULL
                  FROM iam.application_approved_scopes
-                 WHERE application_id = $1 AND scope = 'organizations.read')
+                 WHERE application_id = $1 AND scope = 'self.organizations.read')
             AND (SELECT consumed_at IS NOT NULL
                  FROM iam.oauth_authorization_codes WHERE application_id = $1)
             AND (SELECT status = 'denied'
@@ -1340,11 +1340,11 @@ async fn application_scope_revocation_contains_existing_access(
     )
     .bind(APP_A_ID)
     .bind(CARBON_ID)
-    .bind(Vec::<String>::new())
+    .bind(vec!["obo:test_org>app-beta:trust.manage".to_owned()])
     .fetch_all(&mut *transaction)
     .await?;
     ensure!(
-        removed_scopes == ["organizations.read"],
+        removed_scopes == ["self.organizations.read"],
         "review did not identify the newly removed scope"
     );
     sqlx::query(super::applications::REVOKE_ACCESS_TOKENS_FOR_REMOVED_SCOPES_QUERY)
@@ -1405,14 +1405,14 @@ async fn authorization_code_scope_revocation_fails_closed(pool: &PgPool) -> anyh
     .await
     .map_err(|error| anyhow::anyhow!("initial code scope authority failed: {error:?}"))?;
     ensure!(
-        scopes == ["organizations.read"],
+        scopes == ["self.organizations.read"],
         "initial code scope authority was incomplete"
     );
     sqlx::query(
         r"
         UPDATE iam.application_approved_scopes
         SET revoked_by_carbon_id = $2, revoked_at = transaction_timestamp()
-        WHERE application_id = $1 AND scope = 'organizations.read' AND revoked_at IS NULL
+        WHERE application_id = $1 AND scope = 'self.organizations.read' AND revoked_at IS NULL
         ",
     )
     .bind(APP_A_ID)
@@ -1438,7 +1438,7 @@ async fn authorization_code_scope_revocation_fails_closed(pool: &PgPool) -> anyh
     // exchange runs it.
     set_application_projection_context(&mut transaction, APP_A_ID, Some(APP_A_ID)).await?;
     sqlx::query(
-        "DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id = $1 AND scope = 'organizations.read'",
+        "DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id = $1 AND scope = 'self.organizations.read'",
     )
     .bind(CONSENT_ID)
     .execute(&mut *transaction)
@@ -1697,7 +1697,7 @@ async fn stale_obo_parent_authority_is_rejected(pool: &PgPool) -> anyhow::Result
          AND membership.principal_kind = parent.subject_kind
         JOIN iam.access_token_scopes AS token_scope
           ON token_scope.access_token_id = parent.id
-         AND token_scope.scope = 'obo.issue'
+         AND token_scope.scope = 'obo:test_org>app-beta:trust.manage'
         WHERE parent.id = $1
         ",
     )
@@ -1729,7 +1729,7 @@ async fn stale_obo_parent_authority_is_rejected(pool: &PgPool) -> anyhow::Result
              AND parent.membership_authz_epoch = membership.authz_epoch
             JOIN iam.access_token_scopes AS token_scope
               ON token_scope.access_token_id = parent.id
-             AND token_scope.scope = 'obo.issue'
+             AND token_scope.scope = 'obo:test_org>app-beta:trust.manage'
             WHERE parent.id = $1
         )
         ",
@@ -1875,7 +1875,7 @@ async fn committed_application_secret_revocation_wins_authentication(
     Ok(())
 }
 
-async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
+pub(super) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
     sqlx::raw_sql(
         r#"
         BEGIN;
@@ -1973,9 +1973,9 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             transaction_timestamp() + interval '2 days'
         );
         INSERT INTO iam.application_requested_scopes (application_id, scope)
-        VALUES ('00000000-0000-0000-0000-000000000011', 'organizations.read');
+        VALUES ('00000000-0000-0000-0000-000000000011', 'self.organizations.read');
         INSERT INTO iam.application_approved_scopes (application_id, scope, approved_by_carbon_id)
-        VALUES ('00000000-0000-0000-0000-000000000011', 'organizations.read',
+        VALUES ('00000000-0000-0000-0000-000000000011', 'self.organizations.read',
                 '00000000-0000-0000-0000-000000000001');
         INSERT INTO iam.oauth_authorization_requests (
             id, application_id, redirect_uri, authentication_session_id,
@@ -1993,7 +1993,7 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             authorization_request_id, application_id, scope, approved_at
         ) VALUES (
             '00000000-0000-0000-0000-000000000061',
-            '00000000-0000-0000-0000-000000000011', 'organizations.read', transaction_timestamp()
+            '00000000-0000-0000-0000-000000000011', 'self.organizations.read', transaction_timestamp()
         );
         INSERT INTO iam.oauth_consent_grants (
             id, application_id, subject_principal_id, subject_kind,
@@ -2019,7 +2019,7 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             ARRAY['00000000-0000-0000-0000-000000000031'::uuid]
         );
         INSERT INTO iam.oauth_consent_grant_scopes (consent_grant_id, scope)
-        VALUES ('00000000-0000-0000-0000-000000000071', 'organizations.read');
+        VALUES ('00000000-0000-0000-0000-000000000071', 'self.organizations.read');
         INSERT INTO iam.oauth_authorization_codes (
             id, authorization_request_id, application_id, code_digest,
             digest_key_version, code_prefix, expires_at
@@ -2046,9 +2046,9 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
            '00000000-0000-0000-0000-000000000071', transaction_timestamp() + interval '30 days');
         INSERT INTO iam.oauth_refresh_family_scopes (family_id, consent_grant_id, scope) VALUES
           ('00000000-0000-0000-0000-000000000091',
-           '00000000-0000-0000-0000-000000000071', 'organizations.read'),
+           '00000000-0000-0000-0000-000000000071', 'self.organizations.read'),
           ('00000000-0000-0000-0000-000000000093',
-           '00000000-0000-0000-0000-000000000071', 'organizations.read');
+           '00000000-0000-0000-0000-000000000071', 'self.organizations.read');
         INSERT INTO iam.refresh_tokens (
             id, family_id, token_digest, digest_key_version, token_prefix, expires_at
         ) VALUES
@@ -2104,9 +2104,9 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             transaction_timestamp() + interval '15 minutes'
         );
         INSERT INTO iam.access_token_scopes (access_token_id, scope) VALUES
-          ('00000000-0000-0000-0000-000000000101', 'organizations.read'),
-          ('00000000-0000-0000-0000-000000000102', 'obo.issue'),
-          ('00000000-0000-0000-0000-000000000103', 'organizations.read');
+          ('00000000-0000-0000-0000-000000000101', 'self.organizations.read'),
+          ('00000000-0000-0000-0000-000000000102', 'obo:test_org>app-beta:trust.manage'),
+          ('00000000-0000-0000-0000-000000000103', 'self.organizations.read');
         INSERT INTO iam.application_obo_endpoints (
             organization_id, application_id, endpoint_id, path, metadata_definition
         ) VALUES (
@@ -2114,6 +2114,10 @@ async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             '00000000-0000-0000-0000-000000000012',
             'trust.manage', '/v1/trust', '{"reason":{"type":"string"}}'
         );
+        INSERT INTO iam.oauth_scope_catalog(scope,description,sensitive) VALUES ('obo:test_org>app-beta:trust.manage','Manage trust',false);
+        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES('00000000-0000-0000-0000-000000000011','obo:test_org>app-beta:trust.manage');
+        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES('00000000-0000-0000-0000-000000000011','obo:test_org>app-beta:trust.manage','00000000-0000-0000-0000-000000000001');
+        INSERT INTO iam.oauth_consent_grant_scopes(consent_grant_id,scope) VALUES('00000000-0000-0000-0000-000000000071','obo:test_org>app-beta:trust.manage');
         SELECT set_config('iam.principal_id', '00000000-0000-0000-0000-000000000001', true),
                set_config('iam.application_id', '00000000-0000-0000-0000-000000000011', true);
         INSERT INTO iam.obo_proofs (

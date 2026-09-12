@@ -21,7 +21,7 @@ use crate::{
     domain::actor::{ActorRef, ActorType},
     features::webhook_replay::{self, DeadLetterRecord},
     infrastructure::{
-        crypto::{EncryptedValue, EncryptionContext, ProtectedField},
+        crypto::{EncryptedValue, EncryptionContext, ProtectedField, SecretKind},
         postgres::{
             context::{self, DatabaseContext},
             events::{
@@ -285,7 +285,7 @@ pub(super) async fn approve(
 }
 
 fn require_approvable_application(status: &str) -> Result<(), ApiError> {
-    if status == "verified" {
+    if matches!(status, "verified" | "under_review") {
         Ok(())
     } else {
         Err(ApiError::conflict(
@@ -371,9 +371,10 @@ pub(super) async fn replace(
         .map_err(|_| ApiError::internal("webhook_replace_context"))?;
     let app = resolve_technical_app(&mut transaction, carbon_id, &path.app_id, false).await?;
     let caller_scope = format!("carbon:{carbon_id}:application:{}", app.id);
-    // A caller-supplied replacement secret is echoed in the compatibility
-    // response, so its idempotency replay remains encrypted and short-lived.
-    let contains_secret = input.webhook_secret.is_some();
+    // Test URL replacement generates fresh signing material; all secret responses
+    // remain encrypted and replayable for ten minutes.
+    let contains_secret =
+        input.webhook_secret.is_some() || crate::infrastructure::testing_plane::is_active();
     let claim = idempotency::claim::<WebhookView>(
         &mut transaction,
         &state.crypto,
@@ -426,13 +427,26 @@ pub(super) async fn replace(
     // endpoint immediately so a caller-supplied test-only signing secret can
     // be exercised. Production keeps its pending-review behavior.
     let activate_immediately = crate::infrastructure::testing_plane::is_active();
-    if inherited_secret && input.webhook_secret.is_none() {
-        return Err(ApiError::validation(
-            "webhook_secret",
-            "is required when replacing an imported Application webhook",
+    if inherited_secret && !activate_immediately {
+        return Err(ApiError::forbidden(
+            "imported_webhook_requires_testing_environment",
         ));
     }
-    let supplied_secret = requested_secret;
+    let generated_secret = if activate_immediately && requested_secret.is_none() {
+        Some(
+            state
+                .crypto
+                .generate_secret(SecretKind::ApplicationWebhookSigningSecret)
+                .map_err(|_| ApiError::internal("testing_webhook_secret_generate"))?,
+        )
+    } else {
+        None
+    };
+    let supplied_secret = requested_secret.or_else(|| {
+        generated_secret
+            .as_ref()
+            .map(secrecy::ExposeSecret::expose_secret)
+    });
     let secret = supplied_secret.map_or_else(
         || decrypt_signing_secret(&state, app.id, &old_key),
         |secret| Ok(zeroize::Zeroizing::new(secret.as_bytes().to_vec())),
@@ -1046,6 +1060,11 @@ async fn application_replay_is_authorized(
     application_id: Uuid,
     delivery: &DeadLetterRecord,
 ) -> Result<bool, ApiError> {
+    let subscribed=sqlx::query_scalar::<_,bool>("SELECT COALESCE(bool_or(iam_private.application_webhook_accepts_event(id,$2)),false) FROM iam.application_webhook_endpoints WHERE application_id=$1 AND status='active'")
+        .bind(application_id).bind(&delivery.event_type).fetch_one(&mut **transaction).await.map_err(|_|ApiError::internal("application_webhook_replay_scope"))?;
+    if !subscribed {
+        return Ok(false);
+    }
     if delivery.event_type == "session.logout" {
         return webhook_replay::application_logout_dead_letter_is_bound_to(
             transaction,
@@ -1095,11 +1114,29 @@ async fn application_replay_is_authorized(
             transaction,
             application_id,
             delivery.organization_id,
+            &delivery.event_type,
             &payload,
         )
         .await;
     }
 
+    let required_scope = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT iam_private.application_webhook_event_scope($1)",
+    )
+    .bind(&delivery.event_type)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("application_replay_event_scope"))?;
+    if let Some(required_scope) = required_scope {
+        let Some(organization_id) = delivery.organization_id else {
+            return Ok(false);
+        };
+        return Ok(
+            current_organization_scopes(transaction, application_id, organization_id)
+                .await?
+                .contains(&required_scope),
+        );
+    }
     if delivery.aggregate_type == "application" && delivery.aggregate_id == application_id {
         return Ok(true);
     }
@@ -1131,14 +1168,63 @@ async fn authorize_captured_projection(
     transaction: &mut Transaction<'_, Postgres>,
     application_id: Uuid,
     organization_id: Option<Uuid>,
+    event_type: &str,
     payload: &serde_json::Value,
 ) -> Result<bool, ApiError> {
     let Some(current) = payload.get("current") else {
         return Ok(false);
     };
+    if current.get("members").is_none() && current.get("resource").is_some() {
+        if current
+            .pointer("/resource/authorization")
+            .and_then(serde_json::Value::as_str)
+            == Some("removed")
+        {
+            return Ok(false);
+        }
+        let required = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT iam_private.application_webhook_event_scope($1)",
+        )
+        .bind(event_type)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|_| ApiError::internal("application_replay_event_scope"))?;
+        let (Some(required), Some(organization)) = (required, organization_id) else {
+            return Ok(false);
+        };
+        return Ok(
+            current_organization_scopes(transaction, application_id, organization)
+                .await?
+                .contains(&required),
+        );
+    }
+    if let Some(resource_type) = current
+        .pointer("/resource/type")
+        .and_then(serde_json::Value::as_str)
+    {
+        let required = if resource_type.starts_with("organization_trust") {
+            Some("organization.trust.read")
+        } else if resource_type == "organization_tag" {
+            Some("organization.tags.read")
+        } else {
+            None
+        };
+        if let Some(required) = required {
+            let Some(org) = organization_id else {
+                return Ok(false);
+            };
+            if !current_organization_scopes(transaction, application_id, org)
+                .await?
+                .contains(required)
+            {
+                return Ok(false);
+            }
+        }
+    }
     if let Some(members) = current.get("members").and_then(serde_json::Value::as_array) {
         if members.is_empty() {
-            return Ok(false);
+            return Ok(current.pointer("/resource/type").is_some()
+                && current.pointer("/resource/authorization").is_none());
         }
         for member in members {
             if member
@@ -1170,7 +1256,7 @@ async fn authorize_captured_projection(
         };
         let scopes =
             current_organization_scopes(transaction, application_id, organization_id).await?;
-        return Ok(scopes.contains("organizations.read"));
+        return Ok(scopes.contains("self.organizations.read"));
     }
     let Some(principal_id) = current
         .get("principal_id")
@@ -1190,31 +1276,70 @@ async fn authorize_captured_projection(
 }
 
 fn required_member_scopes(member: &serde_json::Value) -> BTreeSet<String> {
-    let mut scopes = BTreeSet::from(["memberships.read".to_owned()]);
-    if member.get("principal").is_some() {
-        scopes.insert("profile".to_owned());
+    let mut scopes = BTreeSet::new();
+    if let Some(principal) = member.get("principal") {
+        if ["principal_id", "type", "public_id"]
+            .iter()
+            .any(|field| principal.get(*field).is_some())
+        {
+            scopes.insert("self.identity.read".into());
+        }
+        if [
+            "display_name",
+            "timezone",
+            "description",
+            "profile_photo",
+            "created_at",
+            "updated_at",
+        ]
+        .iter()
+        .any(|field| principal.get(*field).is_some())
+        {
+            scopes.insert("self.profile.read".into());
+        }
+        if principal.get("status").is_some() {
+            scopes.insert("self.membership.read".into());
+        }
     }
     if member.get("organization").is_some() {
-        scopes.insert("organizations.read".to_owned());
+        scopes.insert("self.organizations.read".into());
     }
-    if member.get("roles").is_some() {
-        scopes.insert("roles.read".to_owned());
-    }
-    if let Some(contacts) = member.get("contacts") {
-        if contacts.get("email").is_some() {
-            scopes.insert("email".to_owned());
-        }
-        if contacts.get("phone_number").is_some() {
-            scopes.insert("phone".to_owned());
+    for (pointer, scope) in [
+        ("/membership/status", "self.membership.read"),
+        ("/membership/tags", "self.tags.read"),
+        (
+            "/membership/first_silicon_membership_id",
+            "self.silicon_access.read",
+        ),
+        (
+            "/membership/extra_silicon_membership_ids",
+            "self.silicon_access.read",
+        ),
+        (
+            "/membership/reports_to_membership_id",
+            "self.hierarchy.read",
+        ),
+        ("/membership/hierarchy_level", "self.hierarchy.read"),
+        ("/membership/trust", "organization.trust.read"),
+        ("/membership/effective_trust", "self.trust.read"),
+        ("/roles/org_role", "self.membership.read"),
+        ("/roles/job_role", "self.job_role.read"),
+        ("/roles/capabilities", "self.capabilities.read"),
+        ("/contacts/email", "self.email.read"),
+        ("/contacts/phone_number", "self.phone.read"),
+    ] {
+        if member.pointer(pointer).is_some() {
+            scopes.insert(scope.into());
         }
     }
     scopes
 }
-
 fn required_profile_scopes(current: &serde_json::Value) -> BTreeSet<String> {
     let mut scopes = BTreeSet::new();
+    if current.get("carbon_id").is_some() {
+        scopes.insert("self.identity.read".into());
+    }
     if [
-        "carbon_id",
         "display_name",
         "timezone",
         "description",
@@ -1226,13 +1351,13 @@ fn required_profile_scopes(current: &serde_json::Value) -> BTreeSet<String> {
     .iter()
     .any(|field| current.get(*field).is_some())
     {
-        scopes.insert("profile".to_owned());
+        scopes.insert("self.profile.read".into());
     }
     if current.get("email").is_some() {
-        scopes.insert("email".to_owned());
+        scopes.insert("self.email.read".into());
     }
     if current.get("phone_number").is_some() {
-        scopes.insert("phone".to_owned());
+        scopes.insert("self.phone.read".into());
     }
     scopes
 }
@@ -1242,119 +1367,77 @@ async fn current_membership_scopes(
     application_id: Uuid,
     membership_id: Uuid,
 ) -> Result<BTreeSet<String>, ApiError> {
-    sqlx::query_scalar::<_, String>(
-        r"
-        SELECT DISTINCT consent_scope.scope
-        FROM iam.organization_memberships AS membership
-        JOIN iam.principals AS subject
-          ON subject.id = membership.principal_id
-         AND subject.kind = membership.principal_kind
-         AND subject.status = 'active'
-        JOIN iam.oauth_consent_grants AS consent
-          ON consent.subject_principal_id = membership.principal_id
-         AND consent.subject_kind = membership.principal_kind
-         AND consent.status = 'active'
-         AND membership.id = ANY(consent.selected_membership_ids)
-        JOIN iam.oauth_consent_grant_scopes AS consent_scope
-          ON consent_scope.consent_grant_id = consent.id
-        JOIN iam.application_approved_scopes AS approved
-          ON approved.application_id = consent.application_id
-         AND approved.scope = consent_scope.scope
-         AND approved.revoked_at IS NULL
-        WHERE membership.id = $2 AND membership.status = 'active'
-          AND consent.application_id = $1
-        ORDER BY consent_scope.scope
-        ",
+    let scope = sqlx::query_as::<_, (Uuid, Uuid)>(
+        "SELECT principal_id,organization_id FROM iam.organization_memberships WHERE id=$1 AND status='active'",
+    ).bind(membership_id).fetch_optional(&mut **transaction).await
+    .map_err(|_| ApiError::internal("application_replay_membership"))?;
+    let Some((principal, organization)) = scope else {
+        return Ok(BTreeSet::new());
+    };
+    current_resource_scopes(
+        transaction,
+        application_id,
+        Some(principal),
+        Some(organization),
     )
-    .bind(application_id)
-    .bind(membership_id)
-    .fetch_all(&mut **transaction)
     .await
-    .map(|values| values.into_iter().collect())
-    .map_err(|_| ApiError::internal("application_replay_membership_scopes"))
 }
-
 async fn current_organization_scopes(
     transaction: &mut Transaction<'_, Postgres>,
     application_id: Uuid,
     organization_id: Uuid,
 ) -> Result<BTreeSet<String>, ApiError> {
-    sqlx::query_scalar::<_, String>(
-        r"
-        SELECT DISTINCT consent_scope.scope
-        FROM iam.organization_memberships AS membership
-        JOIN iam.principals AS subject
-          ON subject.id = membership.principal_id
-         AND subject.kind = membership.principal_kind
-         AND subject.status = 'active'
-        JOIN iam.oauth_consent_grants AS consent
-          ON consent.subject_principal_id = membership.principal_id
-         AND consent.subject_kind = membership.principal_kind
-         AND consent.status = 'active'
-         AND membership.id = ANY(consent.selected_membership_ids)
-        JOIN iam.oauth_consent_grant_scopes AS consent_scope
-          ON consent_scope.consent_grant_id = consent.id
-        JOIN iam.application_approved_scopes AS approved
-          ON approved.application_id = consent.application_id
-         AND approved.scope = consent_scope.scope
-         AND approved.revoked_at IS NULL
-        WHERE membership.organization_id = $2 AND membership.status = 'active'
-          AND consent.application_id = $1
-        ORDER BY consent_scope.scope
-        ",
-    )
-    .bind(application_id)
-    .bind(organization_id)
-    .fetch_all(&mut **transaction)
-    .await
-    .map(|values| values.into_iter().collect())
-    .map_err(|_| ApiError::internal("application_replay_organization_scopes"))
+    current_resource_scopes(transaction, application_id, None, Some(organization_id)).await
 }
-
 async fn current_principal_scopes(
     transaction: &mut Transaction<'_, Postgres>,
     application_id: Uuid,
     principal_id: Uuid,
     organization_id: Option<Uuid>,
 ) -> Result<BTreeSet<String>, ApiError> {
-    sqlx::query_scalar::<_, String>(
-        r"
-        SELECT DISTINCT consent_scope.scope
-        FROM iam.oauth_consent_grants AS consent
-        JOIN iam.principals AS subject
-          ON subject.id = consent.subject_principal_id
-         AND subject.kind = consent.subject_kind
-         AND subject.status = 'active'
-        JOIN iam.oauth_consent_grant_scopes AS consent_scope
-          ON consent_scope.consent_grant_id = consent.id
-        JOIN iam.application_approved_scopes AS approved
-          ON approved.application_id = consent.application_id
-         AND approved.scope = consent_scope.scope
-         AND approved.revoked_at IS NULL
-        LEFT JOIN iam.organization_memberships AS membership
-          ON membership.organization_id = consent.organization_id
-         AND membership.id = consent.membership_id
-         AND membership.principal_id = consent.subject_principal_id
-         AND membership.principal_kind = consent.subject_kind
-        WHERE consent.application_id = $1
-          AND consent.subject_principal_id = $2
-          AND consent.status = 'active'
-          AND ($3::uuid IS NULL OR EXISTS (
-              SELECT 1 FROM iam.organization_memberships selected
-              WHERE selected.id = ANY(consent.selected_membership_ids)
-                AND selected.organization_id = $3 AND selected.status = 'active'
-                AND selected.principal_id = consent.subject_principal_id
-          ))
-        ORDER BY consent_scope.scope
-        ",
+    current_resource_scopes(
+        transaction,
+        application_id,
+        Some(principal_id),
+        organization_id,
+    )
+    .await
+}
+async fn current_resource_scopes(
+    transaction: &mut Transaction<'_, Postgres>,
+    application_id: Uuid,
+    principal_id: Option<Uuid>,
+    organization_id: Option<Uuid>,
+) -> Result<BTreeSet<String>, ApiError> {
+    let values = sqlx::query_scalar::<_, String>(
+        "SELECT * FROM iam_private.current_application_resource_scopes($1,$2,$3)",
     )
     .bind(application_id)
     .bind(principal_id)
     .bind(organization_id)
     .fetch_all(&mut **transaction)
     .await
-    .map(|values| values.into_iter().collect())
-    .map_err(|_| ApiError::internal("application_replay_principal_scopes"))
+    .map_err(|_| ApiError::internal("application_replay_resource_scopes"))?;
+    let mut scopes = values.into_iter().collect::<BTreeSet<_>>();
+    // The SQL boundary has already established authority over this exact resource.
+    // Map directory permissions to the equivalent field checks only inside replay.
+    for (directory, own) in [
+        ("directory.carbons.read", "self.identity.read"),
+        ("directory.silicons.read", "self.identity.read"),
+        ("directory.profiles.read", "self.profile.read"),
+        ("directory.memberships.read", "self.membership.read"),
+        ("directory.capabilities.read", "self.capabilities.read"),
+        ("directory.job_roles.read", "self.job_role.read"),
+        ("directory.tags.read", "self.tags.read"),
+        ("directory.silicon_access.read", "self.silicon_access.read"),
+        ("directory.hierarchy.read", "self.hierarchy.read"),
+        ("organization.trust.read", "self.trust.read"),
+    ] {
+        if scopes.contains(directory) {
+            scopes.insert(own.into());
+        }
+    }
+    Ok(scopes)
 }
 
 fn value_uuid(payload: &serde_json::Value, keys: &[&str]) -> Option<Uuid> {

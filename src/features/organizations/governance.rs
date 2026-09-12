@@ -1,5 +1,7 @@
 #![allow(clippy::too_many_lines)]
 
+use super::application_reads::ReadScopes;
+
 use std::{borrow::Cow, collections::BTreeSet, str::FromStr as _};
 
 use axum::{
@@ -867,10 +869,11 @@ pub(super) async fn list_approval_requests(
     Path(org_id): Path<String>,
     Query(query): Query<ApprovalQuery>,
 ) -> Result<Response, AppError> {
+    ReadScopes::for_actor(&authenticated).require("organization.governance.read")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     validate_approval_filters(&query)?;
     let (cursor, limit) = validation::page_parts(query.cursor.as_deref(), query.limit)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let rows = sqlx::query_as::<_, ApprovalRow>(APPROVAL_LIST_SQL)
         .bind(scope.access.organization_id)
         .bind(cursor)
@@ -897,8 +900,9 @@ pub(super) async fn get_approval_request(
     authenticated: Authenticated,
     Path((org_id, request_id)): Path<(String, Uuid)>,
 ) -> Result<Response, AppError> {
+    ReadScopes::for_actor(&authenticated).require("organization.governance.read")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let approval = fetch_approval(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -1341,6 +1345,7 @@ pub(super) async fn list_job_role_history(
     Path((org_id, membership_id)): Path<(String, Uuid)>,
     Query(query): Query<PageQuery>,
 ) -> Result<Response, AppError> {
+    ReadScopes::for_actor(&authenticated).require("organization.governance.read")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page(&query)?;
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
@@ -1394,6 +1399,7 @@ pub(super) async fn list_tag_history(
     Path((org_id, membership_id)): Path<(String, Uuid)>,
     Query(query): Query<PageQuery>,
 ) -> Result<Response, AppError> {
+    ReadScopes::for_actor(&authenticated).require("organization.governance.read")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page(&query)?;
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;

@@ -1,173 +1,71 @@
-<p class="lede">
-  A testing environment is the complete Silicon IAM contract on isolated data. It begins with no
-  organizations, Carbons, Silicons, Applications, sessions, or logs, and uses the same endpoints
-  and authorization rules as production.
-</p>
+<p class="lede">Testing environments run the IAM contract against isolated data. An application can create an environment for its own tests or attach to an existing IAM environment, recursively preparing the external applications it depends on.</p>
+<h2>One API, isolated data</h2>
+<p>Requests without a testing header use production. Select an environment with <code>X-Testing-Environment-Key</code>, a 32-character alphanumeric root key. Protected endpoints still require the ordinary credentials issued inside that environment. Production and testing sessions, application secrets, SLTs, refresh tokens, Silicon credentials, and OBO proofs cannot be used interchangeably. A lookup never falls back to production.</p>
+<pre><code>X-Testing-Environment-Key: &lt;environment root key&gt;
+Authorization: Bearer &lt;direct IAM token issued in this environment&gt;</code></pre>
+<p>The key is root authority, not an identifier. A holder can use the testing authentication flows to administer the environment. Keep the public environment UUID in run metadata and store the key separately as a secret. Exclude keys and credential-bearing bodies from source, URLs, logs, traces, screenshots, and persisted webhook records.</p>
+<h2>Create an application testing environment</h2>
+<p>An application uses its production Basic credentials to call <code>POST /api/v1/application/testing-environments</code>. Without <code>iam_test_key</code>, IAM creates a new environment for the application's owning organization. With a valid existing key, IAM attaches the application and its dependencies to that environment. Reuse the same key for all parts of one integrated test.</p>
+<pre><code>POST /api/v1/application/testing-environments
+Authorization: Basic &lt;production app ID and app secret&gt;
+Idempotency-Key: &lt;one logical setup&gt;
+Content-Type: application/json
 
-<h2>Two planes, one API</h2>
-
-<p>
-  A normal request without an environment header operates on production. Add the root key to a
-  plane-selectable request to execute that same route inside one environment:
-</p>
-
-<pre><code>X-Testing-Environment-Key: &lt;32 alphanumeric characters&gt;</code></pre>
-
-<div class="banner banner-danger">
-  <div>
-    <strong>The key is root authority, not an environment label.</strong>
-    Anyone holding it can perform any action inside that environment. Keep the public environment
-    UUID in build metadata and keep the key in a secret store. Never put the key in a URL, source,
-    test name, log, trace, screenshot, or persisted webhook record.
-  </div>
-</div>
-
-<p>
-  The header selects the data plane; it does not replace normal authentication. A protected Carbon
-  route still needs a bearer issued inside that environment. An Application route still needs an
-  Application secret issued there. Production and test access tokens, refresh tokens, short-lived
-  tokens, STKs, Application secrets, sessions, and OBO proofs are mutually rejected. IAM does not
-  currently expose a caller API-key credential; any such credential added later must preserve this
-  same fail-closed plane binding.
-</p>
-
-<h2>Lifecycle API</h2>
-
-<p>
-  Lifecycle routes use a production Carbon or Silicon bearer and never enter the selected test
-  plane. Any active organization member may create an environment and becomes its creator. The
-  creator and current organization owners/admins can administer it.
-</p>
-
-<table>
-  <thead><tr><th>Method</th><th>Route</th><th>Result</th></tr></thead>
-  <tbody>
-    <tr><td><code>GET</code></td><td><code>/organizations/{org_id}/testing-environments</code></td><td>List active or deleted environments</td></tr>
-    <tr><td><code>POST</code></td><td><code>/organizations/{org_id}/testing-environments</code></td><td>Create and return the key</td></tr>
-    <tr><td><code>GET/PATCH/DELETE</code></td><td><code>…/testing-environments/{id}</code></td><td>Read, edit, or retire</td></tr>
-    <tr><td><code>GET</code></td><td><code>…/{id}/key</code></td><td>Audited retrieval of the current key</td></tr>
-    <tr><td><code>POST</code></td><td><code>…/{id}/key-rotations</code></td><td>Replace the key immediately</td></tr>
-    <tr><td><code>POST</code></td><td><code>…/{id}/cleanings</code></td><td>Erase test data but retain the environment</td></tr>
-    <tr><td><code>POST</code></td><td><code>…/{id}/restorations</code></td><td>Restore before <code>purge_after</code></td></tr>
-  </tbody>
-</table>
-
-<p>
-  <code>GET /api/v1/testing-environment</code> and
-  <code>POST /api/v1/testing-environment/cleanings</code> are the key-authorized self routes. They
-  are test-only: omitting the environment key is an authentication error. Cleaning retains the
-  environment and key. Deletion disables the key and starts a 30-day recoverable window. Thirty
-  days without accepted activity causes the same soft deletion automatically.
-</p>
-
-<h2>Fixed OTPs without email or SMS delivery</h2>
-
-<p>
-  Test data never triggers real email or SMS. Use <code>000000</code> for signup email and phone
-  verification, Carbon login, invitation acceptance, and verified-channel step-up. Attempts,
-  cooldowns, expiry, idempotency, and all resulting session behavior still follow the production
-  paths, so a proof exercises more than a mocked response.
-</p>
-
-<h2>Applications: create or import</h2>
-
-<p>
-  To create a test-only Application, call ordinary <code>POST /api/v1/applications</code> with a
-  test Carbon owner/admin bearer and the environment key. The request supplies a local handle,
-  <code>org_id</code>, <code>base_url</code>, webhook URL, a caller-chosen
-  <code>webhook_secret</code>, and an optional OBO catalog. IAM returns the canonical
-  <code>{org_id}&gt;{handle}</code> ID and a generated test-only client secret, and echoes the
-  supplied webhook secret for v1 compatibility. IAM never generates a webhook secret. A test
-  creation may not claim an ID already registered in production.
-</p>
-
-<p>
-  To mirror an existing production Application, use the test-only import route:
-</p>
-
+{
+  "name": "Checkout integration",
+  "description": "Payment and storage delegation",
+  "iam_test_key": "&lt;optional existing environment key&gt;"
+}</code></pre>
+<p>The response includes <code>environment_id</code>, <code>org_id</code>, name and description, <code>iam_test_key</code>, the root application's <code>app_id</code> and fresh test <code>app_secret</code>, a list of imported <code>dependencies</code>, and <code>secret_replay_expires_at</code>. Save it securely during the ten-minute replay window. Repeating the same logical operation uses the original idempotency key.</p>
+<p>IAM follows declared external scopes recursively, including dependencies of dependencies. It deduplicates applications and handles cycles so a dependency is prepared once per environment. Every dependency shares the same environment key. Application-owned organizations may differ; each is represented within the isolated environment.</p>
+<p><code>GET /api/v1/application/testing-environments</code> lists active linked environments in the calling application's owning-organization context, with <code>cursor</code> and <code>limit</code>. Each item exposes the environment UUID, organization, name, description, last activity, and retention days. Credentials are not included in the list.</p>
+<h2>Recognize and authenticate test requests</h2>
+<p>When a test request carries an <code>app_secret</code>, the receiving application treats that as a signal to enter its test flow. It must authenticate the supplied test app credentials against IAM with the corresponding environment key before trusting the request. Presence of a secret-shaped string is insufficient. Store test data separately from production, keyed to the environment, and carry the authenticated testing context through subsequent work.</p>
+<p>For an OBO request, IAM may return a <code>testing_context</code> containing the recipient's test app ID, test secret, and <code>iam_test_key</code>. The caller passes it to that recipient over secure transport. The recipient uses it to verify the proof against IAM inside the correct environment. Production application secrets are never disclosed to another application.</p>
+<h2>IAM environment lifecycle</h2>
+<p>A direct production Carbon or Silicon member can create an environment through the organization lifecycle API. The creator and current owning-organization owners/admins can administer it. These routes operate on the environment's production control record; they do not enter its test data plane.</p>
+<table><thead><tr><th>Method</th><th>Route under /api/v1</th><th>Purpose</th></tr></thead><tbody>
+<tr><td><code>GET/POST</code></td><td><code>/organizations/{org_id}/testing-environments</code></td><td>List or create environments.</td></tr>
+<tr><td><code>GET/PATCH/DELETE</code></td><td><code>…/testing-environments/{environment_id}</code></td><td>Read, edit, or soft-delete an environment.</td></tr>
+<tr><td><code>GET</code></td><td><code>…/{environment_id}/key</code></td><td>Retrieve the current key with audit.</td></tr>
+<tr><td><code>POST</code></td><td><code>…/{environment_id}/key-rotations</code></td><td>Replace the key immediately.</td></tr>
+<tr><td><code>POST</code></td><td><code>…/{environment_id}/cleanings</code></td><td>Erase test data while retaining the environment.</td></tr>
+<tr><td><code>POST</code></td><td><code>…/{environment_id}/restorations</code></td><td>Restore before the purge deadline.</td></tr>
+</tbody></table>
+<p>A newly created IAM environment starts empty. <code>GET /api/v1/testing-environment</code> and <code>POST /api/v1/testing-environment/cleanings</code> are key-authorized self routes. A clean invalidates the erased identities, imports, sessions, and proofs; reimport and obtain new credentials before another run. Deletion disables the key and allows recovery for 30 days before purge.</p>
+<h2>Application import and webhook keys</h2>
+<p>Create a test-only application with the ordinary application registration route using a test Carbon owner/admin token and the environment key. It cannot claim an ID occupied by a production application. To import a production application into the selected environment, use:</p>
 <pre><code>POST /api/v1/testing-environment/applications/imports
 Authorization: Bearer &lt;test Carbon access token&gt;
 X-Testing-Environment-Key: &lt;environment key&gt;
-Idempotency-Key: &lt;one logical operation&gt;
+Idempotency-Key: &lt;one logical import&gt;
 Content-Type: application/json
 
-{ "app_id": "google&gt;drive" }</code></pre>
-
-<p>
-  Import keeps the production canonical ID, base URL, webhook URL, and OBO catalog. When the
-  organization does not exist in the environment, IAM creates it and makes the requesting test
-  Carbon its owner. It returns a fresh test-only Application secret. The production webhook key
-  is inherited so an existing receiver can verify deliveries, but is never exposed; the response
-  says only <code>webhook_secret_inherited: true</code>.
-</p>
-
-<p>
-  The same production Application can be imported into several environments in
-  the same testing database. Organization and Application handle lookups are
-  environment-local, including privileged lookup helpers. An organization with
-  the same public handle in another environment does not block import or grant
-  access to its data. A <code>testing_import_organization_not_managed</code>
-  conflict refers only to an organization in the selected environment whose
-  owner/admin authority the requesting test Carbon does not hold.
-</p>
-
-<p>
-  Replacing the webhook URL of an imported Application that still uses that inherited key requires
-  a caller-supplied <code>webhook_secret</code>. That exceptional <code>PUT …/webhook</code> response
-  echoes it as <code>webhook_signing_secret</code> for v1 compatibility and includes
-  <code>secret_replay_expires_at</code>. Later URL changes reuse it. Explicit rotation remains available through
-  <code>POST …/webhook-secret-rotations</code>.
-</p>
-
-<h2>Application discovery in a test</h2>
-
-<p>
-  Call <code>GET /api/v1/application-directory/{app_id}</code> with the requesting test
-  Application's Basic credential and the environment key. Both requester and target are resolved
-  exclusively inside that environment. The response is <code>{app_id, base_url}</code>; there is no
-  fallback to production. Discovery may cross organizations, while OBO remains same-organization.
-</p>
-
-<h2>Test webhook envelope</h2>
-
-<p>A production event has top-level metadata and data. A test event is instead:</p>
-
+{"app_id":"storage&gt;drive"}</code></pre>
+<p>Import preserves the qualified ID, backend URL, webhook URL, OBO catalog, and declared dependency permissions. IAM creates a missing owning organization in the environment and makes the importing test Carbon its owner. It returns a fresh test-only client secret. The same production app may be imported into several environments without sharing their data or credentials.</p>
+<p>The production webhook signing secret is inherited internally so the existing receiver can validate test deliveries, but IAM never reveals that production secret. When an app replaces its webhook destination in a testing environment, IAM creates and returns a fresh test-only <code>webhook_signing_secret</code> when no replacement was supplied. A caller may instead supply a test-only <code>webhook_secret</code>. The new endpoint activates immediately, and the secret-bearing response has a ten-minute replay window. Every testing destination replacement uses a supplied or newly generated test-only secret. Production destination changes reuse the current key.</p>
+<h2>Fixed verification codes</h2>
+<p>Testing sends no real email or SMS. Use <code>000000</code> for signup contact verification, Carbon login, invitation acceptance, and verified-channel step-up. Challenge creation, attempts, cooldowns, expiry, session binding, and idempotency still run through the normal lifecycle. The root key therefore enables onboarding and authenticating administrative test identities without a real inbox or phone.</p>
+<h2>Test webhooks</h2>
+<p>Production events carry top-level <code>metadata</code> and <code>data</code>. Test deliveries wrap them with the environment key:</p>
 <pre><code>{
   "test": {
-    "testing_key": "&lt;environment key&gt;",
+    "testing_key": "&lt;environment root key&gt;",
     "metadata": {
       "spec_version": "1.0",
       "event_id": "&lt;uuid&gt;",
-      "event_type": "organization.membership.created.v1",
-      "occurred_at": "2026-09-04T08:00:00Z",
+      "event_type": "organization.membership.updated.v1",
+      "occurred_at": "2026-09-12T08:00:00Z",
       "organization_id": "&lt;uuid&gt;",
-      "aggregate": { "type": "membership", "id": "&lt;uuid&gt;", "version": 1 }
+      "aggregate": {"type":"membership", "id":"&lt;uuid&gt;", "version":2}
     },
     "data": {}
   }
 }</code></pre>
-
-<p>
-  Verify the signature over the exact outer bytes before parsing. Deduplicate on
-  <code>test.metadata.event_id</code> and order on
-  <code>test.metadata.aggregate.version</code>. Compare the key without timing leakage, use it to
-  route the event to the isolated run, then redact it; it remains a live root credential.
-</p>
-
-<h2>An application test proof</h2>
-
-<ol>
-  <li>Create an environment from production and store UUID and key separately.</li>
-  <li>Run ordinary signup under the key, verify both contacts with <code>000000</code>, then log in and retain the test bearer under the environment UUID.</li>
-  <li>Create a test organization/Application or import the production Application; persist the returned test-only client secret during its ten-minute replay window.</li>
-  <li>Complete an organization-bound short-lived-token login and matching-organization introspection entirely in the test plane. Also prove an unscoped login remains valid for ordinary Application use. Assert that production credentials fail there and test credentials fail without the header.</li>
-  <li>Trigger a directory change; verify, route, deduplicate, and apply the wrapped webhook. Exercise OBO with the organization-bound token, and prove a token without the OBO organization's selection is refused.</li>
-  <li>Clean the environment for another run or retire it from the production control plane.</li>
-</ol>
-
-<p>
-  The <a href="/docs/client/testing-environments">Rust client guide</a> and the
-  <a href="https://github.com/teamofsilicons/silicon-iam/tree/main/docs/cli#end-to-end-application-proof-in-a-test-environment"
-    rel="external noreferrer"><code>silicon-iam-cli</code> guide</a> show the same proof without
-  constructing headers by hand.
-</p>
+<p>Verify the signature over the complete raw outer body before interpreting it. Validate and match the testing key to the expected environment, route to isolated storage, then redact the key. Deduplicate on <code>test.metadata.event_id</code> and order updates by <code>test.metadata.aggregate.version</code>. An otherwise valid test event must never update production data.</p>
+<h2>Inactivity and cleanup</h2>
+<p>The default application testing retention is 30 idle days. An application's owner/admin can configure <code>testing_idle_days</code> on its registration or update. IAM tracks activity for individual application-environment links and retires idle test instances according to that application's setting. Retiring one instance does not authorize deleting another application's active test data.</p>
+<p>IAM environments also default to soft deletion after 30 idle days, followed by a 30-day recovery window. Active application links with longer configured retention keep their environment available while they are still within that retention period. List responses expose activity and retention so applications can clean their own isolated storage on the same lifecycle.</p>
+<h2>Exercise the complete flow</h2>
+<ol><li>Create or attach an application environment and securely retain its key and test secret.</li><li>Onboard a test Carbon with fixed OTPs, or authenticate a test Silicon, and establish the required memberships.</li><li>Read current login choices, approve the exact scope version, choose organizations, exchange each SLT with its matching test application secret, and introspect the resulting token.</li><li>Discover and call an external dependency through OBO. Verify the proof inside the same environment and ensure an unselected organization or production credential fails.</li><li>Trigger a scoped directory change; verify and apply its signed test webhook only to that environment's data.</li><li>Clean for another run or retire the environment. Discard erased credentials and imported app secrets.</li></ol>
+<p>See the <a href="https://docs.iam.teamofsilicons.com/client/testing-environments/">Rust testing guide</a> and <a href="https://docs.iam.teamofsilicons.com/cli/">CLI guide</a> for typed and command-line workflows.</p>

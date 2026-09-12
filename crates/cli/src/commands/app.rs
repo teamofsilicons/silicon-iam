@@ -31,7 +31,11 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             requester_app_id,
             app_secret,
         } => return discover(context, &app_id, &requester_app_id, app_secret).await,
+        AppCommand::Read(args) => return super::app_reads::run(context, args).await,
         AppCommand::Token(command) => return token(context, command).await,
+        AppCommand::Scopes(command) => return super::app_scopes::run(context, command).await,
+        AppCommand::Bundle(command) => return super::app_bundles::run(context, command).await,
+        AppCommand::Testing(command) => return super::app_testing::run(context, command).await,
         AppCommand::Obo(command) => return obo(context, command).await,
         AppCommand::VerifyWebhook {
             body_file,
@@ -99,12 +103,21 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             webhook_secret,
             base_url,
             obo_endpoints,
+            app_scope,
+            webhook_scope,
+            obo_review_message,
+            testing_idle_days,
         } => {
             let (app_id, organization) = context.application_creation_identity(&app_id)?;
             let created = client
                 .applications()
                 .create(
                     &models::ApplicationCreate {
+                        app_scope: app_scope.as_deref().map(scope_definition).transpose()?,
+                        webhook_scope: webhook_scope
+                            .map(|values| values.into_iter().map(webhook_scope_value).collect()),
+                        obo_review_message,
+                        testing_idle_days: testing_idle_days.map(i64::from),
                         app_id,
                         org_id: organization,
                         app_name: Some(name),
@@ -146,6 +159,10 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             clear_logo,
             base_url,
             obo_endpoints,
+            app_scope,
+            webhook_scope,
+            obo_review_message,
+            testing_idle_days,
         } => {
             let app_id = context.application_id(&app_id)?;
             let current = client.applications().get(&app_id).await?;
@@ -155,6 +172,11 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                     &app_id,
                     current.version,
                     &models::ApplicationPatch {
+                        app_scope: app_scope.as_deref().map(scope_definition).transpose()?,
+                        webhook_scope: webhook_scope
+                            .map(|values| values.into_iter().map(webhook_scope_value).collect()),
+                        obo_review_message,
+                        testing_idle_days: testing_idle_days.map(i64::from),
                         app_name: nullable_patch(name, clear_name),
                         app_logo: nullable_patch(logo, clear_logo),
                         base_url,
@@ -212,7 +234,11 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
             }
         }
         AppCommand::Discover { .. }
+        | AppCommand::Read(_)
         | AppCommand::Token(_)
+        | AppCommand::Scopes(_)
+        | AppCommand::Bundle(_)
+        | AppCommand::Testing(_)
         | AppCommand::Obo(_)
         | AppCommand::VerifyWebhook { .. } => unreachable!(),
         AppCommand::Import { app_id } => {
@@ -276,12 +302,14 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
                             "Proposed. An owning-org owner/admin or IAM reviewer can activate it with `iam app approve-webhook` and a fresh approval step-up."
                         );
                     }
-                    if proposed.webhook_signing_secret.is_some() {
-                        println!("IAM stored the replacement webhook signing secret you supplied.");
+                    if let Some(secret) = proposed.webhook_signing_secret.as_deref() {
+                        println!("Webhook signing secret: {secret}");
                         if let Some(expires_at) = proposed.secret_replay_expires_at {
                             println!("Secret replay expires: {}", timestamp(expires_at));
                         }
-                        println!("The inherited production key was replaced.");
+                        println!(
+                            "Store this secret for the test receiver's signature verification."
+                        );
                     }
                     report_webhook(context, &proposed)
                 }
@@ -564,6 +592,7 @@ async fn obo(context: &Context, command: AppOboCommand) -> Result<()> {
             requester_app_id,
             app_secret,
             subject_token,
+            org_context,
             method,
             metadata,
             idempotency_key,
@@ -590,6 +619,7 @@ async fn obo(context: &Context, command: AppOboCommand) -> Result<()> {
             let metadata = metadata_object(&metadata)?;
             let mutation = mutation_with_optional_key(idempotency_key)?;
             let request = models::OboExchangeRequest {
+                org_id: org_context,
                 subject_token,
                 audience: audience_app_id,
                 endpoint_id,
@@ -706,13 +736,13 @@ fn verify_webhook(
     }
 }
 
-fn application_client(context: &Context, app_id: &str, secret: &str) -> Client {
+pub(super) fn application_client(context: &Context, app_id: &str, secret: &str) -> Client {
     context
         .anonymous()
         .with_credential(Credential::application(app_id, secret))
 }
 
-fn prompted(value: Option<String>, label: &str, flag: &str) -> Result<String> {
+pub(super) fn prompted(value: Option<String>, label: &str, flag: &str) -> Result<String> {
     match value {
         Some(value) if value.trim().is_empty() => {
             Err(CliError::Usage(format!("{flag} cannot be empty")))
@@ -758,7 +788,15 @@ fn report_oauth_tokens(context: &Context, tokens: &models::OAuthTokenResponse) -
             println!("Refresh token: {}", tokens.refresh_token);
             println!("Expires in: {} seconds", tokens.expires_in);
             println!("Scope: {}", tokens.scope);
-            println!("Actor: {}", tokens.actor.public_id);
+            println!(
+                "Actor: {}",
+                tokens
+                    .actor
+                    .as_ref()
+                    .map_or("undisclosed (requires self.identity.read)", |actor| actor
+                        .public_id
+                        .as_str())
+            );
             Ok(())
         }
     }
@@ -803,7 +841,8 @@ fn report_introspection(context: &Context, inspected: &models::TokenIntrospectio
 fn print_authorization(authorization: &models::ApplicationAuthorization) {
     println!(
         "Authorization: {} in {}",
-        authorization.public_id, authorization.org_id
+        authorization.public_id.as_deref().unwrap_or("undisclosed"),
+        authorization.org_id
     );
     println!(
         "Membership: {} (version {}, epoch {})",
@@ -820,15 +859,15 @@ fn print_authorization(authorization: &models::ApplicationAuthorization) {
     );
     println!(
         "Role: {}",
-        authorization
-            .org_role
-            .as_ref()
-            .map_or_else(|| "undisclosed (requires roles.read)".to_owned(), label)
+        authorization.org_role.as_ref().map_or_else(
+            || "undisclosed (requires self.membership.read)".to_owned(),
+            label
+        )
     );
     println!(
         "Tags: {}",
         authorization.tags.as_ref().map_or_else(
-            || "undisclosed (requires memberships.read)".to_owned(),
+            || "undisclosed (requires self.tags.read)".to_owned(),
             |tags| if tags.is_empty() {
                 "none".to_owned()
             } else {
@@ -846,11 +885,12 @@ fn report_obo_catalog(context: &Context, catalog: &models::OboEndpointCatalog) -
     match context.format {
         Format::Json => json(catalog),
         Format::Text => {
-            let mut table = Table::new(["endpoint", "path", "metadata"]);
+            let mut table = Table::new(["endpoint", "path", "critical", "metadata"]);
             for endpoint in &catalog.endpoints {
                 table.row([
                     endpoint.endpoint_id.clone(),
                     endpoint.path.clone(),
+                    endpoint.critical.to_string(),
                     endpoint.metadata.to_string(),
                 ]);
             }
@@ -866,6 +906,11 @@ fn report_obo_proof(context: &Context, proof: &models::OboProofResponse) -> Resu
         Format::Text => {
             println!("OBO access proof: {}", proof.access_proof);
             println!("Proof ID: {}", proof.proof_id);
+            if let Some(test) = &proof.testing_context {
+                println!("Testing audience: {}", test.app_id);
+                println!("Testing application secret: {}", test.app_secret);
+                println!("IAM testing key: {}", test.iam_test_key);
+            }
             println!("Expires: {}", timestamp(proof.expires_at));
             Ok(())
         }
@@ -934,7 +979,13 @@ fn report(context: &Context, application: &models::Application) -> Result<()> {
             table.row(["base_url", &application.base_url]);
             table.row(["status", &label(&application.status)]);
             table.row(["org", &application.org_id]);
-            table.row(["scopes", &application.approved_scopes.join(", ")]);
+            table.row(["active_scopes", &application.approved_scopes.join(", ")]);
+            table.row(["requested_scopes", &application.requested_scopes.join(", ")]);
+            table.row(["scope_version", &application.scope_version.to_string()]);
+            table.row([
+                "pending_review",
+                &application.has_pending_changes.to_string(),
+            ]);
             table.row(["version", &application.version.to_string()]);
             table.print();
             Ok(())
@@ -965,6 +1016,22 @@ fn report_webhook(context: &Context, webhook: &models::ApplicationWebhook) -> Re
     }
 }
 
+/// Parses the structured IAM and external permission declaration.
+pub(super) fn scope_definition(input: &str) -> Result<models::ApplicationScope> {
+    serde_json::from_str(input)
+        .map_err(|error| CliError::Usage(format!("--app-scope is not valid scope JSON: {error}")))
+}
+
+fn webhook_scope_value(value: String) -> models::ApplicationWebhookScope {
+    match value.as_str() {
+        "full" => models::ApplicationWebhookScope::Full,
+        "membership" => models::ApplicationWebhookScope::Membership,
+        "updates" => models::ApplicationWebhookScope::Updates,
+        "trust" => models::ApplicationWebhookScope::Trust,
+        _ => models::ApplicationWebhookScope::Other(value),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -990,7 +1057,7 @@ mod tests {
         assert!(metadata_object("not-json").is_err());
         assert!(
             obo_endpoint_definitions(
-                r#"[{"endpoint_id":"files.upload","path":"/v1/files","metadata":{}}]"#
+                r#"[{"endpoint_id":"files.upload","path":"/v1/files","critical":true,"metadata":{}}]"#
             )
             .is_ok()
         );

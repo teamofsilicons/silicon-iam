@@ -56,7 +56,7 @@ let replacement = application
 
 <p>
   The service may return its stored result with <code>Idempotency-Replayed: true</code>. Version
-  1.2.1 returns the typed response body but does not expose that response header, so recovery must
+  The client returns the typed response body but does not expose that response header, so recovery must
   be keyed by the <code>Mutation</code> your application persisted rather than by an SDK replay
   flag.
 </p>
@@ -114,8 +114,8 @@ let reachable = application.oauth()
 <p>
   The snapshot binds principal ID, public ID, organization ID and handle,
   membership ID/version, current authorization epoch, audience and testing
-  environment. <code>org_role</code> requires <code>roles.read</code>;
-  <code>tags</code> requires <code>memberships.read</code>. Null means undisclosed;
+  environment. <code>org_role</code> requires <code>self.membership.read</code>;
+  <code>tags</code> requires <code>self.tags.read</code>. Null means undisclosed;
   an empty tag array means the disclosed membership has no active tags.
   No unrelated directory edit or webhook delivery is required. One snapshot is one
   organization: never carry a role, tag or epoch disclosed for one organization

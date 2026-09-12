@@ -195,10 +195,11 @@ async fn expand_application_recipients(
         let recipients = sqlx::query_as::<_, ApplicationRecipient>(
             r"
             SELECT endpoint_id, signing_key_id
-            FROM iam_private.list_worker_captured_application_webhook_recipients($1)
+            FROM iam_private.list_worker_captured_application_webhook_recipients($1) WHERE iam_private.application_webhook_accepts_event(endpoint_id,$2)
             ",
         )
         .bind(event.id)
+        .bind(&event.event_type)
         .fetch_all(&mut **transaction)
         .await?;
         for recipient in recipients {
@@ -223,20 +224,24 @@ async fn expand_application_recipients(
         ],
     );
     let application_id = payload_uuid(&event.payload, &["application_id"]);
-    if subject_id.is_none() && application_id.is_none() {
+    if subject_id.is_none() && application_id.is_none() && event.organization_id.is_none() {
         return Ok(());
     }
 
     let recipients = sqlx::query_as::<_, ApplicationRecipient>(
         r"
         SELECT endpoint_id, signing_key_id
-        FROM iam_private.list_worker_application_webhook_recipients($1, $2, $3, $4)
+        FROM iam_private.list_worker_application_webhook_recipients(
+            $1, CASE WHEN iam_private.application_webhook_event_scope($5) IS NOT NULL THEN NULL ELSE $2 END, $3, $4
+        ) WHERE iam_private.application_webhook_accepts_event(endpoint_id,$5)
+          AND iam_private.application_webhook_has_event_scope(endpoint_id,$1,$5,$4)
         ",
     )
     .bind(event.organization_id)
     .bind(subject_id)
     .bind(application_id)
     .bind(event.created_at)
+    .bind(&event.event_type)
     .fetch_all(&mut **transaction)
     .await?;
     for recipient in recipients {

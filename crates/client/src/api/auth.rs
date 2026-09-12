@@ -159,17 +159,11 @@ impl Auth<'_> {
     /// sign in to it.
     pub async fn short_lived_token(
         &self,
-        app_id: &str,
+        request: &models::ShortLivedTokenRequest,
         mutation: &Mutation,
     ) -> Result<models::ShortLivedToken> {
-        let choices = self.login_organizations(app_id).await?;
-        let org_ids = choices
-            .items
-            .into_iter()
-            .filter(|org| org.authorized)
-            .map(|org| org.org_id)
-            .collect::<Vec<_>>();
-        self.short_lived_token_for_organizations(app_id, &org_ids, mutation)
+        self.0
+            .post(&["app-auth", "short-lived-tokens"], request, mutation)
             .await
     }
 
@@ -197,40 +191,88 @@ impl Auth<'_> {
         &self,
         app_id: &str,
         org_ids: &[String],
+        scope_version: i64,
+        approved_scopes: &[String],
         mutation: &Mutation,
     ) -> Result<models::ShortLivedToken> {
+        self.short_lived_token(
+            &models::ShortLivedTokenRequest {
+                app_id: app_id.to_owned(),
+                org_ids: org_ids.to_vec(),
+                scope_version,
+                approved_scopes: approved_scopes.to_vec(),
+                redirect_uri: None,
+            },
+            mutation,
+        )
+        .await
+    }
+
+    /// Lists per-app organization choices for 1–100 unique canonical app IDs.
+    ///
+    /// # Errors
+    /// Fails unless this is a direct IAM login and every app is verified.
+    pub async fn batch_login_organizations(
+        &self,
+        app_ids: &[String],
+    ) -> Result<models::BatchLoginOrganizations> {
+        self.0
+            .get_with(
+                &["app-auth", "batch", "organizations"],
+                &[("app_ids", app_ids.join(","))],
+            )
+            .await
+    }
+
+    /// Atomically issues a separate single-use SLT for every selected app.
+    /// Each target exchanges only its own SLT using its own application secret.
+    ///
+    /// # Errors
+    /// Rejects invalid/duplicate targets, missing consent or inactive membership.
+    /// No app is authorized if any selection fails. Requires a direct IAM session.
+    pub async fn batch_short_lived_tokens(
+        &self,
+        request: &models::BatchLoginRequest,
+        mutation: &Mutation,
+    ) -> Result<models::BatchLoginTokens> {
         self.0
             .post(
-                &["app-auth", "short-lived-tokens"],
-                &models::ShortLivedTokenRequest {
-                    app_id: app_id.to_owned(),
-                    org_ids: org_ids.to_vec(),
-                    redirect_uri: None,
-                },
+                &["app-auth", "batch", "short-lived-tokens"],
+                request,
                 mutation,
             )
             .await
     }
 
-    /// Compatibility helper: adds one explicit organization to this IAM session's
-    /// Application grant. It does not create a single-organization token family.
-    /// Omit the organization only to reuse previously selected organizations.
+    /// Reviews a bundle and each constituent application's current scopes.
     ///
     /// # Errors
-    ///
-    /// Fails when there is no selection, membership is inactive, or the bearer
-    /// is not a direct IAM session. Prefer `short_lived_token_for_organizations`.
-    pub async fn short_lived_token_in_organization(
+    /// Fails unless this is a direct IAM login and every target is usable.
+    pub async fn bundle_login_organizations(
         &self,
-        app_id: &str,
-        org_id: Option<&str>,
+        bundle_id: &str,
+    ) -> Result<models::ApplicationBundleLoginOrganizations> {
+        self.0
+            .get(&["app-auth", "bundles", bundle_id, "organizations"])
+            .await
+    }
+
+    /// Issues one distinct SLT per app after reviewing the complete bundle.
+    ///
+    /// # Errors
+    /// Rejects stale scope versions, missing members, or invalid consent atomically.
+    pub async fn bundle_short_lived_tokens(
+        &self,
+        bundle_id: &str,
+        request: &models::BatchLoginRequest,
         mutation: &Mutation,
-    ) -> Result<models::ShortLivedToken> {
-        if let Some(org_id) = org_id {
-            self.short_lived_token_for_organizations(app_id, &[org_id.to_owned()], mutation)
-                .await
-        } else {
-            self.short_lived_token(app_id, mutation).await
-        }
+    ) -> Result<models::BatchLoginTokens> {
+        self.0
+            .post(
+                &["app-auth", "bundles", bundle_id, "short-lived-tokens"],
+                request,
+                mutation,
+            )
+            .await
     }
 }

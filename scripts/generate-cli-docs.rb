@@ -16,10 +16,10 @@ ASSETS = "crates/cli/src/manual_assets"
 
 CATALOG = [
   ["overview", "Integration documentation index", "docs/README.md", %w[index]],
-  ["organization-consent", "User-selected Application organizations", "docs/ORGANIZATION_CONSENT.md", %w[consent organization-selection]],
+  ["batch-login", "Batch Application login and JSON fragment callbacks", "docs/BATCH_LOGIN.md", %w[batch]],
+  ["bundles", "Application bundles and individual token handoffs", "docs/BUNDLES.md", %w[bundle]],
+  ["organization-consent", "Application permission and organization consent", "docs/ORGANIZATION_CONSENT.md", %w[consent organization-selection]],
   ["frontend", "SolidJS frontend integration and hosting", "docs/frontend/README.md", %w[browser]],
-  ["frontend/deployment", "Frontend deployment history and prerequisites", "docs/frontend/deployment.md", []],
-  ["frontend/manual-qa", "Frontend manual verification history", "docs/frontend/manual-qa.md", []],
   ["cli", "Complete CLI guide and command reference", "docs/cli/README.md", %w[commands]],
   ["storage", "CLI credential storage and concurrent sessions", "docs/cli/storage.md", %w[cli/storage]],
   ["api", "Complete HTTP API reference", "docs/API_DOCS.md", %w[http]],
@@ -78,8 +78,8 @@ def markdown(node, preformatted = false)
   when "a"
     content = children.call.strip
     href = node.attributes["href"]
-    if href&.start_with?("/docs/api/", "/docs/client/")
-      destination = href.delete_prefix("/docs/").split("#").first
+    if href&.match?(%r{\A(?:https://docs\.iam\.teamofsilicons\.com)?/(?:docs/)?(?:api|client)/})
+      destination = href.sub(%r{\Ahttps://docs\.iam\.teamofsilicons\.com}, "").delete_prefix("/docs").delete_prefix("/").split("#").first.delete_suffix("/")
       return "#{content} (`iam docs #{destination}`)"
     end
     href ? "[#{content}](#{CGI.unescapeHTML(href)})" : content
@@ -124,6 +124,8 @@ end
 excluded = %w[
   docs/INTEGRATION_FIXES_2026-09-05.md
   docs/SESSION_BOUND_CONSENT_FIX.md
+  docs/frontend/deployment.md
+  docs/frontend/manual-qa.md
 ]
 canonical = Dir[File.join(ROOT, "docs/**/*.{md,html,yaml}")].map do |path|
   path.delete_prefix("#{ROOT}/")
@@ -170,15 +172,18 @@ changed = outputs.select do |path, expected|
   absolute = File.join(ROOT, path)
   !File.file?(absolute) || File.binread(absolute) != expected.b
 end
+stale = Dir[File.join(ROOT, ASSETS, "*.{md,yaml}")].map { |path| path.delete_prefix("#{ROOT}/") } - outputs.keys
 if ARGV == ["--check"]
-  unless changed.empty?
+  unless changed.empty? && stale.empty?
     warn "Bundled CLI documentation is stale:"
     changed.each_key { |path| warn "  #{path}" }
+    stale.each { |path| warn "  obsolete asset: #{path}" }
     warn "Run ruby scripts/generate-cli-docs.rb after editing docs/."
     exit 1
   end
   puts "Bundled CLI documentation matches #{CATALOG.length} canonical documents."
 else
+  stale.each { |path| File.delete(File.join(ROOT, path)) }
   changed.each do |path, expected|
     absolute = File.join(ROOT, path)
     FileUtils.mkdir_p(File.dirname(absolute))

@@ -231,6 +231,10 @@ pub(super) async fn create(
         "webhook_url": input.webhook_url,
         "webhook_secret": input.webhook_secret.expose_secret(),
         "obo_endpoints": input.obo_endpoints,
+        "app_scope": input.app_scope,
+        "webhook_scope": input.webhook_scope,
+        "obo_review_message": input.obo_review_message,
+        "testing_idle_days": input.testing_idle_days,
     }))
     .map_err(|_| ApiError::internal("application_create_canonical"))?;
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
@@ -323,8 +327,8 @@ pub(super) async fn create(
         r"
         INSERT INTO iam.applications (
             id, app_id, organization_id, created_by_carbon_id,
-            app_name, app_logo_uri, base_url, review_status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'verified')
+            app_name, app_logo_uri, base_url, review_status, webhook_scope, obo_review_message, testing_idle_days
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'under_review', $8, $9, $10)
         ",
     )
     .bind(application_id)
@@ -334,23 +338,19 @@ pub(super) async fn create(
     .bind(&input.app_name)
     .bind(&input.app_logo_uri)
     .bind(&input.base_url)
+    .bind(&input.webhook_scope)
+    .bind(&input.obo_review_message)
+    .bind(input.testing_idle_days)
     .execute(&mut *transaction)
     .await
     .map_err(map_application_write)?;
-    // The login carries the whole catalogue -- "scope of the login is always
-    // everything" -- and a login's request-scope rows are foreign-keyed to the
-    // approved set, so "everything" has to exist as rows rather than as a
-    // special case at authorization time. Approving scopes is a platform
-    // authority the organization owner deliberately does not hold, so the grant
-    // goes through an owner-rights function that checks the caller can manage
-    // this application before it writes. `scope` on the create input is the
-    // webhook's scope and is applied to the webhook, not here.
-    sqlx::query("SELECT iam_private.grant_application_scope_catalogue($1, $2)")
-        .bind(application_id)
-        .bind(carbon_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|_| ApiError::internal("application_scope_catalogue"))?;
+    super::scopes::configure(
+        &mut transaction,
+        application_id,
+        &input.app_scope,
+        carbon_id,
+    )
+    .await?;
     replace_obo_endpoints(&mut transaction, application_id, &input.obo_endpoints).await?;
     sqlx::query(
         r"
@@ -664,6 +664,14 @@ pub(super) async fn rotate_client_secret(
     .execute(&mut *transaction)
     .await
     .map_err(|_| ApiError::internal("application_secret_rotation_insert"))?;
+    crate::features::testing_environments::record_rotated_application_secret(
+        &mut transaction,
+        &state,
+        app.id,
+        &secret,
+    )
+    .await
+    .map_err(|_| ApiError::internal("testing_application_secret_rotation"))?;
     let application_version = bump_application(&mut transaction, app.id).await?;
     let secret_replay_expires_at = sqlx::query_scalar::<_, OffsetDateTime>(
         "SELECT transaction_timestamp() + interval '10 minutes'",
@@ -786,7 +794,11 @@ pub(super) async fn patch(
             let mut values = values.clone();
             values.sort_by(|left, right| left.endpoint_id.cmp(&right.endpoint_id));
             values != current_endpoints
-        });
+        })
+        || input.app_scope.is_some()
+        || input.webhook_scope.is_some()
+        || input.obo_review_message.is_some()
+        || input.testing_idle_days.is_some();
     if !changes_application {
         return Err(ApiError::conflict("application_unchanged"));
     }
@@ -814,12 +826,18 @@ pub(super) async fn patch(
     if let Some(endpoints) = &input.obo_endpoints {
         replace_obo_endpoints(&mut transaction, before.id, endpoints).await?;
     }
-    let updated_version =
-        if input.base_url.is_some() || input.app_name.is_some() || input.app_logo_uri.is_some() {
-            version + 1
-        } else {
-            bump_application(&mut transaction, before.id).await?
-        };
+    if let Some(scope) = &input.app_scope {
+        super::scopes::configure(&mut transaction, before.id, scope, carbon_id).await?;
+    }
+    if input.webhook_scope.is_some()
+        || input.obo_review_message.is_some()
+        || input.testing_idle_days.is_some()
+    {
+        sqlx::query("UPDATE iam.applications SET webhook_scope=COALESCE($2,webhook_scope), obo_review_message=COALESCE($3,obo_review_message), testing_idle_days=COALESCE($4,testing_idle_days) WHERE id=$1")
+            .bind(before.id).bind(&input.webhook_scope).bind(&input.obo_review_message).bind(input.testing_idle_days)
+            .execute(&mut *transaction).await.map_err(|_|ApiError::internal("application_configuration"))?;
+    }
+    let updated_version = bump_application(&mut transaction, before.id).await?;
     let response = load_detail(&mut transaction, &state, before.id, false).await?;
     events::record(
         &mut transaction,
@@ -1364,7 +1382,7 @@ pub(crate) async fn load_detail(
     let requested_scopes = sqlx::query_scalar::<_, String>(
         r"
         SELECT scope FROM iam.application_requested_scopes
-        WHERE application_id = $1 ORDER BY scope
+        WHERE application_id = $1 AND scope=ANY(iam_private.application_scope_names((SELECT app_scope FROM iam.applications WHERE id=$1))) ORDER BY scope
         ",
     )
     .bind(application_id)
@@ -1383,7 +1401,7 @@ pub(crate) async fn load_detail(
     .map_err(|_| ApiError::internal("application_approved_scopes"))?;
     let obo_endpoints = sqlx::query_as::<_, ApplicationOboEndpoint>(
         r"
-        SELECT endpoint_id, path, metadata_definition AS metadata
+        SELECT endpoint_id, path, metadata_definition AS metadata, critical
         FROM iam.application_obo_endpoints
         WHERE application_id = $1 AND status = 'active'
         ORDER BY endpoint_id
@@ -1407,6 +1425,7 @@ pub(crate) async fn load_detail(
                 SELECT 1
                 FROM iam.application_requested_scopes AS requested
                 WHERE requested.application_id = $1
+                  AND requested.scope=ANY(iam_private.application_scope_names((SELECT app_scope FROM iam.applications WHERE id=$1)))
                   AND NOT EXISTS (
                       SELECT 1 FROM iam.application_approved_scopes AS approved
                       WHERE approved.application_id = requested.application_id
@@ -1424,6 +1443,8 @@ pub(crate) async fn load_detail(
     let webhook =
         super::webhooks::load_webhook(transaction, state, application_id, application.version)
             .await?;
+    let (app_scope,webhook_scope,obo_review_message,testing_idle_days) = sqlx::query_as::<_,(sqlx::types::Json<super::model::ApplicationScope>,Vec<String>,Option<String>,i32)>("SELECT app_scope,webhook_scope,obo_review_message,testing_idle_days FROM iam.applications WHERE id=$1")
+        .bind(application_id).fetch_one(&mut **transaction).await.map_err(|_|ApiError::internal("application_scope_configuration"))?;
     Ok(ApplicationDetail {
         id: application.id,
         app_id: application.app_id,
@@ -1436,6 +1457,12 @@ pub(crate) async fn load_detail(
         app_name: application.app_name,
         app_logo: application.app_logo_uri,
         base_url: application.base_url,
+        app_scope: app_scope.0,
+        effective_app_scope: super::scopes::from_names(&approved_scopes),
+        webhook_scope,
+        obo_review_message,
+        testing_idle_days,
+        scope_version: application.version,
         requested_scopes,
         approved_scopes,
         obo_endpoints,
@@ -1829,6 +1856,18 @@ async fn apply_admin_decision(
 }
 
 fn validate_admin_decision(input: &ApplicationAdminDecision) -> Result<(), ApiError> {
+    if input.approved_scopes.is_some()
+        || matches!(
+            input.decision.as_str(),
+            "approve" | "approve_pending_changes" | "reject_pending_changes"
+        )
+    {
+        return Err(ApiError::validation(
+            "decision",
+            "critical permissions are decided through their application-specific scope request",
+        ));
+    }
+
     if !matches!(
         input.decision.as_str(),
         "approve"
@@ -1914,6 +1953,18 @@ fn input_as_json(input: &ApplicationPatch) -> serde_json::Value {
     if let Some(value) = &input.obo_endpoints {
         object.insert("obo_endpoints".to_owned(), json!(value));
     }
+    if let Some(scope) = &input.app_scope {
+        object.insert("app_scope".into(), json!(scope));
+    }
+    if let Some(scope) = &input.webhook_scope {
+        object.insert("webhook_scope".into(), json!(scope));
+    }
+    if let Some(value) = &input.obo_review_message {
+        object.insert("obo_review_message".into(), json!(value));
+    }
+    if let Some(value) = input.testing_idle_days {
+        object.insert("testing_idle_days".into(), json!(value));
+    }
     serde_json::Value::Object(object)
 }
 
@@ -1926,13 +1977,13 @@ async fn replace_obo_endpoints(
         let result = sqlx::query(
             r"
             INSERT INTO iam.application_obo_endpoints (
-                organization_id, application_id, endpoint_id, path, metadata_definition
+                organization_id, application_id, endpoint_id, path, metadata_definition, critical
             )
-            SELECT application.organization_id, application.id, $2, $3, $4
+            SELECT application.organization_id, application.id, $2, $3, $4, $5
             FROM iam.applications AS application
             WHERE application.id = $1
             ON CONFLICT (application_id, endpoint_id) DO UPDATE
-            SET metadata_definition = EXCLUDED.metadata_definition,
+            SET metadata_definition = EXCLUDED.metadata_definition, critical=EXCLUDED.critical,
                 status = 'active',
                 retired_at = NULL
             WHERE application_obo_endpoints.path = EXCLUDED.path
@@ -1942,6 +1993,7 @@ async fn replace_obo_endpoints(
         .bind(&endpoint.endpoint_id)
         .bind(&endpoint.path)
         .bind(sqlx::types::Json(&endpoint.metadata))
+        .bind(endpoint.critical)
         .execute(&mut **transaction)
         .await
         .map_err(|error| map_obo_endpoint_write(&error))?;

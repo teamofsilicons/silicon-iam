@@ -88,13 +88,11 @@ async fn capture_with_dependencies(
         return Ok(());
     }
 
-    let membership_ids = affected_membership_ids(transaction, &event).await?;
-    if membership_ids.is_empty() {
-        return Ok(());
+    if let Some(scope) = raw_organization_scope(event.event_type) {
+        return capture_raw_organization_event(transaction, crypto, &event, scope).await;
     }
-    let membership_ids = membership_ids.into_iter().collect::<Vec<_>>();
-    let authorizations =
-        load_authorizations(transaction, event.organization_id, &membership_ids).await?;
+    let (authorizations, aggregate_authorizations) =
+        load_event_authorizations(transaction, &event).await?;
     if authorizations.is_empty() {
         return Ok(());
     }
@@ -106,7 +104,18 @@ async fn capture_with_dependencies(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let sources = load_sources(transaction, event.organization_id, &source_ids).await?;
+    let mut sources = if source_ids.is_empty() {
+        BTreeMap::new()
+    } else {
+        load_sources(transaction, event.organization_id, &source_ids).await?
+    };
+    enrich_effective_self_trust(
+        transaction,
+        event.organization_id,
+        &authorizations,
+        &mut sources,
+    )
+    .await?;
     let changed_fields = changed_fields(&event);
 
     if event.event_type == "organization.updated.v1" {
@@ -122,15 +131,11 @@ async fn capture_with_dependencies(
     }
 
     for (application_id, members) in authorizations {
-        let aggregate_authorization = AggregateAuthorization {
-            authorized_after: members.values().any(|authorization| {
-                authorization.authorized_after
-                    && authorization.effective_scopes.contains("memberships.read")
-            }),
-            authorized_before_or_after: members
-                .values()
-                .any(|authorization| authorization.union_scopes.contains("memberships.read")),
-        };
+        let aggregate_authorization = aggregate_authority(
+            &members,
+            aggregate_scope(event.event_type),
+            aggregate_authorizations.get(&application_id).copied(),
+        );
         let mut application_changed_fields = BTreeSet::new();
         let mut projected_members = Vec::with_capacity(members.len());
         for (membership_id, authorization) in members {
@@ -143,6 +148,11 @@ async fn capture_with_dependencies(
             } else {
                 &authorization.union_scopes
             };
+            if changed_fields.contains("membership.trust")
+                && disclosure_scopes.contains("self.trust.read")
+            {
+                application_changed_fields.insert("membership.effective_trust".into());
+            }
             application_changed_fields.extend(
                 changed_fields
                     .iter()
@@ -175,10 +185,147 @@ async fn capture_with_dependencies(
     Ok(())
 }
 
+type ApplicationAuthorizations = BTreeMap<Uuid, BTreeMap<Uuid, MemberAuthorization>>;
+
+async fn load_event_authorizations(
+    transaction: &mut Transaction<'_, Postgres>,
+    event: &OrganizationProjectionEvent<'_>,
+) -> Result<(ApplicationAuthorizations, BTreeMap<Uuid, bool>), AppError> {
+    let aggregate_authorizations = if aggregate_scope(event.event_type).starts_with("organization.")
+    {
+        load_aggregate_authorizations(
+            transaction,
+            event.organization_id,
+            aggregate_scope(event.event_type),
+        )
+        .await?
+    } else {
+        BTreeMap::new()
+    };
+    let membership_ids = affected_membership_ids(transaction, event).await?;
+    if membership_ids.is_empty() && aggregate_authorizations.is_empty() {
+        return Ok((BTreeMap::new(), aggregate_authorizations));
+    }
+    let membership_ids = membership_ids.into_iter().collect::<Vec<_>>();
+    let mut authorizations = if membership_ids.is_empty() {
+        BTreeMap::new()
+    } else {
+        load_authorizations(transaction, event.organization_id, &membership_ids).await?
+    };
+    for application_id in aggregate_authorizations.keys() {
+        authorizations.entry(*application_id).or_default();
+    }
+    if authorizations.is_empty() {
+        return Ok((BTreeMap::new(), aggregate_authorizations));
+    }
+
+    Ok((authorizations, aggregate_authorizations))
+}
+
+fn raw_organization_scope(event: &str) -> Option<&'static str> {
+    match event {
+        "organization.created.v1" => Some("self.organizations.read"),
+        "organization.tag_created.v1" => Some("organization.tags.read"),
+        "organization.invitation.created.v1"
+        | "organization.invitation.accepted.v1"
+        | "organization.invitation.revoked.v1" => Some("organization.invitations.read"),
+        "organization.role_change.requested.v1"
+        | "organization.tag_change.requested.v1"
+        | "organization.approval.decided.v1" => Some("organization.governance.read"),
+        _ => None,
+    }
+}
+async fn load_aggregate_authorizations(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization: Uuid,
+    scope: &str,
+) -> Result<BTreeMap<Uuid, bool>, AppError> {
+    let rows = sqlx::query_as::<_, (Uuid, bool)>(
+        "SELECT application_id,authorized_after FROM iam_private.list_organization_webhook_scope_authorizations($1,$2,transaction_timestamp())",
+    ).bind(organization).bind(scope).fetch_all(&mut **transaction).await
+    .map_err(|_| internal("organization_webhook_scope_authorizations"))?;
+    let mut authorizations = BTreeMap::new();
+    for (application, active) in rows {
+        *authorizations.entry(application).or_insert(false) |= active;
+    }
+    Ok(authorizations)
+}
+async fn capture_raw_organization_event(
+    transaction: &mut Transaction<'_, Postgres>,
+    crypto: &CryptoService,
+    event: &OrganizationProjectionEvent<'_>,
+    scope: &str,
+) -> Result<(), AppError> {
+    for (application, active) in
+        load_aggregate_authorizations(transaction, event.organization_id, scope).await?
+    {
+        let mut resource = if active {
+            event
+                .after_state
+                .or(event.before_state)
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Map::from_iter([("authorization".into(), json!("removed"))])
+        };
+        if event.event_type == "organization.created.v1" && active {
+            resource.retain(|field, _| {
+                matches!(
+                    field.as_str(),
+                    "id" | "org_id" | "name" | "logo" | "description" | "version"
+                )
+            });
+        }
+        resource.insert("type".into(), json!(event.aggregate_type));
+        resource.insert("id".into(), json!(event.aggregate_id));
+        resource.insert("version".into(), json!(event.aggregate_version));
+        let before = event.before_state.and_then(Value::as_object);
+        let after = event.after_state.and_then(Value::as_object);
+        let fields = before
+            .into_iter()
+            .flat_map(Map::keys)
+            .chain(after.into_iter().flat_map(Map::keys))
+            .filter(|key| {
+                active
+                    && resource.contains_key(*key)
+                    && before.and_then(|v| v.get(*key)) != after.and_then(|v| v.get(*key))
+            })
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        persist_projection(
+            transaction,
+            crypto,
+            event.outbox_event_id,
+            application,
+            &json!({"changed_fields": fields, "current": {"resource": resource}}),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 struct AggregateAuthorization {
     authorized_after: bool,
     authorized_before_or_after: bool,
+}
+
+fn aggregate_authority(
+    members: &BTreeMap<Uuid, MemberAuthorization>,
+    scope: &str,
+    organization_grant: Option<bool>,
+) -> AggregateAuthorization {
+    AggregateAuthorization {
+        authorized_after: organization_grant.unwrap_or(false)
+            || members
+                .values()
+                .any(|member| member.authorized_after && member.effective_scopes.contains(scope)),
+        authorized_before_or_after: organization_grant.is_some()
+            || members
+                .values()
+                .any(|member| member.union_scopes.contains(scope)),
+    }
 }
 
 fn project_event_resource(
@@ -293,6 +440,34 @@ async fn load_sources(
         .collect())
 }
 
+async fn enrich_effective_self_trust(
+    transaction: &mut Transaction<'_, Postgres>,
+    organization_id: Uuid,
+    authorizations: &BTreeMap<Uuid, BTreeMap<Uuid, MemberAuthorization>>,
+    sources: &mut BTreeMap<Uuid, ProjectionSource>,
+) -> Result<(), AppError> {
+    let ids = authorizations
+        .values()
+        .flat_map(|members| members.iter())
+        .filter(|(_, authority)| authority.effective_scopes.contains("self.trust.read"))
+        .map(|(id, _)| *id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let effective = crate::features::organizations::application_reads::effective_self_trust(
+        transaction,
+        organization_id,
+        &ids,
+    )
+    .await?;
+    for (id, trust) in effective {
+        if let Some(source) = sources.get_mut(&id) {
+            source.current_state.0["effective_trust"] = trust;
+        }
+    }
+    Ok(())
+}
+
 fn project_member(
     crypto: &CryptoService,
     iris_base_url: &url::Url,
@@ -327,41 +502,61 @@ fn project_member(
         return Ok(Value::Object(projected));
     }
 
-    if authorization.effective_scopes.contains("profile") {
-        let mut principal = source_object
-            .get("principal")
-            .and_then(Value::as_object)
-            .cloned()
-            .ok_or_else(|| internal("organization_application_webhook_principal_shape"))?;
-        fill_default_profile_photo(iris_base_url, source, &mut principal)?;
-        projected.insert("principal".to_owned(), Value::Object(principal));
+    let scopes = &authorization.effective_scopes;
+    let mut principal_source = source_object
+        .get("principal")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if scopes.contains("self.profile.read") || scopes.contains("directory.profiles.read") {
+        fill_default_profile_photo(iris_base_url, source, &mut principal_source)?;
     }
-    if authorization
-        .effective_scopes
-        .contains("organizations.read")
-        && let Some(value) = source_object.get("organization")
-    {
-        projected.insert("organization".to_owned(), value.clone());
+    let principal = principal_source
+        .into_iter()
+        .filter(|(field, _)| field_is_authorized(&format!("principal.{field}"), scopes))
+        .collect::<Map<_, _>>();
+    if !principal.is_empty() {
+        projected.insert("principal".into(), Value::Object(principal));
     }
-    if authorization.effective_scopes.contains("memberships.read")
-        && let Some(value) = source_object.get("membership")
-    {
-        projected.insert("membership".to_owned(), value.clone());
+    for section in ["organization", "membership", "roles"] {
+        if let Some(source_section) = source_object.get(section).and_then(Value::as_object) {
+            let filtered = source_section
+                .iter()
+                .filter(|(field, _)| field_is_authorized(&format!("{section}.{field}"), scopes))
+                .map(|(field, value)| (field.clone(), value.clone()))
+                .collect::<Map<_, _>>();
+            if !filtered.is_empty() {
+                projected.insert(section.into(), Value::Object(filtered));
+            }
+        }
     }
-    if authorization.effective_scopes.contains("roles.read")
-        && let Some(value) = source_object.get("roles")
+
+    if scopes.contains("self.trust.read")
+        && let Some(effective) = source_object.get("effective_trust")
     {
-        projected.insert("roles".to_owned(), value.clone());
+        if projected.get("membership").is_none() {
+            projected.insert("membership".to_owned(), json!({}));
+        }
+        if let Some(membership) = projected
+            .get_mut("membership")
+            .and_then(Value::as_object_mut)
+        {
+            membership.insert("effective_trust".to_owned(), effective.clone());
+        }
     }
 
     let mut contacts = Map::new();
-    if source.principal_kind == "carbon" && authorization.effective_scopes.contains("email") {
+    if source.principal_kind == "carbon"
+        && authorization.effective_scopes.contains("self.email.read")
+    {
         contacts.insert(
             "email".to_owned(),
             Value::String(decrypt_contact(crypto, source, "email")?),
         );
     }
-    if source.principal_kind == "carbon" && authorization.effective_scopes.contains("phone") {
+    if source.principal_kind == "carbon"
+        && authorization.effective_scopes.contains("self.phone.read")
+    {
         contacts.insert(
             "phone_number".to_owned(),
             Value::String(decrypt_contact(crypto, source, "phone")?),
@@ -393,7 +588,7 @@ async fn capture_organization_update(
             authorization.authorized_after
                 && authorization
                     .effective_scopes
-                    .contains("organizations.read")
+                    .contains("self.organizations.read")
         });
         let (membership_id, _) = eligible
             .iter()
@@ -401,7 +596,7 @@ async fn capture_organization_update(
                 authorization.authorized_after
                     && authorization
                         .effective_scopes
-                        .contains("organizations.read")
+                        .contains("self.organizations.read")
             })
             .copied()
             .unwrap_or(eligible[0]);
@@ -412,7 +607,21 @@ async fn capture_organization_update(
             .current_state
             .0
             .get("organization")
-            .cloned()
+            .and_then(Value::as_object)
+            .map(|organization| {
+                Value::Object(
+                    organization
+                        .iter()
+                        .filter(|(field, _)| {
+                            matches!(
+                                field.as_str(),
+                                "id" | "org_id" | "name" | "logo" | "description" | "version"
+                            )
+                        })
+                        .map(|(field, value)| (field.clone(), value.clone()))
+                        .collect(),
+                )
+            })
             .ok_or_else(|| internal("organization_application_webhook_organization_shape"))?;
         let current = if authorized_after {
             json!({ "organization": organization })
@@ -442,7 +651,9 @@ async fn capture_organization_update(
 }
 
 fn organization_scope_authorizes(authorization: &MemberAuthorization) -> bool {
-    authorization.union_scopes.contains("organizations.read")
+    authorization
+        .union_scopes
+        .contains("self.organizations.read")
 }
 
 fn member_current(members: &[Value]) -> Value {
@@ -899,14 +1110,58 @@ fn canonical_field(event_type: &str, field: &str) -> Option<&'static str> {
     }
 }
 
+fn aggregate_scope(event_type: &str) -> &'static str {
+    if event_type.contains(".trust.") {
+        "organization.trust.read"
+    } else if event_type.contains(".tag_") {
+        "organization.tags.read"
+    } else {
+        "self.membership.read"
+    }
+}
 fn field_is_authorized(field: &str, scopes: &BTreeSet<String>) -> bool {
-    (field.starts_with("principal") && scopes.contains("profile"))
-        || (field.starts_with("organization") && scopes.contains("organizations.read"))
-        || (field.starts_with("membership") && scopes.contains("memberships.read"))
-        || (field.starts_with("roles") && scopes.contains("roles.read"))
-        || (field.starts_with("resource") && scopes.contains("memberships.read"))
-        || (field == "contacts.email" && scopes.contains("email"))
-        || (field == "contacts.phone_number" && scopes.contains("phone"))
+    let any = |self_scope: &str, directory_scope: &str| {
+        scopes.contains(self_scope) || scopes.contains(directory_scope)
+    };
+    match field {
+        "principal.principal_id" | "principal.type" | "principal.public_id" => {
+            any("self.identity.read", "directory.carbons.read")
+                || scopes.contains("directory.silicons.read")
+        }
+        "principal.status" | "roles.org_role" => {
+            any("self.membership.read", "directory.memberships.read")
+        }
+        "contacts.email" => scopes.contains("self.email.read"),
+        "contacts.phone_number" => scopes.contains("self.phone.read"),
+        "membership.tags" => any("self.tags.read", "directory.tags.read"),
+        "membership.first_silicon_membership_id"
+        | "membership.extra_silicon_membership_ids"
+        | "membership.access" => any("self.silicon_access.read", "directory.silicon_access.read"),
+        "membership.reports_to_membership_id" | "membership.hierarchy_level" => {
+            any("self.hierarchy.read", "directory.hierarchy.read")
+        }
+        "membership.trust" => scopes.contains("organization.trust.read"),
+        "membership.effective_trust" => scopes.contains("self.trust.read"),
+        "roles.job_role" => any("self.job_role.read", "directory.job_roles.read"),
+        "roles.capabilities" => any("self.capabilities.read", "directory.capabilities.read"),
+        "principal"
+        | "principal.display_name"
+        | "principal.timezone"
+        | "principal.description"
+        | "principal.profile_photo" => any("self.profile.read", "directory.profiles.read"),
+        "principal.version" => true,
+        "organization"
+        | "organization.id"
+        | "organization.org_id"
+        | "organization.name"
+        | "organization.logo"
+        | "organization.description"
+        | "organization.version" => scopes.contains("self.organizations.read"),
+        _ if field.starts_with("membership") || field.starts_with("resource") => {
+            any("self.membership.read", "directory.memberships.read")
+        }
+        _ => false,
+    }
 }
 
 fn value_uuid(value: &Value, key: &str) -> Option<Uuid> {
@@ -1044,8 +1299,8 @@ mod tests {
     fn profile_only_authorization_does_not_receive_organization_updates() {
         let profile_only = MemberAuthorization {
             authorized_after: true,
-            union_scopes: BTreeSet::from(["profile".to_owned()]),
-            effective_scopes: BTreeSet::from(["profile".to_owned()]),
+            union_scopes: BTreeSet::from(["self.profile.read".to_owned()]),
+            effective_scopes: BTreeSet::from(["self.profile.read".to_owned()]),
         };
         assert!(!organization_scope_authorizes(&profile_only));
     }
@@ -1140,11 +1395,11 @@ mod tests {
         assert!(fields.contains("membership.tags"));
         assert!(field_is_authorized(
             "roles.job_role",
-            &BTreeSet::from(["roles.read".to_owned()])
+            &BTreeSet::from(["self.job_role.read".to_owned()])
         ));
         assert!(!field_is_authorized(
             "membership.tags",
-            &BTreeSet::from(["roles.read".to_owned()])
+            &BTreeSet::from(["self.job_role.read".to_owned()])
         ));
     }
 
@@ -1178,6 +1433,56 @@ mod tests {
             &BTreeSet::new()
         ));
         assert!(!field_is_authorized("membership.status", &BTreeSet::new()));
+    }
+
+    #[test]
+    fn self_trust_projection_uses_effective_answers_and_never_raw_rules() -> anyhow::Result<()> {
+        let principal_id = uuid::Uuid::from_u128(1);
+        let source = super::ProjectionSource {
+            membership_id: uuid::Uuid::from_u128(2),
+            principal_id,
+            principal_kind: "silicon".into(),
+            current_state: sqlx::types::Json(json!({
+                "resource":{"id":uuid::Uuid::from_u128(2),"principal_id":principal_id,"version":1},
+                "principal":{"display_name":"Helper","profile_photo":"https://images.example/helper.png","status":"active","created_at":"private","version":1},
+                "organization":{"org_id":"acme","name":"Acme","join_method":"sso","trusted_org":true},
+                "membership":{"trust":{"organization_default":{"level":"trusted"},"applicable_rules":[{"id":"private"}]}},
+                "effective_trust":[{"target_silicon_membership_id":uuid::Uuid::from_u128(3),"trust":{"level":"trusted","boundary":"internal"},"advisory":true}]
+            })),
+            email_contact_id: None,
+            email_ciphertext: None,
+            email_nonce: None,
+            email_encryption_key_version: None,
+            phone_contact_id: None,
+            phone_ciphertext: None,
+            phone_nonce: None,
+            phone_encryption_key_version: None,
+        };
+        let scopes = BTreeSet::from([
+            "self.trust.read".into(),
+            "self.organizations.read".into(),
+            "self.profile.read".into(),
+        ]);
+        let authority = MemberAuthorization {
+            authorized_after: true,
+            union_scopes: scopes.clone(),
+            effective_scopes: scopes,
+        };
+        let projected = super::project_member(
+            &projection_crypto()?,
+            &url::Url::parse("https://iris.teamofsilicons.com")?,
+            &source,
+            &authority,
+        )?;
+        ensure!(projected["membership"].get("trust").is_none());
+        ensure!(
+            projected["membership"]["effective_trust"] == source.current_state.0["effective_trust"]
+        );
+        ensure!(projected["principal"].get("status").is_none());
+        ensure!(projected["principal"].get("created_at").is_none());
+        ensure!(projected["organization"].get("join_method").is_none());
+        ensure!(projected["organization"].get("trusted_org").is_none());
+        Ok(())
     }
 
     #[tokio::test]
@@ -1277,19 +1582,23 @@ mod tests {
                '{organization_id}', '{actor_id}', 'verified',
                'https://profile.example.test/api');
             INSERT INTO iam.application_requested_scopes (application_id, scope) VALUES
-              ('{full_application_id}', 'profile'),
-              ('{full_application_id}', 'organizations.read'),
-              ('{full_application_id}', 'memberships.read'),
-              ('{full_application_id}', 'roles.read'),
-              ('{profile_application_id}', 'profile');
+              ('{full_application_id}', 'self.profile.read'),
+              ('{full_application_id}', 'self.organizations.read'),
+              ('{full_application_id}', 'self.membership.read'),
+              ('{full_application_id}', 'self.job_role.read'),
+              ('{full_application_id}', 'self.trust.read'),
+              ('{full_application_id}', 'organization.tags.read'),
+              ('{profile_application_id}', 'self.profile.read');
             INSERT INTO iam.application_approved_scopes (
                 application_id, scope, approved_by_carbon_id
             ) VALUES
-              ('{full_application_id}', 'profile', '{actor_id}'),
-              ('{full_application_id}', 'organizations.read', '{actor_id}'),
-              ('{full_application_id}', 'memberships.read', '{actor_id}'),
-              ('{full_application_id}', 'roles.read', '{actor_id}'),
-              ('{profile_application_id}', 'profile', '{actor_id}');
+              ('{full_application_id}', 'self.profile.read', '{actor_id}'),
+              ('{full_application_id}', 'self.organizations.read', '{actor_id}'),
+              ('{full_application_id}', 'self.membership.read', '{actor_id}'),
+              ('{full_application_id}', 'self.job_role.read', '{actor_id}'),
+              ('{full_application_id}', 'self.trust.read', '{actor_id}'),
+              ('{full_application_id}', 'organization.tags.read', '{actor_id}'),
+              ('{profile_application_id}', 'self.profile.read', '{actor_id}');
             INSERT INTO iam.oauth_consent_grants (
                 id, application_id, subject_principal_id, subject_kind,
                 organization_id, membership_id, parent_authentication_session_id,
@@ -1302,11 +1611,13 @@ mod tests {
                '{organization_id}', '{silicon_membership_id}', '{silicon_session_id}',
                ARRAY['{silicon_membership_id}'::uuid]);
             INSERT INTO iam.oauth_consent_grant_scopes (consent_grant_id, scope) VALUES
-              ('{full_consent_id}', 'profile'),
-              ('{full_consent_id}', 'organizations.read'),
-              ('{full_consent_id}', 'memberships.read'),
-              ('{full_consent_id}', 'roles.read'),
-              ('{profile_consent_id}', 'profile');
+              ('{full_consent_id}', 'self.profile.read'),
+              ('{full_consent_id}', 'self.organizations.read'),
+              ('{full_consent_id}', 'self.membership.read'),
+              ('{full_consent_id}', 'self.job_role.read'),
+              ('{full_consent_id}', 'self.trust.read'),
+              ('{full_consent_id}', 'organization.tags.read'),
+              ('{profile_consent_id}', 'self.profile.read');
             INSERT INTO iam.application_webhook_endpoints (
                 id, application_id, url_ciphertext, url_nonce,
                 encryption_key_version, url_digest, status, activated_at
@@ -1338,11 +1649,37 @@ mod tests {
         let organization_event_id = uuid::Uuid::now_v7();
         let organization_before_only_event_id = uuid::Uuid::now_v7();
         let before_only_event_id = uuid::Uuid::now_v7();
+        let empty_tag_event_id = uuid::Uuid::now_v7();
+        let empty_tag_id = uuid::Uuid::now_v7();
         let mut transaction = pool.begin().await?;
         sqlx::query("SELECT set_config('iam.principal_id', $1, true)")
             .bind(actor_id.to_string())
             .execute(&mut *transaction)
             .await?;
+        sqlx::query("INSERT INTO iam.organization_tags(id,organization_id,name,normalized_name,created_by_membership_id) VALUES($1,$2,'Unassigned','unassigned',$3)")
+            .bind(empty_tag_id).bind(organization_id).bind(actor_membership_id).execute(&mut *transaction).await?;
+        sqlx::query("INSERT INTO iam.outbox_events(id,organization_id,aggregate_type,aggregate_id,aggregate_version,event_ordinal,event_type,schema_version,payload) VALUES($1,$2,'organization_tag',$3,1,1,'organization.tag_created.v1',1,'{}')")
+            .bind(empty_tag_event_id).bind(organization_id).bind(empty_tag_id).execute(&mut *transaction).await?;
+        let empty_tag = json!({"id":empty_tag_id,"name":"Unassigned","status":"active"});
+        let tag_metadata = json!({});
+        capture_with_dependencies(
+            &mut transaction,
+            &crypto,
+            &iris_base_url,
+            OrganizationProjectionEvent {
+                outbox_event_id: empty_tag_event_id,
+                organization_id,
+                aggregate_type: "organization_tag",
+                aggregate_id: empty_tag_id,
+                aggregate_version: 1,
+                event_type: "organization.tag_created.v1",
+                before_state: None,
+                after_state: Some(&empty_tag),
+                metadata: &tag_metadata,
+            },
+        )
+        .await?;
+
         let silicon_version = sqlx::query_scalar::<_, i64>(
             "UPDATE iam.silicons SET display_name = 'Captured', description = 'Captured' WHERE id = $1 RETURNING version",
         )
@@ -1511,6 +1848,7 @@ mod tests {
             )
             .bind(vec![
                 member_event_id,
+                empty_tag_event_id,
                 organization_event_id,
                 organization_before_only_event_id,
                 before_only_event_id,
@@ -1540,6 +1878,16 @@ mod tests {
             );
         }
 
+        let empty_tag_payload = &payloads[&(empty_tag_event_id, full_application_id)];
+        ensure!(empty_tag_payload["current"]["resource"]["name"] == "Unassigned");
+        ensure!(empty_tag_payload["current"]["resource"]["id"] == json!(empty_tag_id));
+        ensure!(!payloads.contains_key(&(empty_tag_event_id, profile_application_id)));
+        let effective = &payloads[&(member_event_id, full_application_id)]["current"]["members"][0]
+            ["membership"]["effective_trust"];
+        ensure!(effective.as_array().is_some_and(|values| values.len() == 1));
+        ensure!(effective[0]["target_silicon_membership_id"] == json!(silicon_membership_id));
+        ensure!(effective[0].get("matching_rule_ids").is_none());
+        ensure!(payloads[&(member_event_id,full_application_id)]["current"]["members"][0]["membership"].get("trust").is_none());
         let full_member = &payloads[&(member_event_id, full_application_id)];
         ensure!(
             full_member["current"]["members"]

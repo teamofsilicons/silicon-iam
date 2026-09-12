@@ -20,6 +20,8 @@ import {
   type SessionState,
 } from "./api";
 import Applications, { Activity } from "./Applications";
+import ScopeReviews from "./ScopeReviews";
+import Bundles from "./Bundles";
 import { OperationForm, type Operation } from "./forms";
 import {
   Badge,
@@ -81,6 +83,13 @@ export default function Console(props: {
     { href: "/tags", id: "tags", title: "Tags", icon: "⌗" },
     { href: "/trust", id: "trust", title: "Trust", icon: "⇄" },
     { href: "/approvals", id: "approvals", title: "Approvals", icon: "✓" },
+    {
+      href: "/scope-reviews",
+      id: "scope-reviews",
+      title: "Scope reviews",
+      icon: "☷",
+    },
+    { href: "/bundles", id: "bundles", title: "App bundles", icon: "▤" },
     {
       href: "/testing",
       id: "testing",
@@ -243,7 +252,7 @@ export default function Console(props: {
         </nav>
         <div class="sidebar-bottom">
           <a
-            href="https://github.com/teamofsilicons/silicon-iam/tree/main/docs"
+            href="https://docs.iam.teamofsilicons.com/"
             target="_blank"
             rel="noopener noreferrer"
           >
@@ -289,6 +298,16 @@ export default function Console(props: {
             retry={organizations.refresh}
           />
           <Switch>
+            <Match when={page === "scope-reviews"}>
+              <ScopeReviews />
+            </Match>
+            <Match when={page === "bundles"}>
+              <Bundles
+                config={props.config}
+                orgs={organizations.data()?.items || []}
+                selectedOrg={selectedOrg()}
+              />
+            </Match>
             <Match when={page === "applications"}>
               <Applications
                 config={props.config}

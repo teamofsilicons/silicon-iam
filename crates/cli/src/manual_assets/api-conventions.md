@@ -25,7 +25,15 @@ IAM selects the highest mutually supported version and returns it in both `selec
 
 **Fail closed on a disagreement.** Verify the catalog, the header, and that the selection really is the highest common version before making a versioned request. The Rust SDK exposes this explicit call as `client.system().negotiate()`. A client that guesses at the wire contract will eventually send a well-formed request that means something other than its author intended.
 
-`/api/v1/version` remains available as a version-specific diagnostic. It is not the handshake, and calling it instead skips every check above.
+`/api/v1/version` is a version-specific diagnostic. It is not the handshake, and calling it instead skips every check above.
+
+## Contract catalog and lifecycle
+
+The first official API contract is `v1`. `GET /api/v1/contracts` returns `items` with each major's `version`, `status`, `released_at`, `deprecated_at`, `last_requested_at`, `sunset_at`, and compatibility classification, together with the registry's lifecycle `policy`. API majors are independent of SDK and CLI package versions.
+
+Breaking changes receive a new major version. A contract can be `current`, `deprecated`, or `sunset`. Deprecation keeps its existing behavior available while clients move to a supported major. Only deprecated contracts can sunset automatically, and only after seven complete days without requests since the later of deprecation or last activity. Activity writes are coalesced within a minute, so retirement includes an additional conservative minute. Current v1 never sunsets solely because it is idle.
+
+Versioned responses identify the path's contract in `Silicon-IAM-API-Version`. Deprecated responses also carry `Deprecation: true`. An unknown major returns `404 unknown_api_version`; a retired major returns `410 api_version_sunset`. If a request supplies `Silicon-IAM-Supported-API-Versions`, the path's major must be among its supported versions, otherwise IAM returns `406 api_version_not_supported`. Negotiate and verify a supported contract before proceeding.
 
 ## Idempotency
 
@@ -45,7 +53,7 @@ Two deliberate exceptions. **OBO proof verification** accepts no idempotency key
 
 ## JSON Merge Patch
 
-Every `PATCH` endpoint consumes `application/merge-patch+json`. For a nullable property, three wire states have three different meanings:
+Use each endpoint’s declared content type. JSON Merge Patch routes consume `application/merge-patch+json`. For a nullable property, three wire states have three different meanings:
 
 | JSON state | Meaning |
 | --- | --- |
@@ -82,7 +90,7 @@ GET /api/v1/organizations?limit=50&cursor=opaque-value
 }
 ```
 
-A cursor is bound to the caller, the filters, the sort order and the tenant context. It is **not** an offset, and clients must not interpret, construct or reuse one across a different filter set. There is no total count, and no way to jump to page seven — an interface that promises either is promising something the API cannot deliver.
+Treat cursors as opaque continuation values and reuse them only with the same caller, filters, sort order, and tenant context. Clients must not interpret or construct them. There is no total count, and no way to jump to page seven — an interface that promises either is promising something the API cannot deliver.
 
 ## Errors
 
@@ -117,7 +125,9 @@ IP and subnet buckets are deliberately disabled until a deployment defines trust
 
 | Header | Direction | Meaning |
 | --- | --- | --- |
-| `Idempotency-Key` | request | Required on every external mutation |
+| `Idempotency-Key` | request | Required on external mutations except single-use OBO verification |
+| `X-Testing-Environment-Key` | request | Selects an isolated testing environment; normal route credentials still apply |
+| `Silicon-IAM-Supported-API-Versions` | request | Implemented API majors for explicit negotiation |
 | `If-Match` | request | Strong version precondition, quoted |
 | `X-Step-Up-Token` | request | Action-bound reauthentication |
 | `X-Org-ID` | request | Introspection only; can never widen authority |
@@ -125,4 +135,4 @@ IP and subnet buckets are deliberately disabled until a deployment defines trust
 | `ETag` | response | Current aggregate version |
 | `Idempotency-Replayed` | response | A stored result was returned |
 
-`X-Org-ID` must agree with the credential and the grant. OBO does not accept it at all: IAM derives the organization from the authenticated applications and refuses cross-organization use.
+`X-Org-ID` must agree with the credential and the existing grant. OBO does not accept this header: its exchange body uses optional `org_id` to select an already authorized user membership. OBO may cross application-owning organizations. When several user memberships are available, the caller must select one explicitly.

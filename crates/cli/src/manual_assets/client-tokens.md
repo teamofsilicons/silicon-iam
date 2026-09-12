@@ -42,7 +42,7 @@ let replacement = application
     .await?;
 ```
 
-The service may return its stored result with `Idempotency-Replayed: true`. Version 1.2.1 returns the typed response body but does not expose that response header, so recovery must be keyed by the `Mutation` your application persisted rather than by an SDK replay flag.
+The service may return its stored result with `Idempotency-Replayed: true`. Version The client returns the typed response body but does not expose that response header, so recovery must be keyed by the `Mutation` your application persisted rather than by an SDK replay flag.
 
 ## Introspection
 
@@ -86,7 +86,7 @@ let reachable = application.oauth()
 // subject has no selected active memberships; that is still no authority.
 ```
 
-The snapshot binds principal ID, public ID, organization ID and handle, membership ID/version, current authorization epoch, audience and testing environment. `org_role` requires `roles.read`; `tags` requires `memberships.read`. Null means undisclosed; an empty tag array means the disclosed membership has no active tags. No unrelated directory edit or webhook delivery is required. One snapshot is one organization: never carry a role, tag or epoch disclosed for one organization into a request that names another. Refresh tokens do not carry organization authorization.
+The snapshot binds principal ID, public ID, organization ID and handle, membership ID/version, current authorization epoch, audience and testing environment. `org_role` requires `self.membership.read`; `tags` requires `self.tags.read`. Null means undisclosed; an empty tag array means the disclosed membership has no active tags. No unrelated directory edit or webhook delivery is required. One snapshot is one organization: never carry a role, tag or epoch disclosed for one organization into a request that names another. Refresh tokens do not carry organization authorization.
 
 Keep webhook updates for asynchronous projection maintenance, but introspect current access tokens before authorizing. Bind any cache to the full environment/audience/organization/principal/membership/epoch/effective-scopes tuple. Never fill undisclosed fields from a broader cached token. After an IAM environment clean, reimport, onboard and log in again; old tokens cannot reconstruct erased authority. Application bearer tokens can read the selected organizations' members, directory, tags and trust data, but cannot mutate those resources.
 

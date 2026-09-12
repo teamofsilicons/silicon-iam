@@ -55,6 +55,9 @@ const RETENTION_PHASES: [&str; 18] = [
 ];
 
 pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppError> {
+    sqlx::query("SELECT iam_private.sunset_idle_contract_versions()")
+        .execute(&context.pool)
+        .await?;
     let parameters = retention_parameters(&context.settings.worker.retention)?;
     let mut first_error = None;
     let ephemeral = sqlx::query_as::<_, EphemeralMaintenanceOutcome>(

@@ -1,5 +1,7 @@
 #![allow(clippy::too_many_lines)]
 
+use super::application_reads::{self, ReadScopes};
+
 use std::{borrow::Cow, collections::BTreeMap, num::NonZeroU32, time::Duration};
 
 use axum::{
@@ -27,9 +29,9 @@ use crate::{
 
 use super::{
     model::{
-        AvailabilityResponse, MembershipPage, MembershipResponse, OrganizationCreate,
-        OrganizationPage, OrganizationPatch, OrganizationResponse, OwnershipTransfer, PageInfo,
-        PageQuery, SiliconResponse, StatusPageQuery, TagInput, TagPage, TagResponse,
+        AvailabilityResponse, MembershipResponse, OrganizationCreate, OrganizationPage,
+        OrganizationPatch, OrganizationResponse, OwnershipTransfer, PageInfo, PageQuery,
+        SiliconResponse, StatusPageQuery, TagInput, TagPage, TagResponse,
     },
     support::{self, Claim, MutationEvent},
     validation,
@@ -83,6 +85,7 @@ pub(super) async fn list_organizations(
     authenticated: Authenticated,
     Query(query): Query<StatusPageQuery>,
 ) -> Result<Response, AppError> {
+    ReadScopes::for_actor(&authenticated).require("self.organizations.read")?;
     let application_token = authenticated.0.client_application_id.is_some();
     let carbon_id = if application_token {
         if query.status.as_deref() == Some("removed") {
@@ -159,13 +162,12 @@ pub(super) async fn list_organizations(
     };
     transaction.commit().await.map_err(support::database)?;
     let page = take_page(&mut organizations, limit)?;
-    support::json(
-        StatusCode::OK,
+    application_reads::page_json(
         &OrganizationPage {
             items: organizations,
             page,
         },
-        None,
+        |item| ReadScopes::for_actor(&authenticated).organization(item),
     )
 }
 
@@ -281,6 +283,7 @@ pub(super) async fn get_organization(
     authenticated: Authenticated,
     Path(org_id): Path<String>,
 ) -> Result<Response, AppError> {
+    ReadScopes::for_actor(&authenticated).require("self.organizations.read")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let organization =
@@ -290,7 +293,12 @@ pub(super) async fn get_organization(
         .commit()
         .await
         .map_err(support::database)?;
-    support::json(StatusCode::OK, &organization, Some(organization.version))
+    support::json(
+        StatusCode::OK,
+        &ReadScopes::for_actor(&authenticated)
+            .organization(application_reads::value(&organization)?),
+        Some(organization.version),
+    )
 }
 
 pub(super) async fn update_organization(
@@ -700,6 +708,7 @@ pub(super) async fn list_tags(
     Path(org_id): Path<String>,
     Query(query): Query<PageQuery>,
 ) -> Result<Response, AppError> {
+    ReadScopes::for_actor(&authenticated).require("organization.tags.read")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page(&query)?;
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
@@ -817,6 +826,7 @@ pub(super) async fn get_tag(
     authenticated: Authenticated,
     Path((org_id, tag_id)): Path<(String, Uuid)>,
 ) -> Result<Response, AppError> {
+    ReadScopes::for_actor(&authenticated).require("organization.tags.read")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let tag = fetch_tag(&mut scope.transaction, scope.access.organization_id, tag_id).await?;
@@ -1057,6 +1067,9 @@ pub(super) async fn list_tag_members(
     Path((org_id, tag_id)): Path<(String, Uuid)>,
     Query(query): Query<PageQuery>,
 ) -> Result<Response, AppError> {
+    let scopes = ReadScopes::for_actor(&authenticated);
+    scopes.require("directory.tags.read")?;
+    let actor_filter = scopes.actor_filter(None)?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page(&query)?;
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
@@ -1066,9 +1079,18 @@ pub(super) async fn list_tag_members(
         scope.access.organization_id,
         cursor,
         limit + 1,
-        None,
+        actor_filter,
         Some(tag_id),
         Some("active"),
+    )
+    .await?;
+    let page = take_page(&mut members, limit)?;
+    let members = application_reads::enrich_members(
+        &mut scope.transaction,
+        &authenticated,
+        scope.access.organization_id,
+        &members,
+        false,
     )
     .await?;
     scope
@@ -1076,15 +1098,7 @@ pub(super) async fn list_tag_members(
         .commit()
         .await
         .map_err(support::database)?;
-    let page = take_page(&mut members, limit)?;
-    support::json(
-        StatusCode::OK,
-        &MembershipPage {
-            items: members,
-            page,
-        },
-        None,
-    )
+    support::json(StatusCode::OK, &json!({"items":members,"page":page}), None)
 }
 
 async fn fetch_tag(

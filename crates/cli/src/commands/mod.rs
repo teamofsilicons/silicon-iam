@@ -1,6 +1,10 @@
 //! One module per noun, matching the command grammar.
 
 pub mod app;
+pub mod app_bundles;
+pub mod app_reads;
+pub mod app_scopes;
+pub mod app_testing;
 pub mod approval;
 pub mod auth;
 pub mod carbon;
@@ -26,6 +30,7 @@ use crate::{cli::Command, context::Context, error::Result};
 pub async fn dispatch(context: &Context, command: Command) -> Result<()> {
     match command {
         Command::Login(args) => auth::login(context, args).await,
+        Command::BatchLogin(args) => auth::batch_login(context, args).await,
         Command::SiliconLogin(args) => auth::silicon_login(context, args).await,
         Command::Logout(args) => auth::logout(context, args).await,
         Command::Whoami => auth::whoami(context).await,
@@ -72,6 +77,7 @@ mod tests {
                     && !matches!(
                         sub.get_name(),
                         "login"
+                            | "batch-login"
                             | "silicon-login"
                             | "logout"
                             | "whoami"

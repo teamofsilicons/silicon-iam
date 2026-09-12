@@ -171,9 +171,17 @@ export const label = (value: string) =>
 export function authDestination(config: Configuration, signup = false): string {
   const result = new URL(signup ? "/signup" : "/login", config.authOrigin);
   const current = new URL(location.href);
-  for (const name of ["app_id", "redirect_uri", "org_id", "next"]) {
-    const value = current.searchParams.get(name);
-    if (value) result.searchParams.set(name, value);
+  for (const name of [
+    "app_id",
+    "app_ids",
+    "bundle_id",
+    "redirect_uri",
+    "org_id",
+    "org_ids",
+    "next",
+  ]) {
+    for (const value of current.searchParams.getAll(name))
+      result.searchParams.append(name, value);
   }
   if (current.pathname === "/join") result.searchParams.set("next", "join");
   return result.href;
@@ -181,9 +189,17 @@ export function authDestination(config: Configuration, signup = false): string {
 export function continueDestination(): string {
   const result = new URL("/auth/continue", location.origin),
     current = new URL(location.href);
-  for (const name of ["app_id", "redirect_uri", "org_id", "next"]) {
-    const value = current.searchParams.get(name);
-    if (value) result.searchParams.set(name, value);
+  for (const name of [
+    "app_id",
+    "app_ids",
+    "bundle_id",
+    "redirect_uri",
+    "org_id",
+    "org_ids",
+    "next",
+  ]) {
+    for (const value of current.searchParams.getAll(name))
+      result.searchParams.append(name, value);
   }
   if (current.pathname === "/join") result.searchParams.set("next", "join");
   return result.pathname + result.search;

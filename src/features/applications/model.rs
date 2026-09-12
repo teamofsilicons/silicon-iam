@@ -44,6 +44,13 @@ pub(super) struct ApplicationCreate {
     pub(super) webhook_secret: SecretString,
     #[serde(default)]
     pub(super) obo_endpoints: Vec<ApplicationOboEndpoint>,
+    #[serde(default)]
+    pub(super) app_scope: ApplicationScope,
+    #[serde(default = "default_webhook_scope")]
+    pub(super) webhook_scope: Vec<String>,
+    pub(super) obo_review_message: Option<String>,
+    #[serde(default = "default_testing_idle_days")]
+    pub(super) testing_idle_days: i32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -66,6 +73,10 @@ pub(super) struct ApplicationPatch {
     #[allow(clippy::option_option)]
     pub(super) app_logo_uri: Option<Option<String>>,
     pub(super) obo_endpoints: Option<Vec<ApplicationOboEndpoint>>,
+    pub(super) app_scope: Option<ApplicationScope>,
+    pub(super) webhook_scope: Option<Vec<String>>,
+    pub(super) obo_review_message: Option<String>,
+    pub(super) testing_idle_days: Option<i32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -100,6 +111,7 @@ pub(super) struct ApplicationOboEndpoint {
     pub(super) endpoint_id: String,
     pub(super) path: String,
     pub(super) metadata: serde_json::Value,
+    pub(super) critical: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -173,6 +185,12 @@ pub(crate) struct ApplicationDetail {
     pub(super) app_name: Option<String>,
     pub(super) app_logo: Option<String>,
     pub(super) base_url: String,
+    pub(super) app_scope: ApplicationScope,
+    pub(super) effective_app_scope: ApplicationScope,
+    pub(super) webhook_scope: Vec<String>,
+    pub(super) obo_review_message: Option<String>,
+    pub(super) testing_idle_days: i32,
+    pub(super) scope_version: i64,
     pub(super) requested_scopes: Vec<String>,
     pub(super) approved_scopes: Vec<String>,
     pub(super) obo_endpoints: Vec<ApplicationOboEndpoint>,
@@ -313,7 +331,11 @@ pub(super) struct LoginEventPage {
 #[derive(Clone, Debug, Deserialize)]
 pub(super) struct LoginQuery {
     #[serde(default)]
+    pub(super) app_ids: Option<String>,
+    #[serde(default)]
     pub(super) app_id: Option<String>,
+    #[serde(default)]
+    pub(super) bundle_id: Option<String>,
     #[serde(default)]
     pub(super) redirect_uri: Option<String>,
     #[serde(default)]
@@ -325,6 +347,8 @@ pub(super) struct LoginQuery {
 #[serde(deny_unknown_fields)]
 pub(super) struct ShortLivedTokenRequest {
     pub(super) app_id: String,
+    pub(super) scope_version: i64,
+    pub(super) approved_scopes: Vec<String>,
     /// Explicit user selection, never inferred from an Application login URL.
     #[serde(default)]
     pub(super) org_ids: Vec<String>,
@@ -383,7 +407,8 @@ pub(super) struct TokenResponse {
     pub(super) expires_in: u64,
     pub(super) scope: String,
     pub(super) refresh_token: String,
-    pub(super) actor: PublicActor,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) actor: Option<PublicActor>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) org_id: Option<String>,
 }
@@ -437,8 +462,10 @@ pub(super) struct AuthorizationTag {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct ApplicationAuthorization {
     pub(super) principal_id: Uuid,
-    pub(super) actor_type: String,
-    pub(super) public_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) actor_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) public_id: Option<String>,
     pub(super) organization_id: Uuid,
     pub(super) org_id: String,
     pub(super) membership_id: Uuid,
@@ -454,6 +481,7 @@ pub(super) struct ApplicationAuthorization {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct OboExchangeRequest {
+    pub(super) org_id: Option<String>,
     pub(super) subject_token: String,
     pub(super) audience: String,
     pub(super) endpoint_id: String,
@@ -470,6 +498,8 @@ pub(super) struct OboExchangeRequestBinding {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct OboProofResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) testing_context: Option<serde_json::Value>,
     pub(super) access_proof: String,
     pub(super) proof_id: Uuid,
     pub(super) expires_in: u64,
@@ -677,6 +707,12 @@ mod tests {
             app_name: Some("Briefcase".to_owned()),
             app_logo: None,
             base_url: "https://briefcase.example".to_owned(),
+            app_scope: ApplicationScope::default(),
+            effective_app_scope: ApplicationScope::default(),
+            webhook_scope: default_webhook_scope(),
+            obo_review_message: None,
+            testing_idle_days: 30,
+            scope_version: 1,
             requested_scopes: Vec::new(),
             approved_scopes: Vec::new(),
             obo_endpoints: Vec::new(),
@@ -710,7 +746,7 @@ mod tests {
             expires_in: 1_800,
             scope: "organizations.read".to_owned(),
             refresh_token: format!("ort_{}", "B".repeat(43)),
-            actor: actor(),
+            actor: Some(actor()),
             org_id: None,
         })
         .unwrap_or(Value::Null);
@@ -727,4 +763,85 @@ mod tests {
         );
         assert_nested_required(&value, "actor", &["principal_id", "type", "public_id"]);
     }
+}
+
+#[derive(Serialize)]
+pub(super) struct LoginOrganizationsResponse {
+    pub(super) scope_version: i64,
+    pub(super) consent_required: bool,
+    pub(super) scopes: Vec<ScopeDefinition>,
+    pub(super) app_id: String,
+    pub(super) app_name: Option<String>,
+    pub(super) items: Vec<LoginOrganization>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BatchLoginSelection {
+    pub(super) scope_version: i64,
+    pub(super) approved_scopes: Vec<String>,
+    pub(super) app_id: String,
+    pub(super) org_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BatchLoginRequest {
+    pub(super) applications: Vec<BatchLoginSelection>,
+    pub(super) redirect_uri: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BatchLoginChoicesQuery {
+    pub(super) app_ids: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct BatchLoginToken {
+    pub(super) app_id: String,
+    #[serde(with = "crate::wire_time")]
+    pub(super) expires_at: time::OffsetDateTime,
+    #[serde(flatten)]
+    pub(super) token: ShortLivedTokenResponse,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct BatchLoginResponse {
+    pub(super) items: Vec<BatchLoginToken>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ExternalScope {
+    pub(super) app_id: String,
+    pub(super) endpoint_id: String,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ApplicationScope {
+    pub(super) iam: Vec<String>,
+    #[serde(default)]
+    pub(super) external: Vec<ExternalScope>,
+}
+impl Default for ApplicationScope {
+    fn default() -> Self {
+        Self {
+            iam: vec!["self.identity.read".into(), "self.profile.read".into()],
+            external: Vec::new(),
+        }
+    }
+}
+pub(super) fn default_webhook_scope() -> Vec<String> {
+    vec!["full".into()]
+}
+pub(super) const fn default_testing_idle_days() -> i32 {
+    30
+}
+#[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]
+pub(super) struct ScopeDefinition {
+    pub(super) scope: String,
+    pub(super) description: String,
+    pub(super) critical: bool,
+    pub(super) app_id: Option<String>,
 }

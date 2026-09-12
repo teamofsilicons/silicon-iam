@@ -19,6 +19,8 @@ import {
   type RecordValue,
 } from "./api";
 import { OperationForm, type Operation } from "./forms";
+import { ApplicationScopes, ScopePicker } from "./Scopes";
+import { defaultAppScope } from "./scope-model";
 import {
   Badge,
   Empty,
@@ -47,6 +49,8 @@ export function ApplicationCreate(props: {
     [base, setBase] = createSignal(""),
     [webhook, setWebhook] = createSignal(""),
     [secret, setSecret] = createSignal(""),
+    [scope, setScope] = createSignal(defaultAppScope()),
+    [webhookScope, setWebhookScope] = createSignal(["full"]),
     [busy, setBusy] = createSignal(false),
     [error, setError] = createSignal<unknown>();
   const send = mutation();
@@ -81,6 +85,8 @@ export function ApplicationCreate(props: {
         base_url: base(),
         webhook_url: webhook(),
         webhook_secret: secret(),
+        app_scope: scope(),
+        webhook_scope: webhookScope(),
       });
       setSecret("");
       props.success(result);
@@ -186,9 +192,40 @@ export function ApplicationCreate(props: {
             onInput={(e) => setSecret(e.currentTarget.value)}
           />
         </Field>
+        <fieldset>
+          <legend>Application permissions</legend>
+          <ScopePicker value={scope()} change={setScope} />
+        </fieldset>
+        <fieldset class="stack">
+          <legend>Webhook subscriptions</legend>
+          <p class="muted">
+            Choose which updates IAM delivers. These subscriptions do not grant
+            access to data.
+          </p>
+          <For each={["full", "membership", "updates", "trust"]}>
+            {(item) => (
+              <label class="checkbox">
+                <input
+                  type="checkbox"
+                  checked={webhookScope().includes(item)}
+                  onChange={(e) =>
+                    setWebhookScope((current) =>
+                      e.currentTarget.checked
+                        ? [...current, item]
+                        : current.filter((value) => value !== item),
+                    )
+                  }
+                />
+                {item === "full" ? "All authorized updates" : item}
+              </label>
+            )}
+          </For>
+        </fieldset>
         <div class="notice">
           After creating the app, save its client secret. The initial webhook
-          must be approved before production deliveries begin.
+          must be approved before production deliveries begin. If you selected
+          critical permissions, open the app’s Permissions tab to submit the
+          review before its first login.
         </div>
         <ErrorBox error={error() || membership.error} />
         <Show
@@ -351,7 +388,9 @@ function ApplicationDetail(props: { appId: string; config: Configuration }) {
   const tabs = [
     "Overview",
     "Authentication",
+    "Permissions",
     "OBO endpoints",
+    "Testing",
     "Webhook",
     "Login history",
     "Failed deliveries",
@@ -475,15 +514,54 @@ function ApplicationDetail(props: { appId: string; config: Configuration }) {
             <Match when={tab() === "Authentication"}>
               <LoginLinks config={props.config} app={app()!} />
             </Match>
+            <Match when={tab() === "Permissions"}>
+              <Show keyed when={app()}>
+                {(value) => <ApplicationScopes app={value} refresh={refetch} />}
+              </Show>
+            </Match>
             <Match when={tab() === "OBO endpoints"}>
               <Endpoints app={app()!} refresh={refetch} />
+            </Match>
+            <Match when={tab() === "Testing"}>
+              <section class="panel padded stack">
+                <h2>Test this application</h2>
+                <p>
+                  Create an isolated IAM environment, then import this
+                  application by its public ID. IAM brings in its declared
+                  application dependencies and issues separate test credentials.
+                </p>
+                <p>
+                  Use the environment key with the same client, CLI, and API
+                  operations. Test verification codes are <code>000000</code>.
+                </p>
+                <div class="actions">
+                  <a
+                    class="button primary"
+                    href={`/testing?org=${segment(app()!.org_id)}`}
+                  >
+                    Manage testing environments →
+                  </a>
+                  <a
+                    class="button"
+                    href="https://docs.iam.teamofsilicons.com/api/testing-environments/"
+                  >
+                    Application testing guide ↗
+                  </a>
+                </div>
+                <p class="muted">
+                  Configure the app’s inactivity retention and OBO review
+                  instructions in Application details. Imported webhook secrets
+                  stay private; replacing a test destination gives it a separate
+                  secret.
+                </p>
+              </section>
             </Match>
             <Match when={tab() === "Webhook"}>
               <section class="panel padded stack">
                 <h2>Webhook delivery</h2>
                 <p class="muted">
-                  IAM delivers signed events and authorization snapshots to this
-                  endpoint. Initial and replacement destinations need approval.
+                  IAM delivers signed events and authorization snapshots limited by your effective scopes and user consent to this
+                  endpoint. Production destinations need approval; testing destinations activate immediately.
                 </p>
                 <RecordDetails value={app()!.webhook || {}} />
                 <div class="actions">
@@ -502,7 +580,7 @@ function ApplicationDetail(props: { appId: string; config: Configuration }) {
                         },
                         version: app()!.version,
                         description:
-                          "Use the same secret on your receiver. Leave an optional replacement secret blank to preserve the existing secret.",
+                          "Production keeps the current signing secret unless you provide a replacement. In a testing environment, IAM generates a fresh test-only secret when you leave this blank; save it on your receiver.",
                       })
                     }
                   >
@@ -717,7 +795,7 @@ function LoginLinks(props: { app: RecordValue; config: Configuration }) {
         </div>
       </div>
       <a
-        href="https://github.com/teamofsilicons/silicon-iam/tree/main/docs"
+        href="https://docs.iam.teamofsilicons.com/client/"
         target="_blank"
         rel="noopener noreferrer"
       >
@@ -756,7 +834,12 @@ function Endpoints(props: { app: RecordValue; refresh: () => unknown }) {
           Array.isArray(metadata)
         )
           throw new Error("Endpoint metadata must be a JSON object.");
-        return { endpoint_id: item.endpoint_id, path: item.path, metadata };
+        return {
+          endpoint_id: item.endpoint_id,
+          path: item.path,
+          metadata,
+          critical: item.critical === true,
+        };
       });
       await send(
         "PATCH",
@@ -778,7 +861,9 @@ function Endpoints(props: { app: RecordValue; refresh: () => unknown }) {
         <div>
           <h2>Inter-application access</h2>
           <p class="muted">
-            Expose callable endpoints to applications in the same organization.
+            Expose callable endpoints to applications in any organization.
+            Critical endpoints require your approval before a caller can use
+            them.
           </p>
         </div>
         <button
@@ -788,7 +873,7 @@ function Endpoints(props: { app: RecordValue; refresh: () => unknown }) {
             setSaved(false);
             setItems((v) => [
               ...v,
-              { endpoint_id: "", path: "", metadata: "{}" },
+              { endpoint_id: "", path: "", metadata: "{}", critical: false },
             ]);
           }}
         >
@@ -839,6 +924,17 @@ function Endpoints(props: { app: RecordValue; refresh: () => unknown }) {
                     />
                   </Field>
                 </div>
+                <label class="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={item().critical === true}
+                    onChange={(e) =>
+                      update(index, "critical", e.currentTarget.checked)
+                    }
+                  />
+                  Critical permission — require approval for each calling
+                  application
+                </label>
                 <Field
                   name="Required metadata"
                   hint="JSON object. Each top-level key is required in an OBO exchange."

@@ -1,3 +1,4 @@
+use super::application_reads::{self, ReadScopes};
 use std::{borrow::Cow, collections::BTreeSet};
 
 use axum::{
@@ -63,6 +64,7 @@ pub(super) async fn get_default_trust(
     authenticated: Authenticated,
     Path(org_id): Path<String>,
 ) -> Result<Response, AppError> {
+    ReadScopes::for_actor(&authenticated).require("organization.trust.read")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let (boundary, level, version) = sqlx::query_as::<_, (String, String, i64)>(
@@ -181,6 +183,7 @@ pub(super) async fn list_trust_rules(
     Path(org_id): Path<String>,
     Query(query): Query<PageQuery>,
 ) -> Result<Response, AppError> {
+    ReadScopes::for_actor(&authenticated).require("organization.trust.read")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page(&query)?;
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
@@ -309,6 +312,7 @@ pub(super) async fn get_trust_rule(
     authenticated: Authenticated,
     Path((org_id, rule_id)): Path<(String, Uuid)>,
 ) -> Result<Response, AppError> {
+    ReadScopes::for_actor(&authenticated).require("organization.trust.read")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let rule = fetch_rule(
@@ -538,6 +542,16 @@ pub(super) async fn evaluate_trust(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
+    let scopes = ReadScopes::for_actor(&authenticated);
+    if scopes.is_application() && !scopes.has("organization.trust.read") {
+        scopes.require("self.trust.read")?;
+        let requester = scope.access.membership_id;
+        if input.subject_membership_id != requester
+            && input.target_silicon_membership_id != requester
+        {
+            return Err(AppError::Forbidden);
+        }
+    }
     validate_evaluation(&mut scope.transaction, scope.access.organization_id, &input).await?;
     let (default_boundary, default_level) =
         sqlx::query_as::<_, (String, String)>(TRUST_DEFAULT_FOR_SUBJECT_SQL)
@@ -559,7 +573,13 @@ pub(super) async fn evaluate_trust(
         .commit()
         .await
         .map_err(support::database)?;
-    support::json(StatusCode::OK, &response, None)
+    let mut projected = application_reads::value(&response)?;
+    if !scopes.has("organization.trust.read")
+        && let Some(object) = projected.as_object_mut()
+    {
+        object.retain(|key, _| matches!(key.as_str(), "trust" | "advisory"));
+    }
+    support::json(StatusCode::OK, &projected, None)
 }
 
 async fn fetch_rule(

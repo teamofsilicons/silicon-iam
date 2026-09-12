@@ -84,6 +84,8 @@ pub struct Global {
 pub enum Command {
     /// Sign in as a Carbon.
     Login(LoginArgs),
+    /// Authorize up to 100 apps using your existing Carbon or Silicon IAM session.
+    BatchLogin(BatchLoginArgs),
     /// Sign in as a Silicon with its credential.
     SiliconLogin(SiliconLoginArgs),
     /// End a Carbon session remotely; forget a Silicon session locally.
@@ -150,7 +152,25 @@ pub enum Command {
     Config(ConfigCommand),
     /// The service itself.
     #[command(subcommand)]
+    #[command(visible_alias = "api")]
     System(SystemCommand),
+}
+
+/// Batch authorization from one previously established direct IAM session.
+#[derive(Debug, Args)]
+pub struct BatchLoginArgs {
+    /// Approve every displayed IAM and external scope for this login. Required without a terminal.
+    #[arg(long)]
+    pub approve_scopes: bool,
+    /// Canonical app ID; repeat --app-id or supply a comma-separated list (maximum 100).
+    #[arg(long = "app-id", required = true, value_delimiter = ',')]
+    pub app_ids: Vec<String>,
+    /// Organizations explicitly shared with every requested app; repeat or comma-separate.
+    #[arg(long = "grant-org", value_delimiter = ',', conflicts_with = "all_orgs")]
+    pub grant_orgs: Vec<String>,
+    /// Explicitly share all currently active organizations with each app.
+    #[arg(long, conflicts_with = "grant_orgs")]
+    pub all_orgs: bool,
 }
 
 /// Arguments for signing in.
@@ -168,6 +188,9 @@ pub enum Command {
         .multiple(true)
 ))]
 pub struct LoginArgs {
+    /// Approve every displayed IAM and external scope for this login. Required without a terminal.
+    #[arg(long)]
+    pub approve_scopes: bool,
     /// Organizations you choose to share with --app-id (comma-separated or repeated).
     /// Does not inherit --org or the stored default; existing grants are preserved.
     #[arg(
@@ -213,6 +236,9 @@ pub struct LogoutArgs {
 /// Arguments for signing a Silicon in.
 #[derive(Debug, Args)]
 pub struct SiliconLoginArgs {
+    /// Approve every displayed IAM and external scope for this login. Required without a terminal.
+    #[arg(long)]
+    pub approve_scopes: bool,
     /// Organizations you choose to share with --app-id (comma-separated or repeated).
     #[arg(
         long = "grant-org",
@@ -1113,6 +1139,8 @@ pub enum SiliconCommand {
 /// Application commands.
 #[derive(Debug, Subcommand)]
 pub enum AppCommand {
+    /// Read only the fields disclosed to an application user token.
+    Read(AppReadArgs),
     /// List applications across all organizations you can administer.
     ///
     /// This is an intentionally cross-organization view. --org does not
@@ -1160,6 +1188,18 @@ pub enum AppCommand {
         /// JSON array of OBO endpoint definitions.
         #[arg(long, value_name = "JSON")]
         obo_endpoints: Option<String>,
+        /// Login permissions as JSON with `iam` scopes and `external` app/endpoint pairs.
+        #[arg(long, value_name = "JSON")]
+        app_scope: Option<String>,
+        /// Webhook event categories: full, membership, updates, trust (comma-separated).
+        #[arg(long, value_delimiter = ',', value_parser = ["full", "membership", "updates", "trust"])]
+        webhook_scope: Option<Vec<String>>,
+        /// Initial instruction shown to apps requesting your critical OBO endpoints.
+        #[arg(long)]
+        obo_review_message: Option<String>,
+        /// Delete this application's test environments after this many inactive days.
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=3650))]
+        testing_idle_days: Option<u16>,
     },
     /// Show one application.
     Show {
@@ -1183,7 +1223,11 @@ pub enum AppCommand {
                 "logo",
                 "clear_logo",
                 "base_url",
-                "obo_endpoints"
+                "obo_endpoints",
+                "app_scope",
+                "webhook_scope",
+                "obo_review_message",
+                "testing_idle_days"
             ])
             .required(true)
             .multiple(true)
@@ -1211,6 +1255,18 @@ pub enum AppCommand {
         /// Complete replacement OBO endpoint array as JSON.
         #[arg(long, value_name = "JSON")]
         obo_endpoints: Option<String>,
+        /// Login permissions as JSON with `iam` scopes and `external` app/endpoint pairs.
+        #[arg(long, value_name = "JSON")]
+        app_scope: Option<String>,
+        /// Webhook event categories: full, membership, updates, trust (comma-separated).
+        #[arg(long, value_delimiter = ',', value_parser = ["full", "membership", "updates", "trust"])]
+        webhook_scope: Option<Vec<String>>,
+        /// Initial instruction shown to apps requesting your critical OBO endpoints.
+        #[arg(long)]
+        obo_review_message: Option<String>,
+        /// Delete this application's test environments after this many inactive days.
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=3650))]
+        testing_idle_days: Option<u16>,
     },
     /// Rotate the client secret. Needs --step-up: action
     /// `application.client_secret.rotate`, resource = the Application UUID.
@@ -1241,7 +1297,16 @@ pub enum AppCommand {
     /// Application token exchange, refresh, introspection, and revocation.
     #[command(subcommand)]
     Token(AppTokenCommand),
-    /// Same-organization on-behalf-of access.
+    /// Discover scopes and manage critical-scope review discussions.
+    #[command(subcommand)]
+    Scopes(AppScopesCommand),
+    /// Manage bundled applications and sign in to a complete bundle.
+    #[command(subcommand)]
+    Bundle(AppBundleCommand),
+    /// Create and list application test environments with their dependencies.
+    #[command(subcommand)]
+    Testing(AppTestingCommand),
+    /// On-behalf-of access across declared applications and organizations.
     #[command(subcommand)]
     Obo(AppOboCommand),
     /// Verify a captured webhook locally, before parsing or acting on it.
@@ -1318,6 +1383,226 @@ pub enum AppCommand {
     },
 }
 
+/// Scope-projected reads with an application's user access token.
+#[derive(Debug, Args)]
+pub struct AppReadArgs {
+    /// Application user access token; prompted when omitted.
+    #[arg(long, global = true)]
+    pub token: Option<String>,
+    /// The requested read operation; organization reads use global --org.
+    #[command(subcommand)]
+    pub command: AppReadCommand,
+}
+
+/// Read operations preserving undisclosed field omission in their JSON output.
+#[derive(Debug, Subcommand)]
+pub enum AppReadCommand {
+    /// Read the represented actor's disclosed identity, profile, and contacts.
+    Me,
+    /// List selected organizations.
+    Organizations {
+        /// Paging.
+        #[command(flatten)]
+        page: PageArgs,
+    },
+    /// Read the selected organization's public details.
+    Organization,
+    /// List members of approved actor types with independently scoped fields.
+    Members {
+        /// Paging.
+        #[command(flatten)]
+        page: PageArgs,
+    },
+    /// Read one membership's disclosed fields.
+    Member {
+        /// Membership UUID in the selected organization.
+        membership_id: Uuid,
+    },
+    /// Read one membership's disclosed role and explicit capabilities.
+    Authorization {
+        /// Membership UUID in the selected organization.
+        membership_id: Uuid,
+    },
+    /// Read the represented actor's directory view.
+    SelfDirectory,
+    /// List the selected directory with scoped fields and trust perspective.
+    Directory {
+        /// Paging.
+        #[command(flatten)]
+        page: PageArgs,
+    },
+    /// List disclosed Silicon identities and fields.
+    Silicons {
+        /// Paging.
+        #[command(flatten)]
+        page: PageArgs,
+    },
+    /// Read one Silicon's disclosed fields.
+    Silicon {
+        /// Canonical Silicon ID in the selected organization.
+        silicon_id: String,
+    },
+    /// List the complete tag catalog, requiring its critical organization scope.
+    Tags {
+        /// Paging.
+        #[command(flatten)]
+        page: PageArgs,
+    },
+    /// Evaluate effective trust involving the represented actor.
+    Trust {
+        /// Membership whose trust is evaluated.
+        subject_membership_id: Uuid,
+        /// Target Silicon membership.
+        target_silicon_membership_id: Uuid,
+    },
+}
+
+/// Critical application scope catalog and approval discussion commands.
+#[derive(Debug, Subcommand)]
+pub enum AppScopesCommand {
+    /// Show IAM scopes, or one application's exposed OBO scope catalog.
+    Catalog {
+        /// Canonical audience app ID; omit for IAM scopes.
+        #[arg(long)]
+        app_id: Option<String>,
+    },
+    /// List approval discussions you may participate in.
+    Requests {
+        /// Filter by request status.
+        #[arg(long, value_parser = ["pending", "approved", "denied", "superseded"])]
+        status: Option<String>,
+    },
+    /// Submit a revised application scope set and explain its purpose.
+    Request {
+        /// Local or canonical application ID.
+        app_id: String,
+        /// Complete requested scope object as JSON.
+        #[arg(long, value_name = "JSON")]
+        app_scope: String,
+        /// Explain the application and why each critical scope is needed.
+        #[arg(long)]
+        message: String,
+    },
+    /// Read a scope request with its complete discussion.
+    Show {
+        /// Request UUID.
+        request_id: Uuid,
+    },
+    /// Reply to a scope review discussion.
+    Reply {
+        /// Request UUID.
+        request_id: Uuid,
+        /// Plain text message.
+        #[arg(long)]
+        message: String,
+    },
+    /// Approve a request as an authorized reviewer.
+    Approve {
+        /// Request UUID.
+        request_id: Uuid,
+    },
+    /// Deny a request and explain the decision.
+    Deny {
+        /// Request UUID.
+        request_id: Uuid,
+        /// Required reason sent to the requester.
+        #[arg(long)]
+        reason: String,
+    },
+}
+
+/// Bundle configuration and login commands.
+#[derive(Debug, Subcommand)]
+pub enum AppBundleCommand {
+    /// List bundles you administer.
+    List,
+    /// Create a bundle containing applications from one organization.
+    Create {
+        /// Local handle or canonical organization-qualified bundle ID.
+        bundle_id: String,
+        /// Application members (repeat or comma-separate).
+        #[arg(long = "app-id", required = true, value_delimiter = ',')]
+        app_ids: Vec<String>,
+        /// Display name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Logo URL.
+        #[arg(long)]
+        logo: Option<String>,
+    },
+    /// Read a bundle.
+    Show {
+        /// Local or canonical bundle ID.
+        bundle_id: String,
+    },
+    /// Change a bundle's presentation or replace its complete application list.
+    #[command(group(clap::ArgGroup::new("changes").args(["name", "logo", "app_ids"]).required(true).multiple(true)))]
+    Update {
+        /// Local or canonical bundle ID.
+        bundle_id: String,
+        /// New display name.
+        #[arg(long)]
+        name: Option<String>,
+        /// New logo URL.
+        #[arg(long)]
+        logo: Option<String>,
+        /// Complete replacement list (repeat or comma-separate).
+        #[arg(long = "app-id", value_delimiter = ',')]
+        app_ids: Option<Vec<String>>,
+    },
+    /// Delete only the bundle; its applications remain available individually.
+    Delete {
+        /// Local or canonical bundle ID.
+        bundle_id: String,
+    },
+    /// Sign in once and receive a distinct SLT for each bundled application.
+    Login {
+        /// Local or canonical bundle ID.
+        bundle_id: String,
+        /// Organizations explicitly shared with each bundle member.
+        #[arg(long = "grant-org", value_delimiter = ',', conflicts_with = "all_orgs")]
+        grant_orgs: Vec<String>,
+        /// Share all currently active organizations with each member.
+        #[arg(long)]
+        all_orgs: bool,
+        /// Approve the bundle's complete displayed permission set without a terminal prompt.
+        #[arg(long)]
+        approve_scopes: bool,
+    },
+}
+
+/// Testing environments initiated by an application using its own credential.
+#[derive(Debug, Subcommand)]
+pub enum AppTestingCommand {
+    /// Create or attach to an IAM environment and provision all transitive dependencies.
+    Create {
+        /// Local or canonical production app ID.
+        app_id: String,
+        /// Name of the environment.
+        name: String,
+        /// Description of this test scenario.
+        #[arg(long)]
+        description: Option<String>,
+        /// Existing IAM testing key. Invalid keys fail; omitted creates a new environment.
+        #[arg(long)]
+        iam_test_key: Option<String>,
+        /// Production application secret; securely prompted when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+    },
+    /// List active environments linked to the production application and its organization.
+    List {
+        /// Local or canonical production app ID.
+        app_id: String,
+        /// Production application secret; securely prompted when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+        /// Pagination.
+        #[command(flatten)]
+        page: PageArgs,
+    },
+}
+
 /// Application token commands.
 #[derive(Debug, Subcommand)]
 pub enum AppTokenCommand {
@@ -1328,7 +1613,7 @@ pub enum AppTokenCommand {
     /// An organization-bound token answers for its own organization; an
     /// multi-organization token reaches only selected active organizations and
     /// needs --org-context to pick one, or use `authorizations` to list them
-    /// all. Role requires roles.read; tags require memberships.read.
+    /// all. Role requires self.membership.read; tags require self.tags.read.
     /// Undisclosed fields grant no authority. Inactive, mismatched and refresh
     /// tokens return no organization snapshot. No webhook or directory edit is
     /// needed. The backend must support authorization snapshots.
@@ -1468,6 +1753,9 @@ pub enum AppOboCommand {
         /// Actor-bound Application access token. Prompted for when omitted.
         #[arg(long)]
         subject_token: Option<String>,
+        /// User-selected organization for this operation; required when the subject has multiple grants.
+        #[arg(long)]
+        org_context: Option<String>,
         /// Downstream HTTP method; normalized to uppercase.
         #[arg(long)]
         method: String,
@@ -1650,6 +1938,8 @@ pub enum ConfigCommand {
 /// Service commands.
 #[derive(Debug, Subcommand)]
 pub enum SystemCommand {
+    /// Show contract lifecycle states, compatibility, and the idle sunset policy.
+    Contracts,
     /// Show the service's version, and agree an API version.
     Version,
     /// Check crates.io now and install the latest CLI release.
@@ -2473,5 +2763,27 @@ mod tests {
             ])
             .is_err()
         );
+    }
+    #[test]
+    fn application_read_token_is_independent_of_direct_iam_session_commands() {
+        use clap::Parser as _;
+        let parsed = Cli::try_parse_from([
+            "iam",
+            "--org",
+            "customer",
+            "app",
+            "read",
+            "directory",
+            "--limit",
+            "25",
+            "--token",
+            "act_test",
+        ]);
+        assert!(matches!(parsed, Ok(Cli {
+            command: super::Command::App(super::AppCommand::Read(super::AppReadArgs {
+                token: Some(token), command: super::AppReadCommand::Directory { .. }
+            })), ..
+        }) if token == "act_test"));
+        assert!(Cli::try_parse_from(["iam", "api", "contracts"]).is_ok());
     }
 }

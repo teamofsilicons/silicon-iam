@@ -19,63 +19,21 @@ runtime processes and three one-shot operator binaries:
 
 PostgreSQL 16 or newer is the sole authoritative datastore.
 
-## Integration docs and released source
+## First official v1 integration
 
-Start with the [integration documentation index](docs/README.md) for the API,
-Rust client, CLI, testing environments, and release provenance.
+The public documentation is hosted at [docs.iam.teamofsilicons.com](https://docs.iam.teamofsilicons.com/). See the [source index](docs/README.md), [HTTP contract](docs/API_DOCS.md), [Rust client](docs/client/README.md), and [CLI](docs/cli/README.md).
 
-CLI **1.4.1** adds `SILICON_HOME` storage selection and complete offline
-`iam --help`; see the [CLI guide](docs/cli/README.md). It uses client **1.4.0**.
+Applications declare `app_scope` for IAM data and external OBO endpoints separately from `webhook_scope` subscriptions. Critical permissions require review with discussion threads and email notifications. Users approve the effective scope version and choose organizations before IAM hands the application a two-minute, single-use SLT. IAM login credentials and verification codes never leave IAM for an application.
 
-CLI and client **1.4.0** introduced [user-selected organization consent](docs/ORGANIZATION_CONSENT.md).
-Applications initiate login without an organization; the user chooses one or more
-in IAM. Additional selections preserve existing grants. Unselected and future
-memberships remain private. Deploy migrations `0072` and `0073`, runtime grants,
-and the API before adopting these crates or the SolidJS [frontend](frontend/).
-The [release notes](docs/README.md#cli-and-client-140) describe compatibility and
-the required reauthorization of legacy all-organization grants. Historical
-behavior is recorded separately; source pushes alone do not deploy or publish.
+External OBO can cross application-owning organizations while preserving selected user memberships. Batch login and bundles produce individual application tokens. Application testing environments import declared dependencies recursively, isolate credentials and data, and use configurable inactivity retention. `GET /api/v1/contracts` exposes the contract lifecycle; negotiate with `GET /api/version` before versioned calls.
 
-Upgrading an older CLI? Existing Unix IAM homes must be private (`0700`) and
-owned by the current user. See the [one-time permission repair](docs/cli/storage.md#upgrading-an-existing-iam-home)
-before changing any directory permissions.
+## Frontend and documentation surfaces
 
-## HTML surfaces
+The SolidJS console and authentication frontend live in [frontend/](frontend/) and serve `iam.teamofsilicons.com` and `auth.iam.teamofsilicons.com` through their session gateway. Run the backend's complete v1 migrations, testing overlays, and runtime grants together with the frontend. See the [frontend guide](docs/frontend/README.md).
 
-Alongside the JSON contract the API serves three server-rendered surfaces from
-`src/web`. They are deliberately outside `openapi.yaml` — an interface and a
-document are not contract — and `scripts/check-openapi-routes.rb` enforces that
-boundary in CI.
+The static documentation site lives in [docs-site/](docs-site/). It builds the same source manuals into canonical `/api/`, `/client/`, `/cli/`, and `/frontend/` paths at `docs.iam.teamofsilicons.com`. It deploys independently from the authenticated frontend and contains no credentials. Historical fix and QA reports remain repository evidence outside the public manuals.
 
-| Path | What it is |
-| --- | --- |
-| `/docs` | Chooses between the two manuals |
-| `/docs/api/` | The sectioned HTTP contract, authored in `docs/api/*.html` |
-| `/docs/client/` | The sectioned official Rust SDK manual, authored in `docs/client/*.html` |
-| `/openapi.yaml` | The normative contract, at a stable cacheable URL |
-| `/admin` | Platform-administration console: application review, consent policy, SSO entitlement |
-
-The client manual documents this workspace's
-[`silicon-iam-client`](crates/client) crate. It is published beside the HTTP
-manual so a reader finds both contracts at one origin and each can link to the
-other without depending on a separate documentation deployment.
-
-Everything they need is embedded at compile time — markup, stylesheet, script,
-marks and the IBM Plex latin subsets — so a release image makes no third-party
-request and cannot serve documentation that has drifted from its binary. The
-`/admin` console executes no SQL and holds no credential; it is a thin
-same-origin client over `/api/v1/admin/*`, which already requires a
-platform-administrator bearer, a verified-channel step-up token, an
-`Idempotency-Key` and an `If-Match` on every mutation.
-
-The HTML router is merged outside the JSON router's layer stack. Inside it,
-error normalisation would rewrite the documentation's own 404 into the JSON
-envelope and the `no-store` default would make every asset uncacheable.
-
-The browser frontends — `auth.iam.teamofsilicons.com` and
-`iam.teamofsilicons.com` — live in the sibling `silicon-iam-frontend`
-repository.
-
+The backend also embeds HTML manuals under `/docs/api/` and `/docs/client/`, the OpenAPI contract at `/openapi.yaml`, and the platform administration UI at `/admin`. These HTML surfaces are outside the JSON contract; `scripts/check-openapi-routes.rb` checks that boundary. Administration uses the authenticated `/api/v1/admin/*` routes, including their current grants, action-bound step-up, idempotency, and version preconditions.
 
 ## Local start
 

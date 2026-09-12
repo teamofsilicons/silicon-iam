@@ -99,6 +99,8 @@ pub enum SecretKind {
     StepUpAssertion,
     /// Application client secret.
     ApplicationSecret,
+    /// Application webhook signing secret generated for isolated testing.
+    ApplicationWebhookSigningSecret,
     /// Organization Silicon webhook signing secret.
     SiliconWebhookSigningSecret,
 }
@@ -178,6 +180,8 @@ pub enum ProtectedField {
     ProviderCredential,
     /// Browser return URI retained for one `WorkOS` SSO transaction.
     SsoReturnUri,
+    /// Application credential shared only within one isolated testing environment.
+    TestingApplicationSecret,
     /// Application webhook endpoint URL.
     ApplicationWebhookUrl,
     /// Application webhook HMAC signing secret.
@@ -676,6 +680,7 @@ impl ProtectedField {
             Self::IdempotencySecretResponse => b"idempotency-secret-response",
             Self::ProviderCredential => b"provider-credential",
             Self::SsoReturnUri => b"sso-return-uri",
+            Self::TestingApplicationSecret => b"testing-application-secret",
             Self::ApplicationWebhookUrl => b"application-webhook-url",
             Self::ApplicationWebhookSigningSecret => b"application-webhook-signing-secret",
             Self::ApplicationWebhookEventPayload => b"application-webhook-event-payload",
@@ -775,6 +780,7 @@ const fn secret_prefix(kind: SecretKind) -> &'static str {
         SecretKind::StepUpAssertion => "sup_",
         SecretKind::ApplicationSecret => "ask_",
         SecretKind::SiliconWebhookSigningSecret => "swhs_",
+        SecretKind::ApplicationWebhookSigningSecret => "whs_",
     }
 }
 

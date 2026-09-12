@@ -196,6 +196,7 @@ async fn deliver(
     match job.notification_kind.as_str() {
         "invitation" => deliver_invitation(context, job, contact_carbon_id, &destination).await,
         "security_notice" => deliver_security_notice(context, job, &destination).await,
+        "application_scope_review" => deliver_scope_notice(context, job, &destination).await,
         _ => Err(DeliveryError::Rejected),
     }
 }
@@ -266,6 +267,41 @@ async fn deliver_invitation(
         }
         _ => Err(DeliveryError::Rejected),
     }
+}
+
+async fn deliver_scope_notice(
+    context: &WorkerContext,
+    job: &ClaimedNotification,
+    destination: &SecretString,
+) -> Result<DeliveryReceipt, DeliveryError> {
+    let (app_id, request_id, message, status) =
+        sqlx::query_as::<_, (String, Uuid, String, String)>(
+            "SELECT * FROM iam_private.get_worker_application_scope_notice($1,$2)",
+        )
+        .bind(job.id)
+        .bind(&context.instance_id)
+        .fetch_optional(&context.pool)
+        .await
+        .map_err(|_| DeliveryError::Unavailable)?
+        .ok_or(DeliveryError::Rejected)?;
+    let mut reply = context.settings.auth_base_url.clone();
+    reply.set_path("/applications");
+    reply.set_query(Some(&format!("scope_request={request_id}")));
+    reply.set_fragment(None);
+    let subject = format!("{app_id}: critical permission review ({status})");
+    let body = format!(
+        "{app_id} is requesting approval for critical permissions.\n\n{message}\n\nView the request and reply: {reply}"
+    );
+    ensure_current_lease(context, job.id).await?;
+    context
+        .notifications
+        .email
+        .send_security_notice(SecurityNotice {
+            recipient: destination,
+            subject: &subject,
+            body: &body,
+        })
+        .await
 }
 
 async fn deliver_security_notice(

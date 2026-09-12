@@ -83,9 +83,9 @@ pub struct SecurityNotice<'a> {
     /// Verified destination contact.
     pub recipient: &'a SecretString,
     /// Short allowlisted subject used by email transports.
-    pub subject: &'static str,
+    pub subject: &'a str,
     /// Short allowlisted plain-text message.
-    pub body: &'static str,
+    pub body: &'a str,
 }
 
 /// Transactional email provider boundary.

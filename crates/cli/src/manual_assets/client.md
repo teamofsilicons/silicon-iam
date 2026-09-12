@@ -1,5 +1,9 @@
 # silicon-iam-client
 
+Batch login authenticates once:
+select organizations per app, and receive up to 100 independent SLTs. See the
+[batch login guide](../BATCH_LOGIN.md) for browser, API, Rust and CLI examples.
+
 A Rust client for the [Silicon IAM](https://backend.iam.teamofsilicons.com) API:
 identity, organization governance, application login, and delegated access.
 
@@ -10,11 +14,11 @@ provider callbacks, and browser navigations remain outside this crate.
 
 ```toml
 [dependencies]
-silicon-iam-client = "1.4.0"
+silicon-iam-client = "1.5.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-Release `1.4.0` speaks HTTP API major `v1` and requires Rust 1.98 or newer.
+The client speaks HTTP API major `v1` and requires Rust 1.98 or newer.
 The crate SemVer and HTTP API major are separate: upgrading the crate within
 the 1.x line does not select a different wire major. `Client::new` and
 `ClientBuilder::build` perform no network handshake; call
@@ -25,26 +29,14 @@ the required `Vary` header. A `406` becomes `Error::ApiVersionUnsupported`;
 an inconsistent success becomes `Error::Decode`. Every request advertises
 `v1`.
 
-Client 1.4.0 comes from
-[`v1.4.0`](https://github.com/teamofsilicons/silicon-iam/tree/v1.4.0/crates/client);
-its [version-pinned manual](https://github.com/teamofsilicons/silicon-iam/blob/v1.4.0/docs/client/README.md)
-describes that release. Later changes on `main` are not part of the published
-package until separately released. The dependency requirement above permits
-compatible newer releases; check your application's `Cargo.lock` for the exact
-version it builds, especially after dependency maintenance.
+This guide describes the current official API contract. Use the matching client, CLI,
+and backend release together. The complete hosted manual is at
+[docs.iam.teamofsilicons.com/client](https://docs.iam.teamofsilicons.com/client).
 
-The 1.4.0 client adds `auth().login_organizations(...)` and
-`auth().short_lived_token_for_organizations(...)` for trusted direct-IAM consent.
-Application integrations still accept only SLTs; they must not hold a user's IAM
-credentials or choose their organizations. It retains `oauth().authorizations(access_token)`, which lists one
-authorization snapshot per organization an access token currently reaches: one
-for an organization-bound token, one per selected active membership for a multi-organization login, and an empty list when no selected membership remains active.
-`oauth().authorization(...)` is unchanged and still answers for a single
-organization. Deploy the matching backend, including migrations `0072` and `0073`, before
-using the new method; against an older API it returns `Error::Decode` rather
-than guessing. It retains the 1.2.1 `applications().approve_webhook(...)` method
-and the `application.webhook.approve` step-up action. The accompanying release
-notes are the [1.4.0 entry](https://github.com/teamofsilicons/silicon-iam/blob/v1.4.0/docs/README.md#cli-and-client-140).
+Applications declare IAM and external endpoint permissions separately from webhook event
+subscriptions. Direct IAM login reviews those permissions before organization selection.
+The SDK exposes scope review discussions, application bundles, cross-organization OBO,
+and application-initiated test environments with transitive dependency provisioning.
 
 The service URL must use HTTPS, except for literal `localhost`, `127.0.0.1`,
 or `::1` during local development. The builder rejects missing hosts, embedded
@@ -63,11 +55,6 @@ live.
 If you want the stateful version — a token store, automatic refresh, a
 configured default service — that is the `silicon-iam-cli` crate, which is
 built on nothing but this one.
-
-The 1.2.0 authorization-snapshot and OBO verification contracts require the
-matching backend, base migration `0067`, testing overlay `9003` and runtime
-grants. Deploy and verify that backend before publishing/adopting these
-packages. Publishing the client does not deploy the service.
 
 ## Automatic crate updates
 
@@ -240,15 +227,16 @@ Application session. Renew an existing session separately with
 `OAuth::refresh(app_id, refresh_token, mutation)`.
 
 For a direct IAM Carbon/Silicon session, call `auth().login_organizations(app_id)`
-and present its choices to the user. Then call
-`auth().short_lived_token_for_organizations(app_id, &selected_org_ids, &Mutation::new())`.
-The selected set is additive on the same parent login. `short_lived_token`
-reuses only existing grants; it does not mean “all organizations”.
-The compatibility single-organization helper now adds that explicit selection.
+and display its `scopes` before selecting organizations. After the user approves, call
+`auth().short_lived_token_for_organizations(app_id, &selected_org_ids, choices.scope_version, &approved_scopes, &Mutation::new())`.
+Supply the exact reviewed flat scope strings, including `obo:{app_id}:{endpoint_id}` external
+permissions. The selected organization set is additive on the same parent login. For a fully
+specified request, `short_lived_token(&ShortLivedTokenRequest, mutation)` also supports a callback.
+An application change invalidates stale consent; fetch a new view and obtain consent again.
 Applications never call these methods with their own credentials; initiate
 IAM browser login and receive an SLT instead.
 
-See [organization consent](../ORGANIZATION_CONSENT.md) for scope, CLI, and upgrade details.
+See [organization consent](../ORGANIZATION_CONSENT.md) for scope consent and CLI details.
 
 For OBO, hash the exact downstream bytes with
 `api::obo::body_sha256`, build one `OboExchangeRequest`, and pass that request,
@@ -282,7 +270,7 @@ refresh family and its related access authority. It does **not** revoke the
 parent IAM session, other devices, or unrelated Applications. Recover an
 uncertain request with
 `Mutation::with_key(IdempotencyKey::parse(saved_key)?)` and the exact same
-input. The 1.2.1 client does not expose the `Idempotency-Replayed` response
+input. The client does not expose the `Idempotency-Replayed` response
 header.
 
 Tokens are opaque. Ask for their current state and optional exact organization
@@ -351,7 +339,7 @@ println!("{}", billing.base_url);
 Client and webhook signing credentials rotate independently. Both operations
 take the current Application `version`, an idempotency key, and a
 verified-channel step-up assertion. The Application supplies its own webhook
-successor; IAM generates only client secrets:
+successor during explicit webhook rotation:
 
 ```rust
 # use silicon_iam_client::{Client, Mutation, models};
@@ -378,11 +366,12 @@ The webhook rotation assertion uses action
 `application.webhook_secret.rotate`; client-secret rotation uses
 `application.client_secret.rotate`. A webhook URL change is a separate
 operation and reuses a test-owned or production signing secret unless its
-request explicitly supplies a new one.
+request explicitly supplies a new one. A testing URL replacement installs the supplied
+secret or generates a fresh test-only secret and returns it as `webhook_signing_secret`.
 
 ### Approving a pending webhook
 
-Since 1.2.1, `applications().approve_webhook(app_id, version, &mutation)`
+`applications().approve_webhook(app_id, version, &mutation)`
 activates a verified Application's pending first or replacement endpoint.
 The authenticated Carbon must currently be the owning organization's owner
 or admin, or an IAM platform administrator with `applications.review`.
@@ -394,9 +383,7 @@ Read `applications().webhook(app_id)` to obtain `application_id`, the internal
 UUID available to both organization managers and platform webhook reviewers.
 Obtain verified-channel step-up for
 `models::StepUpAction::ApplicationWebhookApprove` with that UUID as the
-resource. The optional field supports older idempotency responses; fresh
-reads on the matching backend include it. Use the assertion and current
-aggregate version:
+resource. Use the assertion and current aggregate version:
 
 ```rust
 # use silicon_iam_client::{Client, Mutation};
@@ -616,20 +603,18 @@ if let Some(api) = error.api() {
 ## Testing against a real service
 
 The authoritative integration proof is the manual CLI walkthrough in the
-[CLI guide](https://github.com/teamofsilicons/silicon-iam/tree/main/docs/cli#end-to-end-application-proof-in-a-test-environment).
+[CLI guide](https://docs.iam.teamofsilicons.com/cli#end-to-end-application-proof-in-a-test-environment).
 Run it against an isolated testing environment and inspect each result. At a
 minimum, prove:
 
 - Carbon signup and login use the fixed test-plane code, while an Application
-  receives only the resulting SLT; prove both an ordinary unscoped SLT and an
-  organization-bound SLT minted with `short_lived_token_in_organization`;
+  receives only the resulting SLT; prove explicit scope consent and both single-organization
+  and multiple-organization selections;
 - token exchange, refresh, current introspection, refresh-family revocation,
   and post-revocation `active: false` all agree;
-- an OBO proof made from the organization-bound access token verifies exactly
-  once for the registered method, path and exact body, and fails for every
-  mismatched binding; the unscoped token issues a proof in the calling
-  Application's own organization and is refused for any subject who is not an
-  active member there;
+- an OBO proof verifies exactly once for the registered method, path and exact body,
+  including audiences in other organizations; missing declaration, missing critical approval,
+  unconsented scopes, wrong subject audience, and unselected organizations are refused;
 - valid webhook bytes verify, while a changed byte, stale timestamp, wrong
   secret version, duplicate security header, or wrong environment key fails;
 - production credentials fail in the test plane and test credentials fail in
@@ -665,3 +650,75 @@ reviewable diff.
 Licensed under the Apache License, Version 2.0. See `LICENSE`.
 
 Copyright 2026 Team of Silicons.
+
+## Scope declarations and review discussions
+
+`ApplicationCreate.app_scope` and `ApplicationPatch.app_scope` use
+`ApplicationScope { iam, external }`. Omitted create scopes default to
+`self.identity.read` and `self.profile.read`. `webhook_scope` controls event categories
+(`full`, `membership`, `updates`, `trust`) independently. Read `effective_app_scope` for the
+currently approved configuration and `app_scope` for the requested configuration.
+
+Use `application_scopes().catalog(None)` for the IAM catalog or pass an audience app ID for
+its exposed endpoint scopes. Every OBO endpoint declares `critical: true` or `false`.
+Use `applications().update` to remove permissions or change noncritical configuration;
+submit `application_scopes().request(app_id, version, &ApplicationScopeRequestCreate, mutation)`
+when requesting critical approval. Supply a detailed initial message. IAM creates one review
+per target authority. `requests(status)` lists discussions; `get(request_id)` returns the
+messages and whether you can decide. `reply` and `decide` both require the current request
+version and a mutation key. A denial requires a nonempty `reason`.
+
+The initial critical review blocks first use. An upgrade keeps the previous effective scopes
+working until the requested additions are approved. Removing scopes does not need approval.
+No token receives an unapproved scope, and existing user consent never silently expands.
+
+## Application bundles
+
+`bundles().list/create/get/update/delete` manage named groups of applications in one
+organization. Bundle creation must be available for that organization; unavailable operations
+return a permission error. Each member remains independently registered, with its own secret.
+`auth().bundle_login_organizations` returns the bundle and member consent views.
+`auth().bundle_short_lived_tokens` accepts the complete list of approved member selections and
+returns one independent SLT per app atomically. Each target exchanges its own SLT normally.
+
+## Application testing layer
+
+Authenticate with the production application's `Credential::application`, then call
+`applications().create_testing_environment(&ApplicationTestingEnvironmentCreate, mutation)`.
+Provide `name`, optional `description`, and optionally `iam_test_key`. An existing valid key
+reuses that exact IAM test environment; an invalid supplied key fails; omitting it creates a
+new environment. IAM imports the app and all transitive declared external dependencies into
+that environment, including cyclic/shared dependency graphs without duplicating apps.
+Only the calling application's test secret is returned; dependency secrets remain inside IAM.
+`applications().testing_environments(&paging)` lists active links for the app and organization.
+
+Use the returned `iam_test_key` with `Client::with_environment` and the returned test
+`app_secret` for subsequent application API calls. The same production routes operate on
+isolated data, and verification uses `000000`. Production and test credentials never mix.
+For an application receiving a request, the presence of **`app_secret` in the request itself
+indicates test mode**: validate it through IAM and route to the matching IAM environment's
+isolated application data. Do not select a test database from an unvalidated user flag.
+All transitive app calls remain in that IAM environment. Inactivity retention defaults to
+30 days and is configurable per app through `testing_idle_days`.
+
+Test webhooks put event fields under `test.data` and `test.metadata` and include the IAM
+`testing_key`; production events keep `data` and `metadata` at the top level. Verify the exact
+signed outer body, validate the embedded key using `verify_testing_environment`, and avoid
+logging it. An imported production webhook signing secret is inherited but never revealed;
+replace the test destination to install an independent test secret.
+
+## Scoped IAM reads and API contracts
+
+An application's user access token carries only approved scopes. Organization lists include
+only explicitly selected active memberships. Directory lists require the corresponding
+`directory.carbons.read` or `directory.silicons.read`; field scopes independently control
+profiles, roles, job roles, tags, hierarchy, capabilities, and accessible Silicons.
+Self permissions never reveal those fields for other members. Email and phone are self-only.
+Absent fields mean undisclosed and must not be replaced with cached wider permissions.
+
+Rust integrations use `client.application_reads().me/organizations/organization/members/member/member_authorization/silicon/tags`
+with `Credential::bearer(application_access_token)`. These methods preserve scope-dependent
+JSON field omission. Direct IAM management methods retain their full typed response shapes.
+Use `system().contracts()` or `iam system contracts` (alias `iam api contracts`) to inspect
+contract versions and compatibility. Breaking changes receive a new major API version;
+a deprecated version can sunset after seven days without requests.

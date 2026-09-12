@@ -1,5 +1,34 @@
 # Manual QA
 
+## Batch login — 2026-09-09
+
+Verified against a disposable PostgreSQL 16 container on loopback port 65130,
+restricted API runtime role on port 58141, and the built frontend on port 58142.
+Both ordinary and testing databases received the existing migrations and grants.
+Only synthetic identities, organizations and apps were used.
+
+- One browser OTP login preserved two app IDs and the callback state.
+- Consent offered separate organization checkboxes per app and required a
+  selection for every app before enabling approval.
+- Selecting Work for one app and Personal for the other returned two independent
+  SLTs in the agreed JSON `#slts=` fragment; `state` remained in the query.
+- Reloading consent showed the separate previous grants as already authorized.
+- Without a callback, IAM displayed individually labelled SLTs and status links.
+- Visual inspection at the in-app browser panel width confirmed horizontal
+  checkbox/label alignment after correcting the inherited column layout.
+- A real 100-app atomic issuance returned 100 distinct SLTs in approximately
+  1.25 seconds on this local fixture; this is not a production performance guarantee.
+- The live client regression passed in ordinary and isolated testing planes:
+  failed batches rolled back all new grants, same-key retries returned identical
+  tokens/deadlines, cross-app exchange failed without consuming the token, each
+  own-app exchange succeeded once, and app bearers could not enlarge consent.
+- Existing single-app live client protocol passed after the shared-code refactor.
+- CLI `batch-login` with two app IDs and explicit organization consent returned
+  two independent SLTs in JSON; offline batch help passed.
+- Five frontend regression tests covered bounds, invalid URLs, callback encoding,
+  redirect preservation and CSRF rejection; TypeScript and production build passed.
+
+
 ## Organization consent — 2026-09-08
 
 See the [organization-consent verification record](../ORGANIZATION_CONSENT.md#local-manual-verification--2026-09-08)
@@ -69,3 +98,24 @@ This is **not** exhaustive command/API parity or production certification. WorkO
 OBO proof exchange/verification and application SLT exchange belong to application servers and the IAM client, not this human browser console. The browser run verifies endpoint registration and handoff, not an external application’s authorization implementation.
 
 The local QA API/database and built preview (`http://127.0.0.1:4312`) are left available for continued preview work. The temporary callback receiver on 4321 was stopped after verification. The database container is separate from existing Briefcase containers. Do not use broad Docker cleanup commands; stopping this named container is recoverable, while deleting its storage is not.
+
+## Declared scopes and bundles — 2026-09-12
+
+The production frontend build and seven Node regression tests passed. The
+OpenAPI form snapshot was regenerated after the scope, bundle, and application
+testing contracts changed.
+
+A loopback, read-only UI fixture verified the browser presentation independently
+of backend authorization: app confirmation led to a permission screen displaying
+non-critical IAM identity, critical IAM directory access, and a critical external
+endpoint with its provider. Organization selection appeared only after that
+screen, and authorization stayed disabled without a selection. A bundle showed
+one public bundle identity, a deduplicated permission list, and one organization
+picker. A backend `consent_required: false` response led directly from app
+confirmation to organization selection. No production identity or grant was used.
+
+The standalone documentation site built 36 content pages plus a 404 page. Its
+link/asset checker passed, and the generated home page was visually inspected
+in the in-app browser. Canonical hosting uses `docs.iam.teamofsilicons.com`.
+These checks do not claim a deployment, DNS change, live email delivery, or an
+end-to-end external application integration.

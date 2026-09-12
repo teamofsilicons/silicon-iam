@@ -1,5 +1,7 @@
 #![allow(clippy::too_many_lines)]
 
+use super::application_reads::{self, ReadScopes};
+
 use std::{borrow::Cow, collections::BTreeMap};
 
 use axum::{
@@ -23,7 +25,7 @@ use crate::{
 use super::{
     model::{
         CapabilitiesReplace, MemberQuery, MembershipAuthorizationResponse,
-        MembershipDirectoryPatch, MembershipPage, MembershipResponse, PageInfo, RemovalQuery,
+        MembershipDirectoryPatch, MembershipResponse, PageInfo, RemovalQuery,
     },
     support::{self, Claim, MutationEvent},
     validation,
@@ -55,15 +57,32 @@ pub(super) async fn list_members(
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page_parts(query.cursor.as_deref(), query.limit)?;
     validate_member_filters(&query)?;
+    let scopes = ReadScopes::for_actor(&authenticated);
+    let actor_filter = scopes.actor_filter(query.principal_type.as_deref())?;
+    if query.tag_id.is_some() {
+        scopes.require("directory.tags.read")?;
+    }
+    if query.status.is_some() {
+        scopes.require("directory.memberships.read")?;
+    }
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let mut items = list_members_query(
         &mut scope.transaction,
         scope.access.organization_id,
         cursor,
         limit + 1,
-        query.principal_type.as_deref(),
+        actor_filter,
         query.tag_id,
         query.status.as_deref(),
+    )
+    .await?;
+    let page = take_page(&mut items, limit)?;
+    let items = application_reads::enrich_members(
+        &mut scope.transaction,
+        &authenticated,
+        scope.access.organization_id,
+        &items,
+        false,
     )
     .await?;
     scope
@@ -71,8 +90,7 @@ pub(super) async fn list_members(
         .commit()
         .await
         .map_err(support::database)?;
-    let page = take_page(&mut items, limit)?;
-    support::json(StatusCode::OK, &MembershipPage { items, page }, None)
+    support::json(StatusCode::OK, &json!({"items":items,"page":page}), None)
 }
 
 pub(super) async fn get_member(
@@ -88,12 +106,28 @@ pub(super) async fn get_member(
         membership_id,
     )
     .await?;
+    let scopes = ReadScopes::for_actor(&authenticated);
+    if membership_id != scope.access.membership_id {
+        scopes.require_actor(&member.principal.actor_type)?;
+    }
+    let own_membership_id = scope.access.membership_id;
+    let enriched = application_reads::enrich_members(
+        &mut scope.transaction,
+        &authenticated,
+        scope.access.organization_id,
+        std::slice::from_ref(&member),
+        membership_id == own_membership_id,
+    )
+    .await?;
+    let projected = enriched.into_iter().next().ok_or(AppError::Internal {
+        category: "member_projection_empty",
+    })?;
     scope
         .transaction
         .commit()
         .await
         .map_err(support::database)?;
-    support::json(StatusCode::OK, &member, Some(member.version))
+    support::json(StatusCode::OK, &projected, Some(member.version))
 }
 
 pub(super) async fn update_member_directory(
@@ -538,6 +572,13 @@ pub(super) async fn get_member_authorization(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
+    let scopes = ReadScopes::for_actor(&authenticated);
+    let own_membership_id = scope.access.membership_id;
+    if membership_id == own_membership_id {
+        scopes.require_any(&["self.membership.read", "self.capabilities.read"])?;
+    } else {
+        scopes.require_any(&["directory.memberships.read", "directory.capabilities.read"])?;
+    }
     let authorization = fetch_authorization(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -549,7 +590,13 @@ pub(super) async fn get_member_authorization(
         .commit()
         .await
         .map_err(support::database)?;
-    support::json(StatusCode::OK, &authorization, Some(authorization.version))
+    application_reads::member_json(
+        &authenticated,
+        &authorization,
+        membership_id,
+        own_membership_id,
+        Some(authorization.version),
+    )
 }
 
 pub(super) async fn promote_admin(

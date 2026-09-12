@@ -85,7 +85,7 @@
   Access and refresh tokens are opaque 256-bit random values. There is no signing-key discovery
   surface and nothing to parse: when an application needs to know whether a token is still good
   <em>right now</em>, it calls
-  <a href="/docs/api/applications">introspection</a>.
+  <a href="https://docs.iam.teamofsilicons.com/api/applications">introspection</a>.
 </p>
 
 <h2>Carbon login</h2>
@@ -186,16 +186,24 @@
 
 <p>
   IAM recognizes an existing session and shows Application validation followed by
-  its organization picker. The user must choose at least one organization. Apps
+  the current permission list with descriptions and critical labels, then its organization picker. Explicit permission consent precedes organization selection when <code>consent_required</code> is true. The user must choose at least one organization. Apps
   cannot supply <code>org_id</code>. GET navigation never mints a token; the trusted
-  IAM interface submits explicit <code>org_ids</code> with a direct IAM bearer.
+  IAM interface submits explicit <code>org_ids</code>, the complete <code>approved_scopes</code>, and the exact <code>scope_version</code> returned by the choices API, using a direct IAM bearer. A scope change requires fresh consent.
 </p>
 
 <div class="banner banner-info">
   <div>
-    <strong>An application never sees a credential.</strong>
+    <strong>An application never sees IAM login credentials.</strong>
     Signing in to an application never asks anyone for a password, a verification code, or any
     other authentication secret on that application's behalf. The only thing an application
     receives is a short-lived token.
   </div>
 </div>
+
+<h2>Application scopes and credentials</h2>
+<p>A registration's <code>app_scope</code> declares permitted IAM data and external endpoints. Identity and profile are defaults; critical permissions require reviewer approval. The application receives only the scope intersection currently approved and consented by the user for selected active memberships. <code>webhook_scope</code> controls event subscriptions independently. A direct IAM bearer and an application OAuth bearer are distinct credentials with different authority.</p>
+<p>IAM Carbon and Silicon sessions can read login choices and submit explicit consent. Application secrets and app-issued bearers cannot create or expand that consent. The only login handoff to an app is an app-bound, two-minute single-use SLT, exchanged on that app's backend with its own secret. Read <a href="https://docs.iam.teamofsilicons.com/api/applications/">Applications</a> for the complete request shapes.</p>
+<h2>Batch and bundle login</h2>
+<p><code>/login?app_ids=tos%3Ebriefcase,tos%3Edm</code> authenticates once for 1–100 distinct applications. IAM collects each app's permissions and organization choices, then creates all SLTs atomically. Direct IAM clients use <code>GET /api/v1/app-auth/batch/organizations?app_ids=...</code> followed by <code>POST /api/v1/app-auth/batch/short-lived-tokens</code>. Each element of <code>applications</code> contains <code>app_id</code>, <code>org_ids</code>, <code>approved_scopes</code>, and <code>scope_version</code>.</p>
+<p><code>/login?bundle_id=tos%3Esuite</code> displays one bundle identity with combined member permissions and a shared organization picker. The bundle routes validate the current exact member set. A bundle has no client secret, and every SLT remains bound to an individual application.</p>
+<p>Both callbacks receive <code>#slts=</code> with a URL-encoded JSON array containing <code>app_id</code>, <code>slt</code>, <code>expires_in</code>, <code>expires_at</code>, and <code>request_id</code>. Read the fragment in browser JavaScript, verify login state and expected app IDs, clear it, and send each token to its own application server. See <a href="https://docs.iam.teamofsilicons.com/batch-login/">Batch login</a> and <a href="https://docs.iam.teamofsilicons.com/bundles/">Bundles</a>.</p>

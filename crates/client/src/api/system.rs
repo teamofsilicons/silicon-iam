@@ -8,6 +8,14 @@ use crate::{Client, Result, models};
 pub struct System<'a>(pub(super) &'a Client);
 
 impl System<'_> {
+    /// Lists contract lifecycle states, compatibility metadata, and retirement policy.
+    ///
+    /// # Errors
+    /// Fails when the service is unavailable or returns an invalid response.
+    pub async fn contracts(&self) -> Result<serde_json::Value> {
+        self.0.get(&["contracts"]).await
+    }
+
     /// The service's build and API version.
     ///
     /// # Errors

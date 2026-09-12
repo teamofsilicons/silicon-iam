@@ -40,9 +40,14 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
 </div>
 
 <p>
-  <code>/api/v1/version</code> remains available as a version-specific diagnostic. It is not the
+  <code>/api/v1/version</code> is a version-specific diagnostic. It is not the
   handshake, and calling it instead skips every check above.
 </p>
+
+<h2>Contract catalog and lifecycle</h2>
+<p>The first official API contract is <code>v1</code>. <code>GET /api/v1/contracts</code> returns <code>items</code> with each major's <code>version</code>, <code>status</code>, <code>released_at</code>, <code>deprecated_at</code>, <code>last_requested_at</code>, <code>sunset_at</code>, and compatibility classification, together with the registry's lifecycle <code>policy</code>. API majors are independent of SDK and CLI package versions.</p>
+<p>Breaking changes receive a new major version. A contract can be <code>current</code>, <code>deprecated</code>, or <code>sunset</code>. Deprecation keeps its existing behavior available while clients move to a supported major. Only deprecated contracts can sunset automatically, and only after seven complete days without requests since the later of deprecation or last activity. Activity writes are coalesced within a minute, so retirement includes an additional conservative minute. Current v1 never sunsets solely because it is idle.</p>
+<p>Versioned responses identify the path's contract in <code>Silicon-IAM-API-Version</code>. Deprecated responses also carry <code>Deprecation: true</code>. An unknown major returns <code>404 unknown_api_version</code>; a retired major returns <code>410 api_version_sunset</code>. If a request supplies <code>Silicon-IAM-Supported-API-Versions</code>, the path's major must be among its supported versions, otherwise IAM returns <code>406 api_version_not_supported</code>. Negotiate and verify a supported contract before proceeding.</p>
 
 <h2>Idempotency</h2>
 
@@ -89,7 +94,7 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
 <h2>JSON Merge Patch</h2>
 
 <p>
-  Every <code>PATCH</code> endpoint consumes <code>application/merge-patch+json</code>. For a nullable
+  Use each endpoint’s declared content type. JSON Merge Patch routes consume <code>application/merge-patch+json</code>. For a nullable
   property, three wire states have three different meanings:
 </p>
 
@@ -145,9 +150,7 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
 }</code></pre>
 
 <p>
-  A cursor is bound to the caller, the filters, the sort order and the tenant context. It is
-  <strong>not</strong> an offset, and clients must not interpret, construct or reuse one across
-  a different filter set. There is no total count, and no way to jump to page seven — an
+  Treat cursors as opaque continuation values and reuse them only with the same caller, filters, sort order, and tenant context. Clients must not interpret or construct them. There is no total count, and no way to jump to page seven — an
   interface that promises either is promising something the API cannot deliver.
 </p>
 
@@ -178,7 +181,7 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
 
 <p>
   Status guidance and stable no-op conflict codes are in the
-  <a href="/docs/api/errors">error index</a>.
+  <a href="https://docs.iam.teamofsilicons.com/api/errors">error index</a>.
 </p>
 
 <h2>Rate limits</h2>
@@ -206,7 +209,9 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
 <table>
   <thead><tr><th>Header</th><th>Direction</th><th>Meaning</th></tr></thead>
   <tbody>
-    <tr><td><code>Idempotency-Key</code></td><td>request</td><td>Required on every external mutation</td></tr>
+    <tr><td><code>Idempotency-Key</code></td><td>request</td><td>Required on external mutations except single-use OBO verification</td></tr>
+    <tr><td><code>X-Testing-Environment-Key</code></td><td>request</td><td>Selects an isolated testing environment; normal route credentials still apply</td></tr>
+    <tr><td><code>Silicon-IAM-Supported-API-Versions</code></td><td>request</td><td>Implemented API majors for explicit negotiation</td></tr>
     <tr><td><code>If-Match</code></td><td>request</td><td>Strong version precondition, quoted</td></tr>
     <tr><td><code>X-Step-Up-Token</code></td><td>request</td><td>Action-bound reauthentication</td></tr>
     <tr><td><code>X-Org-ID</code></td><td>request</td><td>Introspection only; can never widen authority</td></tr>
@@ -217,7 +222,5 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
 </table>
 
 <p>
-  <code>X-Org-ID</code> must agree with the credential and the grant. OBO does not accept it at
-  all: IAM derives the organization from the authenticated applications and refuses
-  cross-organization use.
+  <code>X-Org-ID</code> must agree with the credential and the existing grant. OBO does not accept this header: its exchange body uses optional <code>org_id</code> to select an already authorized user membership. OBO may cross application-owning organizations. When several user memberships are available, the caller must select one explicitly.
 </p>

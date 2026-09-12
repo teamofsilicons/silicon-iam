@@ -272,6 +272,9 @@ jobs:
             --locked \
             the_client_speaks_the_contract_end_to_end \
             -- --ignored --exact --test-threads=1
+          cargo test -p silicon-iam-client --features cli-session --test live --locked \
+            batch_login_is_atomic_and_application_bound \
+            -- --ignored --exact --test-threads=1
           kill -TERM "${api_pid}"
           wait "${api_pid}"
           trap - EXIT
