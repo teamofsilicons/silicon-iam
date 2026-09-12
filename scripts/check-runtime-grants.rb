@@ -48,7 +48,6 @@ CRITICAL_DENIED_TABLES = Set.new(%w[
   application_bundle_members
   application_testing_environments
   testing_application_imports
-  contract_versions
   oauth_scope_catalog
   contact_blind_indexes
   cryptographic_key_versions

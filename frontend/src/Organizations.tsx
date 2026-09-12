@@ -483,6 +483,8 @@ function ResourceList(props: {
     row.name ||
     row.display_name ||
     row.principal?.public_id ||
+    row.target_carbon?.carbon_id ||
+    row.masked_delivery_address ||
     row.email ||
     row.carbon_id ||
     (row.kind && label(row.kind)) ||
@@ -550,7 +552,7 @@ function ResourceList(props: {
                       : undefined,
                   description:
                     props.kind === "invitations"
-                      ? "Invite an existing Carbon using either email or Carbon ID. The invitee joins by verifying the invited email. Supply organization membership UUIDs for Silicon assignments."
+                      ? "Invite anyone by email, including people who have not signed up yet, or use an existing Carbon ID. The invitee creates an account if needed and joins by verifying the invited email. Supply organization membership UUIDs for Silicon assignments."
                       : props.kind === "testing"
                         ? "This creates a separate empty testing environment. Save its key securely; it grants broad control over that environment."
                         : undefined,

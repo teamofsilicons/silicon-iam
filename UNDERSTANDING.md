@@ -78,6 +78,8 @@ For when an org_admin is created by default they have all the rights except the 
 The org admins should be able to invite carbon's into the organisation, while inviting a carbon it would need to define:
 `carbon_id/email` - any of the given one's can be used to identify the user. There should also be endpoints to fetch a carbon_id via their email or phone number itself for the registered carbons. For the carbon_id/email invited into the org, mail to the email adress of the carbon with all the required info to join the organisation. And the link to `{frontend_url}/join/{org_id}`. It isn't possible to invite an carbon_id that doesen't exist yet. For the carbon_id invited mail on the registered email adress, say if it's invited via email so the entered email would get the request. 
 
+Email invitations must also work before the recipient has a Carbon account. Keep the invited email encrypted and the invitation pending for 48 hours. The recipient signs up or signs in and verifies that same email before the invitation is bound to their Carbon account and accepted. Creating an invitation must not create an account or grant membership.
+
 There should also be an search carbon endpoint which shows me via fuzzy search the carbon_id i might likely be looking for based on our system. So say i wrote `sak` and out of all the carbon_id's you suggest `saket, sakamm, saket2103`, etc. Show upwards to 10 suggestions, the range of suggestions can be 0 to 10 inclusive of the limits.  
 
 `role` - what's the role of this carbon in the organisation

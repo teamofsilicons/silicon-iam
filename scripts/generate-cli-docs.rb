@@ -15,6 +15,7 @@ MANIFEST = "crates/cli/src/manual_data.rs"
 ASSETS = "crates/cli/src/manual_assets"
 
 CATALOG = [
+  ["email-invitations", "Email invitations before signup", "docs/EMAIL_INVITATIONS.md", []],
   ["overview", "Integration documentation index", "docs/README.md", %w[index]],
   ["batch-login", "Batch Application login and JSON fragment callbacks", "docs/BATCH_LOGIN.md", %w[batch]],
   ["bundles", "Application bundles and individual token handoffs", "docs/BUNDLES.md", %w[bundle]],

@@ -20,4 +20,6 @@ BEGIN
  END IF;
  END LOOP;
 END $new_application_tables$;
+-- This includes the shared iam_private.contract_versions catalogue. Reconcile
+-- grants as well as helper ownership on both fresh and already-scoped databases.
 SELECT iam_private.reconcile_testing_environment_security();

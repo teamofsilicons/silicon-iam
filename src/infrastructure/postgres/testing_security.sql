@@ -12,7 +12,7 @@ WITH definer AS (
     JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = entry.relnamespace
     WHERE namespace.nspname = 'iam' AND entry.relkind IN ('r', 'p')
       AND entry.relname <> ALL (ARRAY[
-          'contract_versions', 'cryptographic_key_versions', 'oauth_scope_catalog',
+          'cryptographic_key_versions', 'oauth_scope_catalog',
           'organization_capability_catalog', 'platform_capability_catalog',
           'platform_role_capabilities', 'platform_role_catalog',
           'runtime_key_activations'

@@ -284,7 +284,6 @@ DECLARE
         'webhook_delivery_attempts',
         'application_scope_messages',
         'application_bundle_members',
-        'contract_versions',
         'oauth_scope_catalog'
     ];
 BEGIN
@@ -658,6 +657,7 @@ DECLARE
         'get_worker_application_webhook_event_projection',
         'get_worker_application_webhook_material',
         'get_worker_invitation_context',
+        'get_worker_email_invitation',
         'get_worker_notification_contact',
         'get_worker_security_notice_contact',
         'get_worker_silicon_hook_identity',
@@ -790,6 +790,7 @@ DECLARE
         'get_worker_application_webhook_material',
         'get_worker_application_webhook_event_projection',
         'get_worker_invitation_context',
+        'get_worker_email_invitation',
         'get_worker_notification_contact',
         'get_worker_security_notice_contact',
         'get_worker_silicon_webhook_material',

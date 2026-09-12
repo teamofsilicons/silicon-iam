@@ -49,6 +49,18 @@ Verified apps can discover another verified app's `base_url` and published OBO e
 
 Basic-authenticated introspection checks opaque application tokens online and returns scope-filtered authorization snapshots for selected organizations. Applications can bootstrap their cache without waiting for a directory event. Webhooks deliver authorized before/after changes at least once, filtered by effective scopes, user consent, and event subscriptions. Invitation, governance, and tag-definition events require their exact organization permissions. Own-profile access covers display name, photo, description, and timezone; own-trust access covers only effective trust from the user’s perspective. Raw SSO and Silicon credential/webhook management configuration are excluded from application deliveries. Silicon subscriptions retain their separate event vocabulary. Verify raw-body signatures, deduplicate event IDs, and apply resource versions in order. [Webhooks guide](api/webhooks.html).
 
+## Email invitations before signup
+
+An organization can invite an email address before its recipient has a Carbon account.
+Creation stores the invitation without creating an account or granting membership. The
+recipient follows `/join/{org_id}`, signs up or signs in, then verifies that exact invited
+email before accepting. IAM binds the invitation only to the current active Carbon with
+that verified contact. Invitations last 48 hours and may be revoked before signup.
+
+`target_carbon` is absent until the invitation is bound; clients can display
+`masked_delivery_address` while signup is pending. Carbon-ID invitations still require an
+existing account. [Email invitation guide](EMAIL_INVITATIONS.md).
+
 ## Testing environments
 
 An application can create a testing environment with its production Basic credentials or attach to an existing `iam_test_key`. IAM imports its declared external dependencies recursively, producing isolated test app credentials in one environment. Receiving applications authenticate any supplied test app secret against IAM before entering their own isolated storage. All subsequent API operations use the environment key and credentials issued there. Test OTPs are `000000`, and no real email or SMS is sent.

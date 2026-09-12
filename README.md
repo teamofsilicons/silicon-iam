@@ -267,8 +267,10 @@ by default. No idle daemon runs; use
 plane; the CLI resolves the UUID through an owner-only stored root key and
 keeps every environment's session separate from production.
 
-CLI/client 1.2.0's authorization snapshots and OBO binding require the matching
-backend with base migration `0067`, testing overlay `9003` and runtime grants.
+CLI/client 1.5.0 require the matching official v1 backend with base migrations
+through `0082`, testing overlay `9004`, and runtime grants. The release resets
+pre-v1 application grants to the default identity/profile permissions and requires
+fresh user consent; direct IAM sign-in sessions remain valid.
 Deploy and verify that backend before publishing/adopting these packages;
 source pushes and crate publication do not deploy the API.
 

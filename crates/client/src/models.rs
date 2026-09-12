@@ -2067,8 +2067,10 @@ pub struct Invite {
     pub id: Uuid,
     /// The contract's `org_id`.
     pub org_id: OrgId,
-    /// The contract's `target_carbon`.
-    pub target_carbon: CarbonPublic,
+    /// Present after the invitation is bound to a Carbon account; absent
+    /// before signup and verified email binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_carbon: Option<CarbonPublic>,
     /// The contract's `masked_delivery_address`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub masked_delivery_address: Option<String>,

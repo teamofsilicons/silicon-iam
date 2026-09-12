@@ -108,12 +108,15 @@ struct EmailJoinResolution {
 struct InvitationRow {
     id: Uuid,
     org_id: String,
-    target_principal_id: Uuid,
-    target_carbon_id: String,
-    target_display_name: String,
+    target_principal_id: Option<Uuid>,
+    target_carbon_id: Option<String>,
+    target_display_name: Option<String>,
+    email_ciphertext: Option<Vec<u8>>,
+    email_nonce: Option<Vec<u8>>,
+    email_key_version: Option<i16>,
     target_description: Option<String>,
     target_profile_photo: String,
-    target_created_at: OffsetDateTime,
+    target_created_at: Option<OffsetDateTime>,
     destination_contact_id: Option<Uuid>,
     destination_contact_kind: Option<String>,
     destination_contact_ciphertext: Option<Vec<u8>>,
@@ -229,7 +232,44 @@ pub(super) async fn create_invitation(
         Claim::Replay(response) => return Ok(response),
         Claim::Acquired(lease) => lease,
     };
+    // Serialize creation with email binding, before resolving a signup race.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 7319))")
+        .bind(scope.access.organization_id.to_string())
+        .execute(&mut *scope.transaction)
+        .await
+        .map_err(support::database)?;
     let target = resolve_target(&mut scope.transaction, &state, &input).await?;
+    let email = if let Some(contact) = &target.contact {
+        decrypt_email(&state, contact)?
+    } else {
+        SecretString::from(input.email.clone().ok_or(AppError::NotFound)?)
+    };
+    let normalized = crate::domain::auth::normalize_email(email.expose_secret());
+    let email_indexes = state
+        .crypto
+        .blind_indexes(BlindIndexPurpose::CarbonEmail, &normalized)
+        .map_err(|_| AppError::Internal {
+            category: "invitation_email_index",
+        })?
+        .iter()
+        .map(|digest| {
+            format!(
+                "{}:{}",
+                digest.key_version(),
+                hex::encode(digest.as_bytes())
+            )
+        })
+        .collect::<Vec<_>>();
+    sqlx::query("UPDATE iam.organization_invitations SET status = 'expired' WHERE organization_id = $1 AND status = 'pending' AND expires_at <= transaction_timestamp()")
+        .bind(scope.access.organization_id).execute(&mut *scope.transaction).await.map_err(support::database)?;
+    let duplicate = sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM iam.organization_invitations WHERE organization_id = $1 AND status = 'pending' AND email_blind_indexes && $2::text[])")
+        .bind(scope.access.organization_id).bind(&email_indexes)
+        .fetch_one(&mut *scope.transaction).await.map_err(support::database)?;
+    if duplicate {
+        return Err(AppError::Conflict {
+            code: Cow::Borrowed("invitation_already_pending"),
+        });
+    }
     validate_invitation_references(&mut scope.transaction, scope.access.organization_id, &input)
         .await?;
     let already_active = sqlx::query_scalar::<_, bool>(
@@ -258,17 +298,27 @@ pub(super) async fn create_invitation(
         None
     };
     let invitation_id = Uuid::now_v7();
+    let encrypted_email = state
+        .crypto
+        .encrypt(
+            EncryptionContext::global(ProtectedField::InvitationEmail, invitation_id),
+            normalized.as_bytes(),
+        )
+        .map_err(|_| AppError::Internal {
+            category: "invitation_email_encrypt",
+        })?;
     sqlx::query(
         r"
         INSERT INTO iam.organization_invitations (
             id, organization_id, target_carbon_id, invited_by_membership_id,
             job_role, first_silicon_membership_id, default_trust_boundary,
             default_trust_level, destination_contact_id,
-            redirect_application_principal_id, expires_at
+            redirect_application_principal_id, expires_at,
+            email_ciphertext, email_nonce, email_key_version, email_blind_indexes
         ) VALUES (
             $1, $2, $3, $4, $5, $6,
             $7::iam.trust_boundary, $8::iam.trust_level, $9, $10,
-            transaction_timestamp() + interval '48 hours'
+            transaction_timestamp() + interval '48 hours', $11, $12, $13, $14
         )
         ",
     )
@@ -280,8 +330,12 @@ pub(super) async fn create_invitation(
     .bind(input.first_silicon_membership_id)
     .bind(input.default_trust.boundary.as_str())
     .bind(input.default_trust.level.as_str())
-    .bind(target.contact.contact_id)
+    .bind(target.contact.as_ref().map(|contact| contact.contact_id))
     .bind(redirect_application_id)
+    .bind(&encrypted_email.ciphertext)
+    .bind(encrypted_email.nonce.as_slice())
+    .bind(encrypted_email.key_version)
+    .bind(&email_indexes)
     .execute(&mut *scope.transaction)
     .await
     .map_err(|error| support::conflict_from_database(error, "invitation_already_pending"))?;
@@ -326,7 +380,7 @@ pub(super) async fn create_invitation(
         ",
     )
     .bind(Uuid::now_v7())
-    .bind(target.contact.contact_id)
+    .bind(target.contact.as_ref().map(|contact| contact.contact_id))
     .bind(invitation_id)
     .execute(&mut *scope.transaction)
     .await
@@ -1030,8 +1084,8 @@ pub(super) async fn join_organization(
 }
 
 struct ResolvedTarget {
-    principal_id: Uuid,
-    contact: ContactMaterial,
+    principal_id: Option<Uuid>,
+    contact: Option<ContactMaterial>,
 }
 
 async fn resolve_pending_email_join(
@@ -1084,8 +1138,8 @@ async fn resolve_target(
         .ok_or(AppError::NotFound)?;
         let contact = primary_email(transaction, principal_id).await?;
         return Ok(ResolvedTarget {
-            principal_id,
-            contact,
+            principal_id: Some(principal_id),
+            contact: Some(contact),
         });
     }
     let email = input.email.as_deref().ok_or(AppError::NotFound)?;
@@ -1111,18 +1165,21 @@ async fn resolve_target(
         .map_err(support::database)?
         {
             return Ok(ResolvedTarget {
-                principal_id: resolved.principal_id,
-                contact: ContactMaterial {
+                principal_id: Some(resolved.principal_id),
+                contact: Some(ContactMaterial {
                     contact_id: resolved.contact_id,
                     contact_kind: "email".to_owned(),
                     ciphertext: resolved.contact_ciphertext,
                     nonce: resolved.contact_nonce,
                     encryption_key_version: resolved.contact_encryption_key_version,
-                },
+                }),
             });
         }
     }
-    Err(AppError::NotFound)
+    Ok(ResolvedTarget {
+        principal_id: None,
+        contact: None,
+    })
 }
 
 async fn insert_invitation_trust_overrides(
@@ -1374,7 +1431,7 @@ fn materialize_invitation(
     state: &ApiState,
     row: InvitationRow,
 ) -> Result<InvitationResponse, AppError> {
-    let masked_delivery_address = match (
+    let mut masked_delivery_address = match (
         row.destination_contact_id,
         row.destination_contact_kind,
         row.destination_contact_ciphertext,
@@ -1405,17 +1462,56 @@ fn materialize_invitation(
             });
         }
     };
+    if let (Some(ciphertext), Some(nonce), Some(key_version)) =
+        (row.email_ciphertext, row.email_nonce, row.email_key_version)
+    {
+        let plaintext = state
+            .crypto
+            .decrypt(
+                EncryptionContext::global(ProtectedField::InvitationEmail, row.id),
+                &EncryptedValue {
+                    ciphertext,
+                    nonce: nonce.try_into().map_err(|_| AppError::Internal {
+                        category: "invitation_email_shape",
+                    })?,
+                    key_version,
+                },
+            )
+            .map_err(|_| AppError::Internal {
+                category: "invitation_email_decrypt",
+            })?;
+        let email = std::str::from_utf8(&plaintext).map_err(|_| AppError::Internal {
+            category: "invitation_email_encoding",
+        })?;
+        masked_delivery_address = Some(mask_email(email));
+    }
+    let target_carbon = match (
+        row.target_principal_id,
+        row.target_carbon_id,
+        row.target_display_name,
+        row.target_created_at,
+    ) {
+        (Some(principal_id), Some(carbon_id), Some(display_name), Some(created_at)) => {
+            Some(CarbonPublicResponse {
+                principal_id,
+                carbon_id,
+                display_name,
+                created_at,
+                description: row.target_description,
+                profile_photo: row.target_profile_photo,
+            })
+        }
+        (None, None, None, None) => None,
+        _ => {
+            return Err(AppError::Internal {
+                category: "invitation_target_shape",
+            });
+        }
+    };
     Ok(InvitationResponse {
         id: row.id,
         org_id: row.org_id,
-        target_carbon: CarbonPublicResponse {
-            principal_id: row.target_principal_id,
-            carbon_id: row.target_carbon_id,
-            display_name: row.target_display_name,
-            description: row.target_description,
-            profile_photo: row.target_profile_photo,
-            created_at: row.target_created_at,
-        },
+        target_carbon,
         masked_delivery_address,
         org_role: "member".to_owned(),
         job_role: row.job_role,
@@ -1733,6 +1829,7 @@ const INVITATION_LIST_SQL: &str = r"
            target.display_name AS target_display_name, target.description AS target_description,
            COALESCE(target.profile_photo_uri, '') AS target_profile_photo,
            target.created_at AS target_created_at,
+           invitation.email_ciphertext, invitation.email_nonce, invitation.email_key_version,
            destination_contact.contact_id AS destination_contact_id,
            destination_contact.contact_kind::text AS destination_contact_kind,
            destination_contact.contact_ciphertext AS destination_contact_ciphertext,
@@ -1781,7 +1878,7 @@ const INVITATION_LIST_SQL: &str = r"
            invitation.expires_at, invitation.version, invitation.created_at, invitation.accepted_at
     FROM iam.organization_invitations invitation
     JOIN iam.organizations organization ON organization.id = invitation.organization_id
-    JOIN iam.carbons target ON target.id = invitation.target_carbon_id
+    LEFT JOIN iam.carbons target ON target.id = invitation.target_carbon_id
     LEFT JOIN LATERAL iam_private.get_organization_invitation_destination(
         invitation.organization_id,
         invitation.id
@@ -1802,6 +1899,7 @@ const INVITATION_BY_ID_SQL: &str = r"
            target.display_name AS target_display_name, target.description AS target_description,
            COALESCE(target.profile_photo_uri, '') AS target_profile_photo,
            target.created_at AS target_created_at,
+           invitation.email_ciphertext, invitation.email_nonce, invitation.email_key_version,
            destination_contact.contact_id AS destination_contact_id,
            destination_contact.contact_kind::text AS destination_contact_kind,
            destination_contact.contact_ciphertext AS destination_contact_ciphertext,
@@ -1849,7 +1947,7 @@ const INVITATION_BY_ID_SQL: &str = r"
            CASE WHEN invitation.status = 'pending' AND invitation.expires_at <= transaction_timestamp() THEN 'expired' ELSE invitation.status END AS status,
            invitation.expires_at, invitation.version, invitation.created_at, invitation.accepted_at
     FROM iam.organization_invitations invitation
-    JOIN iam.carbons target ON target.id = invitation.target_carbon_id
+    LEFT JOIN iam.carbons target ON target.id = invitation.target_carbon_id
     LEFT JOIN LATERAL iam_private.get_organization_invitation_destination(
         invitation.organization_id,
         invitation.id
@@ -2264,6 +2362,352 @@ mod tests {
             "an invitation addressed to another Carbon must not resolve"
         );
 
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "requires a local Docker daemon"]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "full invitation, registration, worker and restricted-role acceptance lifecycle"
+    )]
+    async fn an_email_invitation_can_precede_signup_and_be_accepted() -> anyhow::Result<()> {
+        use anyhow::ensure;
+        use sqlx::postgres::PgPoolOptions;
+        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
+        use testcontainers_modules::postgres::Postgres as TestPostgres;
+
+        const RUNTIME_ROLES: &str = "
+            CREATE ROLE silicon_iam_api NOLOGIN NOSUPERUSER NOBYPASSRLS;
+            CREATE ROLE silicon_iam_worker NOLOGIN NOSUPERUSER NOBYPASSRLS;
+            CREATE ROLE silicon_iam_key_operator NOLOGIN NOSUPERUSER NOBYPASSRLS;
+            CREATE ROLE silicon_iam_api_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS
+                IN ROLE silicon_iam_api;
+        ";
+        let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('\\'))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let container = TestPostgres::default()
+            .with_tag("16-alpine")
+            .start()
+            .await?;
+        let host = container.get_host().await?;
+        let port = container.get_host_port_ipv4(5432).await?;
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&format!(
+                "postgres://postgres:postgres@{host}:{port}/postgres"
+            ))
+            .await?;
+        crate::infrastructure::postgres::migrate(&pool).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(RUNTIME_ROLES))
+            .execute(&pool)
+            .await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(grants))
+            .execute(&pool)
+            .await?;
+
+        let admin = Uuid::from_u128(0x52_01);
+        let recipient = Uuid::from_u128(0x52_02);
+        let organization = Uuid::from_u128(0x52_03);
+        let admin_membership = Uuid::from_u128(0x52_04);
+        let invitation = Uuid::from_u128(0x52_05);
+        let challenge = Uuid::from_u128(0x52_06);
+        let invitee_email_contact = Uuid::from_u128(0x52_07);
+
+        let mut fixture = pool.begin().await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "INSERT INTO iam.cryptographic_key_versions (purpose, key_version)
+             VALUES ('contact_aead', 1), ('token_hmac', 1), ('contact_lookup_hmac', 1)",
+        ))
+        .execute(&mut *fixture)
+        .await?;
+
+        for (principal, handle, email_contact, phone_contact) in [
+            (
+                admin,
+                "admin",
+                Uuid::from_u128(0x52_11),
+                Uuid::from_u128(0x52_12),
+            ),
+            (
+                recipient,
+                "recipient",
+                invitee_email_contact,
+                Uuid::from_u128(0x52_13),
+            ),
+        ]
+        .into_iter()
+        .take(1)
+        {
+            sqlx::query(
+                r"
+                INSERT INTO iam.principals (id, kind, status, activated_at)
+                VALUES ($1, 'carbon', 'active', transaction_timestamp())
+                ",
+            )
+            .bind(principal)
+            .execute(&mut *fixture)
+            .await?;
+            sqlx::query(
+                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $2, $2)",
+            )
+            .bind(principal)
+            .bind(handle)
+            .execute(&mut *fixture)
+            .await?;
+            sqlx::query(
+                r"
+                INSERT INTO iam.carbon_contacts (
+                    id, carbon_id, kind, ciphertext, nonce, encryption_key_version, verified_at
+                ) VALUES
+                    ($1, $3, 'email', decode(repeat('11', 17), 'hex'),
+                        decode(repeat('12', 12), 'hex'), 1, transaction_timestamp()),
+                    ($2, $3, 'phone', decode(repeat('21', 17), 'hex'),
+                        decode(repeat('22', 12), 'hex'), 1, transaction_timestamp())
+                ",
+            )
+            .bind(email_contact)
+            .bind(phone_contact)
+            .bind(principal)
+            .execute(&mut *fixture)
+            .await?;
+        }
+
+        sqlx::query(
+            r"
+            INSERT INTO iam.organizations (id, org_id, created_by_carbon_id, name)
+            VALUES ($1, 'tos', $2, 'Team of Silicons')
+            ",
+        )
+        .bind(organization)
+        .bind(admin)
+        .execute(&mut *fixture)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.organization_memberships (
+                id, organization_id, principal_id, principal_kind, org_role
+            ) VALUES ($1, $2, $3, 'carbon', 'owner')
+            ",
+        )
+        .bind(admin_membership)
+        .bind(organization)
+        .bind(admin)
+        .execute(&mut *fixture)
+        .await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.organization_invitations (
+                id, organization_id, target_carbon_id, invited_by_membership_id,
+                destination_contact_id, job_role, default_trust_boundary,
+                default_trust_level, expires_at, email_ciphertext, email_nonce, email_key_version, email_blind_indexes
+            ) VALUES (
+                $1, $2, NULL, $3, NULL, 'Engineer', 'internal', 'not_trusted',
+                transaction_timestamp() + interval '48 hours',
+                decode(repeat('11',17),'hex'), decode(repeat('12',12),'hex'), 1,
+                ARRAY['1:' || repeat('44',32)]
+            )
+            ",
+        ).bind(invitation).bind(organization).bind(admin_membership)
+        .execute(&mut *fixture).await?;
+        fixture.commit().await?;
+
+        // Read and deliver the invitation before the recipient account exists.
+        let mut managing = pool.begin().await?;
+        sqlx::query("SET LOCAL ROLE silicon_iam_api_runtime")
+            .execute(&mut *managing)
+            .await?;
+        sqlx::query("SELECT set_config('iam.principal_id', $1::text, true), set_config('iam.organization_id', $2::text, true)")
+            .bind(admin).bind(organization).execute(&mut *managing).await?;
+        let pending = sqlx::query_as::<_, InvitationRow>(INVITATION_BY_ID_SQL)
+            .bind(organization)
+            .bind(invitation)
+            .bind("tos")
+            .fetch_one(&mut *managing)
+            .await?;
+        ensure!(pending.target_principal_id.is_none());
+        ensure!(pending.email_ciphertext.is_some());
+        let unresolved = sqlx::query("SELECT * FROM iam_private.resolve_pending_email_join_invitation('tos', 1::smallint, decode(repeat('44',32),'hex'))")
+            .fetch_optional(&mut *managing).await?;
+        ensure!(
+            unresolved.is_none(),
+            "an inviter must not claim the recipient's email"
+        );
+        let job = Uuid::now_v7();
+        sqlx::query("INSERT INTO iam.notification_jobs (id, notification_kind, provider, recipient_contact_kind, template_id, context_type, context_id, status, lease_owner, lease_expires_at) VALUES ($1, 'invitation', 'postmark', 'email', 'invitation.created', 'organization_invitation', $2, 'processing', 'email-test', transaction_timestamp() + interval '1 minute')")
+            .bind(job).bind(invitation).execute(&mut *managing).await?;
+        managing.commit().await?;
+        let mut delivery = pool.begin().await?;
+        sqlx::query("SET LOCAL ROLE silicon_iam_worker")
+            .execute(&mut *delivery)
+            .await?;
+        let delivered =
+            sqlx::query("SELECT * FROM iam_private.get_worker_email_invitation($1, 'email-test')")
+                .bind(job)
+                .fetch_optional(&mut *delivery)
+                .await?;
+        ensure!(
+            delivered.is_some(),
+            "worker must resolve an unregistered recipient"
+        );
+        let unleased = sqlx::query(
+            "SELECT * FROM iam_private.get_worker_email_invitation($1, 'other-worker')",
+        )
+        .bind(job)
+        .fetch_optional(&mut *delivery)
+        .await?;
+        ensure!(unleased.is_none(), "worker must own the notification lease");
+        delivery.rollback().await?;
+
+        // Registration occurs only after the invitation has been stored/delivered.
+        let mut fixture = pool.begin().await?;
+        for (principal, handle, email_contact, phone_contact) in [
+            (
+                admin,
+                "admin",
+                Uuid::from_u128(0x52_11),
+                Uuid::from_u128(0x52_12),
+            ),
+            (
+                recipient,
+                "recipient",
+                invitee_email_contact,
+                Uuid::from_u128(0x52_13),
+            ),
+        ]
+        .into_iter()
+        .skip(1)
+        {
+            sqlx::query(
+                r"
+                INSERT INTO iam.principals (id, kind, status, activated_at)
+                VALUES ($1, 'carbon', 'active', transaction_timestamp())
+                ",
+            )
+            .bind(principal)
+            .execute(&mut *fixture)
+            .await?;
+            sqlx::query(
+                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $2, $2)",
+            )
+            .bind(principal)
+            .bind(handle)
+            .execute(&mut *fixture)
+            .await?;
+            sqlx::query(
+                r"
+                INSERT INTO iam.carbon_contacts (
+                    id, carbon_id, kind, ciphertext, nonce, encryption_key_version, verified_at
+                ) VALUES
+                    ($1, $3, 'email', decode(repeat('11', 17), 'hex'),
+                        decode(repeat('12', 12), 'hex'), 1, transaction_timestamp()),
+                    ($2, $3, 'phone', decode(repeat('21', 17), 'hex'),
+                        decode(repeat('22', 12), 'hex'), 1, transaction_timestamp())
+                ",
+            )
+            .bind(email_contact)
+            .bind(phone_contact)
+            .bind(principal)
+            .execute(&mut *fixture)
+            .await?;
+        }
+
+        sqlx::query("INSERT INTO iam.contact_blind_indexes (contact_id, contact_kind, hmac_key_version, digest) VALUES ($1, 'email', 1, decode(repeat('44',32),'hex'))")
+            .bind(invitee_email_contact).execute(&mut *fixture).await?;
+        fixture.commit().await?;
+        let mut binding = pool.begin().await?;
+        sqlx::query("SET LOCAL ROLE silicon_iam_api_runtime")
+            .execute(&mut *binding)
+            .await?;
+        sqlx::query("SELECT set_config('iam.principal_id', $1::text, true)")
+            .bind(recipient)
+            .execute(&mut *binding)
+            .await?;
+        for (org, digest) in [("tos", vec![0x55_u8; 32]), ("other", vec![0x44_u8; 32])] {
+            let wrong = sqlx::query("SELECT * FROM iam_private.resolve_pending_email_join_invitation($1, 1::smallint, $2)")
+                .bind(org).bind(digest).fetch_optional(&mut *binding).await?;
+            ensure!(
+                wrong.is_none(),
+                "wrong email or organization must not resolve"
+            );
+        }
+        let bound = sqlx::query_as::<_, EmailJoinResolution>("SELECT * FROM iam_private.resolve_pending_email_join_invitation('tos', 1::smallint, decode(repeat('44',32),'hex'))")
+            .fetch_one(&mut *binding).await?;
+        ensure!(bound.invitation_id == invitation && bound.contact_id == invitee_email_contact);
+        binding.commit().await?;
+        let mut fixture = pool.begin().await?;
+        sqlx::query(
+            r"
+            INSERT INTO iam.invitation_verification_challenges (
+                id, organization_id, invitation_id, target_carbon_id,
+                destination_contact_id, code_digest, digest_key_version,
+                max_attempts, expires_at, delivery_status, delivered_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, decode(repeat('33', 32), 'hex'), 1,
+                10, transaction_timestamp() + interval '10 minutes',
+                'delivered', transaction_timestamp()
+            )
+            ",
+        )
+        .bind(challenge)
+        .bind(organization)
+        .bind(invitation)
+        .bind(recipient)
+        .bind(invitee_email_contact)
+        .execute(&mut *fixture)
+        .await?;
+        fixture.commit().await?;
+
+        // Exactly the recipient's context: their principal is known, and they
+        // belong to no organization.
+        let mut accepting = pool.begin().await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "SET LOCAL ROLE silicon_iam_api_runtime",
+        ))
+        .execute(&mut *accepting)
+        .await?;
+        sqlx::query("SELECT set_config('iam.principal_id', $1::text, true)")
+            .bind(recipient)
+            .execute(&mut *accepting)
+            .await?;
+
+        let row = super::fetch_challenge(&mut accepting, invitation, recipient)
+            .await
+            .map_err(|_| anyhow::anyhow!("the recipient could not lock their own invitation"))?;
+
+        ensure!(row.challenge_id == challenge, "locked the wrong challenge");
+        ensure!(row.invitation_status == "pending", "unexpected status");
+        ensure!(row.max_attempts == 10, "unexpected attempt ceiling");
+
+        // Somebody else's invitation must still be refused.
+        ensure!(
+            super::fetch_challenge(&mut accepting, invitation, admin)
+                .await
+                .is_err(),
+            "an invitation addressed to another Carbon must not resolve"
+        );
+
+        accepting.rollback().await?;
+        let mut joining = pool.begin().await?;
+        sqlx::query("SET LOCAL ROLE silicon_iam_api_runtime")
+            .execute(&mut *joining)
+            .await?;
+        sqlx::query("SELECT set_config('iam.principal_id', $1::text, true), set_config('iam.organization_id', $2::text, true)")
+            .bind(recipient).bind(organization).execute(&mut *joining).await?;
+        let joined = sqlx::query_as::<_, CompletedInvitation>("SELECT * FROM iam_private.complete_verified_organization_invitation('tos', $1, $2, 1::smallint, decode(repeat('33',32),'hex'))")
+            .bind(invitation).bind(Uuid::now_v7()).fetch_one(&mut *joining).await?;
+        ensure!(joined.organization_id == organization);
+        joining.commit().await?;
+        let state = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM iam.organization_invitations WHERE id=$1",
+        )
+        .bind(invitation)
+        .fetch_one(&pool)
+        .await?;
+        ensure!(state == "accepted");
         Ok(())
     }
 }

@@ -63,7 +63,7 @@ The directory deliberately exposes public handles rather than `membership_id`. T
 
 `POST /api/v1/organizations/{org_id}/carbon-invites` identifies the invitee by **either** `carbon_id` **or** `email`, never both, and carries the job role, tags, default trust and any trust overrides they should start with.
 
-You cannot invite a Carbon who does not yet have an account. Resolve or search first.
+An email invitation can be created before the recipient has a Carbon account. The recipient signs up, verifies the invited email, and accepts the invitation. Carbon-ID invitations still require an existing active Carbon. The response omits `target_carbon` until the email invitation is bound to an account.
 
 The invitation email links to `{auth_url}/join/{org_id}?app={app_id}`. When `app_id` is present, the person is returned to that application after joining. Invitations last 48 hours and can be revoked at any point before acceptance.
 

@@ -62,7 +62,7 @@ DECLARE
     -- from nearly every scoped table, so it has to be shared for those
     -- references to resolve at all.
     shared_table_names text[] := ARRAY[
-        'contract_versions', 'cryptographic_key_versions',
+        'cryptographic_key_versions',
         'oauth_scope_catalog',
         'organization_capability_catalog',
         'platform_capability_catalog',

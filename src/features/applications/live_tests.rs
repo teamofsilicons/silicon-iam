@@ -9,7 +9,7 @@
 use anyhow::{Context as _, ensure};
 use axum::{body::to_bytes, http::StatusCode, response::IntoResponse as _};
 use serde_json::Value;
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use sqlx::{Acquire as _, PgPool, postgres::PgPoolOptions};
 use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
 use testcontainers_modules::postgres::Postgres;
 use uuid::Uuid;
@@ -58,6 +58,7 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     crate::infrastructure::postgres::migrate(&pool).await?;
     seed_protocol_rows(&pool).await?;
 
+    unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(&pool).await?;
     selected_login_additions_preserve_existing_organizations(&pool).await?;
     expired_obo_proof_cannot_be_consumed_after_transaction_wait(&pool).await?;
     consent_preserves_each_parent_session(&pool).await?;
@@ -78,6 +79,273 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     organization_management_authority_tracks_current_roles(&pool).await?;
     application_list_authority_lock_blocks_concurrent_demotion(&pool).await?;
     application_tenancy_and_creator_are_immutable(&pool).await?;
+    Ok(())
+}
+
+/// SLT exchange, refresh, and introspection share this authority projection.
+/// Selected-organization Silicon logins must keep their unscoped token shape
+/// while still depending on the Silicon's own live organization and membership.
+async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
+    pool: &PgPool,
+) -> anyhow::Result<()> {
+    const AUTHORITY_QUERY: &str = r"
+        SELECT to_jsonb(authority)
+        FROM iam_private.lock_current_application_oauth_subject_authority(
+            $1, $2, $3, $4, 'silicon', $5, $6
+        ) AS authority
+    ";
+    let silicon_id = Uuid::from_u128(0x501);
+    let membership_id = Uuid::from_u128(0x531);
+    let parent_id = Uuid::from_u128(0x541);
+    let second_parent_id = Uuid::from_u128(0x542);
+    let unscoped_consent = Uuid::from_u128(0x571);
+    let scoped_consent = Uuid::from_u128(0x572);
+    let mut transaction = pool.begin().await?;
+    sqlx::raw_sql(
+        r"
+        INSERT INTO iam.principals (id, kind, status, activated_at)
+        VALUES ('00000000-0000-0000-0000-000000000501', 'silicon', 'active',
+                transaction_timestamp());
+        INSERT INTO iam.organization_memberships (
+            id, organization_id, principal_id, principal_kind, org_role
+        ) VALUES ('00000000-0000-0000-0000-000000000531',
+                  '00000000-0000-0000-0000-000000000021',
+                  '00000000-0000-0000-0000-000000000501', 'silicon', 'member');
+        INSERT INTO iam.silicons (
+            id, organization_id, membership_id, organization_handle, silicon_handle,
+            display_name, provisioning_status
+        ) VALUES ('00000000-0000-0000-0000-000000000501',
+                  '00000000-0000-0000-0000-000000000021',
+                  '00000000-0000-0000-0000-000000000531', 'test_org', 'test_silicon',
+                  'Test Silicon', 'active');
+        INSERT INTO iam.authentication_sessions (
+            id, subject_principal_id, subject_kind, authentication_method,
+            assurance_level, subject_auth_epoch, idle_expires_at, absolute_expires_at
+        ) SELECT id, '00000000-0000-0000-0000-000000000501', 'silicon',
+                 'silicon_credential', 1, 1,
+                 transaction_timestamp() + interval '1 day',
+                 transaction_timestamp() + interval '2 days'
+          FROM unnest(ARRAY['00000000-0000-0000-0000-000000000541'::uuid,
+                            '00000000-0000-0000-0000-000000000542'::uuid]) AS id;
+        INSERT INTO iam.oauth_consent_grants (
+            id, application_id, subject_principal_id, subject_kind,
+            organization_id, membership_id, parent_authentication_session_id,
+            selected_membership_ids
+        ) VALUES (
+            '00000000-0000-0000-0000-000000000571',
+            '00000000-0000-0000-0000-000000000011',
+            '00000000-0000-0000-0000-000000000501', 'silicon', NULL, NULL,
+            '00000000-0000-0000-0000-000000000541',
+            ARRAY['00000000-0000-0000-0000-000000000531'::uuid]
+        ), (
+            '00000000-0000-0000-0000-000000000572',
+            '00000000-0000-0000-0000-000000000011',
+            '00000000-0000-0000-0000-000000000501', 'silicon',
+            '00000000-0000-0000-0000-000000000021',
+            '00000000-0000-0000-0000-000000000531',
+            '00000000-0000-0000-0000-000000000541',
+            ARRAY['00000000-0000-0000-0000-000000000531'::uuid]
+        );
+        ",
+    )
+    .execute(&mut *transaction)
+    .await?;
+    set_context(&mut transaction, APP_A_ID, None, APP_A_ID).await?;
+
+    for (consent, organization, membership) in [
+        (unscoped_consent, None, None),
+        (scoped_consent, Some(ORGANIZATION_ID), Some(membership_id)),
+    ] {
+        let authority = sqlx::query_scalar::<_, Value>(AUTHORITY_QUERY)
+            .bind(APP_A_ID)
+            .bind(consent)
+            .bind(parent_id)
+            .bind(silicon_id)
+            .bind(organization)
+            .bind(membership)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .context("a live Silicon login lost its OAuth subject authority")?;
+        ensure!(authority["subject_public_id"] == "test_silicon:test_org");
+        ensure!(authority["subject_auth_epoch"] == 1);
+        ensure!(
+            authority["org_id"] == serde_json::json!(organization.map(|_| "test_org"))
+                && authority["membership_authz_epoch"] == serde_json::json!(membership.map(|_| 1)),
+            "the Silicon login's organization binding changed: {authority}"
+        );
+        ensure!(authority["session_idle_expires_at"].is_string());
+        ensure!(authority["session_absolute_expires_at"].is_string());
+    }
+
+    // Every identifier must belong to this exact grant, subject and session.
+    for (label, application, consent, parent, subject, organization, membership) in [
+        (
+            "other Application",
+            APP_B_ID,
+            unscoped_consent,
+            parent_id,
+            silicon_id,
+            None,
+            None,
+        ),
+        (
+            "other consent",
+            APP_A_ID,
+            CONSENT_ID,
+            parent_id,
+            silicon_id,
+            None,
+            None,
+        ),
+        (
+            "other live parent",
+            APP_A_ID,
+            unscoped_consent,
+            second_parent_id,
+            silicon_id,
+            None,
+            None,
+        ),
+        (
+            "other subject",
+            APP_A_ID,
+            unscoped_consent,
+            parent_id,
+            CARBON_ID,
+            None,
+            None,
+        ),
+        (
+            "added organization binding",
+            APP_A_ID,
+            unscoped_consent,
+            parent_id,
+            silicon_id,
+            Some(ORGANIZATION_ID),
+            Some(membership_id),
+        ),
+        (
+            "removed organization binding",
+            APP_A_ID,
+            scoped_consent,
+            parent_id,
+            silicon_id,
+            None,
+            None,
+        ),
+        (
+            "other membership",
+            APP_A_ID,
+            scoped_consent,
+            parent_id,
+            silicon_id,
+            Some(ORGANIZATION_ID),
+            Some(OWNER_MEMBERSHIP_ID),
+        ),
+        (
+            "partial organization binding",
+            APP_A_ID,
+            unscoped_consent,
+            parent_id,
+            silicon_id,
+            Some(ORGANIZATION_ID),
+            None,
+        ),
+    ] {
+        set_context(&mut transaction, application, None, application).await?;
+        let authority = sqlx::query_scalar::<_, Value>(AUTHORITY_QUERY)
+            .bind(application)
+            .bind(consent)
+            .bind(parent)
+            .bind(subject)
+            .bind(organization)
+            .bind(membership)
+            .fetch_optional(&mut *transaction)
+            .await?;
+        ensure!(
+            authority.is_none(),
+            "Silicon authority accepted {label}: {authority:?}"
+        );
+    }
+    set_context(&mut transaction, APP_A_ID, None, APP_A_ID).await?;
+
+    // Each revocation is independent and rolled back before the next case.
+    for (label, mutation) in [
+        (
+            "principal epoch change",
+            "UPDATE iam.principals SET auth_epoch = auth_epoch + 1 WHERE id = '00000000-0000-0000-0000-000000000501'",
+        ),
+        (
+            "suspended principal",
+            "UPDATE iam.principals SET status = 'suspended', suspended_at = transaction_timestamp() WHERE id = '00000000-0000-0000-0000-000000000501'",
+        ),
+        (
+            "inactive Silicon",
+            "UPDATE iam.silicons SET provisioning_status = 'hook_error' WHERE id = '00000000-0000-0000-0000-000000000501'",
+        ),
+        (
+            "suspended organization",
+            "UPDATE iam.organizations SET status = 'suspended' WHERE id = '00000000-0000-0000-0000-000000000021'",
+        ),
+        (
+            "removed membership",
+            "UPDATE iam.organization_memberships SET status = 'removed', removed_at = transaction_timestamp() WHERE id = '00000000-0000-0000-0000-000000000531'",
+        ),
+        (
+            "revoked parent",
+            "UPDATE iam.authentication_sessions SET status = 'revoked', revoked_at = transaction_timestamp() WHERE id = '00000000-0000-0000-0000-000000000541'",
+        ),
+        (
+            "expired parent",
+            "UPDATE iam.authentication_sessions SET created_at = transaction_timestamp() - interval '2 days', idle_expires_at = transaction_timestamp() - interval '1 day' WHERE id = '00000000-0000-0000-0000-000000000541'",
+        ),
+        (
+            "revoked consent",
+            "UPDATE iam.oauth_consent_grants SET status = 'revoked', revoked_at = transaction_timestamp() WHERE id = '00000000-0000-0000-0000-000000000571'",
+        ),
+    ] {
+        let mut savepoint = transaction.begin().await?;
+        sqlx::query(mutation).execute(&mut *savepoint).await?;
+        let authority = sqlx::query_scalar::<_, Value>(AUTHORITY_QUERY)
+            .bind(APP_A_ID)
+            .bind(unscoped_consent)
+            .bind(parent_id)
+            .bind(silicon_id)
+            .bind(None::<Uuid>)
+            .bind(None::<Uuid>)
+            .fetch_optional(&mut *savepoint)
+            .await?;
+        ensure!(
+            authority.is_none(),
+            "Silicon authority survived {label}: {authority:?}"
+        );
+        savepoint.rollback().await?;
+    }
+
+    // An Application cannot borrow the projection through another principal's
+    // context, even when every supplied subject-chain identifier is valid.
+    let mut savepoint = transaction.begin().await?;
+    set_context(&mut savepoint, silicon_id, None, APP_A_ID).await?;
+    let error = sqlx::query_scalar::<_, Value>(AUTHORITY_QUERY)
+        .bind(APP_A_ID)
+        .bind(unscoped_consent)
+        .bind(parent_id)
+        .bind(silicon_id)
+        .bind(None::<Uuid>)
+        .bind(None::<Uuid>)
+        .fetch_optional(&mut *savepoint)
+        .await
+        .err()
+        .context("a non-Application principal borrowed OAuth subject authority")?;
+    ensure!(
+        error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref()
+            == Some("42501")
+    );
+    savepoint.rollback().await?;
+    transaction.rollback().await?;
     Ok(())
 }
 
