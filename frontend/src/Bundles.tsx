@@ -274,7 +274,7 @@ function BundleForm(props: {
             }
           >
             {(app) => (
-              <label class="organization-choice">
+              <label class="organization-choice check">
                 <input
                   type="checkbox"
                   checked={ids().includes(app.app_id)}

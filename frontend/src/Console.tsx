@@ -252,7 +252,14 @@ export default function Console(props: {
                 <option value="">No organization yet</option>
               </Show>
               <For each={organizations.data()?.items}>
-                {(item) => <option value={item.org_id}>{item.name}</option>}
+                {(item) => (
+                  <option
+                    value={item.org_id}
+                    selected={selectedOrg() === item.org_id}
+                  >
+                    {item.name}
+                  </option>
+                )}
               </For>
             </select>
           </label>
