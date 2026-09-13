@@ -1,0 +1,37 @@
+{
+  "organization": "tos",
+  "table": "siliconiam",
+  "access": [
+    "@saket"
+  ],
+  "windows": [
+    {
+      "name": "IAM Overview",
+      "slug": "overview",
+      "id": "9f4dafec-6b03-4b83-98a7-fb6a4ea1627f",
+      "url": "https://spacestation.teamofsilicons.com/o/tos/windows/9f4dafec-6b03-4b83-98a7-fb6a4ea1627f",
+      "version": "v1.1"
+    },
+    {
+      "name": "IAM Requests",
+      "slug": "requests",
+      "id": "341dc745-a1ce-463c-989a-6510c76fe31f",
+      "url": "https://spacestation.teamofsilicons.com/o/tos/windows/341dc745-a1ce-463c-989a-6510c76fe31f",
+      "version": "v1.1"
+    },
+    {
+      "name": "IAM Diagnostics",
+      "slug": "diagnostics",
+      "id": "50d55ed6-3035-4e6a-9f59-3e16ae39d8f9",
+      "url": "https://spacestation.teamofsilicons.com/o/tos/windows/50d55ed6-3035-4e6a-9f59-3e16ae39d8f9",
+      "version": "v1.1"
+    },
+    {
+      "name": "IAM Web & CLI",
+      "slug": "clients",
+      "id": "7b0ee0c9-a47d-4564-92ee-1a837ea605a8",
+      "url": "https://spacestation.teamofsilicons.com/o/tos/windows/7b0ee0c9-a47d-4564-92ee-1a837ea605a8",
+      "version": "v1.1"
+    }
+  ]
+}

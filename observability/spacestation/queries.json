@@ -1,0 +1,45 @@
+[
+  {
+    "slug": "overview",
+    "name": "IAM Overview",
+    "subtitle": "Production signals at a glance",
+    "scope": "Production \u00b7 last 24 hours \u00b7 all events, including health probes",
+    "queries": {
+      "sources": "SELECT record.source::String AS source, toInt32(count()) AS events, toInt32(countIf(record.context.level::String = 'ERROR')) AS errors, toInt32(countIf(record.context.level::String = 'WARN')) AS warnings, toFloat64(max(event_ts_ms)) AS last_seen_ms FROM siliconiam WHERE event_ts_ms >= toUnixTimestamp64Milli(now64()) - 86400000 AND record.environment::String = 'production' GROUP BY source ORDER BY events DESC",
+      "trend": "SELECT toFloat64(intDiv(event_ts_ms, 3600000) * 3600000) AS at_ms, toInt32(count()) AS value FROM siliconiam WHERE event_ts_ms >= toUnixTimestamp64Milli(now64()) - 86400000 AND record.environment::String = 'production' GROUP BY at_ms ORDER BY at_ms"
+    }
+  },
+  {
+    "slug": "requests",
+    "name": "IAM Requests",
+    "subtitle": "Traffic, latency and request traces",
+    "scope": "Production \u00b7 last 24 hours \u00b7 API and scoped API \u00b7 health probes excluded",
+    "queries": {
+      "totals": "SELECT toInt32(count()) AS requests, toInt32(countIf(record.context.status::Nullable(Int32) >= 400 AND record.context.status::Nullable(Int32) < 500)) AS client_errors, toInt32(countIf(record.context.status::Nullable(Int32) >= 500)) AS server_errors, avg(coalesce(record.context.latency_ms::Nullable(Float64), record.context.duration_ms::Nullable(Float64))) AS avg_ms, quantile(0.95)(coalesce(record.context.latency_ms::Nullable(Float64), record.context.duration_ms::Nullable(Float64))) AS p95_ms FROM siliconiam WHERE event_ts_ms >= toUnixTimestamp64Milli(now64()) - 86400000 AND record.environment::String = 'production' AND record.source::String IN ('iam-api','iam-scoped-api') AND record.context.status::Nullable(Int32) >= 100 AND record.context.method::String != '' AND record.context.route::String NOT IN ('/healthz','/readyz')",
+      "routes": "SELECT record.source::String AS source, record.context.method::String AS method, record.context.route::String AS route, toInt32(count()) AS requests, toInt32(countIf(record.context.status::Nullable(Int32) >= 400 AND record.context.status::Nullable(Int32) < 500)) AS client_errors, toInt32(countIf(record.context.status::Nullable(Int32) >= 500)) AS server_errors, avg(coalesce(record.context.latency_ms::Nullable(Float64), record.context.duration_ms::Nullable(Float64))) AS avg_ms, quantile(0.95)(coalesce(record.context.latency_ms::Nullable(Float64), record.context.duration_ms::Nullable(Float64))) AS p95_ms FROM siliconiam WHERE event_ts_ms >= toUnixTimestamp64Milli(now64()) - 86400000 AND record.environment::String = 'production' AND record.source::String IN ('iam-api','iam-scoped-api') AND record.context.status::Nullable(Int32) >= 100 AND record.context.method::String != '' AND record.context.route::String NOT IN ('/healthz','/readyz') GROUP BY source, method, route ORDER BY requests DESC LIMIT 50",
+      "recent": "SELECT toFloat64(event_ts_ms) AS at_ms, record.source::String AS source, record.event::String AS event,\nrecord.context.level::String AS level, record.context.method::String AS method, record.context.route::String AS route,\nrecord.context.status::Nullable(Int32) AS status, coalesce(record.context.latency_ms::Nullable(Float64), record.context.duration_ms::Nullable(Float64)) AS latency_ms, record.context.request_id::String AS request_id,\nrecord.context.stage::String AS stage, record.context.command::String AS command,\nrecord.context.success::Nullable(Bool) AS success, record.context.code::String AS code FROM siliconiam WHERE event_ts_ms >= toUnixTimestamp64Milli(now64()) - 86400000 AND record.environment::String = 'production' AND record.source::String IN ('iam-api','iam-scoped-api') AND record.context.status::Nullable(Int32) >= 100 AND record.context.method::String != '' AND record.context.route::String NOT IN ('/healthz','/readyz') ORDER BY event_ts_ms DESC LIMIT 45"
+    }
+  },
+  {
+    "slug": "diagnostics",
+    "name": "IAM Diagnostics",
+    "subtitle": "Warnings, failures and worker progress",
+    "scope": "Production \u00b7 last 24 hours \u00b7 error events are not unique incidents",
+    "queries": {
+      "totals": "SELECT toInt32(countIf(record.context.level::String = 'ERROR')) AS errors, toInt32(countIf(record.context.level::String = 'WARN')) AS warnings, toInt32(countIf(record.context.success::Nullable(Bool) = false)) AS failed_operations FROM siliconiam WHERE event_ts_ms >= toUnixTimestamp64Milli(now64()) - 86400000 AND record.environment::String = 'production'",
+      "recent": "SELECT toFloat64(event_ts_ms) AS at_ms, record.source::String AS source, record.event::String AS event,\nrecord.context.level::String AS level, record.context.method::String AS method, record.context.route::String AS route,\nrecord.context.status::Nullable(Int32) AS status, coalesce(record.context.latency_ms::Nullable(Float64), record.context.duration_ms::Nullable(Float64)) AS latency_ms, record.context.request_id::String AS request_id,\nrecord.context.stage::String AS stage, record.context.command::String AS command,\nrecord.context.success::Nullable(Bool) AS success, record.context.code::String AS code FROM siliconiam WHERE event_ts_ms >= toUnixTimestamp64Milli(now64()) - 86400000 AND record.environment::String = 'production' AND (record.context.level::String IN ('ERROR', 'WARN') OR record.context.status::Nullable(Int32) >= 500 OR record.context.success::Nullable(Bool) = false OR record.event::String IN ('iam.request.failed','iam.render.failed','network_error','error')) ORDER BY event_ts_ms DESC LIMIT 45",
+      "stages": "SELECT record.context.stage::String AS stage, toInt32(count()) AS events, toInt32(countIf(record.context.success::Nullable(Bool) = false OR record.context.level::String = 'ERROR')) AS failures, toFloat64(max(event_ts_ms)) AS last_seen_ms FROM siliconiam WHERE event_ts_ms >= toUnixTimestamp64Milli(now64()) - 86400000 AND record.environment::String = 'production' AND record.source::String = 'iam-worker' AND record.context.stage::String != '' GROUP BY stage ORDER BY stage"
+    }
+  },
+  {
+    "slug": "clients",
+    "name": "IAM Web & CLI",
+    "subtitle": "Browser usage and native client activity",
+    "scope": "Last 24 hours \u00b7 web, SDK, CLI and daemon \u00b7 environments shown separately",
+    "queries": {
+      "activity": "SELECT record.source::String AS source, record.environment::String AS environment, record.event::String AS event, toInt32(count()) AS events, toFloat64(max(event_ts_ms)) AS last_seen_ms FROM siliconiam WHERE event_ts_ms >= toUnixTimestamp64Milli(now64()) - 86400000 AND record.source::String IN ('iam-web','iam-cli','iam-daemon','rust-client') GROUP BY source,environment,event ORDER BY events DESC LIMIT 70",
+      "pages": "SELECT record.context.path::String AS path, record.environment::String AS environment, toInt32(count()) AS views, toInt32(uniqExactIf(record.context.session_id::String, record.context.session_id::String != '')) AS sessions FROM siliconiam WHERE event_ts_ms >= toUnixTimestamp64Milli(now64()) - 86400000 AND record.source::String = 'iam-web' AND record.event::String = 'page_view' GROUP BY path, environment ORDER BY views DESC LIMIT 30",
+      "recent": "SELECT toFloat64(event_ts_ms) AS at_ms, record.source::String AS source, record.event::String AS event,\nrecord.context.level::String AS level, record.context.method::String AS method, record.context.route::String AS route,\nrecord.context.status::Nullable(Int32) AS status, coalesce(record.context.latency_ms::Nullable(Float64), record.context.duration_ms::Nullable(Float64)) AS latency_ms, record.context.request_id::String AS request_id,\nrecord.context.stage::String AS stage, record.context.command::String AS command,\nrecord.context.success::Nullable(Bool) AS success, record.context.code::String AS code FROM siliconiam WHERE event_ts_ms >= toUnixTimestamp64Milli(now64()) - 86400000 AND record.source::String IN ('iam-cli','iam-daemon','rust-client') AND record.event::String IN ('command.completed','update.completed','request.completed') ORDER BY event_ts_ms DESC LIMIT 35"
+    }
+  }
+]
