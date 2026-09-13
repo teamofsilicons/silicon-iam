@@ -75,6 +75,10 @@ Import preserves the qualified ID, backend URL, webhook URL, OBO catalog, and de
 
 The production webhook signing secret is inherited internally so the existing receiver can validate test deliveries, but IAM never reveals that production secret. When an app replaces its webhook destination in a testing environment, IAM creates and returns a fresh test-only `webhook_signing_secret` when no replacement was supplied. A caller may instead supply a test-only `webhook_secret`. The new endpoint activates immediately, and the secret-bearing response has a ten-minute replay window. Every testing destination replacement uses a supplied or newly generated test-only secret. Production destination changes reuse the current key.
 
+## Application login
+
+With the verified environment key and its test Application secret, `POST /api/v1/app-auth/tokens` accepts either an IAM-issued one-time code or an existing Carbon/Silicon public ID in `slt`. For example, send `app_id=tos%3Ebriefcase&slt=alice` or `app_id=tos%3Ebriefcase&slt=worker%3Atos`. IAM issues ordinary access and rotating refresh tokens. The actor-ID shortcut selects the actor’s current active organizations and the Application’s currently approved scopes; future memberships are not added to that session automatically. Unknown or inactive actors are rejected. Production never accepts an actor ID as a login credential. Keep the same idempotency key and exact input when retrying an uncertain exchange.
+
 ## Fixed verification codes
 
 Testing sends no real email or SMS. Use `000000` for signup contact verification, Carbon login, invitation acceptance, and verified-channel step-up. Challenge creation, attempts, cooldowns, expiry, session binding, and idempotency still run through the normal lifecycle. The root key therefore enables onboarding and authenticating administrative test identities without a real inbox or phone.
