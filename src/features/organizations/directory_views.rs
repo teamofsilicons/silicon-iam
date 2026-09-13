@@ -421,7 +421,8 @@ async fn list_directory_members(
     if let Some(kind) = actor_filter {
         statement
             .push(" AND membership.principal_kind = ")
-            .push_bind(kind);
+            .push_bind(kind)
+            .push("::iam.principal_kind");
     }
     if let Some(cursor) = cursor {
         statement.push(" AND membership.id > ").push_bind(cursor);
