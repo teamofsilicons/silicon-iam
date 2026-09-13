@@ -1197,6 +1197,46 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
         .expect("test credential selects own context");
     assert_eq!(viewed.environment_id, created.environment_id);
     assert_eq!(viewed.application.app_id, created.app_id);
+    let discovered = caller
+        .without_environment()
+        .with_testing_application(&created.app_id, &created.app_secret)
+        .expect("test selector");
+    let context = discovered
+        .applications()
+        .testing_context()
+        .await
+        .expect("secret-only discovery");
+    assert_eq!(context.environment_id, created.environment_id);
+    assert_eq!(
+        context.environment.as_ref().expect("IAM metadata").org_id,
+        orgs[0]
+    );
+    assert!(
+        discovered.signup().start(&Mutation::new()).await.is_err(),
+        "test app secret is not signup/root authority"
+    );
+    assert!(
+        app.with_testing_application(&created.app_id, &apps[0].app_secret)
+            .expect("shape")
+            .applications()
+            .testing_context()
+            .await
+            .is_err(),
+        "production secrets never select testing"
+    );
+    assert!(
+        discovered
+            .with_credential(Credential::application(
+                &apps[1].application.app_id,
+                &created.app_secret
+            ))
+            .applications()
+            .testing_context()
+            .await
+            .is_err(),
+        "different application rejected"
+    );
+
     assert!(
         app.applications().testing_context().await.is_err(),
         "no test view in production"
@@ -1271,12 +1311,12 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
         )
         .await
         .expect("test subject grants exact scopes");
-    let tokens = caller
+    let tokens = discovered
         .oauth()
         .login(&created.app_id, &slt.slt, &Mutation::new())
         .await
         .expect("imported app exchanges subject SLT");
-    let bearer = sandbox.with_credential(Credential::bearer(tokens.access_token.clone()));
+    let bearer = discovered.with_credential(Credential::bearer(tokens.access_token.clone()));
     let profile = bearer
         .application_reads()
         .me()
@@ -1483,6 +1523,18 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
         .await
         .expect("owner app edits environment");
     assert_eq!(edited.name, "Renamed app environment");
+    assert_eq!(
+        discovered
+            .applications()
+            .testing_context()
+            .await
+            .expect("metadata refresh")
+            .environment
+            .expect("metadata")
+            .name,
+        edited.name
+    );
+
     assert!(
         app.environments()
             .update(
@@ -1519,6 +1571,11 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
         caller.applications().testing_context().await.is_err(),
         "old root key invalidated"
     );
+    discovered
+        .applications()
+        .testing_context()
+        .await
+        .expect("application discovery survives root rotation");
     let next = caller.with_environment(
         silicon_iam_client::EnvironmentKey::new(new_key.key.clone()).expect("new key"),
     );
@@ -1532,6 +1589,11 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
         .await
         .expect("owner deletes environment");
     assert!(deleted.purge_after.is_some());
+    assert!(
+        discovered.applications().testing_context().await.is_err(),
+        "IAM retirement disables discovery"
+    );
+
     assert!(
         next.applications().testing_context().await.is_err(),
         "deleted environment unavailable"
@@ -1550,6 +1612,11 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
         .testing_context()
         .await
         .expect("restore preserves test application");
+    discovered
+        .applications()
+        .testing_context()
+        .await
+        .expect("IAM restore enables discovery");
     let clean = Mutation::new();
     let cleaned = app
         .environments()
@@ -1557,6 +1624,10 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
         .await
         .expect("owner cleans entire environment");
     assert!(cleaned.erased_rows > 0);
+    assert!(
+        discovered.applications().testing_context().await.is_err(),
+        "IAM clean invalidates old app selector"
+    );
     let replay = app
         .environments()
         .clean(&orgs[0], created.environment_id, &clean)

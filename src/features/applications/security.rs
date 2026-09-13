@@ -529,7 +529,7 @@ fn bearer_credential(headers: &HeaderMap) -> Result<&str, ApiError> {
     Ok(credential)
 }
 
-fn basic_credentials(headers: &HeaderMap) -> Result<(String, SecretString), ApiError> {
+pub(crate) fn basic_credentials(headers: &HeaderMap) -> Result<(String, SecretString), ApiError> {
     let value = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())

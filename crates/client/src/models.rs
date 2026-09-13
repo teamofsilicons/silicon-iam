@@ -1525,6 +1525,12 @@ pub struct ApplicationTestingContext {
     pub environment_id: Uuid,
     /// The contract's `application`.
     pub application: TestingApplicationView,
+    /// The contract's `environment`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<TestingEnvironmentMetadata>,
+    /// The contract's `webhook_key_digest`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_key_digest: Option<String>,
 }
 
 /// Contract type `ApplicationTestingEnvironment`.
@@ -3425,6 +3431,38 @@ pub struct TestingEnvironmentKey {
     pub key_rotated_at: Option<OffsetDateTime>,
     /// The contract's `key`.
     pub key: TestingEnvironmentKeyValue,
+}
+
+/// Contract type `TestingEnvironmentMetadata`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TestingEnvironmentMetadata {
+    /// The contract's `environment_id`.
+    pub environment_id: Uuid,
+    /// The contract's `org_id`.
+    pub org_id: String,
+    /// The contract's `name`.
+    pub name: String,
+    /// The contract's `description`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The contract's `version`.
+    pub version: i64,
+    /// The contract's `key_generation`.
+    pub key_generation: i64,
+    /// The contract's `cleaned_at`.
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cleaned_at: Option<OffsetDateTime>,
+    /// The contract's `created_at`.
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    /// The contract's `creator_type`.
+    pub creator_type: String,
+    /// The contract's `creator_id`.
+    pub creator_id: String,
 }
 
 /// Contract type `TestingEnvironmentPage`.

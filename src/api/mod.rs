@@ -3,7 +3,7 @@
 pub(crate) mod authentication;
 mod contracts;
 pub(crate) mod me;
-mod scoped;
+pub(crate) mod scoped;
 
 use std::{future::IntoFuture as _, sync::Arc, time::Instant};
 
@@ -166,6 +166,7 @@ async fn serve_surface(settings: Settings, surface: Surface) -> anyhow::Result<(
         workos,
         testing,
     };
+    crate::features::testing_environments::backfill(&state).await?;
     let app = router(state.clone(), surface)?;
     let listener = TcpListener::bind(bind_addr).await?;
     let shutdown_timeout = state.settings.server.shutdown_timeout;
@@ -245,6 +246,9 @@ fn cors_layer(state: &ApiState) -> anyhow::Result<CorsLayer> {
             http::header::ACCEPT,
             http::header::AUTHORIZATION,
             http::header::CONTENT_TYPE,
+            http::HeaderName::from_static(
+                crate::features::testing_environments::APPLICATION_HEADER,
+            ),
             http::HeaderName::from_static("idempotency-key"),
             http::header::IF_MATCH,
             http::HeaderName::from_static("x-csrf-token"),
@@ -282,6 +286,7 @@ fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
         http::HeaderName::from_static(
             crate::features::testing_environments::ENVIRONMENT_KEY_HEADER,
         ),
+        http::HeaderName::from_static(crate::features::testing_environments::APPLICATION_HEADER),
         http::HeaderName::from_static("idempotency-key"),
         http::HeaderName::from_static("x-csrf-token"),
         http::HeaderName::from_static("x-step-up-token"),
@@ -319,7 +324,11 @@ fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
         crate::features::testing_environments::select_plane,
     ));
     let control_plane = match surface {
-        Surface::Full => Router::new().merge(crate::features::testing_environments::router()),
+        Surface::Full => Router::new()
+            .merge(crate::features::testing_environments::router())
+            .layer(middleware::from_fn(
+                crate::features::testing_environments::reject_application_selector,
+            )),
         Surface::Scoped => Router::new(),
     };
     let web = match surface {

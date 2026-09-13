@@ -4,6 +4,30 @@
   paths while the client adds the environment root key to each request.
 </p>
 
+<h2>Connect an Application with its test secret alone</h2>
+<p>After IAM imports or creates the test Application, a service such as Briefcase can
+select its environment without retaining the IAM root key or registering a pairing.</p>
+<pre><code>let application = Client::new("https://backend.iam.teamofsilicons.com")?
+    .with_testing_application(&amp;app_id, &amp;app_secret)?
+    .with_credential(Credential::application(&amp;app_id, &amp;app_secret));
+let context = application.applications().testing_context().await?;
+let tokens = application.oauth().login(&amp;app_id, "test-user", &amp;Mutation::new()).await?;
+let actor = application.with_credential(Credential::bearer(tokens.access_token));
+let me = actor.application_reads().me().await?;</code></pre>
+<p>The SDK sends <code>X-Testing-Application: Basic …</code> separately from actor
+Authorization. IAM verifies the full application credential and returns current
+metadata in <code>context.environment</code>. Scoped OAuth reads retain their
+normal audience and scope checks. This selector cannot bootstrap identities,
+issue direct IAM sessions, or manage the environment. Use IAM's root selection
+and authorized control-plane identity for those operations. Production secrets,
+inactive environments, mixed selectors, and mismatched application tokens fail closed.</p>
+<p>Application secret rotation needs no service pairing update. Environment root
+rotation leaves application selection usable. IAM clean removes the old applications
+and selectors; reimport them and use the new secret. Services should track
+<code>cleaned_at</code> to clear their old data before accepting a reinitialized world.
+The context also contains a SHA-256 <code>webhook_key_digest</code> for matching
+an already signature-verified IAM webhook without retaining root authority.</p>
+
 <h2>Create on production, execute in the test plane</h2>
 
 <pre><code>use silicon_iam_client::{Client, EnvironmentKey, Mutation, models};

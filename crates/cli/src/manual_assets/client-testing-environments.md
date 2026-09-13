@@ -2,6 +2,24 @@
 
 The Rust client uses one switch for an entire isolated IAM world: `Client::with_environment`. Every ordinary API group then keeps the same methods and paths while the client adds the environment root key to each request.
 
+## Connect an Application with its test secret alone
+
+After IAM imports or creates the test Application, a service such as Briefcase can select its environment without retaining the IAM root key or registering a pairing.
+
+```
+let application = Client::new("https://backend.iam.teamofsilicons.com")?
+    .with_testing_application(&app_id, &app_secret)?
+    .with_credential(Credential::application(&app_id, &app_secret));
+let context = application.applications().testing_context().await?;
+let tokens = application.oauth().login(&app_id, "test-user", &Mutation::new()).await?;
+let actor = application.with_credential(Credential::bearer(tokens.access_token));
+let me = actor.application_reads().me().await?;
+```
+
+The SDK sends `X-Testing-Application: Basic …` separately from actor Authorization. IAM verifies the full application credential and returns current metadata in `context.environment`. Scoped OAuth reads retain their normal audience and scope checks. This selector cannot bootstrap identities, issue direct IAM sessions, or manage the environment. Use IAM's root selection and authorized control-plane identity for those operations. Production secrets, inactive environments, mixed selectors, and mismatched application tokens fail closed.
+
+Application secret rotation needs no service pairing update. Environment root rotation leaves application selection usable. IAM clean removes the old applications and selectors; reimport them and use the new secret. Services should track `cleaned_at` to clear their old data before accepting a reinitialized world. The context also contains a SHA-256 `webhook_key_digest` for matching an already signature-verified IAM webhook without retaining root authority.
+
 ## Create on production, execute in the test plane
 
 ```

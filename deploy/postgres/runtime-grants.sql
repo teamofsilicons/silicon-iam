@@ -524,6 +524,8 @@ DECLARE
         'touch_testing_application',
         'update_testing_application_secret',
         'get_testing_environment_obo_key',
+        'test_application_environment',
+        'test_application_backfill_environments',
 
         'active_organization_membership_id',
         'apply_approved_tag_change',
@@ -695,6 +697,12 @@ DECLARE
         'sunset_idle_contract_versions'
     ];
 BEGIN
+    IF to_regprocedure('iam_private.current_testing_environment_id()') IS NOT NULL THEN
+        api_function_names := api_function_names || ARRAY[
+            'register_test_application_selector', 'resolve_test_application_selector',
+            'test_application_selector_backfill'
+        ];
+    END IF;
     FOREACH allowed_function_name IN ARRAY api_function_names
     LOOP
         SELECT pg_catalog.count(*)

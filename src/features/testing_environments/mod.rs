@@ -11,6 +11,9 @@
 //! deliberately not reachable from inside an environment, so an environment
 //! cannot create or destroy environments.
 
+mod discovery;
+pub(crate) use discovery::register as register_application_selector;
+pub(crate) use discovery::{APPLICATION_HEADER, backfill, reject_application_selector};
 mod application_layer;
 mod application_view;
 mod graph;

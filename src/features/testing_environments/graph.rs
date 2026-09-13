@@ -139,6 +139,12 @@ pub(super) async fn import_all(
         } else {
             create_one(transaction, state, source, selected.id).await?
         };
+        super::discovery::register(
+            transaction,
+            application.application_id,
+            &application.app_secret,
+        )
+        .await?;
         imported.insert(app_id.clone(), application);
     }
     if !imported.contains_key(root) {
@@ -315,6 +321,7 @@ pub(crate) async fn record_rotated_application_secret(
     let Some(environment_id) = testing_plane::current_id() else {
         return Ok(());
     };
+    super::discovery::register(transaction, application_id, secret).await?;
     let stored = state
         .crypto
         .encrypt(

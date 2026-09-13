@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.0
+
+- Update the IAM client and embedded testing-environment documentation to 1.8.0.
+
 ## 1.7.0
 
 - Added `app testing manage` for reading, editing, cleaning, deleting, restoring, revealing, and rotating keys for application-owned environments.

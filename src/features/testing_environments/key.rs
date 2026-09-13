@@ -63,6 +63,15 @@ pub(crate) async fn select_plane(
     request: Request,
     next: Next,
 ) -> Response {
+    match super::discovery::presented(request.headers()) {
+        Ok(Some(credential)) => {
+            return super::discovery::select(state, request, next, credential)
+                .await
+                .unwrap_or_else(axum::response::IntoResponse::into_response);
+        }
+        Err(error) => return error.into_response(),
+        Ok(None) => {}
+    }
     let presented = match presented_key(request.headers()) {
         Ok(None) => return next.run(request).await,
         Ok(Some(presented)) => presented,

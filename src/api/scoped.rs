@@ -16,7 +16,7 @@ use crate::{
 /// Include only endpoints governed by published IAM scopes. The outer gate is
 /// independent of individual handlers, so future direct-IAM bypasses in a
 /// handler cannot grant first-party or delegated tokens access to this host.
-pub(super) fn router(state: ApiState) -> Router<ApiState> {
+pub(crate) fn router(state: ApiState) -> Router<ApiState> {
     Router::new()
         .route("/api/v1/me", get(me::get))
         .merge(crate::features::organizations::scoped_router())

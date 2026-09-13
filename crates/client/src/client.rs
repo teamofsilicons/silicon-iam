@@ -44,6 +44,7 @@ pub struct Client {
     base_url: Url,
     credential: Credential,
     environment: Option<EnvironmentKey>,
+    testing_application: Option<Credential>,
     updater: Arc<AutomaticUpdater>,
 }
 
@@ -53,6 +54,7 @@ pub struct ClientBuilder {
     base_url: Url,
     credential: Credential,
     environment: Option<EnvironmentKey>,
+    testing_application: Option<Credential>,
     timeout: Duration,
     user_agent: Option<String>,
     update_policy: UpdatePolicy,
@@ -124,6 +126,30 @@ impl Client {
         }
     }
 
+    /// Selects testing using an application credential, without environment root authority.
+    /// The selector is retained when switching to an OAuth bearer for scoped reads.
+    ///
+    /// # Errors
+    /// Rejects malformed application credentials locally.
+    pub fn with_testing_application(&self, app_id: &str, secret: &str) -> Result<Self> {
+        if !app_id.contains('>')
+            || secret.len() != 47
+            || !secret.starts_with("ask_")
+            || !secret[4..]
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err(Error::Invalid(
+                "invalid testing application credential".into(),
+            ));
+        }
+        Ok(Self {
+            environment: None,
+            testing_application: Some(Credential::application(app_id, secret)),
+            ..self.clone()
+        })
+    }
+
     /// The same client, executing inside a testing environment.
     ///
     /// Every subsequent request runs against that environment's data instead
@@ -134,6 +160,7 @@ impl Client {
     pub fn with_environment(&self, environment: EnvironmentKey) -> Self {
         Self {
             environment: Some(environment),
+            testing_application: None,
             ..self.clone()
         }
     }
@@ -143,6 +170,7 @@ impl Client {
     pub fn without_environment(&self) -> Self {
         Self {
             environment: None,
+            testing_application: None,
             ..self.clone()
         }
     }
@@ -199,6 +227,23 @@ impl Client {
             .request(method, url)
             .header(SUPPORTED_VERSIONS_HEADER, API_VERSION);
         request = self.credential.apply(request);
+        if let Some(Credential::Application { app_id, secret }) = &self.testing_application {
+            use base64::Engine as _;
+            use secrecy::ExposeSecret as _;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(format!(
+                "{}:{}",
+                app_id,
+                secret.expose_secret()
+            ));
+            let value = format!("Basic {encoded}");
+            request = match http::HeaderValue::from_str(&value) {
+                Ok(mut header) => {
+                    header.set_sensitive(true);
+                    request.header("x-testing-application", header)
+                }
+                Err(_) => request.header("x-testing-application", value),
+            };
+        }
         if let Some(environment) = &self.environment {
             request = request.header(ENVIRONMENT_KEY_HEADER, environment.expose());
         }
@@ -606,6 +651,7 @@ impl ClientBuilder {
             base_url,
             credential: Credential::Anonymous,
             environment: None,
+            testing_application: None,
             timeout: Duration::from_secs(30),
             user_agent: None,
             update_policy: UpdatePolicy::Automatic,
@@ -709,6 +755,7 @@ impl ClientBuilder {
             base_url: self.base_url,
             credential: self.credential,
             environment: self.environment,
+            testing_application: self.testing_application,
             updater: Arc::new(AutomaticUpdater::new(update_policy, self.update_manifest)),
         })
     }

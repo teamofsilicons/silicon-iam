@@ -369,6 +369,13 @@ pub(super) async fn create(
     .execute(&mut *transaction)
     .await
     .map_err(|_| ApiError::internal("application_secret_insert"))?;
+    crate::features::testing_environments::register_application_selector(
+        &mut transaction,
+        application_id,
+        &client_secret,
+    )
+    .await
+    .map_err(|_| ApiError::internal("testing_application_selector"))?;
     sqlx::query(
         r"
         INSERT INTO iam.application_webhook_endpoints (

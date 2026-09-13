@@ -3932,7 +3932,7 @@ paths:
       tags: [Testing environments]
       operationId: getApplicationTestingContext
       summary: Authenticate and inspect this application in the selected testing environment
-      description: Requires its test app_secret and X-Testing-Environment-Key. Production credentials do not authenticate in a testing environment. No secret is returned.
+      description: Present test application Basic credentials and X-Testing-Application with the same Basic value to discover the environment without a root key. X-Testing-Environment-Key remains supported for administrative clients. Selectors are mutually exclusive. Production credentials do not authenticate in testing. Returns IAM-owned metadata and a webhook routing digest, never the root key.
       security: [{ applicationBasic: [] }]
       parameters:
         - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
@@ -6251,12 +6251,28 @@ components:
       properties:
         decision: { type: string, enum: [approve, deny] }
         reason: { type: string, maxLength: 10000, description: Required and nonempty when denying a request. }
+    TestingEnvironmentMetadata:
+      type: object
+      required: [environment_id, org_id, name, version, key_generation, created_at, creator_type, creator_id]
+      properties:
+        environment_id: { type: string, format: uuid }
+        org_id: { type: string }
+        name: { type: string }
+        description: { type: [string, 'null'] }
+        version: { type: integer, minimum: 1 }
+        key_generation: { type: integer, minimum: 1 }
+        cleaned_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+        creator_type: { type: string }
+        creator_id: { type: string }
     ApplicationTestingContext:
       type: object
       required: [environment_id, application]
       properties:
         environment_id: { type: string, format: uuid }
         application: { $ref: '#/components/schemas/TestingApplicationView' }
+        environment: { $ref: '#/components/schemas/TestingEnvironmentMetadata' }
+        webhook_key_digest: { type: string, pattern: '^[a-f0-9]{64}$' }
     TestingApplicationView:
       type: object
       required: [app_id, base_url, app_scope, webhook_scope, testing_idle_days]

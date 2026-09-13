@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.0
+
+- Add application-secret-only test selection and verified IAM environment metadata. App selectors remain restricted to the selected application’s existing OAuth and directory authority.
+
 ## 1.7.0
 
 - Added authenticated test configuration inspection with `applications().testing_context()`.
