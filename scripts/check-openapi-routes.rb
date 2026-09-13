@@ -135,7 +135,7 @@ if File.exist?(WEB_ROUTER)
   end
 end
 
-router_files = Dir["src/features/*/mod.rs"].sort + ["src/api/mod.rs"]
+router_files = Dir["src/features/*/mod.rs"].sort + ["src/api/mod.rs", "src/api/scoped_webhook.rs"]
 actual = router_files.each_with_object({}) do |path, routes|
   extract_routes(path).each do |route, methods|
     raise "duplicate Axum route #{route}" if routes.key?(route)
