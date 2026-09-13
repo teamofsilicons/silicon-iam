@@ -1333,12 +1333,14 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
             .await
             .is_err()
     );
+    let denied_directory = bearer
+        .application_reads()
+        .members(&user_org, &Paging::new())
+        .await
+        .expect_err("unapproved directory scope is forbidden");
     assert!(
-        bearer
-            .application_reads()
-            .members(&user_org, &Paging::new())
-            .await
-            .is_err()
+        matches!(denied_directory, silicon_iam_client::Error::Api(ref error) if error.status == 403),
+        "parameterized scoped routes must reject missing scopes, not fail path extraction: {denied_directory:?}"
     );
     assert!(
         bearer

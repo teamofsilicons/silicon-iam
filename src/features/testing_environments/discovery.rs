@@ -172,6 +172,11 @@ pub(super) async fn select(
                 {
                     return Err(AppError::Forbidden);
                 }
+                // The outer router already captured path parameters. A second
+                // route match appends them, making Path<T> fail on duplicate
+                // parameters. Preserve the verified actor, but rebuild routing
+                // extensions for the scoped router. Request IDs stay in headers.
+                parts.extensions.clear();
                 parts.extensions.insert(auth);
                 support::touch(&state.pool, id).await;
                 // Reuse the application's existing scope-governed router. Anonymous OTP,
