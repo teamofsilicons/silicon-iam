@@ -1,4 +1,11 @@
+x-telemetry-environment: &telemetry-environment
+  IAM_TELEMETRY: ${IAM_TELEMETRY:-on}
+  IAM_TELEMETRY_KEY: ${IAM_TELEMETRY_KEY:-}
+  IAM_TELEMETRY_URL: ${IAM_TELEMETRY_URL:-https://backend.spacestation.teamofsilicons.com}
+  IAM_TELEMETRY_HOME: ${IAM_TELEMETRY_HOME:-/tmp/iam-telemetry}
+
 x-runtime-environment: &runtime-environment
+  <<: *telemetry-environment
   IAM_ENVIRONMENT: ${IAM_ENVIRONMENT:-development}
   IAM_BIND_ADDR: 0.0.0.0:8080
   IAM_PUBLIC_BASE_URL: ${IAM_PUBLIC_BASE_URL:-http://localhost:8080}
@@ -100,6 +107,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      <<: *telemetry-environment
       IAM_ENVIRONMENT: development
       IAM_LOG_FILTER: silicon_iam=info
       IAM_MIGRATOR_DATABASE_URL: postgres://silicon_iam_migrator:${IAM_LOCAL_MIGRATOR_DATABASE_PASSWORD}@postgres:5432/silicon_iam
@@ -154,6 +162,7 @@ services:
       grant-runtime-access:
         condition: service_completed_successfully
     environment:
+      <<: *telemetry-environment
       IAM_ENVIRONMENT: development
       IAM_LOG_FILTER: silicon_iam=info
       IAM_KEY_OPERATOR_DATABASE_URL: postgres://silicon_iam_key_operator_runtime:${IAM_LOCAL_KEY_OPERATOR_DATABASE_PASSWORD}@postgres:5432/silicon_iam
@@ -210,6 +219,7 @@ services:
       grant-runtime-access:
         condition: service_completed_successfully
     environment:
+      <<: *telemetry-environment
       IAM_ENVIRONMENT: ${IAM_ENVIRONMENT:-development}
       IAM_LOG_FILTER: ${IAM_LOG_FILTER:-silicon_iam=debug}
       IAM_DATABASE_URL: postgres://silicon_iam_worker_runtime:${IAM_LOCAL_WORKER_DATABASE_PASSWORD}@postgres:5432/silicon_iam

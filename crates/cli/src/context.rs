@@ -83,7 +83,8 @@ impl Context {
             .user_agent(concat!("iam/", env!("CARGO_PKG_VERSION")))
             // The CLI updates its whole installed crate after dispatch. Its
             // embedded client must not separately mutate this source tree.
-            .auto_update(false);
+            .auto_update(false)
+            .telemetry(config.telemetry);
         if let Some(environment_id) = testing_environment_id {
             let credentials = store::load_credentials()?;
             let Some(key) = credentials.testing_environment_key(&profile_name, environment_id)

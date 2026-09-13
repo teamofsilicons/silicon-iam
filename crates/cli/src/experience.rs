@@ -292,6 +292,19 @@ fn notes(path: &str) -> String {
         "iam silicon-login" => {
             "Examples:\n  iam silicon-login --sid 'assistant:tos'\n  iam silicon-login --app-id 'tos>space-station' --grant-org tos\n\nThe first command prompts for an STK on a terminal. In an agent/non-interactive\nprocess provide --stk explicitly. With only --app-id, reuse a stored Silicon\nsession and return an SLT; do not give the STK to the Application."
         }
+        "iam iam" => {
+            "Example:\n  iam iam --json\n\nDiscover repository, docs, packages and credential-issuer metadata offline. IAM itself has no application ID; it issues app-bound SLTs."
+        }
+        "iam report" => {
+            "Examples:\n  iam report 'Login fails: steps, expected result, actual result'\n  iam report 'Login fails after refresh' --pr https://github.com/teamofsilicons/silicon-iam/pull/123\n\nSubmits a GitHub issue using gh authentication. Only your supplied text, PR and package version are sent; no logs or credentials are collected. Run gh auth login first. Reports are not retried automatically."
+        }
+        "iam daemon"
+        | "iam daemon install"
+        | "iam daemon uninstall"
+        | "iam daemon status"
+        | "iam daemon run" => {
+            "Workflow:\n  iam daemon install\n  iam daemon status --json\n  iam config set auto-update off\n  iam daemon uninstall\n\nThe installer starts a per-user service on macOS (launchd) or Linux (systemd). It checks hourly without commands being run. A fresh child loads updated code; one store lock prevents duplicate workers. Use daemon run with another supervisor. Install again after changing IAM home or moving the binary."
+        }
         "iam signup" => {
             "Example:\n  iam signup --email you@example.com --phone '+14155552671' --carbon-id space-pilot\n\nIAM verifies both channels before account creation. Production signup requires\ninteractive verification. Carbon IDs use lowercase letters, digits 1-9 (not 0),\nunderscores or hyphens, and must be 3-30 characters. Signup does not select an organization."
         }

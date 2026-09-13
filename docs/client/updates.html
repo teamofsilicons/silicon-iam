@@ -58,15 +58,15 @@
 <div class="banner banner-info">
   <div>
     <strong>The CLI has its own updater.</strong>
-    After a normal command completes and prints its result, the <code>iam</code> binary checks
-    its persisted last-attempt time and, when at least one hour has elapsed, can replace itself
-    with <code>cargo install</code> for the next invocation. The first use checks immediately
-    after completion. Failures also record an attempt, and a cross-process lock prevents
-    concurrent checks or installations. The command's output and exit status are preserved.
-    No idle daemon or timer runs. Use <code>iam config set auto-update off</code> to opt out,
-    or <code>SILICON_IAM_AUTO_UPDATE=false</code> for one invocation.
-    <code>iam system update</code> explicitly bypasses opt-out and the hourly throttle,
-    while retaining the concurrent-update lock. Help, command discovery and offline docs
-    never trigger automatic maintenance.
+    The installer enables a user service that checks hourly without CLI activity.
+    Use <code>iam daemon install</code> after a Cargo-only installation and
+    <code>iam daemon status --json</code> to inspect it. Each maintenance pass
+    launches a fresh binary, reads the persisted policy and attempt time, and
+    shares the installation lock with manual updates. Failed attempts are also
+    throttled. Updates target the same Cargo installation root; normal commands
+    never wait for an update. Use <code>iam config set auto-update off</code> to
+    opt out or <code>iam daemon uninstall</code> to remove the service.
+    <code>iam system update</code> bypasses opt-out and the hourly throttle.
+    See <a href="/cli/">CLI installation and service operation</a>.
   </div>
 </div>

@@ -9,6 +9,7 @@
 mod cli;
 mod commands;
 mod context;
+mod daemon;
 mod error;
 mod experience;
 mod guidance;
@@ -25,16 +26,46 @@ async fn main() -> std::process::ExitCode {
         Ok(parsed) => parsed,
         Err(exit) => return exit,
     };
-    let mut maintain_after_command = updater::follows(&cli.command);
-    let exit = match run(cli).await {
+    let observed = !matches!(
+        &cli.command,
+        cli::Command::Docs { .. }
+            | cli::Command::Commands
+            | cli::Command::Iam
+            | cli::Command::Config(_)
+            | cli::Command::Daemon(cli::DaemonCommand::Run)
+    );
+    let telemetry = observed
+        .then(|| store::load_config().ok())
+        .flatten()
+        .and_then(|config| {
+            silicon_iam_client::telemetry::Telemetry::from_env(
+                if matches!(&cli.command, cli::Command::Daemon(_)) {
+                    "iam-daemon"
+                } else {
+                    "iam-cli"
+                },
+                config.telemetry,
+            )
+            .ok()
+            .flatten()
+        });
+    let invocation_id = uuid::Uuid::now_v7();
+    let started = std::time::Instant::now();
+    if let Some(telemetry) = &telemetry {
+        telemetry.record(
+            "command",
+            "command.started",
+            serde_json::json!({"command":path.join(" "), "invocation_id":invocation_id}),
+        );
+    }
+    let result = run(cli).await;
+    if let Some(telemetry) = &telemetry {
+        telemetry.record("command", "command.completed", serde_json::json!({"command":path.join(" "), "invocation_id":invocation_id, "success":result.is_ok(), "exit_code":result.as_ref().err().map_or(0, error::CliError::exit_code), "duration_ms":u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)}));
+        let _ = telemetry.flush();
+    }
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            // Maintenance uses the same local settings and store. If those
-            // already failed, report their recovery once without reopening
-            // them just to repeat the failure as an updater warning.
-            if matches!(error, error::CliError::Config(_)) {
-                maintain_after_command = false;
-            }
             let message = error.to_string();
             eprintln!("error: {message}");
             if let Some(hint) = error.hint() {
@@ -53,29 +84,21 @@ async fn main() -> std::process::ExitCode {
             }
             std::process::ExitCode::from(u8::try_from(error.exit_code()).unwrap_or(1))
         }
-    };
-    if maintain_after_command {
-        // Publish all result bytes before a registry check or Cargo install.
-        use std::io::Write as _;
-        let _ = std::io::stdout().flush();
-        let _ = std::io::stderr().flush();
-        match updater::automatic().await {
-            Ok(updater::Outcome::Updated { from, to }) => {
-                eprintln!(
-                    "Updated iam from {from} to {to} after the command completed. The next invocation will use {to}."
-                );
-            }
-            Ok(_) => {}
-            Err(error) => eprintln!("warning: post-command automatic update skipped: {error}"),
-        }
     }
-    exit
 }
 
-async fn run(cli: Cli) -> error::Result<()> {
-    // Reference commands must work offline, including with a broken credential
-    // store or unavailable service. They never start background maintenance.
+async fn run(mut cli: Cli) -> error::Result<()> {
+    if cli.global.json {
+        cli.global.output = output::Format::Json;
+    }
+    // Discovery, reports and daemon lifecycle do not need an IAM session.
+    // Reference commands also remain usable with a broken credential store.
     match &cli.command {
+        cli::Command::Iam => return commands::discovery::run(cli.global.output),
+        cli::Command::Daemon(command) => return daemon::run(command, cli.global.output).await,
+        cli::Command::Report { message, pr } => {
+            return commands::discovery::report(cli.global.output, message, pr.as_deref());
+        }
         cli::Command::Docs { topic, search } => {
             return manual::run(cli.global.output, topic.as_deref(), search.as_deref());
         }

@@ -35,6 +35,7 @@ impl Plan {
             return plan;
         }
         match command {
+            Command::Login(args) if args.status.is_some() => {}
             Command::Login(args) => {
                 if let Some(app_id) = args.app_id.as_deref() {
                     plan.short_lived_token(context, app_id);

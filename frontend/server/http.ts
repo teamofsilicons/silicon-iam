@@ -1,3 +1,4 @@
+import { loadTelemetryKey } from "./telemetry-config.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { resolve, sep, extname } from "node:path";
@@ -13,6 +14,9 @@ export function createHandler(assetDirectory: string) {
     SESSION_COOKIE_KEY: process.env.SESSION_COOKIE_KEY || "",
     COOKIE_DOMAIN: process.env.COOKIE_DOMAIN,
     DISPLAY_ENVIRONMENT: process.env.DISPLAY_ENVIRONMENT,
+    IAM_TELEMETRY: process.env.IAM_TELEMETRY,
+    IAM_TELEMETRY_KEY: loadTelemetryKey(process.env),
+    IAM_TELEMETRY_URL: process.env.IAM_TELEMETRY_URL,
     ASSETS: {
       async fetch(request) {
         if (!["GET", "HEAD"].includes(request.method))

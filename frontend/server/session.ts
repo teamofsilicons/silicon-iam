@@ -1,4 +1,7 @@
 export type Environment = {
+  IAM_TELEMETRY?: string;
+  IAM_TELEMETRY_KEY?: string;
+  IAM_TELEMETRY_URL?: string;
   API_UPSTREAM: string;
   CONSOLE_ORIGIN: string;
   AUTH_ORIGIN: string;
@@ -301,5 +304,12 @@ export function apiHeaders(request: Request, session: Session | null): Headers {
     headers.set("Authorization", `Bearer ${session.access}`);
     headers.set("Cookie", session.browserCookie);
   }
+  if (
+    request.headers.get("x-iam-telemetry") === "off" ||
+    /(?:^|;\s*)iam_telemetry=off(?:;|$)/.test(
+      request.headers.get("cookie") || "",
+    )
+  )
+    headers.set("x-iam-telemetry", "off");
   return headers;
 }

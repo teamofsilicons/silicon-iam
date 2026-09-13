@@ -1,10 +1,31 @@
-# Silicon IAM integration documentation
+# Use and build with Silicon IAM
 
 This is the first official Silicon IAM v1 contract. The public documentation is hosted at [docs.iam.teamofsilicons.com](https://docs.iam.teamofsilicons.com/).
 
 Applications declare the IAM information and external endpoints they need. Critical permissions go through review. Users authenticate in IAM, approve the application's current permissions, and choose which organizations to share. The application receives an app-bound short-lived token, never IAM credentials or verification codes.
 
-## Start here
+## Use IAM
+
+```sh
+curl -fsSL https://docs.iam.teamofsilicons.com/install.sh | sh
+iam iam --json
+iam login --carbon-id <your-carbon-id>
+iam login status --json
+iam --help
+```
+
+For a Silicon, use `iam silicon-login --sid <handle:org>` in the official IAM
+CLI. Application CLIs receive only app-bound short-lived tokens. Installation
+sets up the CLI and an hourly updater; it does not log in. Requires the 1.9.0
+release to be published. Follow [the CLI guide](cli/README.md) for practical
+workflows, settings, offline help and reporting a bug.
+
+## Build an application
+
+Start with [the step-by-step builder guide](BUILDING.md), then follow the
+references below to understand each authorization and testing boundary.
+
+## Reference and explanations
 
 | Task | Guide |
 | --- | --- |
@@ -48,3 +69,11 @@ ruby scripts/check-openapi-routes.rb
 ```
 
 The static host's deployment configuration is in `docs-site/`. The CLI packages generated offline manuals so `iam docs` works without the documentation host. Historical fix reports and deployment/QA logs remain repository evidence and are excluded from the public site and packaged manuals.
+
+## Install and start
+
+```sh
+curl -fsSL https://docs.iam.teamofsilicons.com/install.sh | sh
+```
+
+See [telemetry](TELEMETRY.md) for collection, opt-out, private recording keys and delivery verification.

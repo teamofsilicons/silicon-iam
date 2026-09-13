@@ -51,6 +51,8 @@ fn show(context: &Context) -> Result<()> {
     match context.format {
         Format::Json => json(&serde_json::json!({
             "auto_update": config.auto_update,
+            "telemetry": config.telemetry,
+            "telemetry_effective": silicon_iam_client::telemetry::enabled(config.telemetry),
             "profile": context.profile_name,
             "url": context.profile.url,
             "org": context.organization_if_set(),
@@ -60,6 +62,7 @@ fn show(context: &Context) -> Result<()> {
         })),
         Format::Text => {
             let mut table = Table::new(["field", "value"]);
+            table.row(["telemetry", if config.telemetry { "on" } else { "off" }]);
             table.row(["auto_update", if config.auto_update { "on" } else { "off" }]);
             table.row(["profile", &context.profile_name]);
             table.row(["url", &context.profile.url]);
@@ -123,6 +126,20 @@ fn profiles(context: &Context) -> Result<()> {
 fn set(context: &Context, key: &str, value: String) -> Result<()> {
     let store = store::lock()?;
     let mut config = store.load_config()?;
+    if key == "telemetry" {
+        config.telemetry = parse_switch(&value)?;
+        store.save_config(&config)?;
+        return report_setting(
+            context,
+            key,
+            Some(&serde_json::Value::Bool(config.telemetry)),
+            if config.telemetry {
+                "Telemetry is on."
+            } else {
+                "Telemetry is off. New CLI and daemon events will not be collected."
+            },
+        );
+    }
     if key == "auto-update" {
         config.auto_update = parse_switch(&value)?;
         store.save_config(&config)?;
@@ -155,7 +172,7 @@ fn set(context: &Context, key: &str, value: String) -> Result<()> {
         },
         other => {
             return Err(CliError::Usage(format!(
-                "unknown setting `{other}`; expected url, org, or auto-update"
+                "unknown setting `{other}`; expected url, org, auto-update, or telemetry"
             )));
         }
     }
@@ -178,6 +195,16 @@ fn set(context: &Context, key: &str, value: String) -> Result<()> {
 fn unset(context: &Context, key: &str) -> Result<()> {
     let store = store::lock()?;
     let mut config = store.load_config()?;
+    if key == "telemetry" {
+        config.telemetry = true;
+        store.save_config(&config)?;
+        return report_setting(
+            context,
+            key,
+            Some(&serde_json::Value::Bool(true)),
+            "Telemetry is on (default).",
+        );
+    }
     if key == "auto-update" {
         config.auto_update = true;
         store.save_config(&config)?;
@@ -204,7 +231,7 @@ fn unset(context: &Context, key: &str) -> Result<()> {
         },
         other => {
             return Err(CliError::Usage(format!(
-                "unknown setting `{other}`; expected org or auto-update"
+                "unknown setting `{other}`; expected org, auto-update, or telemetry"
             )));
         }
     }
@@ -224,7 +251,7 @@ fn parse_switch(value: &str) -> Result<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "on" | "true" | "yes" | "1" => Ok(true),
         "off" | "false" | "no" | "0" => Ok(false),
-        _ => Err(CliError::Usage("auto-update must be on or off".to_owned())),
+        _ => Err(CliError::Usage("setting must be on or off".to_owned())),
     }
 }
 

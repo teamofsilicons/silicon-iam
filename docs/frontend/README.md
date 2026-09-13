@@ -172,3 +172,5 @@ batch login. Every member must exchange its own token using its own secret.
 The frontend links to the standalone documentation site at
 https://docs.iam.teamofsilicons.com. Its static build and hosting configuration
 are in `docs-site/`; it is deployed separately from the authenticated frontend.
+
+The console and login page include **Telemetry settings** for a persistent browser opt-out. The gateway collects sanitized Space Station analytics and explicit events using a server-only key; see [telemetry](../TELEMETRY.md).

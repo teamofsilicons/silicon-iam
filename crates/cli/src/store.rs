@@ -37,6 +37,9 @@ const LOCK_OPEN_RETRY_DELAYS_MS: [u64; 5] = [1, 2, 4, 8, 16];
 /// Settings that are not secret.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
+    /// Collect operational telemetry by default; never send credentials or command arguments.
+    #[serde(default = "enabled")]
+    pub telemetry: bool,
     /// Whether the installed CLI maintains itself from crates.io.
     #[serde(default = "enabled")]
     pub auto_update: bool,
@@ -52,6 +55,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             auto_update: true,
+            telemetry: true,
             current_profile: None,
             profiles: BTreeMap::new(),
         }
@@ -368,6 +372,11 @@ pub fn save_update_state(state: &UpdateState) -> Result<()> {
 /// Returns an error for an unsafe home/lock path or an operating-system failure.
 pub fn try_lock_updater_check() -> Result<Option<File>> {
     StoreDirectory::open()?.try_lock("updater-check.lock")
+}
+
+/// Holds a lifetime lock so only one daemon runs for this home.
+pub fn try_lock_daemon() -> Result<Option<File>> {
+    StoreDirectory::open()?.try_lock("daemon.lock")
 }
 
 /// Reads stored sessions, or an empty set.

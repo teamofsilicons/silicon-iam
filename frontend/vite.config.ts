@@ -1,3 +1,4 @@
+import { loadTelemetryKey } from "./server/telemetry-config.ts";
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import solid from "vite-plugin-solid";
 import { randomBytes } from "node:crypto";
@@ -66,6 +67,9 @@ export default defineConfig(({ mode }) => {
           vars.SESSION_COOKIE_KEY || randomBytes(32).toString("base64url"),
         COOKIE_DOMAIN: vars.COOKIE_DOMAIN || "",
         DISPLAY_ENVIRONMENT: vars.DISPLAY_ENVIRONMENT,
+        IAM_TELEMETRY: vars.IAM_TELEMETRY,
+        IAM_TELEMETRY_URL: vars.IAM_TELEMETRY_URL,
+        IAM_TELEMETRY_KEY: loadTelemetryKey(vars),
       }),
     ],
     build: { outDir: "dist/client" },

@@ -45,6 +45,9 @@ pub fn session_from_actor(
 /// Returns an error when no identity was given, the code is refused, or the
 /// session cannot be stored.
 pub async fn login(context: &Context, args: LoginArgs) -> Result<()> {
+    if args.status.is_some() {
+        return login_status(context).await;
+    }
     if args.email.is_none() && args.phone.is_none() && args.carbon_id.is_none() {
         if let Some(app_id) = args.app_id.as_deref() {
             let authenticated = context.authenticated().await?;
@@ -836,6 +839,52 @@ fn require_prompt_value(value: String, label: &str) -> Result<String> {
         )));
     }
     Ok(value)
+}
+
+/// Validate the selected session against IAM; never infer validity from disk alone.
+pub async fn login_status(context: &Context) -> Result<()> {
+    let checked = async {
+        let session = context.session()?;
+        if session.pending_logout.is_some() {
+            return Err(CliError::NotSignedIn);
+        }
+        let client = context.authenticated().await?;
+        if session.actor_type == SessionActor::Silicon {
+            let (sid, org) = context.silicon_identity(&session.actor_id)?;
+            client.silicons().get(&org, &sid).await?;
+        } else {
+            client.carbons().me().await?;
+        }
+        Ok::<_, CliError>(session)
+    }
+    .await;
+    let session = match checked {
+        Ok(session) => Some(session),
+        Err(CliError::NotSignedIn) => None,
+        Err(CliError::Client(silicon_iam_client::Error::Api(ref error))) if error.status == 401 => {
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    match context.format {
+        Format::Json => json(&serde_json::json!({
+            "authenticated": session.is_some(),
+            "actor_id": session.as_ref().map(|s| &s.actor_id),
+            "actor_type": session.as_ref().map(|s| s.actor_type),
+            "profile": context.profile_name,
+            "testing_environment_id": context.testing_environment_id(),
+        })),
+        Format::Text => {
+            println!(
+                "{}",
+                session.map_or_else(
+                    || "Not authenticated.".to_owned(),
+                    |s| format!("Authenticated as {}.", s.actor_id)
+                )
+            );
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

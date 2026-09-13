@@ -15,6 +15,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  IAM_TELEMETRY: "off"
   IAM_ENVIRONMENT: test
   IAM_PUBLIC_BASE_URL: http://127.0.0.1:8080
   IAM_AUTH_BASE_URL: http://127.0.0.1:3000
@@ -65,6 +66,11 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --all-targets --all-features --locked
+
+      - name: Validate CLI installer without downloads or service changes
+        run: |
+          python3 scripts/test-cli-installer.py
+          ruby scripts/generate-telemetry-routes.rb --check
 
       - name: Confirm the client wire types still match the contract
         run: |

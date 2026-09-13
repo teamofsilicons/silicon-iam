@@ -9,6 +9,7 @@ pub mod approval;
 pub mod auth;
 pub mod carbon;
 pub mod config;
+pub mod discovery;
 pub mod env;
 pub mod invite;
 pub mod member;
@@ -29,6 +30,11 @@ use crate::{cli::Command, context::Context, error::Result};
 /// Returns whatever the command reports.
 pub async fn dispatch(context: &Context, command: Command) -> Result<()> {
     match command {
+        Command::Iam => discovery::run(context.format),
+        Command::Report { message, pr } => {
+            discovery::report(context.format, &message, pr.as_deref())
+        }
+        Command::Daemon(command) => crate::daemon::run(&command, context.format).await,
         Command::Login(args) => auth::login(context, args).await,
         Command::BatchLogin(args) => auth::batch_login(context, args).await,
         Command::SiliconLogin(args) => auth::silicon_login(context, args).await,
@@ -76,7 +82,9 @@ mod tests {
                 !sub.is_hide_set()
                     && !matches!(
                         sub.get_name(),
-                        "login"
+                        "iam"
+                            | "report"
+                            | "login"
                             | "batch-login"
                             | "silicon-login"
                             | "logout"

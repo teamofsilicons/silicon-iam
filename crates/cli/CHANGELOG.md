@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.9.0
+
+Add issuer discovery, --json, verified login status and GitHub reports with optional PR links. Replace command-triggered updates with a supervised hourly worker, user service controls and an installer. Reorganize online and bundled docs around usage and building applications. Add default-on, configurable Space Station telemetry for commands, SDK requests and daemon activity, with a dedicated table and private recording key.
+
 ## 1.8.0
 
 - Update the IAM client and embedded testing-environment documentation to 1.8.0.

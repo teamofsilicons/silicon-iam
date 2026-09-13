@@ -15,6 +15,8 @@ MANIFEST = "crates/cli/src/manual_data.rs"
 ASSETS = "crates/cli/src/manual_assets"
 
 CATALOG = [
+  ["telemetry", "Space Station collection, opt-out and delivery", "docs/TELEMETRY.md", %w[diagnostics]],
+  ["building", "Build an IAM application step by step", "docs/BUILDING.md", %w[development integration]],
   ["iam-scopes", "IAM read and mutation permissions", "docs/IAM_SCOPES.md", %w[scopes permissions]],
   ["scoped-backend", "Separate scoped IAM backend", "docs/SCOPED_BACKEND.md", []],
   ["email-invitations", "Email invitations before signup", "docs/EMAIL_INVITATIONS.md", []],

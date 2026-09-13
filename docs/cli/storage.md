@@ -98,9 +98,10 @@ For an individual failing command, retain:
 
 In a shell, save `$?` immediately after the invocation, before running another
 command. A process runner should retain each child's exit code or signal and
-stderr separately, rather than only counting failures. Disable automatic
-maintenance with `SILICON_IAM_AUTO_UPDATE=false` for a deliberate diagnostic
-invocation if you need to isolate the command from post-command update output.
+stderr separately, rather than only counting failures. Automatic maintenance
+runs in the daemon and never appends output to ordinary commands. Use
+`iam config set auto-update off` to pause future background installations during
+a diagnostic session; an installation already running may finish.
 Do not run a remote logout again merely to gather diagnostics: it changes
 server state. Preserve the original evidence first, then choose recovery based
 on the reported failure.

@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
     let arguments = Arguments::parse();
     arguments.validate()?;
     let settings = KeyOperatorSettings::from_env()?;
-    telemetry::init_process(settings.environment, &settings.log_filter)?;
+    let _telemetry = telemetry::init_process(settings.environment, &settings.log_filter)?;
 
     let purpose = RuntimeKeyPurpose::from(arguments.purpose);
     let pool = postgres::connect(&settings.database, "iam-activate-key-version").await?;

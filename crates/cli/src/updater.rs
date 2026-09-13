@@ -1,11 +1,10 @@
-//! Opportunistic maintenance after an `iam` command has finished.
+//! Hourly maintenance driven by the persistent CLI updater.
 
 use time::{Duration, OffsetDateTime};
 
-use silicon_iam_client::update::{Release, Version, check, install_binary};
+use silicon_iam_client::update::{Release, Version, check, install_binary_in};
 
 use crate::{
-    cli::{Command, ConfigCommand, SystemCommand},
     error::Result,
     store::{self, UpdateState},
 };
@@ -33,22 +32,7 @@ pub enum Outcome {
     },
 }
 
-/// Whether normal command completion may trigger automatic maintenance.
-pub fn follows(command: &Command) -> bool {
-    !matches!(
-        command,
-        Command::Docs { .. } | Command::Commands | Command::System(SystemCommand::Update)
-    ) && !matches!(
-        command,
-        Command::Config(ConfigCommand::Set { key, .. } | ConfigCommand::Unset { key })
-            if key == "auto-update"
-    )
-}
-
-/// Checks on use, at most hourly, only after the command result is reported.
-///
-/// No background task or daemon is left running. Failure remains a warning:
-/// it must not replace the completed command's result or exit code.
+/// Checks at most hourly when automatic maintenance is enabled.
 pub async fn automatic() -> Result<Outcome> {
     let config = store::load_config()?;
     if !environment_switch().unwrap_or(config.auto_update) {
@@ -73,8 +57,26 @@ async fn update_if_due(force: bool) -> Result<Outcome> {
         checked_version: Some(CLI_VERSION.to_owned()),
         checked_at: Some(now),
     })?;
-    let release = check(CLI_CRATE, CLI_VERSION).await?;
-    apply_release(&release)
+    let telemetry = store::load_config().ok().and_then(|config| {
+        silicon_iam_client::telemetry::Telemetry::from_env("iam-daemon", config.telemetry)
+            .ok()
+            .flatten()
+    });
+    if let Some(t) = &telemetry {
+        t.record("update", "update.started", serde_json::json!({}));
+    }
+    let result = match check(CLI_CRATE, CLI_VERSION).await {
+        Ok(release) => apply_release(&release),
+        Err(error) => Err(error.into()),
+    };
+    if let Some(t) = &telemetry {
+        t.record(
+            "update",
+            "update.completed",
+            serde_json::json!({"success":result.is_ok()}),
+        );
+    }
+    result
 }
 
 /// Checks and installs immediately for the explicit `iam system update` command.
@@ -88,7 +90,13 @@ fn apply_release(release: &Release) -> Result<Outcome> {
             version: release.current.clone(),
         });
     }
-    install_binary(CLI_CRATE, &release.latest)?;
+    let executable = std::env::current_exe()?;
+    let bin = executable.parent().filter(|p| p.file_name().is_some_and(|name| name == "bin"))
+        .ok_or_else(|| crate::error::CliError::Config("Self-update requires an installed <root>/bin/iam binary. Install with the documented installer or cargo install; development builds are not replaced.".into()))?;
+    let root = bin.parent().ok_or_else(|| {
+        crate::error::CliError::Config("Cannot resolve IAM installation root.".into())
+    })?;
+    install_binary_in(CLI_CRATE, &release.latest, root)?;
     Ok(Outcome::Updated {
         from: release.current.clone(),
         to: release.latest.clone(),

@@ -6,6 +6,6 @@ use silicon_iam::{api, config::Settings, telemetry};
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let settings = Settings::from_env()?;
-    telemetry::init(&settings)?;
+    let _telemetry = telemetry::init(&settings)?;
     api::serve_scoped(settings).await
 }

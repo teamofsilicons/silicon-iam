@@ -254,6 +254,7 @@ fn cors_layer(state: &ApiState) -> anyhow::Result<CorsLayer> {
             http::header::IF_MATCH,
             http::HeaderName::from_static("x-csrf-token"),
             http::HeaderName::from_static("x-org-id"),
+            http::HeaderName::from_static("x-iam-telemetry"),
             http::HeaderName::from_static("x-request-id"),
             http::HeaderName::from_static("x-step-up-token"),
             http::HeaderName::from_static(
@@ -543,6 +544,10 @@ async fn request_scope(mut request: Request, next: Next) -> Response {
             .insert(http::HeaderName::from_static("x-request-id"), header_value);
     }
 
+    let telemetry_enabled = request
+        .headers()
+        .get("x-iam-telemetry")
+        .is_none_or(|value| value != "off");
     let method = request.method().clone();
     let route = request
         .extensions()
@@ -551,6 +556,7 @@ async fn request_scope(mut request: Request, next: Next) -> Response {
     let started_at = Instant::now();
     let span = info_span!(
         "http.request",
+        telemetry_enabled,
         request_id = %request_id,
         method = %method,
         route = %route,

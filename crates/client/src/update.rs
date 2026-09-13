@@ -207,8 +207,29 @@ pub fn update_dependency(
 ///
 /// Returns an error when Cargo cannot run or the installation fails.
 pub fn install_binary(package: &str, version: &Version) -> Result<(), UpdateError> {
-    let status = Command::new(cargo_program())
-        .arg("install")
+    install_binary_command(package, version, None)
+}
+
+/// Install a binary into a specific Cargo root, keeping custom installations updated.
+///
+/// # Errors
+/// Returns an error when Cargo cannot run or the installation fails.
+pub fn install_binary_in(package: &str, version: &Version, root: &Path) -> Result<(), UpdateError> {
+    install_binary_command(package, version, Some(root))
+}
+
+fn install_binary_command(
+    package: &str,
+    version: &Version,
+    root: Option<&Path>,
+) -> Result<(), UpdateError> {
+    let mut command = Command::new(cargo_program());
+    if let Some(root) = root {
+        command.arg("install").arg("--root").arg(root);
+    } else {
+        command.arg("install");
+    }
+    let status = command
         .arg(package)
         .arg("--version")
         .arg(format!("={version}"))

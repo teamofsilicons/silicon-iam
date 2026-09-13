@@ -200,6 +200,9 @@ async fn run_maintenance(context: &WorkerContext) {
 }
 
 async fn run_once(context: &WorkerContext) {
+    static LAST_HEARTBEAT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    let started = std::time::Instant::now();
     let (
         notification_result,
         outbox_result,
@@ -213,6 +216,34 @@ async fn run_once(context: &WorkerContext) {
         outbox::process_testing_batch(context),
         webhook::process_testing_batch(context),
     );
+    // Bound idle-worker diagnostics to one per-stage heartbeat each minute.
+    let now = u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp()).unwrap_or(0);
+    let previous = LAST_HEARTBEAT.load(std::sync::atomic::Ordering::Relaxed);
+    if now.saturating_sub(previous) >= 60
+        && LAST_HEARTBEAT
+            .compare_exchange(
+                previous,
+                now,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
+    {
+        for (stage, success) in [
+            ("outbox_expansion", outbox_result.is_ok()),
+            ("notification_delivery", notification_result.is_ok()),
+            ("webhook_delivery", webhook_result.is_ok()),
+            ("testing_outbox_expansion", testing_outbox_result.is_ok()),
+            ("testing_webhook_delivery", testing_webhook_result.is_ok()),
+        ] {
+            tracing::info!(
+                worker.stage = stage,
+                success,
+                latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                "worker stage completed"
+            );
+        }
+    }
     if let Err(error) = outbox_result {
         error!(error = %error, worker.stage = "outbox_expansion", "worker stage failed");
     }

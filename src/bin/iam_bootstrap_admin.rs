@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let arguments = Arguments::parse();
     let settings = MigrationSettings::from_env()?;
-    telemetry::init_process(settings.environment, &settings.log_filter)?;
+    let _telemetry = telemetry::init_process(settings.environment, &settings.log_filter)?;
 
     let pool = postgres::connect(&settings.database, "iam-bootstrap-admin").await?;
     if !postgres::ready(&pool).await {

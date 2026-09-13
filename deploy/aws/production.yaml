@@ -508,6 +508,8 @@ Resources:
 
             cat > /etc/silicon-iam/api.env <<EOF
             IAM_ENVIRONMENT=production
+            IAM_TELEMETRY=on
+            IAM_TELEMETRY_HOME=/var/lib/silicon-iam/telemetry
             IAM_BIND_ADDR=0.0.0.0:8080
             IAM_PUBLIC_BASE_URL=https://backend.iam.teamofsilicons.com
             IAM_AUTH_BASE_URL=https://auth.iam.teamofsilicons.com
@@ -541,11 +543,14 @@ Resources:
                 "IAM_WORKOS_API_KEY=" + .IAM_WORKOS_API_KEY,
                 "IAM_WORKOS_CLIENT_ID=" + .IAM_WORKOS_CLIENT_ID,
                 "IAM_WORKOS_WEBHOOK_SECRET=" + .IAM_WORKOS_WEBHOOK_SECRET,
-                "IAM_IRIS_BASE_URL=" + .IAM_IRIS_BASE_URL ] | .[]
+                "IAM_IRIS_BASE_URL=" + .IAM_IRIS_BASE_URL,
+                "IAM_TELEMETRY_KEY=" + (.IAM_TELEMETRY_KEY // "") ] | .[]
             ' >> /etc/silicon-iam/api.env
 
             cat > /etc/silicon-iam/worker.env <<EOF
             IAM_ENVIRONMENT=production
+            IAM_TELEMETRY=on
+            IAM_TELEMETRY_HOME=/var/lib/silicon-iam/telemetry
             IAM_AUTH_BASE_URL=https://auth.iam.teamofsilicons.com
             IAM_DATABASE_URL=$WORKER_DB_URL
             IAM_TESTING_DATABASE_URL=$TESTING_WORKER_DB_URL
@@ -566,9 +571,12 @@ Resources:
                 "IAM_TWILIO_ACCOUNT_SID=" + .IAM_TWILIO_ACCOUNT_SID,
                 "IAM_TWILIO_AUTH_TOKEN=" + .IAM_TWILIO_AUTH_TOKEN,
                 "IAM_TWILIO_MESSAGING_SERVICE_SID=" + .IAM_TWILIO_MESSAGING_SERVICE_SID,
-                "IAM_IRIS_BASE_URL=" + .IAM_IRIS_BASE_URL ] | .[]
+                "IAM_IRIS_BASE_URL=" + .IAM_IRIS_BASE_URL,
+                "IAM_TELEMETRY_KEY=" + (.IAM_TELEMETRY_KEY // "") ] | .[]
             ' >> /etc/silicon-iam/worker.env
             chmod 0600 /etc/silicon-iam/api.env /etc/silicon-iam/worker.env
+
+            install -d -m 0700 -o 10001 -g 10001 /var/lib/silicon-iam/telemetry/api /var/lib/silicon-iam/telemetry/worker
 
             cat > /etc/systemd/system/silicon-iam-api.service <<EOF
             [Unit]
@@ -581,7 +589,7 @@ Resources:
             RestartSec=5
             TimeoutStopSec=45
             ExecStartPre=-/usr/bin/docker rm -f silicon-iam-api
-            ExecStart=/usr/bin/docker run --name silicon-iam-api --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 --volume /opt/silicon-iam/aws-rds-global-bundle.pem:/opt/silicon-iam/aws-rds-global-bundle.pem:ro --env-file /etc/silicon-iam/api.env --publish 8080:8080 --log-driver awslogs --log-opt awslogs-region=$REGION --log-opt awslogs-group=/silicon-iam/production/api --log-opt tag=api "$BACKEND_IMAGE" iam-api
+            ExecStart=/usr/bin/docker run --name silicon-iam-api --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 --volume /opt/silicon-iam/aws-rds-global-bundle.pem:/opt/silicon-iam/aws-rds-global-bundle.pem:ro --volume /var/lib/silicon-iam/telemetry/api:/var/lib/silicon-iam/telemetry --env-file /etc/silicon-iam/api.env --publish 8080:8080 --log-driver awslogs --log-opt awslogs-region=$REGION --log-opt awslogs-group=/silicon-iam/production/api --log-opt tag=api "$BACKEND_IMAGE" iam-api
             ExecStop=/usr/bin/docker stop --time 35 silicon-iam-api
 
             [Install]
@@ -599,7 +607,7 @@ Resources:
             RestartSec=5
             TimeoutStopSec=315
             ExecStartPre=-/usr/bin/docker rm -f silicon-iam-worker
-            ExecStart=/usr/bin/docker run --name silicon-iam-worker --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 --volume /opt/silicon-iam/aws-rds-global-bundle.pem:/opt/silicon-iam/aws-rds-global-bundle.pem:ro --env-file /etc/silicon-iam/worker.env --log-driver awslogs --log-opt awslogs-region=$REGION --log-opt awslogs-group=/silicon-iam/production/worker --log-opt tag=worker "$BACKEND_IMAGE" iam-worker
+            ExecStart=/usr/bin/docker run --name silicon-iam-worker --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 --volume /opt/silicon-iam/aws-rds-global-bundle.pem:/opt/silicon-iam/aws-rds-global-bundle.pem:ro --volume /var/lib/silicon-iam/telemetry/worker:/var/lib/silicon-iam/telemetry --env-file /etc/silicon-iam/worker.env --log-driver awslogs --log-opt awslogs-region=$REGION --log-opt awslogs-group=/silicon-iam/production/worker --log-opt tag=worker "$BACKEND_IMAGE" iam-worker
             ExecStop=/usr/bin/docker stop --time 310 silicon-iam-worker
 
             [Install]

@@ -1,3 +1,4 @@
+import { collectTelemetry, deploymentTelemetryEnabled } from "./telemetry.ts";
 import { testApplicationView } from "./test-view.ts";
 import {
   apiHeaders,
@@ -87,9 +88,11 @@ export async function gateway(
     );
   if (![config.console.origin, config.auth.origin].includes(url.origin))
     return fail("untrusted_host", "This frontend host is not allowed.", 403);
+  if (path === "/api/web/telemetry") return collectTelemetry(request, env);
   if (path === "/api/config" && request.method === "GET")
     return finish(
       Response.json({
+        telemetryEnabled: deploymentTelemetryEnabled(env),
         consoleOrigin: config.console.origin,
         authOrigin: config.auth.origin,
         environment:

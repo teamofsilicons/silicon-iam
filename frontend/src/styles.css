@@ -1492,3 +1492,8 @@ legend {
     gap: 0.5rem;
   }
 }
+
+.telemetry-settings { margin: 1rem auto; padding: .75rem 1rem; max-width: 46rem; color: var(--muted, #64748b); font-size: .8rem; }
+.telemetry-settings summary { cursor: pointer; }
+.telemetry-settings label { display: flex; gap: .5rem; align-items: center; margin-top: .75rem; }
+.telemetry-settings input { width: auto; }

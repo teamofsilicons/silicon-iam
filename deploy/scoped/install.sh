@@ -58,6 +58,8 @@ if [[ ! -e /etc/silicon-iam/scoped-webhook.env ]]; then
 fi
 chmod 0600 /etc/silicon-iam/scoped-webhook.env
 
+install -d -m 0700 -o 10001 -g 10001 /var/lib/silicon-iam/telemetry/scoped-api
+
 cat > /etc/systemd/system/silicon-iam-scoped-api.service <<UNIT
 [Unit]
 Description=Silicon IAM scoped application API
@@ -69,7 +71,7 @@ Restart=always
 RestartSec=5
 TimeoutStopSec=45
 ExecStartPre=-/usr/bin/docker rm -f silicon-iam-scoped-api
-ExecStart=/usr/bin/docker run --name silicon-iam-scoped-api --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 --volume /opt/silicon-iam/aws-rds-global-bundle.pem:/opt/silicon-iam/aws-rds-global-bundle.pem:ro --env-file /etc/silicon-iam/scoped.env --env-file /etc/silicon-iam/scoped-webhook.env --publish 127.0.0.1:8081:8080 --log-driver awslogs --log-opt awslogs-region=$SCOPED_REGION --log-opt awslogs-group=/silicon-iam/production/api --log-opt tag=scoped-api "$SCOPED_IMAGE" iam-scoped-api
+ExecStart=/usr/bin/docker run --name silicon-iam-scoped-api --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 --volume /opt/silicon-iam/aws-rds-global-bundle.pem:/opt/silicon-iam/aws-rds-global-bundle.pem:ro --volume /var/lib/silicon-iam/telemetry/scoped-api:/var/lib/silicon-iam/telemetry --env IAM_TELEMETRY_HOME=/var/lib/silicon-iam/telemetry --env-file /etc/silicon-iam/scoped.env --env-file /etc/silicon-iam/scoped-webhook.env --publish 127.0.0.1:8081:8080 --log-driver awslogs --log-opt awslogs-region=$SCOPED_REGION --log-opt awslogs-group=/silicon-iam/production/api --log-opt tag=scoped-api "$SCOPED_IMAGE" iam-scoped-api
 ExecStop=/usr/bin/docker stop --time 35 silicon-iam-scoped-api
 
 [Install]

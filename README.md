@@ -5,6 +5,12 @@ Carbon accounts, organization-scoped Silicon identities, applications,
 OAuth, delegated OBO access, governance, WorkOS SSO, audit, and reliable
 webhook delivery.
 
+To use IAM, start with the [CLI usage guide](docs/cli/README.md). To build an
+application, follow the [step-by-step builder guide](docs/BUILDING.md), then the
+[API and Rust references](docs/README.md). The CLI bundles these guides under
+`iam docs`, exposes discovery with `iam iam --json`, and supports a persistent
+hourly updater through `iam daemon install`.
+
 The backend is a Rust 2024 modular monolith with three independently scalable
 runtime processes and three one-shot operator binaries:
 
@@ -261,11 +267,10 @@ builder or environment.
 `crates/cli` is `silicon-iam-cli`, installing the `iam` binary. It is a shell
 over the client and has no capability the client lacks; what it adds is the
 state the client refuses to hold: a profile, a service URL, and a session under
-`~/.silicon-iam/` that it renews when it is close to expiring. It also checks
-crates.io after a command finishes if its persisted last attempt is at least
-one hour old, and updates its Cargo-installed binary for the next invocation
-by default. No idle daemon runs; use
-`iam config set auto-update off` to opt out. Use
+`~/.silicon-iam/` that it renews when it is close to expiring. Its supervised daemon checks
+crates.io hourly and updates the Cargo-installed binary for the next invocation.
+Run `iam daemon install` to enable it, or use
+`iam config set auto-update off` to opt out of updates. Use
 `iam --test <environment-uuid> <command>` to run the same command in a test
 plane; the CLI resolves the UUID through an owner-only stored root key and
 keeps every environment's session separate from production.
@@ -452,3 +457,5 @@ else is grouped by what it is.
   document every other one below answers to.
 - `docs/openapi.yaml` is the normative HTTP contract.
 - `docs/API_DOCS.md` explains endpoint behavior and security semantics.
+
+See [telemetry setup and opt-out](docs/TELEMETRY.md) for the dedicated `tos.siliconiam` event store.

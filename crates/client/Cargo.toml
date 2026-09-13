@@ -1,6 +1,6 @@
 [package]
 name = "silicon-iam-client"
-version = "1.8.0"
+version = "1.9.0"
 description = "Client for the Silicon IAM API: identity, organization governance, application login, and delegated access."
 keywords = ["iam", "identity", "authentication", "authorization", "client"]
 categories = ["api-bindings", "authentication"]
@@ -39,6 +39,10 @@ time.workspace = true
 tokio = { workspace = true, features = ["rt", "time"] }
 url.workspace = true
 uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+space-station = "0.1.1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [dev-dependencies]
 tokio.workspace = true

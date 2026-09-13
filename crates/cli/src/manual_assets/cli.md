@@ -8,6 +8,39 @@ For local session safety and storage precedence, see [credential storage](storag
 Use `iam --help` for the full command reference, `iam app scopes --help` for scope reviews,
 and `iam -o json commands` for machine-readable command discovery. Help and bundled docs work offline.
 
+## Start using IAM
+
+```sh
+curl -fsSL https://docs.iam.teamofsilicons.com/install.sh | sh
+iam iam --json
+iam login --carbon-id <your-carbon-id>       # Carbon: enter the IAM verification code
+# Or, for a Silicon: iam silicon-login --sid <handle:org>
+iam login status --json
+iam --org <org> member self
+```
+
+The installer sets up Rust if needed, installs IAM and enables its user updater
+on macOS/Linux. It does not authenticate. The 1.9.0 installer requires that
+release to be published. See `iam --help`, then a noun such as `iam app --help`,
+then a verb such as `iam app create --help`. Every level includes purpose,
+arguments and related documentation. `iam commands --json` exposes the tree to agents.
+
+IAM is the credential issuer: Carbon verification and Silicon SID/STK login
+happen here. An application CLI must instead accept `app login '<SLT>'`, using a
+token minted by `iam login --app-id 'org>app'` or the IAM consent website. An
+app-bound SLT cannot create an unrestricted IAM session. `iam iam --json`
+therefore reports `app_id: null` and `credential_issuer: true`; IAM does not
+invent an application registration for itself.
+
+`iam login status --json` validates the selected profile/environment with IAM,
+refreshing when needed. It returns `authenticated: false` for an absent or
+rejected session. Transport, configuration and authorization errors remain
+errors so agents can distinguish a service outage from needing to log in.
+No tokens are printed. `--json` is equivalent to `--output json` everywhere.
+
+For an application integration, follow [the builder guide](../BUILDING.md).
+For reasons behind the contract, see [permission and organization consent](../ORGANIZATION_CONSENT.md).
+
 ## Current authorization without waiting for a webhook
 
 After an Application login with an explicit organization selection, use its secret and access token
@@ -48,7 +81,8 @@ Only selected active memberships are returned. See [the consent guide](../ORGANI
 ## Installation
 
 ```sh
-cargo install silicon-iam-cli --locked
+cargo install silicon-iam-cli --version ">=1.9.0" --locked
+iam daemon install
 ```
 
 The CLI requires Rust 1.98 or newer and speaks HTTP API major `v1`. Package
@@ -59,37 +93,62 @@ contract lifecycle states with `iam api contracts`.
 The IAM home must be owned by the current user and private (`0700` on Unix).
 See [credential storage](storage.md) for its format and ownership checks.
 
-Automatic updates are on by default and run only when the CLI is used. After a
-normal command has completed and printed its result, the CLI checks crates.io
-if no attempt is recorded or its last attempt was at least one hour ago. When a
-newer stable release exists, it runs `cargo install` to replace the binary for
-the next invocation. No idle timer, detached daemon or login service runs.
+Automatic updates are on by default. The installer starts a user service:
+launchd on macOS, systemd on Linux. It checks immediately, then hourly even
+without IAM commands being run. A supervisor restarts a failed worker and
+starts it again at login. On Linux, configure user lingering separately if the
+service must also run while logged out; on headless systems or other platforms,
+supervise `iam daemon run` yourself.
 
-The last-attempt time is persisted in the private CLI home before the registry
-request, so registry or installation failures are also throttled for an hour.
-A cross-process lock prevents concurrent checks and installations. An offline
-registry or unavailable Cargo executable produces only a warning on stderr;
-maintenance never replaces the completed command's output or exit status.
-The process exits after any due maintenance finishes.
-
-A command that already failed to load or safely access
-local configuration/state skips post-command maintenance, so the same local
-failure is not repeated as an update warning. Authentication and service errors
-still allow the normal due update check.
+The worker re-reads settings every minute and spawns the installed binary for
+each maintenance pass, so future passes load newly installed code. It reserves
+the hourly attempt before contacting crates.io, throttles failures, and holds
+a cross-process lock through installation. Cargo updates the same installation
+root, including a custom `CARGO_INSTALL_ROOT`. Development builds outside a
+`bin` directory cannot self-update. Commands no longer wait for an installation.
 
 ```sh
-iam config set auto-update off   # opt out persistently
-iam config unset auto-update     # restore the default-on policy
-iam system update                # force a check now, even while opted out
+iam daemon install             # enable/start the current installed binary
+iam daemon status --json       # worker presence, policy, last attempt and home
+iam config set auto-update off # persistent opt-out; worker stays available
+iam config unset auto-update   # restore default-on policy
+iam system update              # force a check, even while opted out
+iam daemon uninstall           # stop and remove the service
 ```
 
-The persistent opt-out takes effect on subsequent invocations; an installation
-already in progress may finish. `SILICON_IAM_AUTO_UPDATE=false` disables automatic
-maintenance for one invocation, while `true` overrides the persisted opt-out for
-that invocation. Re-enabling does not reset the hourly throttle.
-`iam system update` explicitly bypasses both opt-out and the hourly throttle,
-while retaining the concurrent-update lock. Help, `iam commands`, `iam docs`
-and changes to the auto-update setting do not trigger automatic maintenance.
+The opt-out takes effect on the next maintenance pass; an installation already
+running may finish. `SILICON_IAM_AUTO_UPDATE=false` overrides automatic policy
+in a manually supervised worker. For an installed service use `config set`;
+changing a shell variable does not modify an already running service.
+Re-enabling does not reset the hourly throttle. `system update` bypasses opt-out
+and the throttle but retains the installation lock. Help and docs stay offline.
+
+There is one OS user service. Its configuration captures the selected IAM home,
+PATH, CARGO_HOME, RUSTUP_HOME and RUSTUP_TOOLCHAIN; it contains no authentication credentials.
+Run `iam daemon install` again after changing `iam config home`, `SILICON_HOME`,
+`SILICON_IAM_HOME`, or the installation path. `SILICON_HOME` remains the base
+for `.silicon-iam`; OS service registration lives in the OS user's service directory.
+Inspect Linux service errors with `journalctl --user -u silicon-iam-updater`.
+For a foreground diagnostic run, uninstall the managed worker and run
+`iam daemon run`; failures appear on stderr. On macOS use the updater log in
+the IAM home. A stateless Rust client continues using its separate lockfile
+update policy; it does not install a host service.
+
+## Report and contribute a fix
+
+Install [GitHub CLI](https://cli.github.com/) and run `gh auth login` once, then:
+
+```sh
+iam report 'Login fails: reproduction steps, expected and actual behavior'
+iam report 'Login fails after refresh; regression test included' --pr https://github.com/teamofsilicons/silicon-iam/pull/123
+```
+
+This submits an issue to [the repository](https://github.com/teamofsilicons/silicon-iam).
+The supplied report text, optional project PR link and package version are the
+only submitted content. It never uploads logs, credentials or environment data,
+and it never retries an uncertain submission. A report without `--pr` includes
+an invitation to contribute a fix. `iam iam --json` includes repository, online
+docs and package links without requiring configuration or network access.
 
 Everything the CLI can do, the [`silicon-iam-client`](https://crates.io/crates/silicon-iam-client) crate can do —
 the CLI is a shell over it and has no capability of its own. What it adds is
@@ -1150,3 +1209,5 @@ iam app testing view 'acme>checkout'
 ```
 
 This returns the environment UUID and test configuration without returning credentials. The `view` command does not grant a production IAM session or user-data authority.
+
+Telemetry defaults on when configured. Use `iam config set telemetry off` to disable collection, or `iam docs telemetry` for [setup and delivery details](../TELEMETRY.md).

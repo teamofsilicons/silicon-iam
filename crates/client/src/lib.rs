@@ -152,6 +152,8 @@ pub mod error;
 pub mod models;
 mod models_manual;
 pub mod request;
+pub mod support;
+pub mod telemetry;
 pub mod update;
 pub mod webhook;
 

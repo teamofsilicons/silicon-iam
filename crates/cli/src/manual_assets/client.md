@@ -752,3 +752,5 @@ JSON field omission. Direct IAM management methods retain their full typed respo
 Use `system().contracts()` or `iam system contracts` (alias `iam api contracts`) to inspect
 contract versions and compatibility. Breaking changes receive a new major API version;
 a deprecated version can sunset after seven days without requests.
+
+The client supports sanitized Space Station request diagnostics when configured. Use `.telemetry(false)` on the builder to opt out. See [telemetry](../TELEMETRY.md) for keys, buffering and propagated preferences.

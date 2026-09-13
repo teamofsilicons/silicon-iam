@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.9.0
+
+Add public project links and explicit GitHub bug reporting with optional PR validation. Add installation-root-aware binary updates. Add optional Space Station diagnostics, sanitized request context, request correlation IDs, and propagated telemetry opt-out.
+
 ## 1.8.0
 
 - Add application-secret-only test selection and verified IAM environment metadata. App selectors remain restricted to the selected application’s existing OAuth and directory authority.

@@ -74,6 +74,10 @@ pub struct Global {
     #[arg(long, global = true)]
     pub step_up: Option<String>,
 
+    /// Emit machine-readable JSON (equivalent to --output json).
+    #[arg(long, global = true)]
+    pub json: bool,
+
     /// Output format.
     #[arg(long, short = 'o', global = true, value_enum, default_value_t = Format::Text)]
     pub output: Format,
@@ -82,6 +86,19 @@ pub struct Global {
 /// Everything the CLI can do.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Discover IAM service, authentication, source and package information.
+    Iam,
+    /// Submit a bug report to the source repository using authenticated GitHub CLI.
+    Report {
+        /// Explain the failure, reproduction steps and expected behavior.
+        message: String,
+        /// Optional GitHub pull request containing a fix.
+        #[arg(long)]
+        pr: Option<String>,
+    },
+    /// Manage the persistent hourly updater.
+    #[command(subcommand)]
+    Daemon(DaemonCommand),
     /// Sign in as a Carbon.
     Login(LoginArgs),
     /// Authorize up to 100 apps using your existing Carbon or Silicon IAM session.
@@ -183,11 +200,14 @@ pub struct BatchLoginArgs {
 ))]
 #[command(group(
     clap::ArgGroup::new("login_source")
-        .args(["email", "phone", "carbon_id", "app_id"])
+        .args(["email", "phone", "carbon_id", "app_id", "status"])
         .required(true)
         .multiple(true)
 ))]
 pub struct LoginArgs {
+    /// Check the current session with IAM without prompting for credentials.
+    #[arg(value_parser = ["status"], conflicts_with_all = ["email", "phone", "carbon_id", "app_id", "code", "approve_scopes"])]
+    pub status: Option<String>,
     /// Approve every displayed IAM and external scope for this login. Required without a terminal.
     #[arg(long)]
     pub approve_scopes: bool,
@@ -2004,8 +2024,8 @@ pub enum ConfigCommand {
     },
     /// Set a value on the current profile.
     Set {
-        /// One of `url`, `org`, `auto-update`.
-        #[arg(value_parser = ["url", "org", "auto-update"])]
+        /// One of `url`, `org`, `auto-update`, `telemetry`.
+        #[arg(value_parser = ["url", "org", "auto-update", "telemetry"])]
         key: String,
         /// The value to store. For auto-update use on/off; URL follows --url's
         /// security rules; org is an organization handle.
@@ -2014,7 +2034,7 @@ pub enum ConfigCommand {
     /// Clear a value on the current profile.
     Unset {
         /// `org`, or `auto-update` to restore its default-on policy.
-        #[arg(value_parser = ["org", "auto-update"])]
+        #[arg(value_parser = ["org", "auto-update", "telemetry"])]
         key: String,
     },
     /// Switch the default profile.
@@ -2942,4 +2962,20 @@ mod tests {
         }) if token == "act_test"));
         assert!(Cli::try_parse_from(["iam", "api", "contracts"]).is_ok());
     }
+}
+
+/// Persistent updater lifecycle; installation starts it and enables login startup.
+#[derive(Debug, Subcommand)]
+pub enum DaemonCommand {
+    /// Install and start the current binary as a per-user background service.
+    Install,
+    /// Stop and remove the per-user background service.
+    Uninstall,
+    /// Show whether the background worker is running for this IAM home.
+    Status,
+    /// Run the worker in the foreground under a process supervisor.
+    Run,
+    /// Perform one automatic check using current settings and throttle state.
+    #[command(hide = true)]
+    Check,
 }

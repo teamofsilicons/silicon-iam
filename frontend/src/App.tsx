@@ -1,4 +1,12 @@
-import { ErrorBoundary, onCleanup, onMount, Show } from "solid-js";
+import { startTelemetry, stopTelemetry, track } from "./telemetry";
+import TelemetrySettings from "./TelemetrySettings";
+import {
+  ErrorBoundary,
+  createEffect,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
 import { createResource } from "./resource";
 import { request, type Configuration, type SessionState } from "./api";
 import Auth from "./Auth";
@@ -13,7 +21,14 @@ export default function App() {
   const [session, { refetch, mutate }] = createResource(() =>
     request<SessionState>("/api/session"),
   );
-  const expired = () => mutate({ authenticated: false });
+  const expired = () => {
+    track("iam.session.expired");
+    mutate({ authenticated: false });
+  };
+  createEffect(() => {
+    if (config()) startTelemetry(config()!.telemetryEnabled === true);
+  });
+  onCleanup(stopTelemetry);
   onMount(() => window.addEventListener("iam:session-expired", expired));
   onCleanup(() => window.removeEventListener("iam:session-expired", expired));
   const authPage = () =>
@@ -26,16 +41,19 @@ export default function App() {
       config()!.authOrigin !== config()!.consoleOrigin);
   return (
     <ErrorBoundary
-      fallback={(error, reset) => (
-        <main class="boot">
-          <Brand />
-          <h1>Unable to load this view</h1>
-          <ErrorBox error={error} />
-          <button class="button" onClick={reset}>
-            Try again
-          </button>
-        </main>
-      )}
+      fallback={(error, reset) => {
+        track("iam.render.failed");
+        return (
+          <main class="boot">
+            <Brand />
+            <h1>Unable to load this view</h1>
+            <ErrorBox error={error} />
+            <button class="button" onClick={reset}>
+              Try again
+            </button>
+          </main>
+        );
+      }}
     >
       <Show
         when={!config.loading && !session.loading}
@@ -75,6 +93,7 @@ export default function App() {
           </Show>
         </Show>
       </Show>
+      <TelemetrySettings />
     </ErrorBoundary>
   );
 }

@@ -46,6 +46,8 @@ pub struct Client {
     environment: Option<EnvironmentKey>,
     testing_application: Option<Credential>,
     updater: Arc<AutomaticUpdater>,
+    telemetry: Option<crate::telemetry::Telemetry>,
+    telemetry_enabled: bool,
 }
 
 /// Assembles a [`Client`].
@@ -59,6 +61,7 @@ pub struct ClientBuilder {
     user_agent: Option<String>,
     update_policy: UpdatePolicy,
     update_manifest: Option<PathBuf>,
+    telemetry_enabled: bool,
 }
 
 impl Client {
@@ -225,7 +228,12 @@ impl Client {
         let mut request = self
             .http
             .request(method, url)
-            .header(SUPPORTED_VERSIONS_HEADER, API_VERSION);
+            .header(SUPPORTED_VERSIONS_HEADER, API_VERSION)
+            .header("x-request-id", uuid::Uuid::now_v7().to_string())
+            .header(
+                "x-iam-telemetry",
+                if self.telemetry_enabled { "on" } else { "off" },
+            );
         request = self.credential.apply(request);
         if let Some(Credential::Application { app_id, secret }) = &self.testing_application {
             use base64::Engine as _;
@@ -454,7 +462,34 @@ impl Client {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<(HeaderMap, Vec<u8>)> {
-        let mut response = request.send().await.map_err(Error::Transport)?;
+        let request = request.build().map_err(Error::Transport)?;
+        let started = Instant::now();
+        let method = request.method().to_string();
+        let route = crate::telemetry::route(request.url().path());
+        let request_id = request
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let result = self.send_response_inner(request).await;
+        if let Some(telemetry) = &self.telemetry {
+            let (status, code) = match &result {
+                Ok((_, _, status)) => (*status, "success"),
+                Err(Error::Api(error)) => (error.status, error.code.as_str()),
+                Err(Error::RateLimited { source, .. }) => (429, source.code.as_str()),
+                Err(Error::Transport(_)) => (0, "transport_error"),
+                Err(_) => (0, "response_error"),
+            };
+            telemetry.record("request", "request.completed", serde_json::json!({"request_id":request_id, "route":route, "method":method, "status":status, "code":code, "success":result.is_ok(), "testing":self.environment.is_some(), "duration_ms":u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)}));
+        }
+        result.map(|(headers, body, _)| (headers, body))
+    }
+
+    async fn send_response_inner(
+        &self,
+        request: reqwest::Request,
+    ) -> Result<(HeaderMap, Vec<u8>, u16)> {
+        let mut response = self.http.execute(request).await.map_err(Error::Transport)?;
         let status = response.status();
         let retry_after = header_seconds(&response, "retry-after");
         let limit = header_u64(&response, "ratelimit-limit");
@@ -483,7 +518,7 @@ impl Client {
         }
 
         if status.is_success() {
-            return Ok((headers, body));
+            return Ok((headers, body, status.as_u16()));
         }
         if status.is_redirection() {
             return Err(Error::Decode(format!(
@@ -656,6 +691,7 @@ impl ClientBuilder {
             user_agent: None,
             update_policy: UpdatePolicy::Automatic,
             update_manifest: None,
+            telemetry_enabled: true,
         })
     }
 
@@ -710,6 +746,13 @@ impl ClientBuilder {
         self
     }
 
+    /// Opt out of client telemetry and propagate the preference to the IAM backend.
+    #[must_use]
+    pub fn telemetry(mut self, enabled: bool) -> Self {
+        self.telemetry_enabled = enabled;
+        self
+    }
+
     /// Selects the Cargo manifest whose lockfile automatic updates maintain.
     ///
     /// Without this, the client searches from the process working directory
@@ -750,8 +793,14 @@ impl ClientBuilder {
         } else {
             UpdatePolicy::Automatic
         };
+        let telemetry_enabled = crate::telemetry::enabled(self.telemetry_enabled);
+        let telemetry = crate::telemetry::Telemetry::from_env("rust-client", telemetry_enabled)
+            .ok()
+            .flatten();
         Ok(Client {
             http,
+            telemetry,
+            telemetry_enabled,
             base_url: self.base_url,
             credential: self.credential,
             environment: self.environment,
@@ -1044,6 +1093,33 @@ mod tests {
     fn a_non_http_base_url_is_refused() {
         assert!(Client::new("ftp://example.test").is_err());
         assert!(Client::new("not a url").is_err());
+    }
+
+    #[test]
+    fn telemetry_opt_out_is_propagated_without_a_recorder() -> crate::Result<()> {
+        let client = Client::builder("https://example.test")?
+            .telemetry(false)
+            .build()?;
+        assert!(client.telemetry.is_none());
+        let request = client
+            .route(reqwest::Method::GET, &["me"])?
+            .build()
+            .map_err(crate::Error::Transport)?;
+        assert_eq!(
+            request
+                .headers()
+                .get("x-iam-telemetry")
+                .and_then(|v| v.to_str().ok()),
+            Some("off")
+        );
+        assert!(
+            request
+                .headers()
+                .get("x-request-id")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+        );
+        Ok(())
     }
 
     #[test]

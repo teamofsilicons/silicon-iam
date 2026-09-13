@@ -1,9 +1,11 @@
+import { track, telemetryPreference } from "./telemetry";
 export type RecordValue = Record<string, any>;
 export type Page<T = RecordValue> = {
   items: T[];
   page: { next_cursor?: string | null; has_more: boolean };
 };
 export type Configuration = {
+  telemetryEnabled?: boolean;
   consoleOrigin: string;
   authOrigin: string;
   environment: string;
@@ -54,6 +56,8 @@ export async function request<T = RecordValue>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
+  const started = performance.now();
+  track("iam.request.started", { route: path, method: init.method || "GET" });
   let response: Response;
   try {
     response = await fetch(path, {
@@ -62,18 +66,31 @@ export async function request<T = RecordValue>(
       redirect: "error",
       headers: {
         "X-IAM-Frontend": "1",
+        "X-IAM-Telemetry": telemetryPreference() ? "on" : "off",
         Accept: "application/json",
         ...init.headers,
       },
       signal: AbortSignal.timeout(35000),
     });
   } catch {
+    track("iam.request.failed", {
+      route: path,
+      method: init.method || "GET",
+      duration_ms: performance.now() - started,
+    });
     throw new ApiError(
       0,
       "connection_interrupted",
       "IAM could not confirm the request. Retry the same submission; its request key has been retained.",
     );
   }
+  track("iam.request.completed", {
+    route: path,
+    method: init.method || "GET",
+    status: response.status,
+    duration_ms: performance.now() - started,
+    request_id: response.headers.get("x-request-id"),
+  });
   if (response.status === 204) return undefined as T;
   let value: RecordValue;
   try {
