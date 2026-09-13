@@ -122,7 +122,20 @@ NGINX
   install -m 0644 "$SCOPED_DIRECTORY/nginx.conf" "$SCOPED_NGINX"
   nginx -t
   systemctl reload nginx
-  curl --fail --silent --show-error --max-time 10 "https://$SCOPED_HOST/readyz"
+  # Old nginx workers can briefly serve their previous certificate after a
+  # successful reload. Retry both public checks with normal TLS verification.
+  SCOPED_PUBLIC_READY=false
+  for attempt in {1..5}; do
+    if curl --fail --silent --show-error --max-time 3 "https://$SCOPED_HOST/healthz" >/dev/null \
+      && curl --fail --silent --show-error --max-time 3 "https://$SCOPED_HOST/readyz"; then
+      SCOPED_PUBLIC_READY=true
+      break
+    fi
+    if ((attempt < 5)); then
+      sleep 2
+    fi
+  done
+  [[ "$SCOPED_PUBLIC_READY" == true ]] || { echo 'Scoped HTTPS health/readiness checks did not pass after nginx reload.' >&2; exit 1; }
   echo
 fi
 
