@@ -3,8 +3,9 @@
 Open Applications → select the target application → Approvals. Incoming requests
 are matched by `target_app_id`; sent requests are matched by the caller's
 `app_id`. The app view includes every status by default so completed reviews
-remain visible. The shared Scope reviews page retains its Pending default and
-adds a Needs your review filter. Organization governance approvals remain in the
+remain visible. The shared Scope reviews page defaults to all requests and all
+statuses across every authorized application and organization. Its direction and
+status filters can narrow this combined history. Organization governance approvals remain in the
 separate Approvals section.
 
 A review's critical scope list is its immutable decision boundary. Requests are

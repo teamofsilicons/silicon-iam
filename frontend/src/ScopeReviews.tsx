@@ -17,7 +17,7 @@ export default function ScopeReviews(props: { appId?: string } = {}) {
   const [direction, setDirection] = createSignal<ReviewDirection>(
     props.appId ? "incoming" : "all",
   );
-  const [status, setStatus] = createSignal(props.appId ? "" : "pending"),
+  const [status, setStatus] = createSignal(""),
     [selected, setSelected] = createSignal(
       new URL(location.href).searchParams.get("request") || "",
     );
@@ -32,14 +32,14 @@ export default function ScopeReviews(props: { appId?: string } = {}) {
       <Show when={!props.appId}>
         <PageTitle
           title="Scope reviews"
-          subtitle="Review critical permissions and keep the conversation in one place."
+          subtitle="All scope approval requests across your applications, in one place."
         />
       </Show>
       <div class="panel-toolbar">
         <p class="muted">
           {props.appId
             ? "Incoming requests ask to use this app’s critical OBO endpoints. Its organization owner or admin can approve or deny them. Sent requests ask IAM or other apps for access."
-            : "Scope reviews include requests sent by your apps and requests you can approve for apps your organization owns."}
+            : "Incoming and sent requests across all your applications and organizations appear here, including pending requests and completed approval history."}
         </p>
         <select
           aria-label="Scope request direction"
@@ -53,7 +53,7 @@ export default function ScopeReviews(props: { appId?: string } = {}) {
           }}
         >
           <option value="incoming">
-            {props.appId ? "Incoming requests" : "Needs your review"}
+            {props.appId ? "Incoming requests" : "Requests you can review"}
           </option>
           <Show when={props.appId}>
             <option value="outgoing">Sent requests</option>
@@ -64,7 +64,7 @@ export default function ScopeReviews(props: { appId?: string } = {}) {
       <div class="scope-review-layout">
         <section class="panel">
           <div class="panel-toolbar">
-            <h2>Requests</h2>
+            <h2>{props.appId ? "Requests" : "All applications"}</h2>
             <select
               aria-label="Filter scope reviews"
               value={status()}
@@ -73,7 +73,8 @@ export default function ScopeReviews(props: { appId?: string } = {}) {
               <option value="pending">Pending</option>
               <option value="approved">Approved</option>
               <option value="denied">Denied</option>
-              <option value="">All requests</option>
+              <option value="superseded">Superseded</option>
+              <option value="">All statuses</option>
             </select>
           </div>
           <ErrorBox error={page.data.error} retry={page.refresh} />
@@ -90,7 +91,9 @@ export default function ScopeReviews(props: { appId?: string } = {}) {
                 >
                   {direction() === "incoming"
                     ? "No requests match this status. A caller must submit a critical scope review for your app’s endpoints before it appears here."
-                    : "Requests sent by this app appear here, including IAM and other application scope approvals."}
+                    : props.appId
+                      ? "Requests sent by this app appear here, including IAM and other application scope approvals."
+                      : "No requests match these filters. Incoming and sent scope approval requests across your applications appear here."}
                 </Empty>
               }
             >
