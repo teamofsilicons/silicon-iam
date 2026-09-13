@@ -4,6 +4,7 @@ pub(crate) mod authentication;
 mod contracts;
 pub(crate) mod me;
 pub(crate) mod scoped;
+mod scoped_webhook;
 
 use std::{future::IntoFuture as _, sync::Arc, time::Instant};
 
@@ -291,6 +292,7 @@ fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
         http::HeaderName::from_static("x-csrf-token"),
         http::HeaderName::from_static("x-step-up-token"),
         http::HeaderName::from_static("workos-signature"),
+        http::HeaderName::from_static("x-silicon-iam-signature"),
     ];
     let sensitive_response_headers = [http::header::SET_COOKIE, http::header::LOCATION];
 
@@ -329,7 +331,7 @@ fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
             .layer(middleware::from_fn(
                 crate::features::testing_environments::reject_application_selector,
             )),
-        Surface::Scoped => Router::new(),
+        Surface::Scoped => scoped_webhook::router()?,
     };
     let web = match surface {
         Surface::Full => crate::web::router(),

@@ -16,10 +16,10 @@ registration; the hosted service does not reserve or automatically register one.
 Set the application's `base_url` to
 `https://scoped.backend.iam.teamofsilicons.com`, declare the IAM permissions that
 Interface needs under `app_scope.iam`, and leave `app_scope.external` and
-`obo_endpoints` empty. Registration still requires the application's actual,
-signature-verifying webhook receiver and its secret. The stateless scoped IAM
-service is not a webhook receiver and must not be entered as a placeholder
-webhook destination.
+`obo_endpoints` empty. Registration requires a signature-verifying webhook receiver and its secret.
+For this application, configure the scoped service's `POST /webhooks/iam`
+receiver as described below and register
+`https://scoped.backend.iam.teamofsilicons.com/webhooks/iam` as its webhook URL.
 
 An organization with bundle configuration available can include that application in its existing bundle.
 The bundle issues the usual separate, single-use SLT for that application.
@@ -57,6 +57,36 @@ timeouts, admission control, structured errors, sensitive-header redaction,
 request IDs, and no-store responses. Testing-environment credentials select the
 same isolated testing data plane before authentication, but testing-environment
 administration is available only through main IAM.
+
+## Signed application webhook receiver
+
+The scoped service can receive its registered application's production IAM
+notifications at `POST /webhooks/iam`. Set `IAM_SCOPED_WEBHOOK_KEYRING` to a JSON
+object mapping positive signing-key versions to their secrets, for example
+`{"1":"<the same random secret supplied at registration>"}`. This secret is
+separate from the generated application client secret. The route is absent
+when this setting is missing, and invalid or empty keyrings prevent startup.
+
+The production installer loads the setting from the private host file
+`/etc/silicon-iam/scoped-webhook.env` and preserves that file on reinstall.
+Store it with mode `0600`; never commit keys or print them in logs. Restart only
+the scoped service after updating it. Retain both old and new versions during
+webhook-secret rotation until the previous delivery retry window has elapsed.
+
+The receiver uses the official SDK verifier: HMAC-SHA256 over the timestamp,
+a dot and exact body bytes; a five-minute timestamp window; a 1 MiB body limit;
+exactly one of each security header; and matching header/body event IDs. Valid
+production events receive `204`; missing, invalid, stale or unknown-version
+signatures and testing envelopes receive `401`. Imported testing applications
+must configure their own receiver with their own environment-bound keys.
+
+This receiver keeps no user/session cache. The scoped API reads IAM's
+revocation-aware database on every authorized request, so webhook processing
+requires no domain mutation, forwarding or payload storage. Duplicate valid
+deliveries are safe to acknowledge. The receiver is authenticated by its
+signature, outside the application's bearer gate; business APIs still require
+application bearer tokens. It is not exposed on the main IAM host and adds no
+OBO or webhook-administration endpoints.
 
 ## Available route groups
 

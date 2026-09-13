@@ -55,6 +55,52 @@ tags:
   - { name: Platform administration }
 
 paths:
+  /webhooks/iam:
+    servers:
+      - url: https://scoped.backend.iam.teamofsilicons.com
+    post:
+      operationId: receiveScopedIamWebhook
+      summary: Receive a signed production notification for the scoped IAM application
+      description: >-
+        Available only on the scoped backend when its dedicated signing keyring
+        is configured. Validates HMAC-SHA256 over the timestamp, a dot, and the
+        exact request bytes, with a five-minute timestamp tolerance and 1 MiB
+        body limit. Security headers must occur exactly once and the event ID
+        must match the signed body. Testing envelopes are rejected. The service
+        uses live IAM authorization, so notifications require no cache mutation
+        or payload storage; repeated valid events are harmless.
+      security: []
+      parameters:
+        - name: X-Silicon-IAM-Event-Id
+          in: header
+          required: true
+          schema: {type: string, format: uuid}
+        - name: X-Silicon-IAM-Timestamp
+          in: header
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+        - name: X-Silicon-IAM-Key-Version
+          in: header
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+        - name: X-Silicon-IAM-Signature
+          in: header
+          required: true
+          description: Required v1= prefixed hexadecimal HMAC-SHA256 signature.
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEvent'
+      responses:
+        '204':
+          description: Authentic production notification acknowledged without storing its payload.
+        '401':
+          description: Missing or invalid signature, stale timestamp, unknown key version, or testing envelope.
+        '413':
+          description: Body exceeds one mebibyte.
   /healthz:
     get:
       tags: [System]
