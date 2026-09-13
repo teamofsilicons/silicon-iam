@@ -90,6 +90,7 @@ mod tests {
             "spec_version": "1.0", "event_id": Uuid::from_u128(1),
             "event_type": "organization.membership.created.v1",
             "occurred_at": "2026-09-13T00:00:00Z",
+            "organization_id": null,
             "aggregate": {"type": "membership", "id": Uuid::from_u128(2), "version": 1},
             "data": {}
         })
@@ -163,10 +164,15 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("fixture"))?
             .remove("data");
         let test = serde_json::to_vec(&json!({"test": {
-            "testing_key": "silicon_iam_test_abcdefghijklmnopqrstuvwxyz0123456789",
+            "testing_key": "0123456789abcdefghijklmnopqrstuv",
             "metadata": metadata, "data": {}
         }}))?;
         let headers = signed(&test, now, 1)?;
+        assert!(
+            verifier(&json!({"1": SECRET}).to_string())?
+                .verify(&headers, &test)?
+                .is_testing()
+        );
         assert_eq!(status(test, headers).await?, StatusCode::UNAUTHORIZED);
         let oversized = vec![b' '; DEFAULT_MAX_WEBHOOK_BODY_BYTES + 1];
         assert_eq!(
