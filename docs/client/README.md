@@ -45,6 +45,22 @@ redirects, so IAM authority stays on the configured endpoint, and every
 response body is capped at 4 MiB. An oversized response becomes
 `Error::ResponseTooLarge`.
 
+## Application IAM reads and writes
+
+For an ordinary application bearer, use `client.application_reads()` and
+`client.application_mutations()` to preserve scope-filtered responses. A write
+permission does not grant permission to read the full resource: mutation
+successes may contain only IDs/version/status or `{}`. The projected mutation
+methods return `models::ApplicationMutationObject` (`serde_json::Value`) so a
+successful write does not fail decoding as a complete first-party resource.
+Generated Silicon credentials remain in their one-time creation response.
+
+The existing typed organization/member/tag/governance methods remain for direct
+IAM sessions. Deletes, SSO, verification-code delivery, and completed credential
+rotation keep their existing typed methods. The separate [scoped backend](../SCOPED_BACKEND.md)
+accepts application bearers at `https://scoped.backend.iam.teamofsilicons.com`;
+login, token exchange/refresh, and first-party step-up remain at main IAM.
+
 ## Runtime state stays with your application
 
 `Client` does not store sessions, cache API responses, or refresh credentials

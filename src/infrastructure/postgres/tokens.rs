@@ -217,6 +217,7 @@ pub async fn authenticate(
                      AND consent_scope.scope = approved.scope
                     WHERE approved.application_id = token.client_application_id
                       AND approved.scope = token_scope.scope AND approved.revoked_at IS NULL
+                      AND iam_private.application_iam_scope_allowed(approved.application_id, approved.scope)
                   ))
                 ORDER BY token_scope.scope
             ) AS scopes,

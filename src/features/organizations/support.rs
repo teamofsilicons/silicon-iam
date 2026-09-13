@@ -102,10 +102,9 @@ pub(crate) async fn begin_organization<'a>(
     })
 }
 
-/// Opens a read-only organization directory scope for a human/Silicon bearer
-/// or an authenticated Application access token. Application tokens are
-/// deliberately admitted only here; mutation handlers continue to use
-/// `begin_organization` and reject them through `direct_iam_binding`.
+/// Resolves current selected membership for directory reads and explicitly
+/// scoped mutations. Mutation callers must check every applicable application
+/// scope before entering this transaction; unscoped callers stay direct-IAM only.
 pub(crate) async fn begin_directory_organization<'a>(
     state: &'a ApiState,
     authenticated: &Authenticated,
@@ -152,6 +151,50 @@ pub(crate) async fn begin_directory_organization<'a>(
         transaction,
         access,
     })
+}
+
+/// Require an ordinary self-audience application token, never an external OBO token.
+pub(crate) fn require_application_scope(
+    authenticated: &Authenticated,
+    scope: &str,
+) -> Result<(), AppError> {
+    let access = &authenticated.0;
+    if let Some(application) = access.client_application_id {
+        if access.audience_application_id != Some(application)
+            || access.audience == "silicon-iam"
+            || !matches!(
+                access.subject.actor_type,
+                ActorType::Carbon | ActorType::Silicon
+            )
+            || !access.scopes.iter().any(|value| value == scope)
+        {
+            return Err(AppError::Forbidden);
+        }
+        Ok(())
+    } else {
+        direct_iam_binding(authenticated).map(|_| ())
+    }
+}
+
+pub(crate) fn require_scoped_carbon(
+    authenticated: &Authenticated,
+    scope: &str,
+) -> Result<Uuid, AppError> {
+    require_application_scope(authenticated, scope)?;
+    if authenticated.0.subject.actor_type != ActorType::Carbon {
+        return Err(AppError::Forbidden);
+    }
+    Ok(authenticated.0.subject.id)
+}
+
+pub(crate) async fn begin_scoped_organization<'a>(
+    state: &'a ApiState,
+    authenticated: &Authenticated,
+    org: &str,
+    scope: &str,
+) -> Result<OrganizationTransaction<'a>, AppError> {
+    require_application_scope(authenticated, scope)?;
+    begin_directory_organization(state, authenticated, org).await
 }
 
 pub(super) fn require_carbon(authenticated: &Authenticated) -> Result<Uuid, AppError> {
@@ -282,11 +325,14 @@ pub(super) async fn replay_resource_if_present<T: Serialize>(
             .fetch_one(&mut **transaction)
             .await
             .map_err(database)?;
-    let caller_scope = SecretString::from(idempotency_caller_scope(
-        authenticated.0.subject.actor_type.as_str(),
-        authenticated.0.subject.id,
-        organization_id,
-        Some(resource_scope),
+    let caller_scope = SecretString::from(application_caller_scope(
+        authenticated,
+        idempotency_caller_scope(
+            authenticated.0.subject.actor_type.as_str(),
+            authenticated.0.subject.id,
+            organization_id,
+            Some(resource_scope),
+        ),
     ));
     let request_payload =
         SecretString::from(
@@ -341,11 +387,14 @@ async fn claim_scoped<T: Serialize>(
             .fetch_one(&mut **transaction)
             .await
             .map_err(database)?;
-    let caller_scope = SecretString::from(idempotency_caller_scope(
-        authenticated.0.subject.actor_type.as_str(),
-        authenticated.0.subject.id,
-        organization_id,
-        resource_scope,
+    let caller_scope = SecretString::from(application_caller_scope(
+        authenticated,
+        idempotency_caller_scope(
+            authenticated.0.subject.actor_type.as_str(),
+            authenticated.0.subject.id,
+            organization_id,
+            resource_scope,
+        ),
     ));
     let request_payload =
         SecretString::from(
@@ -374,6 +423,20 @@ async fn claim_scoped<T: Serialize>(
     }
 }
 
+fn application_caller_scope(actor: &Authenticated, base: String) -> String {
+    if let Some(app) = actor.0.client_application_id {
+        let mut scopes = actor.0.scopes.clone();
+        scopes.sort();
+        format!(
+            "{base}:app:{app}:session:{}:scopes:{}",
+            actor.0.authentication_session_id,
+            scopes.join(",")
+        )
+    } else {
+        base
+    }
+}
+
 fn idempotency_caller_scope(
     actor_type: &str,
     actor_id: Uuid,
@@ -396,7 +459,14 @@ pub(super) async fn consume_step_up(
     resource_id: Option<Uuid>,
     assurance: RequiredAssurance,
 ) -> Result<Uuid, AppError> {
-    let carbon_id = require_carbon(authenticated)?;
+    let carbon_id = if authenticated.0.client_application_id.is_some() {
+        if authenticated.0.subject.actor_type != ActorType::Carbon {
+            return Err(AppError::Forbidden);
+        }
+        authenticated.0.subject.id
+    } else {
+        require_carbon(authenticated)?
+    };
     let token = headers
         .get("x-step-up-token")
         .and_then(|value| value.to_str().ok())
@@ -883,6 +953,139 @@ fn collect_direct_tag_ids(value: &serde_json::Value, tag_ids: &mut BTreeSet<Uuid
             tag_ids.insert(tag_id);
         }
     }
+}
+
+/// Mutations return only independently authorized existing data. Generated IDs,
+/// versions and explicitly requested one-time credentials remain usable.
+#[derive(Clone, Copy)]
+pub(super) enum MutationView {
+    Organization,
+    Member,
+    Silicon,
+    SiliconCreated,
+    Invitation,
+    Tag,
+    Trust,
+    Approval,
+    Authorization(bool),
+    Credential,
+}
+
+pub(super) fn mutation_projection(
+    actor: &Authenticated,
+    kind: MutationView,
+    mut value: serde_json::Value,
+) -> serde_json::Value {
+    use super::application_reads::ReadScopes;
+    let scopes = ReadScopes::for_actor(actor);
+    if !scopes.is_application() {
+        return value;
+    }
+    let is_self = value
+        .pointer("/principal/principal_id")
+        .or_else(|| value.get("principal_id"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|id| id == actor.0.subject.id.to_string());
+    match kind {
+        MutationView::Organization if scopes.has("self.organizations.read") => {
+            return scopes.organization(value);
+        }
+        MutationView::Member
+            if if is_self {
+                scopes.has("self.identity.read")
+            } else {
+                match value
+                    .pointer("/principal/type")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    Some("carbon") => scopes.has("directory.carbons.read"),
+                    Some("silicon") => scopes.has("directory.silicons.read"),
+                    _ => false,
+                }
+            } =>
+        {
+            return scopes.member(value, is_self);
+        }
+        // Authorization responses contain no principal identity; callers know
+        // whether the target membership is the user's own current membership.
+        MutationView::Authorization(target_is_self) => {
+            return scopes.member(value, target_is_self);
+        }
+        MutationView::Silicon
+            if scopes.has(if is_self {
+                "self.identity.read"
+            } else {
+                "directory.silicons.read"
+            }) =>
+        {
+            return scopes.silicon(value, is_self);
+        }
+        MutationView::SiliconCreated => {
+            if let Some(silicon) = value.get_mut("silicon") {
+                let created = std::mem::take(silicon);
+                let mut projected = if scopes.has("directory.silicons.read") {
+                    scopes.silicon(created.clone(), false)
+                } else {
+                    serde_json::json!({})
+                };
+                // Creation may return its newly generated identifiers and the
+                // explicitly requested one-time credential without read scope.
+                for field in [
+                    "principal_id",
+                    "membership_id",
+                    "silicon_id",
+                    "org_id",
+                    "version",
+                ] {
+                    if let Some(generated) = created.get(field) {
+                        projected[field] = generated.clone();
+                    }
+                }
+                *silicon = projected;
+            }
+            return value;
+        }
+        MutationView::Credential => return value,
+        MutationView::Tag if scopes.has("organization.tags.read") => return value,
+        MutationView::Invitation if scopes.has("organization.invitations.read") => return value,
+        MutationView::Trust if scopes.has("organization.trust.read") => return value,
+        MutationView::Approval
+            if scopes.has("organization.governance.read")
+                || scopes.has("organization.change_requests.read") =>
+        {
+            return value;
+        }
+        _ => {}
+    }
+    if let Some(fields) = value.as_object_mut() {
+        fields.retain(|name, _| {
+            matches!(
+                name.as_str(),
+                "id" | "membership_id" | "version" | "org_id" | "status" | "kind"
+            )
+        });
+    }
+    value
+}
+
+pub(super) async fn finish_mutation<T: Serialize>(
+    actor: &Authenticated,
+    kind: MutationView,
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    lease: IdempotencyLease,
+    status: StatusCode,
+    value: &T,
+) -> Result<Vec<u8>, AppError> {
+    let value = super::application_reads::value(value)?;
+    finish_json(
+        transaction,
+        state,
+        lease,
+        status,
+        &mutation_projection(actor, kind, value),
+    )
+    .await
 }
 
 pub(super) async fn finish_json<T: Serialize>(

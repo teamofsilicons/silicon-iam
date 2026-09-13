@@ -17,6 +17,17 @@ use crate::api::ApiState;
 
 /// Builds the `WorkOS` SSO feature router.
 pub(crate) fn router() -> Router<ApiState> {
+    scoped_router()
+        .route("/api/v1/sso/callback", get(authorization::callback))
+        .route("/api/v1/provider-webhooks/workos", post(webhook::receive))
+        .route(
+            "/api/v1/admin/organizations/{org_id}/sso-entitlement",
+            put(configuration::replace_entitlement),
+        )
+}
+
+/// Organization SSO routes covered by published IAM permissions.
+pub(crate) fn scoped_router() -> Router<ApiState> {
     Router::new()
         .route(
             "/api/v1/organizations/{org_id}/sso",
@@ -30,15 +41,9 @@ pub(crate) fn router() -> Router<ApiState> {
             "/api/v1/organizations/{org_id}/sso/authorize",
             get(authorization::authorize),
         )
-        .route("/api/v1/sso/callback", get(authorization::callback))
         .route(
             "/api/v1/organizations/{org_id}/sso/test",
             post(configuration::test),
-        )
-        .route("/api/v1/provider-webhooks/workos", post(webhook::receive))
-        .route(
-            "/api/v1/admin/organizations/{org_id}/sso-entitlement",
-            put(configuration::replace_entitlement),
         )
 }
 

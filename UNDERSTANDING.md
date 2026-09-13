@@ -30,7 +30,7 @@ This is the process of signing up or signing in a carbon into the system.
 
 During the carbon sign up, it would generate a sign up session, this session would have `TTL: 48 hours`, after 48 hours if this session is not used to create a new account, the session would expire. This ensures for the email and phone number verified, they belong to a particular session and it ensures the correct verification goes to the correct sign up. 
 
-During the sign up process, it requres email verification which is done via postmark `(sent via auth@teamofsilicons.com)`, the verification code would be 6 digits, and have a TTL of 10 minutes. It also requires mobile number verification which is done via twillio this is also a 6 digit verification code which also has a TTL of 10 minutes. During each verification of either email or phone number, if it already exists dont send the verification code and just respond `already_exists: True`. 
+During the sign up process, it requres email verification which is done via postmark `(sent via iam@teamofsilicons.com)`, the verification code would be 6 digits, and have a TTL of 10 minutes. It also requires mobile number verification which is done via twillio this is also a 6 digit verification code which also has a TTL of 10 minutes. During each verification of either email or phone number, if it already exists dont send the verification code and just respond `already_exists: True`.
 
 For the endpoint rate limit it at 10 then needs to wait for 10 minutes before continuing.
 
@@ -77,8 +77,6 @@ For when an org_admin is created by default they have all the rights except the 
 
 The org admins should be able to invite carbon's into the organisation, while inviting a carbon it would need to define:
 `carbon_id/email` - any of the given one's can be used to identify the user. There should also be endpoints to fetch a carbon_id via their email or phone number itself for the registered carbons. For the carbon_id/email invited into the org, mail to the email adress of the carbon with all the required info to join the organisation. And the link to `{frontend_url}/join/{org_id}`. It isn't possible to invite an carbon_id that doesen't exist yet. For the carbon_id invited mail on the registered email adress, say if it's invited via email so the entered email would get the request. 
-
-Email invitations must also work before the recipient has a Carbon account. Keep the invited email encrypted and the invitation pending for 48 hours. The recipient signs up or signs in and verifies that same email before the invitation is bound to their Carbon account and accepted. Creating an invitation must not create an account or grant membership.
 
 There should also be an search carbon endpoint which shows me via fuzzy search the carbon_id i might likely be looking for based on our system. So say i wrote `sak` and out of all the carbon_id's you suggest `saket, sakamm, saket2103`, etc. Show upwards to 10 suggestions, the range of suggestions can be 0 to 10 inclusive of the limits.  
 
@@ -161,23 +159,73 @@ App_scope is the scope of an application, this defines what all information app 
 
 ### Critical IAM Scope
 
-| Proposed scope                  | What the app can access                                                                |
-| ------------------------------- | -------------------------------------------------------------------------------------- |
-| `directory.carbons.read`        | List, search, and look up Carbons within a selected organization                       |
-| `directory.silicons.read`       | List, search, and look up Silicons within a selected organization                      |
-| `directory.profiles.read`       | Other members’ names, photos, descriptions, timezones                                  |
-| `directory.memberships.read`    | Other members’ membership status and owner/admin/member roles                          |
-| `directory.capabilities.read`   | Other members’ explicit organization capabilities                                      |
-| `directory.job_roles.read`      | Other members’ descriptive job roles                                                   |
-| `directory.tags.read`           | Other members’ tag assignments, including membership of a tag                          |
-| `directory.silicon_access.read` | Other Carbons’ first Silicon, extra Silicons, and accessible Silicon assignments       |
-| `directory.hierarchy.read`      | Silicon reporting relationships across the organization                                |
-| `organization.tags.read`        | The organization’s complete tag catalog                                                |
-| `organization.trust.read`       | Organization default trust, tag rules, exact Silicon overrides, inter-tag trust matrix |
-| `organization.invitations.read` | Pending/historical invitations and invitation details                                  |
-| `organization.governance.read`  | Role/tag change requests, approval decisions, role/tag history                         |
+| Proposed scope                             | What the app can access                                                                       |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| `directory.carbons.read`                   | List, search, and look up Carbons within a selected organization                              |
+| `directory.silicons.read`                  | List, search, and look up Silicons within a selected organization                             |
+| `directory.profiles.read`                  | Other members’ names, photos, descriptions, timezones                                         |
+| `directory.memberships.read`               | Other members’ membership status and owner/admin/member roles                                 |
+| `directory.capabilities.read`              | Other members’ explicit organization capabilities                                             |
+| `directory.job_roles.read`                 | Other members’ descriptive job roles                                                          |
+| `directory.tags.read`                      | Other members’ tag assignments, including membership of a tag                                 |
+| `directory.silicon_access.read`            | Other Carbons’ first Silicon, extra Silicons, and accessible Silicon assignments              |
+| `directory.hierarchy.read`                 | Silicon reporting relationships across the organization                                       |
+| `organization.tags.read`                   | The organization’s complete tag catalog                                                       |
+| `organization.trust.read`                  | Organization default trust, tag rules, exact Silicon overrides, inter-tag trust matrix        |
+| `organization.invitations.read`            | Pending/historical invitations and invitation details                                         |
+| `organization.governance.read`             | Role/tag change requests, approval decisions, role/tag history                                |
+| `organizations.create`                     | Create an organization on behalf of a Carbon; that Carbon becomes its owner                   |
+| `organization.profile.update`              | Change organization name, logo, description                                                   |
+| `organization.invitations.create`          | Invite Carbons with the permitted invitation settings                                         |
+| `organization.invitations.revoke`          | Revoke pending Carbon invitations                                                             |
+| `organization.silicons.create`             | Create a Silicon account in the organization                                                  |
+| `organization.silicons.update`             | Update Silicon profile details and reporting relationships                                    |
+| `organization.carbons.remove`              | Remove Carbons from the organization                                                          |
+| `organization.silicons.remove`             | Remove Silicons from the organization                                                         |
+| `organization.tags.create`                 | Create tags                                                                                   |
+| `organization.tags.update`                 | Edit tag definitions                                                                          |
+| `organization.tags.delete`                 | Delete tags                                                                                   |
+| `organization.member_tags.update`          | Assign or remove members’ tags                                                                |
+| `organization.job_roles.update`            | Change members’ descriptive job roles                                                         |
+| `organization.silicon_access.update`       | Change first Silicon and extra Silicon assignments                                            |
+| `organization.trust.update`                | Change trust defaults and rules                                                               |
+| `organization.admins.promote`              | Promote a Carbon member to admin                                                              |
+| `organization.admins.demote`               | Remove a Carbon’s admin status                                                                |
+| `organization.capabilities.update`         | Change an admin’s explicitly assigned capabilities                                            |
+| `organization.invitations.read`            | List invitations and fetch their details/status                                               |
+| `organization.invitations.create`          | Send Carbon invitations                                                                       |
+| `organization.invitations.revoke`          | Revoke pending invitations                                                                    |
+| `organization.change_requests.read`        | List and fetch role/tag change requests, including their decisions                            |
+| `organization.job_role_changes.request`    | Submit a role-change request                                                                  |
+| `organization.tag_changes.request`         | Submit a tag-change request                                                                   |
+| `organization.change_requests.decide`      | Approve or reject a request the represented user is eligible to decide                        |
+| `organization.job_role_history.read`       | View job-role change history                                                                  |
+| `organization.tag_history.read`            | View tag-assignment history                                                                   |
+| `organizations.join`                       | Complete invitation verification and join; still require a valid invitation or successful SSO |
+| `organization.sso.read` / `.manage`        | View and configure SSO, including join-method settings                                        |
+| `organization.silicons.credentials.rotate` | Rotate Silicon credentials separately from editing their profile                              |
 
 The one's described above were the critical and non critical IAM scope, then except this each application should also be able to define other apps they would need OBO from. These could be any application's even outside the organisation. For the selected application they would need to select the scope of the external application - this scope can be selected based on the exposed OBO endpoints of the said application.
+
+In case of IAM some of the scopes are gonna be limited only to the trusted organisations, those scopes would include:
+
+```
+organization.silicons.credentials.rotate
+organization.sso.read` / `.manage`
+organization.invitations.create
+organization.silicons.create
+organization.member_tags.update
+organization.job_roles.update
+organization.silicon_access.update
+organization.trust.update
+organization.admins.promote
+organization.capabilities.update
+organization.change_requests.decide
+organizations.join
+organization.sso.read` / `.manage
+```
+
+This can also be configured for each trusted organisation where in the db itself when making an organisation a trusted org i can also remove elements from this.
 
 ##### Scope Permissions
 
@@ -233,7 +281,7 @@ For each login that takes place also store the login history, app specific and a
 
 Bundled apps is an exclusive concept availaible only to the orgs configured as trusted_org true. These orgs would be able to create bundled apps, bundled apps are a simple way to be able to login to multiple apps at once, for the apps inside of a bundled app the apps would still exist standalone, but now for when the bundled app triggers a login the user only sees the bundled app detail but it actually logs them into all the applications inside the bundle app. 
 
-For creating an bundled app, give the app_id, and the list of the apps in the bundle (this would include just the apps in their org in the trusted org). For the said applications, a seperate short live token is not generated, similar to the normal login this also returns the short live token seperately for each configured application, and the actual app needs to request with it's secret to be able to get the auth and refresh token.
+For creating an bundled app, give the app_id, bundle_logo and the list of the apps in the bundle (this would include just the apps in their org in the trusted org). For the said applications, a seperate short live token is not generated, similar to the normal login this also returns the short live token seperately for each configured application, and the actual app needs to request with it's secret to be able to get the auth and refresh token.
 
 So bundled apps is just a preetier way to get the users to login to multiple apps at once. 
 

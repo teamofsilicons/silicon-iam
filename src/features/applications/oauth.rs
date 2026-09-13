@@ -389,6 +389,10 @@ pub(super) async fn login_choices(
     .map_err(|_| ApiError::internal("login_choices"))?;
     let policy = super::scopes::policy(transaction, app.id).await?;
     Ok(super::model::LoginOrganizationsResponse {
+        allow_empty_organization_selection: allows_empty_organization_selection(
+            access.subject.actor_type,
+            policy.scopes.iter().map(|scope| scope.scope.as_str()),
+        ),
         scope_version: policy.scope_version,
         consent_required: policy.consent_required,
         scopes: policy.scopes,
@@ -508,10 +512,10 @@ pub(super) async fn issue_short_lived_token(
             "Use org_ids for the user's explicit selection; org_id no longer scopes an Application login.",
         ));
     }
-    if input.org_ids.is_empty() || input.org_ids.len() > 1000 {
+    if input.org_ids.len() > 1000 {
         return Err(ApiError::bad_request(
             "organization_selection_required",
-            "Select between 1 and 1000 organizations in IAM.",
+            "Select at most 1000 organizations in IAM.",
         ));
     }
     for org in &input.org_ids {
@@ -579,6 +583,38 @@ pub(super) async fn issue_short_lived_token(
     Ok((StatusCode::CREATED, Json(response)).into_response())
 }
 
+/// Account onboarding scopes may be consented before a Carbon has any memberships.
+/// This never selects an organization or grants access to future memberships.
+fn allows_empty_organization_selection<'a>(
+    actor: ActorType,
+    scopes: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    actor == ActorType::Carbon
+        && scopes
+            .into_iter()
+            .any(|scope| matches!(scope, "organizations.create" | "organizations.join"))
+}
+
+fn validate_organization_selection(
+    actor: ActorType,
+    consented_scopes: &[String],
+    org_ids: &[String],
+) -> Result<(), ApiError> {
+    if org_ids.len() > 1000
+        || (org_ids.is_empty()
+            && !allows_empty_organization_selection(
+                actor,
+                consented_scopes.iter().map(String::as_str),
+            ))
+    {
+        return Err(ApiError::bad_request(
+            "organization_selection_required",
+            "Select between 1 and 1000 organizations. Only a Carbon consenting to organizations.create or organizations.join may select none.",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) async fn issue_for_selection(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
@@ -611,6 +647,7 @@ pub(super) async fn issue_for_selection(
     let policy = super::scopes::policy(transaction, app.id).await?;
     let scopes =
         super::scopes::validate_consent(&policy, input.scope_version, &input.approved_scopes)?;
+    validate_organization_selection(access.subject.actor_type, &scopes, &input.org_ids)?;
     let requested = input
         .org_ids
         .iter()
@@ -623,11 +660,12 @@ pub(super) async fn issue_for_selection(
         ));
     }
     let selected_membership_ids = sqlx::query_scalar::<_, Vec<Uuid>>(
-        "SELECT iam_private.lock_login_organization_selection($1, $2, $3)",
+        "SELECT iam_private.lock_account_login_organization_selection($1, $2, $3, $4)",
     )
     .bind(access.subject.id)
     .bind(access.authentication_session_id)
     .bind(requested.iter().cloned().collect::<Vec<_>>())
+    .bind(app.id)
     .fetch_one(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("login_selection"))?;
@@ -2634,6 +2672,54 @@ mod tests {
         REFRESH_TOKEN_CANDIDATE_QUERY, append_redirect_parameters, empty_idempotent_response,
         escape_html, login_html_response, scopes_retain_exact_authority,
     };
+
+    #[test]
+    fn account_onboarding_still_requires_an_explicit_empty_selection() {
+        let mut input = serde_json::json!({
+            "app_id": "tos>interface",
+            "scope_version": 1,
+            "approved_scopes": ["organizations.create"]
+        });
+        assert!(serde_json::from_value::<super::ShortLivedTokenRequest>(input.clone()).is_err());
+        input["org_ids"] = serde_json::json!([]);
+        assert!(serde_json::from_value::<super::ShortLivedTokenRequest>(input).is_ok());
+    }
+
+    #[test]
+    fn empty_selection_requires_carbon_and_a_current_consented_onboarding_scope() {
+        use super::validate_organization_selection;
+        use crate::domain::actor::ActorType;
+        for scope in ["organizations.create", "organizations.join"] {
+            let scopes = vec!["self.identity.read".into(), scope.into()];
+            assert!(validate_organization_selection(ActorType::Carbon, &scopes, &[]).is_ok());
+            for actor in [
+                ActorType::Silicon,
+                ActorType::Application,
+                ActorType::Service,
+            ] {
+                assert!(validate_organization_selection(actor, &scopes, &[]).is_err());
+            }
+        }
+        for scopes in [
+            vec![],
+            vec!["organizations.read".into()],
+            vec!["organization.invitations.create".into()],
+        ] {
+            assert!(validate_organization_selection(ActorType::Carbon, &scopes, &[]).is_err());
+            assert!(
+                validate_organization_selection(ActorType::Carbon, &scopes, &["work".into()])
+                    .is_ok()
+            );
+        }
+        assert!(
+            validate_organization_selection(
+                ActorType::Carbon,
+                &["organizations.create".into()],
+                &vec!["work".into(); 1001]
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn redirects_preserve_existing_query_and_encode_protocol_values() {

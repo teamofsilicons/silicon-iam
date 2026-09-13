@@ -213,7 +213,13 @@ pub(super) async fn create_invitation(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     validate_invitation(&mut input)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.invitations.create",
+    )
+    .await?;
     support::require_capability(&scope.access, Capability::MembersInvite)?;
     if !input.tag_ids.is_empty() {
         support::require_capability(&scope.access, Capability::TagsManage)?;
@@ -411,7 +417,9 @@ pub(super) async fn create_invitation(
         },
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Invitation,
         &mut scope.transaction,
         &state,
         lease,
@@ -460,7 +468,13 @@ pub(super) async fn revoke_invitation(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.invitations.revoke",
+    )
+    .await?;
     support::require_capability(&scope.access, Capability::MembersInvite)?;
     let lease = match support::claim_resource(
         &mut scope.transaction,
@@ -560,7 +574,7 @@ pub(super) async fn send_invitation_email_code(
     headers: HeaderMap,
     Json(mut input): Json<InvitationEmailCodeRequest>,
 ) -> Result<Response, AppError> {
-    let carbon_id = support::require_carbon(&authenticated)?;
+    let carbon_id = support::require_scoped_carbon(&authenticated, "organizations.join")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     input.email = validate_invitation_email(&input.email)?;
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
@@ -903,7 +917,7 @@ pub(super) async fn join_organization(
     headers: HeaderMap,
     Json(input): Json<InvitationAcceptance>,
 ) -> Result<Response, AppError> {
-    let carbon_id = support::require_carbon(&authenticated)?;
+    let carbon_id = support::require_scoped_carbon(&authenticated, "organizations.join")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     let code = validate_code(&input.verification_code)?;
     let (mut transaction, organization_id) =
@@ -1077,8 +1091,16 @@ pub(super) async fn join_organization(
         },
     )
     .await?;
-    let body =
-        support::finish_json(&mut transaction, &state, lease, StatusCode::OK, &member).await?;
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Member,
+        &mut transaction,
+        &state,
+        lease,
+        StatusCode::OK,
+        &member,
+    )
+    .await?;
     transaction.commit().await.map_err(support::database)?;
     support::json_response(StatusCode::OK, body, Some(member.version), false)
 }
@@ -1378,7 +1400,7 @@ async fn begin_invitation<'a>(
     org_id: &str,
     invite_id: Uuid,
 ) -> Result<(Transaction<'a, Postgres>, Uuid), AppError> {
-    support::require_carbon(authenticated)?;
+    support::require_scoped_carbon(authenticated, "organizations.join")?;
     let mut transaction = context::begin(
         state.db(),
         DatabaseContext::principal(authenticated.0.subject.id),

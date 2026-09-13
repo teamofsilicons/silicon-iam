@@ -92,7 +92,13 @@ pub(super) async fn replace_default_trust(
     Json(input): Json<TrustValue>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.trust.update",
+    )
+    .await?;
     support::require_capability(&scope.access, Capability::TrustManage)?;
     let lease = match support::claim(
         &mut scope.transaction,
@@ -161,7 +167,9 @@ pub(super) async fn replace_default_trust(
         },
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Trust,
         &mut scope.transaction,
         &state,
         lease,
@@ -207,6 +215,10 @@ pub(super) async fn list_trust_rules(
     support::json(StatusCode::OK, &TrustRulePage { items, page }, None)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one transaction retains validation, scope and capability gates, audit, and idempotency"
+)]
 pub(super) async fn create_trust_rule(
     State(state): State<ApiState>,
     authenticated: Authenticated,
@@ -215,7 +227,13 @@ pub(super) async fn create_trust_rule(
     Json(input): Json<TrustRuleInput>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.trust.update",
+    )
+    .await?;
     support::require_capability(&scope.access, Capability::TrustManage)?;
     let lease = match support::claim(
         &mut scope.transaction,
@@ -291,7 +309,9 @@ pub(super) async fn create_trust_rule(
         &affected_membership_ids,
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Trust,
         &mut scope.transaction,
         &state,
         lease,
@@ -342,7 +362,13 @@ pub(super) async fn update_trust_rule(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     validation::trust_rule_patch(&input)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.trust.update",
+    )
+    .await?;
     support::require_capability(&scope.access, Capability::TrustManage)?;
     let lease = match support::claim_resource(
         &mut scope.transaction,
@@ -444,8 +470,16 @@ pub(super) async fn update_trust_rule(
         &affected_membership_ids,
     )
     .await?;
-    let body =
-        support::finish_json(&mut scope.transaction, &state, lease, StatusCode::OK, &rule).await?;
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Trust,
+        &mut scope.transaction,
+        &state,
+        lease,
+        StatusCode::OK,
+        &rule,
+    )
+    .await?;
     scope
         .transaction
         .commit()
@@ -461,7 +495,13 @@ pub(super) async fn delete_trust_rule(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.trust.update",
+    )
+    .await?;
     support::require_capability(&scope.access, Capability::TrustManage)?;
     let lease = match support::claim_resource(
         &mut scope.transaction,

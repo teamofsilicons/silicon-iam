@@ -367,7 +367,6 @@ pub(super) struct ShortLivedTokenRequest {
     pub(super) scope_version: i64,
     pub(super) approved_scopes: Vec<String>,
     /// Explicit user selection, never inferred from an Application login URL.
-    #[serde(default)]
     pub(super) org_ids: Vec<String>,
     #[serde(default)]
     pub(super) org_id: Option<String>,
@@ -825,6 +824,7 @@ mod tests {
 
 #[derive(Serialize)]
 pub(super) struct LoginOrganizationsResponse {
+    pub(super) allow_empty_organization_selection: bool,
     pub(super) scope_version: i64,
     pub(super) consent_required: bool,
     pub(super) scopes: Vec<ScopeDefinition>,

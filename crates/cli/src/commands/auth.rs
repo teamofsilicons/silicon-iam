@@ -300,10 +300,16 @@ fn select_login_organizations(
             );
         }
         let selection = prompt(
-            "Organization handles (comma-separated), or all: ",
+            if choices.allow_empty_organization_selection {
+                "Organization handles (comma-separated), all, or none for account onboarding: "
+            } else {
+                "Organization handles (comma-separated), or all: "
+            },
             "Use --grant-org or --all-orgs.",
         )?;
-        if selection.trim() == "all" {
+        if choices.allow_empty_organization_selection && selection.trim() == "none" {
+            Vec::new()
+        } else if selection.trim() == "all" {
             choices.items.iter().map(|org| org.org_id.clone()).collect()
         } else {
             selection
@@ -314,7 +320,7 @@ fn select_login_organizations(
                 .collect()
         }
     };
-    if org_ids.is_empty() {
+    if org_ids.is_empty() && !choices.allow_empty_organization_selection {
         return Err(CliError::Usage(
             "Select at least one active organization. Join or create an organization in IAM first."
                 .to_owned(),
@@ -830,4 +836,33 @@ fn require_prompt_value(value: String, label: &str) -> Result<String> {
         )));
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_login_organizations;
+    use silicon_iam_client::models;
+
+    fn choices(allow_empty: bool) -> models::LoginOrganizations {
+        models::LoginOrganizations {
+            app_id: "tos>interface".into(),
+            app_name: None,
+            scope_version: 1,
+            consent_required: true,
+            allow_empty_organization_selection: allow_empty,
+            scopes: Vec::new(),
+            items: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn explicit_all_current_orgs_can_be_empty_only_when_iam_allows_it() {
+        assert_eq!(
+            select_login_organizations(&choices(true), &[], true)
+                .ok()
+                .as_deref(),
+            Some([].as_slice())
+        );
+        assert!(select_login_organizations(&choices(false), &[], true).is_err());
+    }
 }

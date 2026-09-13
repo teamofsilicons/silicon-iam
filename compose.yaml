@@ -26,7 +26,7 @@ x-runtime-environment: &runtime-environment
   IAM_OTP_TTL_SECONDS: ${IAM_OTP_TTL_SECONDS:-600}
   IAM_OTP_MAX_ATTEMPTS: ${IAM_OTP_MAX_ATTEMPTS:-10}
   IAM_POSTMARK_SERVER_TOKEN: ${IAM_POSTMARK_SERVER_TOKEN:-}
-  IAM_POSTMARK_FROM_EMAIL: ${IAM_POSTMARK_FROM_EMAIL:-auth@teamofsilicons.com}
+  IAM_POSTMARK_FROM_EMAIL: ${IAM_POSTMARK_FROM_EMAIL:-iam@teamofsilicons.com}
   IAM_TWILIO_ACCOUNT_SID: ${IAM_TWILIO_ACCOUNT_SID:-}
   IAM_TWILIO_AUTH_TOKEN: ${IAM_TWILIO_AUTH_TOKEN:-}
   IAM_TWILIO_MESSAGING_SERVICE_SID: ${IAM_TWILIO_MESSAGING_SERVICE_SID:-}
@@ -180,6 +180,24 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
 
+  scoped-api:
+    <<: *runtime-hardening
+    build:
+      context: .
+    command: ["iam-scoped-api"]
+    depends_on:
+      grant-runtime-access:
+        condition: service_completed_successfully
+    environment:
+      <<: *runtime-environment
+      # Keep the canonical IAM backend URL for SSO provider callbacks.
+      IAM_DATABASE_URL: postgres://silicon_iam_api_runtime:${IAM_LOCAL_API_DATABASE_PASSWORD}@postgres:5432/silicon_iam
+      IAM_CORS_ALLOWED_ORIGINS: ${IAM_SCOPED_CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+      IAM_DATABASE_MAX_CONNECTIONS: ${IAM_SCOPED_DATABASE_MAX_CONNECTIONS:-4}
+      IAM_DATABASE_MIN_CONNECTIONS: 0
+    ports:
+      - "127.0.0.1:8081:8080"
+
   worker:
     <<: *runtime-hardening
     build:
@@ -204,7 +222,7 @@ services:
       IAM_ENCRYPTION_CURRENT_VERSION: ${IAM_ENCRYPTION_CURRENT_VERSION}
       IAM_ENCRYPTION_KEYRING: ${IAM_ENCRYPTION_KEYRING}
       IAM_POSTMARK_SERVER_TOKEN: ${IAM_POSTMARK_SERVER_TOKEN:-}
-      IAM_POSTMARK_FROM_EMAIL: ${IAM_POSTMARK_FROM_EMAIL:-auth@teamofsilicons.com}
+      IAM_POSTMARK_FROM_EMAIL: ${IAM_POSTMARK_FROM_EMAIL:-iam@teamofsilicons.com}
       IAM_TWILIO_ACCOUNT_SID: ${IAM_TWILIO_ACCOUNT_SID:-}
       IAM_TWILIO_AUTH_TOKEN: ${IAM_TWILIO_AUTH_TOKEN:-}
       IAM_TWILIO_MESSAGING_SERVICE_SID: ${IAM_TWILIO_MESSAGING_SERVICE_SID:-}

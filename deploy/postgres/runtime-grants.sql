@@ -510,6 +510,9 @@ DECLARE
         'get_testing_application_secret',
         'import_testing_application_configuration',
         'activate_testing_application_scopes',
+        'get_testing_source_iam_scope_policies',
+        'list_testing_import_iam_scope_sources',
+        'apply_testing_import_iam_scope_policies',
         'create_application_testing_environment',
         'link_application_testing_environment',
         'list_application_testing_environments',
@@ -578,6 +581,7 @@ DECLARE
         'lock_governance_request_target',
         'lock_invitation_verification_challenge',
         'lock_login_organization_selection',
+        'lock_account_login_organization_selection',
         'lock_membership_removal_event_scope',
         'lock_organization_tag_scope',
         'lock_silicon_webhook_delivery_scope',
@@ -609,6 +613,7 @@ DECLARE
         'touch_testing_environment',
         'application_scope_names',
         'iam_scope_catalog',
+        'application_iam_scope_allowed',
         'application_scope_catalog',
         'configure_application_scopes',
         'application_login_scope_policy',
@@ -630,6 +635,8 @@ DECLARE
         'application_webhook_has_event_scope'
     ];
     non_api_definer_names text[] := ARRAY[
+        'enforce_application_iam_scope_policy',
+        'revoke_unavailable_iam_scopes',
         'list_testing_application_orphan_candidates',
         'testing_environment_record_exists',
         'list_idle_application_testing_candidates',

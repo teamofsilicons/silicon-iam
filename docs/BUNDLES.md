@@ -87,7 +87,7 @@ credentials or verification codes.
 Read `GET /api/v1/app-auth/bundles/{bundle_id}/organizations` using the current
 Carbon or Silicon IAM session. It returns the bundle identity and one login
 choice object per member. Each object includes organizations, `scope_version`,
-`consent_required`, and the complete active permission descriptors.
+`consent_required`, `allow_empty_organization_selection`, and the complete active permission descriptors.
 
 Submit explicit choices to
 `POST /api/v1/app-auth/bundles/{bundle_id}/short-lived-tokens`:
@@ -116,6 +116,15 @@ choices endpoint. All current bundle members must be present exactly once.
 Membership, application status, and scope changes are revalidated atomically
 before issuing any token. If validation fails, no partial bundle login is
 created. Reload choices after a stale scope or changed-member response.
+
+The shared browser picker allows a Carbon to continue with no organization only
+when every member has `allow_empty_organization_selection: true`. That requires
+each app's current approved and consented scopes to include `organizations.create`
+or `organizations.join`. API callers may send an empty selection for eligible
+members alongside selected organizations for others; eligibility is enforced
+independently and issuance remains atomic. No organization is granted by an empty
+selection or by subsequently creating or joining one. The user must return to IAM
+to explicitly add organization access.
 
 An idempotent retry is bound to the same IAM session and bundle, preserving the
 original tokens and expiry times. Retry the exact same body and key after an

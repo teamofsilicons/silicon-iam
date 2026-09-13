@@ -158,6 +158,27 @@ pub(super) fn validate_consent(
     }
     Ok(expected.into_iter().collect())
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct IamCatalogQuery {}
+
+/// IAM-only permission discovery for the scoped backend.
+pub(crate) fn scoped_router() -> axum::Router<ApiState> {
+    axum::Router::new().route(
+        "/api/v1/application-scopes",
+        axum::routing::get(iam_catalog),
+    )
+}
+
+/// The application-only surface never exposes external OBO endpoint discovery.
+pub(super) async fn iam_catalog(
+    State(state): State<ApiState>,
+    bearer: Bearer,
+    Query(_query): Query<IamCatalogQuery>,
+) -> Result<Json<Catalog>, ApiError> {
+    catalog(State(state), bearer, Query(CatalogQuery { app_id: None })).await
+}
+
 pub(super) async fn catalog(
     State(state): State<ApiState>,
     Bearer(access): Bearer,
@@ -228,7 +249,7 @@ pub(super) fn database_error(error: &sqlx::Error) -> ApiError {
         _ => ApiError::internal("application_scope_database"),
     }
 }
-const IAM_SCOPES: &[&str] = &[
+pub(super) const IAM_SCOPES: &[&str] = &[
     "self.identity.read",
     "self.profile.read",
     "self.email.read",
@@ -254,6 +275,34 @@ const IAM_SCOPES: &[&str] = &[
     "organization.trust.read",
     "organization.invitations.read",
     "organization.governance.read",
+    "organizations.create",
+    "organization.profile.update",
+    "organization.invitations.create",
+    "organization.invitations.revoke",
+    "organization.silicons.create",
+    "organization.silicons.update",
+    "organization.carbons.remove",
+    "organization.silicons.remove",
+    "organization.tags.create",
+    "organization.tags.update",
+    "organization.tags.delete",
+    "organization.member_tags.update",
+    "organization.job_roles.update",
+    "organization.silicon_access.update",
+    "organization.trust.update",
+    "organization.admins.promote",
+    "organization.admins.demote",
+    "organization.capabilities.update",
+    "organization.change_requests.read",
+    "organization.job_role_changes.request",
+    "organization.tag_changes.request",
+    "organization.change_requests.decide",
+    "organization.job_role_history.read",
+    "organization.tag_history.read",
+    "organizations.join",
+    "organization.sso.read",
+    "organization.sso.manage",
+    "organization.silicons.credentials.rotate",
 ];
 #[cfg(test)]
 mod tests {

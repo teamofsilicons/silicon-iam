@@ -144,6 +144,7 @@ pub(super) async fn import_all(
     if !imported.contains_key(root) {
         return Err(AppError::NotFound);
     }
+    super::scope_policy::synchronize(transaction, &state.pool).await?;
     sqlx::query("SELECT iam_private.activate_testing_application_scopes($1)")
         .bind(
             imported

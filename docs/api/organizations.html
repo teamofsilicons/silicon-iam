@@ -114,9 +114,10 @@
 <p>
   An authenticated Application access token may use these read-only directory endpoints as well.
   IAM resolves the token subject's active membership in the requested organization and returns the
-  complete directory projection, including role, tags, organization metadata and evaluated trust.
-  Application tokens cannot use administrative or mutation endpoints such as removing members,
-  changing roles, tags or trust.
+  directory projection filtered by granted read scopes, including permitted role, tags, organization metadata and evaluated trust.
+  Applications can also call explicitly scoped mutation endpoints after critical-scope approval
+  and user consent. IAM still checks current selected membership, actor capabilities, version
+  preconditions and step-up. See the scoped IAM permission guide for exact operation scopes.
 </p>
 
 <p>

@@ -28,6 +28,7 @@ RUN --mount=type=cache,id=silicon-iam-cargo-registry,target=/usr/local/cargo/reg
     --mount=type=cache,id=silicon-iam-target,target=/workspace/target,sharing=locked \
     cargo build --locked --release --bins \
     && install -D -m 0755 target/release/iam-api /opt/silicon-iam/iam-api \
+    && install -D -m 0755 target/release/iam-scoped-api /opt/silicon-iam/iam-scoped-api \
     && install -D -m 0755 target/release/iam-worker /opt/silicon-iam/iam-worker \
     && install -D -m 0755 target/release/iam-migrate /opt/silicon-iam/iam-migrate \
     && install -D -m 0755 target/release/iam-bootstrap-admin /opt/silicon-iam/iam-bootstrap-admin \
@@ -50,6 +51,7 @@ RUN apt-get update \
     && useradd --system --uid 10001 --gid silicon-iam --no-create-home --home-dir /nonexistent silicon-iam
 
 COPY --from=builder /opt/silicon-iam/iam-api /usr/local/bin/iam-api
+COPY --from=builder /opt/silicon-iam/iam-scoped-api /usr/local/bin/iam-scoped-api
 COPY --from=builder /opt/silicon-iam/iam-worker /usr/local/bin/iam-worker
 COPY --from=builder /opt/silicon-iam/iam-migrate /usr/local/bin/iam-migrate
 COPY --from=builder /opt/silicon-iam/iam-bootstrap-admin /usr/local/bin/iam-bootstrap-admin
@@ -59,6 +61,8 @@ COPY --from=builder /opt/silicon-iam/iam-activate-key-version /usr/local/bin/iam
 # long-running API and worker never execute this file; the deployment bootstrap
 # extracts it and applies it with the short-lived RDS migration principal.
 COPY --chown=10001:10001 deploy/postgres/runtime-grants.sql /opt/silicon-iam/postgres/runtime-grants.sql
+
+COPY --chown=10001:10001 deploy/scoped /opt/silicon-iam/scoped
 
 USER 10001:10001
 

@@ -110,7 +110,14 @@ pub(super) async fn get(
     Path(raw_org_id): Path<String>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&raw_org_id)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id, false).await?;
+    let mut scope = support::begin_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        false,
+        support::SSO_READ_SCOPE,
+    )
+    .await?;
     support::require_manage(&scope.access)?;
     let row = fetch_configuration(&mut scope.transaction, scope.access.organization_id).await?;
     let configuration = configuration_from_row(row);
@@ -141,7 +148,14 @@ pub(super) async fn create_setup_link(
     let request = SetupRequest {
         org_id: org_id.as_str(),
     };
-    let mut preflight = support::begin_organization(&state, &authenticated, &org_id, false).await?;
+    let mut preflight = support::begin_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        false,
+        support::SSO_MANAGE_SCOPE,
+    )
+    .await?;
     support::require_manage(&preflight.access)?;
     let lease = match support::claim(
         &mut preflight.transaction,
@@ -220,7 +234,14 @@ pub(super) async fn create_setup_link(
         expires_at,
     };
 
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id, true).await?;
+    let mut scope = support::begin_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        true,
+        support::SSO_MANAGE_SCOPE,
+    )
+    .await?;
     support::require_manage(&scope.access)?;
     let row = sqlx::query_as::<_, (i64,)>(
         r"
@@ -309,7 +330,14 @@ pub(super) async fn disable(
     let request = VersionRequest {
         org_id: org_id.as_str(),
     };
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id, true).await?;
+    let mut scope = support::begin_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        true,
+        support::SSO_MANAGE_SCOPE,
+    )
+    .await?;
     support::require_manage(&scope.access)?;
     let lease = match support::claim(
         &mut scope.transaction,
@@ -481,7 +509,14 @@ pub(super) async fn test(
     let request = TestRequest {
         org_id: org_id.as_str(),
     };
-    let mut preflight = support::begin_organization(&state, &authenticated, &org_id, false).await?;
+    let mut preflight = support::begin_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        false,
+        support::SSO_MANAGE_SCOPE,
+    )
+    .await?;
     support::require_manage(&preflight.access)?;
     let lease = match support::claim(
         &mut preflight.transaction,
@@ -543,7 +578,14 @@ pub(super) async fn test(
         }),
         checked_at: OffsetDateTime::now_utc(),
     };
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id, true).await?;
+    let mut scope = support::begin_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        true,
+        support::SSO_MANAGE_SCOPE,
+    )
+    .await?;
     support::require_manage(&scope.access)?;
     let body = support::complete_json(
         &mut scope.transaction,

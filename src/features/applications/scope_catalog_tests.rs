@@ -1,10 +1,14 @@
 //! Scope discovery must distinguish an empty public catalog from an invalid ID.
 
+use std::time::Duration;
+
 use anyhow::{Context as _, ensure};
 use axum::{http::StatusCode, response::IntoResponse as _};
+use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgPoolOptions};
 use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
+use uuid::Uuid;
 
 use super::scopes::catalog_items;
 
@@ -30,6 +34,15 @@ async fn scope_catalog_validates_applications_without_disclosing_other_environme
     crate::infrastructure::postgres::migrate(&production).await?;
     seed_catalog(&production).await?;
     assert_catalog_choices(&production).await?;
+    sqlx::raw_sql(include_str!(
+        "../../../tests/sql/iam_mutation_scope_policy.sql"
+    ))
+    .execute(&production)
+    .await
+    .context("IAM mutation scope policy")?;
+    assert_policy_concurrency(&production)
+        .await
+        .context("production IAM policy concurrency")?;
 
     sqlx::query("CREATE DATABASE testing")
         .execute(&production)
@@ -48,6 +61,15 @@ async fn scope_catalog_validates_applications_without_disclosing_other_environme
     crate::infrastructure::postgres::migrate_testing(&testing).await?;
     seed_catalog(&testing).await?;
     assert_catalog_choices(&testing).await?;
+    sqlx::raw_sql(include_str!(
+        "../../../tests/sql/iam_mutation_scope_policy.sql"
+    ))
+    .execute(&testing)
+    .await
+    .context("testing IAM mutation scope policy")?;
+    assert_policy_concurrency(&testing)
+        .await
+        .context("testing IAM policy concurrency")?;
     let mut tx = testing.begin().await?;
     select_runtime_actor(&mut tx).await?;
     for environment in ["00000000-0000-0000-0000-000000000802", ""] {
@@ -57,7 +79,10 @@ async fn scope_catalog_validates_applications_without_disclosing_other_environme
             .await?;
         assert_not_found(&mut tx, "test_org>app-beta").await?;
         let iam = catalog_items(&mut tx, None).await.map_err(catalog_error)?;
-        ensure!(iam.len() == 25 && iam.iter().all(|scope| scope.app_id.is_none()));
+        ensure!(
+            iam.len() == super::scopes::IAM_SCOPES.len()
+                && iam.iter().all(|scope| scope.app_id.is_none())
+        );
     }
     tx.rollback().await?;
     assert_catalog_upgrade(&production, &base_url).await?;
@@ -158,7 +183,10 @@ async fn assert_catalog_choices(pool: &PgPool) -> anyhow::Result<()> {
         "shared external scope history must remain private"
     );
     let iam = catalog_items(&mut tx, None).await.map_err(catalog_error)?;
-    ensure!(iam.len() == 25 && iam.iter().all(|scope| scope.app_id.is_none()));
+    ensure!(
+        iam.len() == super::scopes::IAM_SCOPES.len()
+            && iam.iter().all(|scope| scope.app_id.is_none())
+    );
     let empty = catalog_items(&mut tx, Some("test_org>app-alpha"))
         .await
         .map_err(catalog_error)?;
@@ -219,4 +247,255 @@ async fn assert_not_found(tx: &mut Transaction<'_, Postgres>, app_id: &str) -> a
 
 fn catalog_error(error: super::error::ApiError) -> anyhow::Error {
     anyhow::anyhow!("scope catalog failed: {}", error.into_response().status())
+}
+
+const POLICY_ORG: Uuid = Uuid::from_u128(0x21);
+const POLICY_APP: Uuid = Uuid::from_u128(0x11);
+const POLICY_ACTOR: Uuid = Uuid::from_u128(1);
+const RESTRICTED_SCOPE: &str = "organization.invitations.create";
+
+async fn assert_policy_concurrency(pool: &PgPool) -> anyhow::Result<()> {
+    sqlx::query("INSERT INTO iam.platform_role_grants(id,carbon_id,role,grant_source) VALUES($1,$2,'application_reviewer','bootstrap')")
+        .bind(Uuid::from_u128(0x171)).bind(POLICY_ACTOR).execute(pool).await?;
+    existing_review_cannot_commit_past_policy_revocation(pool).await?;
+    uncommitted_application_grant_holds_organization_policy(pool).await?;
+    new_application_grant_rechecks_policy_after_wait(pool).await?;
+    Ok(())
+}
+
+async fn begin_policy_transaction(
+    pool: &PgPool,
+) -> Result<Transaction<'static, Postgres>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SET LOCAL statement_timeout = '10s'")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SET LOCAL deadlock_timeout = '100ms'")
+        .execute(&mut *tx)
+        .await?;
+    Ok(tx)
+}
+
+async fn configure_restricted_scope(
+    tx: &mut Transaction<'_, Postgres>,
+    application: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT iam_private.configure_application_scopes($1,$2,$3)")
+        .bind(application)
+        .bind(json!({"iam":["self.organizations.read", RESTRICTED_SCOPE],"external":[]}))
+        .bind(POLICY_ACTOR)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+async fn restore_policy(pool: &PgPool) -> anyhow::Result<()> {
+    sqlx::query("UPDATE iam.organizations SET trusted_org=true WHERE id=$1")
+        .bind(POLICY_ORG)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn deny_policy(tx: &mut Transaction<'_, Postgres>) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE iam.organizations SET trusted_org=false WHERE id=$1")
+        .bind(POLICY_ORG)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+async fn backend_pid(tx: &mut Transaction<'_, Postgres>) -> Result<i32, sqlx::Error> {
+    sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut **tx)
+        .await
+}
+
+async fn wait_for_blocker(pool: &PgPool, waiting: i32, blocker: i32) -> anyhow::Result<()> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if sqlx::query_scalar::<_, bool>("SELECT $1 = ANY(pg_blocking_pids($2))")
+                .bind(blocker)
+                .bind(waiting)
+                .fetch_one(pool)
+                .await?
+            {
+                return Ok::<(), sqlx::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .context("transaction did not wait for its required policy/app lock")??;
+    Ok(())
+}
+
+async fn finish_transaction(
+    tx: Transaction<'_, Postgres>,
+    result: Result<(), sqlx::Error>,
+) -> Result<(), sqlx::Error> {
+    match result {
+        Ok(()) => tx.commit().await,
+        Err(error) => {
+            tx.rollback().await?;
+            Err(error)
+        }
+    }
+}
+
+fn is_deadlock(result: &Result<(), sqlx::Error>) -> bool {
+    matches!(result, Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("40P01"))
+}
+
+async fn assert_no_policy_authority(pool: &PgPool, application: Uuid) -> anyhow::Result<()> {
+    let active = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM iam.application_approved_scopes WHERE application_id=$1 AND scope=$2 AND revoked_at IS NULL)")
+        .bind(application).bind(RESTRICTED_SCOPE).fetch_one(pool).await?;
+    ensure!(
+        !active,
+        "concurrent approval survived organization policy revocation"
+    );
+    let token = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM iam.access_tokens token JOIN iam.access_token_scopes scope ON scope.access_token_id=token.id WHERE token.client_application_id=$1 AND scope.scope=$2 AND token.revoked_at IS NULL)")
+        .bind(application).bind(RESTRICTED_SCOPE).fetch_one(pool).await?;
+    ensure!(
+        !token,
+        "concurrent restricted token survived organization policy revocation"
+    );
+    Ok(())
+}
+
+async fn existing_review_cannot_commit_past_policy_revocation(pool: &PgPool) -> anyhow::Result<()> {
+    restore_policy(pool).await?;
+    let mut setup = begin_policy_transaction(pool).await?;
+    select_runtime_actor(&mut setup).await?;
+    configure_restricted_scope(&mut setup, POLICY_APP).await?;
+    let requests = sqlx::query_scalar::<_, Vec<Uuid>>(
+        "SELECT iam_private.submit_application_scope_requests($1,$2,'Concurrency regression')",
+    )
+    .bind(POLICY_APP)
+    .bind(POLICY_ACTOR)
+    .fetch_one(&mut *setup)
+    .await?;
+    ensure!(
+        requests.len() == 1,
+        "fixture requires exactly one restricted scope request"
+    );
+    setup.commit().await?;
+    sqlx::query("INSERT INTO iam.access_token_scopes(access_token_id,scope) VALUES($1,$2)")
+        .bind(Uuid::from_u128(0x101))
+        .bind(RESTRICTED_SCOPE)
+        .execute(pool)
+        .await?;
+
+    let mut grant = begin_policy_transaction(pool).await?;
+    let grant_pid = backend_pid(&mut grant).await?;
+    select_runtime_actor(&mut grant).await?;
+    sqlx::query("SELECT id FROM iam.applications WHERE id=$1 FOR UPDATE")
+        .bind(POLICY_APP)
+        .execute(&mut *grant)
+        .await?;
+    let mut revocation = begin_policy_transaction(pool).await?;
+    let revocation_pid = backend_pid(&mut revocation).await?;
+    let revocation = tokio::spawn(async move {
+        let result = deny_policy(&mut revocation).await;
+        finish_transaction(revocation, result).await
+    });
+    wait_for_blocker(pool, revocation_pid, grant_pid).await?;
+
+    // Without the application-before-grants scan, revocation has already
+    // missed this uncommitted approval by the time it waits for the app lock.
+    let approval = sqlx::query_scalar::<_, Value>("SELECT iam_private.mutate_application_scope_request($1,$2,1,'approve','Concurrency regression')")
+        .bind(requests[0]).bind(POLICY_ACTOR).fetch_one(&mut *grant).await.map(|_| ());
+    let approval = finish_transaction(grant, approval).await;
+    let revocation = tokio::time::timeout(Duration::from_secs(10), revocation).await??;
+    ensure!(
+        approval.is_ok() || is_deadlock(&approval),
+        "unexpected approval result: {approval:?}"
+    );
+    ensure!(
+        revocation.is_ok() || is_deadlock(&revocation),
+        "unexpected policy result: {revocation:?}"
+    );
+    ensure!(
+        approval.is_ok() || revocation.is_ok(),
+        "one conflicting transaction must complete"
+    );
+    if revocation.is_err() {
+        let mut retry = begin_policy_transaction(pool).await?;
+        deny_policy(&mut retry).await?;
+        retry.commit().await?;
+    }
+    assert_no_policy_authority(pool, POLICY_APP).await?;
+    restore_policy(pool).await?;
+    assert_no_policy_authority(pool, POLICY_APP).await?;
+    Ok(())
+}
+
+async fn insert_uncommitted_application(
+    tx: &mut Transaction<'_, Postgres>,
+    application: Uuid,
+    name: &str,
+) -> Result<(), sqlx::Error> {
+    // Exercise the DB guard even for imports/privileged writers that have not
+    // used the normal creation helper's existing organization SHARE lock.
+    sqlx::query("INSERT INTO iam.principals(id,kind,status,activated_at) VALUES($1,'application','active',transaction_timestamp())")
+        .bind(application).execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO iam.applications(id,app_id,organization_id,created_by_carbon_id,review_status,base_url) VALUES($1,$2,$3,$4,'verified','https://concurrent.example.test/api')")
+        .bind(application).bind(name).bind(POLICY_ORG).bind(POLICY_ACTOR).execute(&mut **tx).await?;
+    Ok(())
+}
+
+async fn uncommitted_application_grant_holds_organization_policy(
+    pool: &PgPool,
+) -> anyhow::Result<()> {
+    restore_policy(pool).await?;
+    let application = Uuid::from_u128(0x172);
+    let mut creation = begin_policy_transaction(pool).await?;
+    let creation_pid = backend_pid(&mut creation).await?;
+    insert_uncommitted_application(&mut creation, application, "test_org>policy-race-new").await?;
+    select_runtime_actor(&mut creation).await?;
+    configure_restricted_scope(&mut creation, application).await?;
+    sqlx::query("INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES($1,$2,$3)")
+        .bind(application).bind(RESTRICTED_SCOPE).bind(POLICY_ACTOR).execute(&mut *creation).await?;
+    let mut revocation = begin_policy_transaction(pool).await?;
+    let revocation_pid = backend_pid(&mut revocation).await?;
+    let revocation = tokio::spawn(async move {
+        let result = deny_policy(&mut revocation).await;
+        finish_transaction(revocation, result).await
+    });
+    wait_for_blocker(pool, revocation_pid, creation_pid).await?;
+    creation.commit().await?;
+    tokio::time::timeout(Duration::from_secs(10), revocation).await???;
+    assert_no_policy_authority(pool, application).await?;
+    restore_policy(pool).await?;
+    assert_no_policy_authority(pool, application).await?;
+    Ok(())
+}
+
+async fn new_application_grant_rechecks_policy_after_wait(pool: &PgPool) -> anyhow::Result<()> {
+    restore_policy(pool).await?;
+    let mut revocation = begin_policy_transaction(pool).await?;
+    let revocation_pid = backend_pid(&mut revocation).await?;
+    deny_policy(&mut revocation).await?;
+    let mut creation = begin_policy_transaction(pool).await?;
+    let creation_pid = backend_pid(&mut creation).await?;
+    insert_uncommitted_application(
+        &mut creation,
+        Uuid::from_u128(0x173),
+        "test_org>policy-race-blocked",
+    )
+    .await?;
+    select_runtime_actor(&mut creation).await?;
+    let creation = tokio::spawn(async move {
+        let result = configure_restricted_scope(&mut creation, Uuid::from_u128(0x173)).await;
+        finish_transaction(creation, result).await
+    });
+    wait_for_blocker(pool, creation_pid, revocation_pid).await?;
+    revocation.commit().await?;
+    let result = tokio::time::timeout(Duration::from_secs(10), creation).await??;
+    ensure!(
+        matches!(result, Err(sqlx::Error::Database(ref error)) if error.code().as_deref() == Some("42501")),
+        "a grant waiting on policy revocation must recheck the committed policy: {result:?}"
+    );
+    assert_no_policy_authority(pool, Uuid::from_u128(0x173)).await?;
+    Ok(())
 }

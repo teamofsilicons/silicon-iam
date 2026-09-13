@@ -19,6 +19,7 @@ use crate::{
         organization::Capability,
     },
     error::AppError,
+    features::organizations::support as organization_support,
     infrastructure::{
         postgres::{
             authorization::{self, AuthorizationError, OrganizationAccess},
@@ -30,6 +31,7 @@ use crate::{
             },
             rate_limit::{self, RateLimitPolicy},
             step_up::{self, RequiredAssurance, StepUpExpectation, StepUpToken},
+            tokens::AccessContext,
         },
         providers::workos::{WorkOsClient, WorkOsError},
     },
@@ -38,6 +40,8 @@ use crate::{
 use super::security;
 use super::security::BrowserSession;
 
+pub(super) const SSO_READ_SCOPE: &str = "organization.sso.read";
+pub(super) const SSO_MANAGE_SCOPE: &str = "organization.sso.manage";
 pub(super) const SSO_CHANGE_ACTION: &str = "organization.sso_change";
 pub(super) const PLATFORM_ADMIN_ACTION: &str = "platform_admin.sso_entitlement";
 
@@ -69,8 +73,9 @@ pub(super) async fn begin_organization<'a>(
     authenticated: &Authenticated,
     organization_handle: &OrganizationId,
     serializable: bool,
+    required_scope: &str,
 ) -> Result<OrganizationScope<'a>, AppError> {
-    let carbon_id = security::require_first_party_carbon(&authenticated.0)?;
+    let carbon_id = organization_support::require_scoped_carbon(authenticated, required_scope)?;
     let mut transaction = if serializable {
         begin_serializable(state, Some(carbon_id), None).await?
     } else {
@@ -86,6 +91,26 @@ pub(super) async fn begin_organization<'a>(
     .await
     .map_err(map_authorization)?
     .ok_or(AppError::NotFound)?;
+    if authenticated.0.client_application_id.is_some() {
+        if authenticated
+            .0
+            .organization_id
+            .is_some_and(|bound| bound != access.organization_id)
+        {
+            return Err(AppError::Forbidden);
+        }
+        let selected = sqlx::query_scalar::<_, bool>(
+            "SELECT iam_private.application_token_allows_membership($1, $2)",
+        )
+        .bind(authenticated.0.token_id)
+        .bind(access.membership_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database)?;
+        if !selected {
+            return Err(AppError::NotFound);
+        }
+    }
     context::select_organization(&mut transaction, access.organization_id)
         .await
         .map_err(database)?;
@@ -130,7 +155,11 @@ pub(super) async fn consume_step_up(
     action: &'static str,
     resource_id: Uuid,
 ) -> Result<Uuid, AppError> {
-    let carbon_id = security::require_first_party_carbon(&authenticated.0)?;
+    let carbon_id = if action == SSO_CHANGE_ACTION {
+        organization_support::require_scoped_carbon(authenticated, SSO_MANAGE_SCOPE)?
+    } else {
+        security::require_first_party_carbon(&authenticated.0)?
+    };
     let raw = headers
         .get("x-step-up-token")
         .and_then(|value| value.to_str().ok())
@@ -191,10 +220,8 @@ pub(super) async fn claim<T: Serialize>(
     contains_one_time_secret: bool,
 ) -> Result<Claim, AppError> {
     let key = idempotency_key(headers)?;
-    let caller_scope = SecretString::from(idempotency_caller_scope(
-        authenticated.0.subject.id,
-        resource_scope,
-    ));
+    let caller_scope =
+        SecretString::from(idempotency_caller_scope(&authenticated.0, resource_scope));
     let request_payload = SecretString::from(
         serde_json::to_string(request).map_err(|_| internal("sso_idempotency_serialize"))?,
     );
@@ -216,8 +243,22 @@ pub(super) async fn claim<T: Serialize>(
     }
 }
 
-fn idempotency_caller_scope(carbon_id: Uuid, resource_scope: &str) -> String {
-    format!("carbon:{carbon_id}:resource:{resource_scope}")
+fn idempotency_caller_scope(access: &AccessContext, resource_scope: &str) -> String {
+    // Existing IAM callers must still find their pre-upgrade replay records.
+    // Application callers use a separate authorization-bound namespace below.
+    if access.client_application_id.is_none() {
+        return format!("carbon:{}:resource:{resource_scope}", access.subject.id);
+    }
+    let mut scopes = access.scopes.clone();
+    scopes.sort_unstable();
+    scopes.dedup();
+    format!(
+        "carbon:{}:application:{:?}:session:{}:scopes:{}:resource:{resource_scope}",
+        access.subject.id,
+        access.client_application_id,
+        access.authentication_session_id,
+        scopes.join(","),
+    )
 }
 
 pub(super) async fn complete_json<T: Serialize>(
@@ -375,7 +416,7 @@ pub(super) async fn record_browser_mutation(
             }),
             authentication_session_id: Some(browser_session.session_id),
             organization_id: Some(organization_id),
-            application_id: None,
+            application_id: browser_session.application_id,
             action: event.action,
             target_type: event.target_type,
             target_id: event.target_id,
@@ -668,15 +709,80 @@ mod tests {
         }
     }
 
+    fn access() -> crate::infrastructure::postgres::tokens::AccessContext {
+        use crate::domain::actor::{ActorRef, ActorType};
+        use uuid::Uuid;
+
+        crate::infrastructure::postgres::tokens::AccessContext {
+            token_id: Uuid::from_u128(1),
+            authentication_session_id: Uuid::from_u128(2),
+            subject: ActorRef {
+                actor_type: ActorType::Carbon,
+                id: Uuid::from_u128(3),
+            },
+            client_application_id: Some(Uuid::from_u128(4)),
+            audience_application_id: Some(Uuid::from_u128(4)),
+            audience: "tos>interface".to_owned(),
+            organization_id: None,
+            membership_id: None,
+            scopes: vec![
+                super::SSO_READ_SCOPE.to_owned(),
+                super::SSO_MANAGE_SCOPE.to_owned(),
+            ],
+            assurance_level: 1,
+        }
+    }
+
     #[test]
-    fn idempotency_caller_scope_is_resource_qualified() {
-        let carbon_id = uuid::Uuid::from_u128(1);
-        let first = idempotency_caller_scope(carbon_id, "first-org");
-        assert_eq!(first, idempotency_caller_scope(carbon_id, "first-org"));
-        assert_ne!(first, idempotency_caller_scope(carbon_id, "second-org"));
+    fn direct_iam_idempotency_preserves_the_original_replay_namespace() {
+        let application = access();
+        let mut direct = application.clone();
+        direct.client_application_id = None;
+        direct.audience_application_id = None;
+        direct.audience = "silicon-iam".to_owned();
+        direct.scopes = vec!["iam.self".to_owned()];
+        let legacy_key = "carbon:00000000-0000-0000-0000-000000000003:resource:first-org";
+        assert_eq!(idempotency_caller_scope(&direct, "first-org"), legacy_key);
+        direct.authentication_session_id = uuid::Uuid::from_u128(6);
+        direct.token_id = uuid::Uuid::from_u128(7);
+        assert_eq!(idempotency_caller_scope(&direct, "first-org"), legacy_key);
+        assert_ne!(
+            idempotency_caller_scope(&application, "first-org"),
+            legacy_key
+        );
+        assert_ne!(idempotency_caller_scope(&direct, "second-org"), legacy_key);
+    }
+
+    #[test]
+    fn idempotency_replays_cannot_cross_resource_actor_application_or_session() {
+        let authenticated = access();
+        let first = idempotency_caller_scope(&authenticated, "first-org");
+        assert_eq!(first, idempotency_caller_scope(&authenticated, "first-org"));
         assert_ne!(
             first,
-            idempotency_caller_scope(uuid::Uuid::from_u128(2), "first-org")
+            idempotency_caller_scope(&authenticated, "second-org")
         );
+        let mut changed = authenticated.clone();
+        changed.subject.id = uuid::Uuid::from_u128(5);
+        assert_ne!(first, idempotency_caller_scope(&changed, "first-org"));
+        changed = authenticated.clone();
+        changed.client_application_id = Some(uuid::Uuid::from_u128(5));
+        assert_ne!(first, idempotency_caller_scope(&changed, "first-org"));
+        changed = authenticated;
+        changed.authentication_session_id = uuid::Uuid::from_u128(5);
+        assert_ne!(first, idempotency_caller_scope(&changed, "first-org"));
+    }
+
+    #[test]
+    fn idempotency_replay_tracks_effective_scope_set_without_scope_order() {
+        let mut authenticated = access();
+        let first = idempotency_caller_scope(&authenticated, "first-org");
+        authenticated.scopes.reverse();
+        authenticated.scopes.push(super::SSO_READ_SCOPE.to_owned());
+        assert_eq!(first, idempotency_caller_scope(&authenticated, "first-org"));
+        authenticated
+            .scopes
+            .retain(|scope| scope != super::SSO_MANAGE_SCOPE);
+        assert_ne!(first, idempotency_caller_scope(&authenticated, "first-org"));
     }
 }

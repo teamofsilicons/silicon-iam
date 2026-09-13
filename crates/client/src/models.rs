@@ -28,6 +28,20 @@ pub type AppId = String;
 /// creation; the public id becomes `{org_id}>{handle}`.
 pub type ApplicationHandle = String;
 
+/// Scope-projected response for an ordinary application mutation. Write
+/// scopes do not imply read access. Without the corresponding read scopes,
+/// existing profile, role, tag, contact, trust, and governance fields are
+/// omitted; the response may be an empty object. Applicable identifiers,
+/// org_id, membership_id, version, status, and kind may remain as operation
+/// receipts. Independently approved read scopes add only their authorized
+/// fields, with the same projections as application reads. Silicon creation
+/// returns its nested silicon receipt and the explicitly requested one-time
+/// silicon_token plus secret_replay_expires_at. Completed credential rotation
+/// retains its separate full one-time credential response. Missing fields
+/// mean undisclosed, not null/default values. Direct IAM callers receive the
+/// full resource schema.
+pub type ApplicationMutationObject = serde_json::Value;
+
 /// Scope-filtered application bearer response. Fields absent from approved
 /// user scopes are omitted. An omitted field is undisclosed and grants no
 /// authority.
@@ -1386,8 +1400,9 @@ pub struct ApplicationPatch {
 /// Contract type `ApplicationScope`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApplicationScope {
-    /// IAM permissions; defaults to self.identity.read and self.profile.read
-    /// on creation.
+    /// IAM permissions from GET /api/v1/application-scopes; defaults to
+    /// self.identity.read and self.profile.read on creation. Mutation
+    /// permissions require approval
     pub iam: Vec<String>,
     /// The contract's `external`.
     pub external: Vec<ApplicationExternalScope>,
@@ -1803,6 +1818,8 @@ pub struct BatchLoginSelection {
     /// The contract's `app_id`.
     pub app_id: AppId,
     /// Explicit user selection for this app; existing grants are preserved.
+    /// Empty is allowed only for a Carbon approving an active
+    /// organizations.create or organizations.join scope.
     pub org_ids: Vec<OrgId>,
 }
 
@@ -2264,6 +2281,10 @@ pub struct LoginOrganization {
 /// Contract type `LoginOrganizations`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LoginOrganizations {
+    /// Whether this Carbon may continue without selecting organizations using
+    /// an approved organizations.create or organizations.join permission.
+    /// Empty selection adds no organization grants.
+    pub allow_empty_organization_selection: bool,
     /// The contract's `scope_version`.
     pub scope_version: i64,
     /// The contract's `consent_required`.

@@ -89,7 +89,13 @@ pub(super) async fn create_silicon(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     validation::silicon_create(&mut input, state.settings.environment)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.silicons.create",
+    )
+    .await?;
     support::require_capability(&scope.access, Capability::SiliconsCreate)?;
     if !input.tag_ids.is_empty() {
         support::require_capability(&scope.access, Capability::TagsManage)?;
@@ -246,7 +252,9 @@ pub(super) async fn create_silicon(
         },
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::SiliconCreated,
         &mut scope.transaction,
         &state,
         lease,
@@ -304,7 +312,13 @@ pub(super) async fn update_silicon(
     let org_id = validation::organization_id(&org_id)?.to_string();
     validate_global_silicon_id(&silicon_id, &org_id)?;
     validation::silicon_patch(&mut input, state.settings.environment)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.silicons.update",
+    )
+    .await?;
     let lease = match support::claim_resource(
         &mut scope.transaction,
         &state,
@@ -529,7 +543,9 @@ pub(super) async fn update_silicon(
             .ok_or(AppError::Internal {
                 category: "silicon_update_response",
             })?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Silicon,
         &mut scope.transaction,
         &state,
         lease,
@@ -554,7 +570,13 @@ pub(super) async fn remove_silicon(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     validate_global_silicon_id(&silicon_id, &org_id)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.silicons.remove",
+    )
+    .await?;
     support::require_capability(&scope.access, Capability::SiliconsRemove)?;
     let lease = match support::claim_resource(
         &mut scope.transaction,

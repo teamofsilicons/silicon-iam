@@ -20,11 +20,12 @@ mod webhooks;
 
 pub(crate) use applications::{load_detail, webhook_secret_fingerprint};
 pub(crate) use model::ApplicationDetail;
+pub(crate) use scopes::scoped_router;
 
 #[cfg(test)]
 mod bundle_availability_tests;
 #[cfg(test)]
-mod live_tests;
+pub(crate) mod live_tests;
 #[cfg(test)]
 mod login_history_tests;
 #[cfg(test)]

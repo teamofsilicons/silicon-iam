@@ -49,7 +49,7 @@ GET /api/v1/app-auth/batch/organizations?app_ids=tos%3Ebriefcase,tos%3Edm
 Authorization: Bearer <direct IAM token>
 ```
 
-The response is `{ "items": [...] }`. Each item includes app identity, organization choices with existing `authorized` flags, `scopes`, `scope_version`, and `consent_required`. Present the current permissions before submitting each app's exact scope set and version:
+The response is `{ "items": [...] }`. Each item includes app identity, organization choices with existing `authorized` flags, `scopes`, `scope_version`, `consent_required`, and `allow_empty_organization_selection`. Present the current permissions before submitting each app's exact scope set and version:
 
 ```http
 POST /api/v1/app-auth/batch/short-lived-tokens
@@ -75,7 +75,7 @@ Content-Type: application/json
 }
 ```
 
-The versions above are examples; use the returned values. External scopes use `obo:{app_id}:{endpoint_id}`. Changed scope versions require fresh consent. Each app needs 1–1000 distinct selected organization IDs, subject to the request-body size limit.
+The versions above are examples; use the returned values. External scopes use `obo:{app_id}:{endpoint_id}`. Changed scope versions require fresh consent. Each app needs 1–1000 distinct selected organization IDs, subject to the request-body size limit. A Carbon may explicitly submit `org_ids: []` for an app whose `allow_empty_organization_selection` is true after consenting to its current approved `organizations.create` or `organizations.join` permission. Eligibility is rechecked for every app; other members of the batch still require an organization. Empty selection adds no organization access, including organizations created or joined afterward.
 
 IAM validates and issues the complete batch in one transaction. If any application, membership, scope set, or version is invalid, no new consent or SLT is committed. Success returns `201` with `{ "items": [...] }` in requested app order. An uncertain response should be retried with the original key and identical body. Replaying never extends expiry.
 

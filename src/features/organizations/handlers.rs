@@ -60,7 +60,7 @@ pub(super) async fn organization_id_availability(
     authenticated: Authenticated,
     Path(org_id): Path<String>,
 ) -> Result<Response, AppError> {
-    support::require_carbon(&authenticated)?;
+    support::require_scoped_carbon(&authenticated, "organizations.create")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     enforce_actor_rate_limit(&state, &authenticated, "organization_id_availability").await?;
 
@@ -177,7 +177,7 @@ pub(super) async fn create_organization(
     headers: HeaderMap,
     Json(mut input): Json<OrganizationCreate>,
 ) -> Result<Response, AppError> {
-    let carbon_id = support::require_carbon(&authenticated)?;
+    let carbon_id = support::require_scoped_carbon(&authenticated, "organizations.create")?;
     validation::organization_create(&mut input, state.settings.environment)?;
 
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
@@ -266,7 +266,9 @@ pub(super) async fn create_organization(
         },
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Organization,
         &mut transaction,
         &state,
         lease,
@@ -310,7 +312,13 @@ pub(super) async fn update_organization(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     validation::organization_patch(&mut input, state.settings.environment)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    if input.join_method.is_some() {
+        support::require_application_scope(&authenticated, "organization.sso.manage")?;
+    }
+    if input.name.is_some() || input.logo.is_some() || input.description.is_some() {
+        support::require_application_scope(&authenticated, "organization.profile.update")?;
+    }
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     support::require_capability(&scope.access, Capability::OrganizationUpdate)?;
     let lease = match support::claim(
         &mut scope.transaction,
@@ -414,7 +422,9 @@ pub(super) async fn update_organization(
         },
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Organization,
         &mut scope.transaction,
         &state,
         lease,
@@ -754,7 +764,13 @@ pub(super) async fn create_tag(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let normalized_name = validation::tag(&mut input)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.tags.create",
+    )
+    .await?;
     support::require_capability(&scope.access, Capability::TagsManage)?;
     let lease = match support::claim(
         &mut scope.transaction,
@@ -805,7 +821,9 @@ pub(super) async fn create_tag(
         },
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Tag,
         &mut scope.transaction,
         &state,
         lease,
@@ -847,7 +865,13 @@ pub(super) async fn update_tag(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let normalized_name = validation::tag(&mut input)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.tags.update",
+    )
+    .await?;
     support::require_capability(&scope.access, Capability::TagsManage)?;
     let lease = match support::claim_resource(
         &mut scope.transaction,
@@ -924,8 +948,16 @@ pub(super) async fn update_tag(
         },
     )
     .await?;
-    let body =
-        support::finish_json(&mut scope.transaction, &state, lease, StatusCode::OK, &tag).await?;
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Tag,
+        &mut scope.transaction,
+        &state,
+        lease,
+        StatusCode::OK,
+        &tag,
+    )
+    .await?;
     scope
         .transaction
         .commit()
@@ -953,7 +985,13 @@ pub(super) async fn delete_tag(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.tags.delete",
+    )
+    .await?;
     support::require_capability(&scope.access, Capability::TagsManage)?;
     let lease = match support::claim_resource(
         &mut scope.transaction,
