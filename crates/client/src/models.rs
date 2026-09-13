@@ -1611,7 +1611,8 @@ pub struct ApplicationTestingEnvironmentPage {
 pub struct ApplicationTokenRequest {
     /// The contract's `app_id`.
     pub app_id: AppId,
-    /// The contract's `slt`.
+    /// IAM-issued one-time code, or an existing Carbon/Silicon ID in a
+    /// verified testing environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slt: Option<String>,
     /// The contract's `refresh_token`.

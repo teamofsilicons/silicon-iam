@@ -123,7 +123,14 @@ async fn assert_catalog_upgrade(admin: &PgPool, base_url: &str) -> anyhow::Resul
             .connect(&format!("{base_url}/{database}")).await?;
         base.run(&pool).await?;
         if testing {
-            let mut overlay = sqlx::migrate!("./migrations/testing");
+            // Freeze the overlay alongside the historical base schema.
+            let mut overlay = sqlx::migrate::Migrator::with_migrations(
+                sqlx::migrate!("./migrations/testing")
+                    .iter()
+                    .filter(|migration| migration.version <= 9004)
+                    .cloned()
+                    .collect(),
+            );
             overlay.set_ignore_missing(true).run(&pool).await?;
         }
         super::live_tests::seed_protocol_rows(&pool).await?;

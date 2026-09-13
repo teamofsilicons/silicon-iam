@@ -502,6 +502,7 @@ DECLARE
     matched_function_count integer;
     function_record record;
     api_function_names text[] := ARRAY[
+        'create_testing_actor_login',
         'discover_application_obo_endpoints',
         'resolve_application_obo_memberships',
         'lookup_application_obo_proof',

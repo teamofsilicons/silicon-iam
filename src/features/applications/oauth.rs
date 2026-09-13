@@ -929,10 +929,19 @@ pub(super) async fn app_tokens(
     let Claim::Acquired(idempotency_id) = claim else {
         return Err(ApiError::internal("oauth_token_idempotency"));
     };
-    let outcome = if form.slt.is_some() {
-        RefreshExchange::Issued(Box::new(
-            exchange_authorization_code(&mut transaction, &state, &client, &form).await?,
-        ))
+    let outcome = if let Some(slt) = form.slt.as_deref() {
+        let issued_code = slt.strip_prefix("oac_").is_some_and(|code| {
+            code.len() == 43
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        });
+        let response = if crate::infrastructure::testing_plane::is_active() && !issued_code {
+            exchange_testing_actor(&mut transaction, &state, &client, slt).await?
+        } else {
+            exchange_authorization_code(&mut transaction, &state, &client, &form).await?
+        };
+        RefreshExchange::Issued(Box::new(response))
     } else {
         exchange_refresh_token(&mut transaction, &state, &client, &form).await?
     };
@@ -1458,6 +1467,82 @@ pub(super) async fn revoke(
         .await
         .map_err(|_| ApiError::internal("oauth_revoke_commit"))?;
     Ok(empty_idempotent_response(StatusCode::OK, false))
+}
+
+#[derive(FromRow)]
+struct TestingLoginActor {
+    principal_id: Uuid,
+    subject_kind: String,
+    subject_auth_epoch: i64,
+    subject_public_id: String,
+    scopes: Vec<String>,
+}
+
+async fn exchange_testing_actor(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    client: &ApplicationClient,
+    actor_id: &str,
+) -> Result<TokenResponse, ApiError> {
+    // The SQL implementation exists only in the testing database. The
+    // production helper always returns no rows, even with forged DB context.
+    if !crate::infrastructure::testing_plane::is_active() || actor_id.len() > 101 {
+        return Err(ApiError::bad_request(
+            "invalid_grant",
+            "The test actor ID is invalid.",
+        ));
+    }
+    let session_id = Uuid::now_v7();
+    let consent_id = Uuid::now_v7();
+    let lifetime = i64::try_from(state.settings.security.refresh_family_ttl.as_secs())
+        .map_err(|_| ApiError::internal("test_login_lifetime"))?;
+    let actor = sqlx::query_as::<_, TestingLoginActor>(
+        "SELECT * FROM iam_private.create_testing_actor_login($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(client.application_id)
+    .bind(client.auth_epoch)
+    .bind(actor_id)
+    .bind(session_id)
+    .bind(consent_id)
+    .bind(lifetime)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("test_actor_login"))?
+    .ok_or_else(|| ApiError::bad_request("invalid_grant", "The test actor ID is invalid."))?;
+    let response = issue_tokens(
+        transaction,
+        state,
+        client,
+        TokenSubject {
+            session_id,
+            principal_id: actor.principal_id,
+            subject_kind: actor.subject_kind.clone(),
+            subject_auth_epoch: actor.subject_auth_epoch,
+            organization_id: None,
+            membership_id: None,
+            membership_authz_epoch: None,
+            consent_grant_id: consent_id,
+            org_id: None,
+            subject_public_id: actor.subject_public_id,
+        },
+        &actor.scopes,
+        None,
+        None,
+    )
+    .await?;
+    events::authentication_event(
+        transaction,
+        client.application_id,
+        Some(actor.principal_id),
+        Some(&actor.subject_kind),
+        Some(session_id),
+        "oauth.token_exchange",
+        "success",
+        None,
+        json!({"credential": "testing_actor_id", "scope_count": actor.scopes.len()}),
+    )
+    .await?;
+    Ok(response)
 }
 
 async fn exchange_authorization_code(
@@ -2937,3 +3022,7 @@ mod tests {
         assert!(!OAUTH_REFRESH_INSERT_QUERY.contains("30 days"));
     }
 }
+
+#[cfg(test)]
+#[path = "testing_login_tests.rs"]
+mod testing_login_tests;
