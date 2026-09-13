@@ -40,7 +40,7 @@ await collect(docs);
 for (const page of pages) page.route = page.route.replace(/^\/docs\//, "/");
 const bySource = new Map(pages.map((page) => [page.source, page.route]));
 const groups = [
-  { title: "HTTP API", route: "/api/", items: api.map((item) => pages.find((page) => page.source === `api/${item}.html`)).filter(Boolean) },
+  { title: "HTTP API", route: "/api/", items: [...api.map((item) => pages.find((page) => page.source === `api/${item}.html`)), ...["IAM_SCOPES.md", "SCOPED_BACKEND.md"].map((source) => pages.find((page) => page.source === source))].filter(Boolean) },
   { title: "Rust client", route: "/client/", items: client.map((item) => pages.find((page) => page.source === `client/${item}.html`)).filter(Boolean) },
   { title: "CLI", route: "/cli/", items: pages.filter((page) => page.source.startsWith("cli/")) },
   { title: "Frontend", route: "/frontend/", items: pages.filter((page) => page.source.startsWith("frontend/")) },

@@ -381,3 +381,126 @@ async fn application_login_history_preserves_events_with_private_actor_identifie
     assert!(headers.starts_with("GET /api/v1/applications/acme%3Eworkspace/login-history "));
     server.join().expect("mock completed");
 }
+
+#[tokio::test]
+async fn scoped_organization_creation_accepts_a_write_only_receipt() {
+    let receipt =
+        json!({"id": Uuid::from_u128(41), "org_id":"new_org", "version":1, "status":"active"});
+    let (client, capture, server) = service(receipt.clone());
+    let client = client.with_credential(Credential::bearer("act_scoped_creator"));
+    let created = client
+        .application_mutations()
+        .create_organization(
+            &models::OrganizationCreate {
+                org_id: "new_org".to_owned(),
+                name: "New organization".to_owned(),
+                logo: None,
+                description: None,
+            },
+            &Mutation::new(),
+        )
+        .await
+        .expect("successful scoped creation must not decode as a full organization");
+    assert_eq!(created, receipt);
+    assert!(created.get("name").is_none());
+    assert!(created.get("created_at").is_none());
+    let (headers, body) = capture.recv().expect("captured creation");
+    assert!(headers.starts_with("POST /api/v1/organizations "));
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer act_scoped_creator\r\n")
+    );
+    assert_eq!(body, json!({"org_id":"new_org", "name":"New organization"}));
+    server.join().expect("mock completed");
+}
+
+#[tokio::test]
+async fn scoped_member_patch_preserves_receipts_and_mutation_preconditions() {
+    let membership_id = Uuid::from_u128(42);
+    let receipt = json!({"id":membership_id,"version":9,"status":"active"});
+    let (client, capture, server) = service(receipt.clone());
+    let patch: models::MembershipDirectoryPatch =
+        serde_json::from_value(json!({"first_silicon_membership_id":null}))
+            .expect("clear a Silicon assignment");
+    let mutation = Mutation::with_key(
+        IdempotencyKey::parse("scoped-member-update-0001").expect("idempotency key"),
+    )
+    .step_up("stu_verified_action");
+    let updated = client
+        .application_mutations()
+        .update_member("customer", membership_id, 8, &patch, &mutation)
+        .await
+        .expect("successful patch must accept omitted profile and authorization");
+    assert_eq!(updated, receipt);
+    for field in [
+        "principal",
+        "display_name",
+        "org_role",
+        "capabilities",
+        "tags",
+    ] {
+        assert!(updated.get(field).is_none(), "invented {field}");
+    }
+    let (headers, body) = capture.recv().expect("captured patch");
+    assert!(headers.starts_with(&format!(
+        "PATCH /api/v1/organizations/customer/members/{membership_id} "
+    )));
+    let headers = headers.to_ascii_lowercase();
+    assert!(headers.contains("if-match: \"8\"\r\n"));
+    assert!(headers.contains("idempotency-key: scoped-member-update-0001\r\n"));
+    assert!(headers.contains("x-step-up-token: stu_verified_action\r\n"));
+    assert!(headers.contains("content-type: application/merge-patch+json\r\n"));
+    assert_eq!(body, json!({"first_silicon_membership_id":null}));
+    server.join().expect("mock completed");
+}
+
+#[tokio::test]
+async fn scoped_trust_write_accepts_an_empty_receipt() {
+    let (client, capture, server) = service(json!({}));
+    let result = client
+        .application_mutations()
+        .replace_default_trust(
+            "customer",
+            2,
+            &models::TrustValue {
+                boundary: models::TrustValueBoundary::Internal,
+                level: models::TrustValueLevel::NeedsApproval,
+            },
+            &Mutation::new(),
+        )
+        .await
+        .expect("write-only trust success must not require readable trust fields");
+    assert_eq!(result, json!({}));
+    let (headers, body) = capture.recv().expect("captured trust replacement");
+    assert!(headers.starts_with("PUT /api/v1/organizations/customer/trust/default "));
+    assert_eq!(
+        body,
+        json!({"boundary":"internal","level":"needs_approval"})
+    );
+    server.join().expect("mock completed");
+}
+
+#[tokio::test]
+async fn scoped_silicon_creation_keeps_the_one_time_credential_and_sparse_identity() {
+    let receipt = json!({
+        "silicon": {"principal_id":Uuid::from_u128(43), "membership_id":Uuid::from_u128(44), "silicon_id":"customer>helper", "org_id":"customer", "version":1},
+        "silicon_token":"sit_generated_one_time", "secret_replay_expires_at":"2026-09-13T02:00:00Z"
+    });
+    let (client, capture, server) = service(receipt.clone());
+    let input: models::SiliconCreate =
+        serde_json::from_value(json!({"silicon_id":"helper","job_role":"Assistant"}))
+            .expect("Silicon create input");
+    let created = client
+        .application_mutations()
+        .create_silicon("customer", &input, &Mutation::new())
+        .await
+        .expect("generated credential must survive omitted nested Silicon profile");
+    assert_eq!(created, receipt);
+    assert!(created["silicon"].get("display_name").is_none());
+    assert!(created["silicon"].get("reports_to_membership_id").is_none());
+    let (headers, body) = capture.recv().expect("captured Silicon creation");
+    assert!(headers.starts_with("POST /api/v1/organizations/customer/silicons "));
+    assert_eq!(body, json!({"silicon_id":"helper","job_role":"Assistant"}));
+    server.join().expect("mock completed");
+}

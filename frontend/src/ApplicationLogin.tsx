@@ -1,6 +1,7 @@
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { mutation, request } from "./api";
 import {
+  canApproveOrganizationSelections,
   loginApplications,
   loginCallback,
   tokenDestination,
@@ -18,6 +19,7 @@ type Choices = {
   app_logo?: string | null;
   items: Organization[];
   consent_required: boolean;
+  allow_empty_organization_selection: boolean;
   scope_version: number;
   scopes: ScopeDescriptor[];
 };
@@ -107,8 +109,7 @@ export default function ApplicationLogin() {
     }
   });
   const canApprove = () =>
-    choices().length > 0 &&
-    choices().every((app) => selected()[app.app_id]?.length);
+    canApproveOrganizationSelections(choices(), selected());
   const needsConsent = () =>
     choices().some((app) => app.consent_required !== false);
   const sharedChoices = () =>
@@ -116,6 +117,9 @@ export default function ApplicationLogin() {
       ? [
           {
             ...choices()[0],
+            allow_empty_organization_selection: choices().every(
+              (app) => app.allow_empty_organization_selection === true,
+            ),
             app_id: bundle()!.bundle_id,
             app_name: bundle()!.app_name,
             app_logo: bundle()!.app_logo,
@@ -250,8 +254,8 @@ export default function ApplicationLogin() {
                   : `Connect ${choices().length} applications`}
             </strong>
             <p>
-              You decide which organizations each app can read. Your credentials
-              stay in IAM.
+              You decide which organizations each app can access. Your
+              credentials stay in IAM.
             </p>
             <ul>
               <For
@@ -294,9 +298,9 @@ export default function ApplicationLogin() {
         <Show when={step() === "consent"}>
           <h2>Review requested permissions</h2>
           <p>
-            Continuing approves these permissions for the organizations you
-            choose next. Critical permissions include access to other members or
-            sensitive application actions.
+            Continuing approves these account permissions and permissions for
+            the organizations you choose next. Critical permissions include
+            access to other members or sensitive actions.
           </p>
           <For each={consentGroups()}>
             {(app) => (
@@ -320,7 +324,8 @@ export default function ApplicationLogin() {
         </Show>
         <Show when={["select", "loading", "done"].includes(step())}>
           <p>
-            Share at least one organization with each app. Existing access is
+            Choose the organizations to share. Apps with account onboarding
+            permissions can let you continue without one. Existing access is
             kept; future memberships are not shared automatically.
           </p>
           <Show when={choices().length > 1 && !bundle()}>
@@ -352,11 +357,19 @@ export default function ApplicationLogin() {
                 <BundleLogo url={app.app_logo} />
                 <small>{app.app_id}</small>
                 <Show
+                  when={
+                    app.allow_empty_organization_selection && app.items.length
+                  }
+                >
+                  <p>You can continue without selecting an organization.</p>
+                </Show>
+                <Show
                   when={app.items.length}
                   fallback={
                     <p>
-                      Join or create an organization in IAM, then return here to
-                      sign in.
+                      {app.allow_empty_organization_selection
+                        ? "You can continue without an organization and use the approved account permissions."
+                        : "Join or create an organization in IAM, then return here to sign in."}
                     </p>
                   }
                 >
@@ -410,9 +423,10 @@ export default function ApplicationLogin() {
             )}
           </For>
           <p class="muted">
-            Each application receives only its declared, approved permissions in
-            your selected organizations. Your IAM authentication credentials
-            stay in IAM.
+            Each application receives only its declared, approved account and
+            organization permissions. Creating or joining an organization does
+            not share it automatically; approve it in IAM afterward. Your IAM
+            authentication credentials stay in IAM.
           </p>
           <Show when={step() === "select" && needsConsent()}>
             <button class="text-button" onClick={() => setStep("consent")}>

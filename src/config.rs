@@ -551,7 +551,7 @@ fn provider_settings() -> Result<ProviderSettings, SettingsError> {
         postmark_server_token: optional_secret_in_range("IAM_POSTMARK_SERVER_TOKEN", 1, 4_096)?,
         postmark_from_email: string_in_range(
             "IAM_POSTMARK_FROM_EMAIL",
-            value_or("IAM_POSTMARK_FROM_EMAIL", "auth@teamofsilicons.com"),
+            value_or("IAM_POSTMARK_FROM_EMAIL", "iam@teamofsilicons.com"),
             3,
             254,
         )?,
@@ -581,7 +581,7 @@ fn worker_provider_settings() -> Result<WorkerProviderSettings, SettingsError> {
         postmark_server_token: optional_secret_in_range("IAM_POSTMARK_SERVER_TOKEN", 1, 4_096)?,
         postmark_from_email: string_in_range(
             "IAM_POSTMARK_FROM_EMAIL",
-            value_or("IAM_POSTMARK_FROM_EMAIL", "auth@teamofsilicons.com"),
+            value_or("IAM_POSTMARK_FROM_EMAIL", "iam@teamofsilicons.com"),
             3,
             254,
         )?,

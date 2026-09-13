@@ -10,6 +10,7 @@ Applications declare the IAM information and external endpoints they need. Criti
 | --- | --- |
 | Understand the HTTP contract | [API reference](API_DOCS.md) and [OpenAPI](openapi.yaml) |
 | Register an application and request permissions | [Applications](api/applications.html) |
+| Perform IAM actions from an application | [IAM permissions](IAM_SCOPES.md) and [scoped backend](SCOPED_BACKEND.md) |
 | Implement permission and organization consent | [Consent](ORGANIZATION_CONSENT.md) |
 | Sign in to several applications | [Batch login](BATCH_LOGIN.md) or [bundles](BUNDLES.md) |
 | Call an external application for a user | [OBO](api/obo.html) |
@@ -24,6 +25,7 @@ Applications declare the IAM information and external endpoints they need. Criti
 | Surface | Address |
 | --- | --- |
 | HTTP API | `https://backend.iam.teamofsilicons.com` |
+| Scoped application API | `https://scoped.backend.iam.teamofsilicons.com` |
 | IAM login and signup | `https://auth.iam.teamofsilicons.com` |
 | Organization console | `https://iam.teamofsilicons.com` |
 | Documentation | `https://docs.iam.teamofsilicons.com` |

@@ -68,6 +68,10 @@ name = "iam-api"
 path = "src/bin/iam_api.rs"
 
 [[bin]]
+name = "iam-scoped-api"
+path = "src/bin/iam_scoped_api.rs"
+
+[[bin]]
 name = "iam-worker"
 path = "src/bin/iam_worker.rs"
 

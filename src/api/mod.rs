@@ -3,6 +3,7 @@
 pub(crate) mod authentication;
 mod contracts;
 pub(crate) mod me;
+mod scoped;
 
 use std::{future::IntoFuture as _, sync::Arc, time::Instant};
 
@@ -107,7 +108,36 @@ const SELECTED_API_VERSION_HEADER: &str = "silicon-iam-api-version";
 /// Returns an error when PostgreSQL or the listener cannot be initialized, or
 /// when the HTTP server exits unexpectedly.
 pub async fn serve(settings: Settings) -> anyhow::Result<()> {
-    let pool = postgres::connect(&settings.database, "iam-api").await?;
+    serve_surface(settings, Surface::Full).await
+}
+
+/// Serves only IAM scope APIs for ordinary registered-application sessions.
+///
+/// # Errors
+///
+/// Returns an error when dependencies or the listener cannot be initialized,
+/// or when the server exits unexpectedly.
+pub async fn serve_scoped(settings: Settings) -> anyhow::Result<()> {
+    serve_surface(settings, Surface::Scoped).await
+}
+
+#[derive(Clone, Copy)]
+enum Surface {
+    Full,
+    Scoped,
+}
+
+impl Surface {
+    const fn process_name(self) -> &'static str {
+        match self {
+            Self::Full => "iam-api",
+            Self::Scoped => "iam-scoped-api",
+        }
+    }
+}
+
+async fn serve_surface(settings: Settings, surface: Surface) -> anyhow::Result<()> {
+    let pool = postgres::connect(&settings.database, surface.process_name()).await?;
     postgres::register_runtime_key_versions(&pool, &settings.security).await?;
     let bind_addr = settings.server.bind_addr;
     let crypto = CryptoService::from_settings(&settings.security)?;
@@ -136,12 +166,12 @@ pub async fn serve(settings: Settings) -> anyhow::Result<()> {
         workos,
         testing,
     };
-    let app = router(state.clone())?;
+    let app = router(state.clone(), surface)?;
     let listener = TcpListener::bind(bind_addr).await?;
     let shutdown_timeout = state.settings.server.shutdown_timeout;
     let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel::<()>();
 
-    info!(%bind_addr, "Silicon IAM API listening");
+    info!(%bind_addr, service = surface.process_name(), "Silicon IAM API listening");
     let server = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             let _ = shutdown_receiver.await;
@@ -240,7 +270,7 @@ fn cors_layer(state: &ApiState) -> anyhow::Result<CorsLayer> {
         .max_age(std::time::Duration::from_mins(10)))
 }
 
-fn router(state: ApiState) -> anyhow::Result<Router> {
+fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
     let max_body_bytes = state.settings.server.max_body_bytes;
     let request_timeout = state.settings.server.request_timeout;
     let admission = Arc::new(Semaphore::new(
@@ -274,17 +304,28 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
      * it sits structurally beyond the reach of plane selection rather than
      * relying on each of its handlers to opt out.
      */
-    let planed = Router::new()
-        .route("/api/v1/me", get(me::get).patch(me::patch))
-        .merge(crate::features::authentication::router())
-        .merge(crate::features::organizations::router())
-        .merge(crate::features::applications::router())
-        .merge(crate::features::sso::router())
-        .merge(crate::features::testing_environments::data_plane_router())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            crate::features::testing_environments::select_plane,
-        ));
+    let planed = match surface {
+        Surface::Full => Router::new()
+            .route("/api/v1/me", get(me::get).patch(me::patch))
+            .merge(crate::features::authentication::router())
+            .merge(crate::features::organizations::router())
+            .merge(crate::features::applications::router())
+            .merge(crate::features::sso::router())
+            .merge(crate::features::testing_environments::data_plane_router()),
+        Surface::Scoped => scoped::router(state.clone()),
+    }
+    .layer(middleware::from_fn_with_state(
+        state.clone(),
+        crate::features::testing_environments::select_plane,
+    ));
+    let control_plane = match surface {
+        Surface::Full => Router::new().merge(crate::features::testing_environments::router()),
+        Surface::Scoped => Router::new(),
+    };
+    let web = match surface {
+        Surface::Full => crate::web::router(),
+        Surface::Scoped => Router::new(),
+    };
 
     // The JSON contract. Everything under this router answers with the error
     // envelope and is never cached.
@@ -295,7 +336,7 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
         .route("/api/v1/version", get(version))
         .route("/api/v1/contracts", get(contracts::list))
         .merge(planed)
-        .merge(crate::features::testing_environments::router())
+        .merge(control_plane)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             contracts::govern,
@@ -322,7 +363,7 @@ fn router(state: ApiState) -> anyhow::Result<Router> {
      * protections rather than contract behaviour.
      */
     let router = api
-        .merge(crate::web::router())
+        .merge(web)
         /*
          * A path that matches no route at all.
          *

@@ -186,7 +186,9 @@ impl Auth<'_> {
     /// to existing tokens. Newly joined organizations are never automatic.
     ///
     /// # Errors
-    /// Fails on an empty selection, nonmembership, or Application credentials.
+    /// Fails on an ineligible empty selection, nonmembership, or Application credentials.
+    /// A Carbon can select none when the current consented scopes include
+    /// `organizations.create` or `organizations.join`; check the choices response.
     pub async fn short_lived_token_for_organizations(
         &self,
         app_id: &str,

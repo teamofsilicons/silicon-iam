@@ -85,3 +85,24 @@ export function tokenDestination(
   }
   return result.href;
 }
+
+/** An empty selection is allowed only when IAM confirms this user's eligibility. */
+export function canApproveOrganizationSelections(
+  choices: {
+    app_id: string;
+    allow_empty_organization_selection?: boolean;
+  }[],
+  selected: Record<string, string[]>,
+): boolean {
+  return (
+    choices.length > 0 &&
+    choices.every((app) => {
+      const ids = selected[app.app_id];
+      return (
+        Array.isArray(ids) &&
+        ids.length <= 1000 &&
+        (ids.length > 0 || app.allow_empty_organization_selection === true)
+      );
+    })
+  );
+}

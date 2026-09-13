@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  canApproveOrganizationSelections,
   loginApplications,
   loginCallback,
   tokenDestination,
 } from "../src/login-flow.ts";
-import { selectedScope, scopeNames, validateConsent } from "../src/scope-model.ts";
+import {
+  selectedScope,
+  scopeNames,
+  validateConsent,
+} from "../src/scope-model.ts";
 import { gateway } from "../server/gateway.ts";
 
 test("single and 100-app URLs are unambiguous and bounded", () => {
@@ -124,28 +129,118 @@ test("continuation preserves invalid duplicates and empty selections for rejecti
   }
 });
 
-
 test("bundle URLs are exclusive and survive session continuation", async () => {
-  assert.deepEqual(loginApplications(new URLSearchParams({ bundle_id: "tos>workspace" })), { ids: [], batch: true, bundleId: "tos>workspace" });
-  for (const query of ["bundle_id=", "bundle_id=tos>suite&app_id=tos>app", "bundle_id=tos>suite&app_ids=tos>a", "bundle_id=tos>a&bundle_id=tos>b", "bundle_id=tos>a&org_id=tos"])
+  assert.deepEqual(
+    loginApplications(new URLSearchParams({ bundle_id: "tos>workspace" })),
+    { ids: [], batch: true, bundleId: "tos>workspace" },
+  );
+  for (const query of [
+    "bundle_id=",
+    "bundle_id=tos>suite&app_id=tos>app",
+    "bundle_id=tos>suite&app_ids=tos>a",
+    "bundle_id=tos>a&bundle_id=tos>b",
+    "bundle_id=tos>a&org_id=tos",
+  ])
     assert.throws(() => loginApplications(new URLSearchParams(query)));
-  const response = await gateway(new Request("http://127.0.0.1:4311/auth/continue?bundle_id=tos%3Eworkspace"), {
-    API_UPSTREAM: "http://127.0.0.1:58080", CONSOLE_ORIGIN: "http://127.0.0.1:4310", AUTH_ORIGIN: "http://127.0.0.1:4311", SESSION_COOKIE_KEY: "A".repeat(43),
-  });
-  assert.equal(new URL(response.headers.get("location")!).searchParams.get("bundle_id"), "tos>workspace");
+  const response = await gateway(
+    new Request(
+      "http://127.0.0.1:4311/auth/continue?bundle_id=tos%3Eworkspace",
+    ),
+    {
+      API_UPSTREAM: "http://127.0.0.1:58080",
+      CONSOLE_ORIGIN: "http://127.0.0.1:4310",
+      AUTH_ORIGIN: "http://127.0.0.1:4311",
+      SESSION_COOKIE_KEY: "A".repeat(43),
+    },
+  );
+  assert.equal(
+    new URL(response.headers.get("location")!).searchParams.get("bundle_id"),
+    "tos>workspace",
+  );
 });
 
 test("permission approval preserves exact published scopes and rejects incomplete policy", () => {
   const catalog = [
-    { scope: "self.identity.read", description: "Identity", critical: false, app_id: null },
-    { scope: "obo:outside>drive:files.read", description: "Read files", critical: true, app_id: "outside>drive" },
+    {
+      scope: "self.identity.read",
+      description: "Identity",
+      critical: false,
+      app_id: null,
+    },
+    {
+      scope: "obo:outside>drive:files.read",
+      description: "Read files",
+      critical: true,
+      app_id: "outside>drive",
+    },
   ];
-  const selected = selectedScope(catalog.map((item) => item.scope), catalog);
-  assert.deepEqual(selected, { iam: ["self.identity.read"], external: [{ app_id: "outside>drive", endpoint_id: "files.read" }] });
-  assert.deepEqual(scopeNames(selected), catalog.map((item) => item.scope));
+  const selected = selectedScope(
+    catalog.map((item) => item.scope),
+    catalog,
+  );
+  assert.deepEqual(selected, {
+    iam: ["self.identity.read"],
+    external: [{ app_id: "outside>drive", endpoint_id: "files.read" }],
+  });
+  assert.deepEqual(
+    scopeNames(selected),
+    catalog.map((item) => item.scope),
+  );
   assert.throws(() => selectedScope(["self.email.read"], catalog));
   validateConsent([{ scope_version: 2, scopes: catalog }]);
   assert.throws(() => validateConsent([{ scope_version: 0, scopes: catalog }]));
-  assert.throws(() => validateConsent([{ scope_version: 2, scopes: [catalog[0], catalog[0]] }]));
-  assert.throws(() => validateConsent([{ scope_version: 2, scopes: undefined as any }]));
+  assert.throws(() =>
+    validateConsent([{ scope_version: 2, scopes: [catalog[0], catalog[0]] }]),
+  );
+  assert.throws(() =>
+    validateConsent([{ scope_version: 2, scopes: undefined as any }]),
+  );
+});
+
+test("account onboarding requires explicit IAM eligibility for every empty selection", () => {
+  const onboarding = {
+    app_id: "tos>interface",
+    allow_empty_organization_selection: true,
+  };
+  const ordinary = {
+    app_id: "tos>files",
+    allow_empty_organization_selection: false,
+  };
+  assert.equal(
+    canApproveOrganizationSelections([onboarding], { "tos>interface": [] }),
+    true,
+  );
+  assert.equal(canApproveOrganizationSelections([onboarding], {}), false);
+  assert.equal(
+    canApproveOrganizationSelections([ordinary], { "tos>files": [] }),
+    false,
+  );
+  assert.equal(
+    canApproveOrganizationSelections([{ app_id: "tos>old-api" }], {
+      "tos>old-api": [],
+    }),
+    false,
+  );
+  assert.equal(canApproveOrganizationSelections([], {}), false);
+  assert.equal(
+    canApproveOrganizationSelections([onboarding, ordinary], {
+      "tos>interface": [],
+      "tos>files": [],
+    }),
+    false,
+  );
+  assert.equal(
+    canApproveOrganizationSelections([onboarding, ordinary], {
+      "tos>interface": [],
+      "tos>files": ["work"],
+    }),
+    true,
+  );
+  assert.equal(
+    canApproveOrganizationSelections(
+      [onboarding, { ...ordinary, allow_empty_organization_selection: true }],
+      { "tos>interface": [], "tos>files": [] },
+    ),
+    true,
+  );
 });

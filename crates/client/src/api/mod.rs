@@ -9,6 +9,7 @@
 //! deliberately absent: they belong to the operator, to the provider and to
 //! the browser respectively, not to an API caller.
 
+pub mod application_mutations;
 pub mod application_reads;
 pub mod application_scopes;
 pub mod applications;
@@ -117,6 +118,16 @@ impl Client {
     #[must_use]
     pub const fn application_reads(&self) -> application_reads::ApplicationReads<'_> {
         application_reads::ApplicationReads(self)
+    }
+
+    /// Scope-projected IAM mutation receipts for an application's user token.
+    ///
+    /// Use these methods when write scopes do not include the corresponding read
+    /// permissions. They preserve omitted fields instead of decoding as a full
+    /// first-party resource.
+    #[must_use]
+    pub const fn application_mutations(&self) -> application_mutations::ApplicationMutations<'_> {
+        application_mutations::ApplicationMutations(self)
     }
 
     /// Application scope catalogs, approval requests, and their discussions.

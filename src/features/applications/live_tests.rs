@@ -2143,7 +2143,7 @@ async fn committed_application_secret_revocation_wins_authentication(
     Ok(())
 }
 
-pub(super) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
+pub(crate) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
     sqlx::raw_sql(
         r#"
         BEGIN;

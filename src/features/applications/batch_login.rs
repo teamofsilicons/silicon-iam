@@ -50,10 +50,10 @@ pub(super) fn validate(input: &BatchLoginRequest) -> Result<(), ApiError> {
         validation::redirect_uri(uri)?;
     }
     for app in &input.applications {
-        if app.org_ids.is_empty() || app.org_ids.len() > 1000 {
+        if app.org_ids.len() > 1000 {
             return Err(ApiError::validation(
                 "org_ids",
-                "select between 1 and 1000 organizations per application",
+                "select at most 1000 organizations per application",
             ));
         }
         let mut unique = std::collections::BTreeSet::new();
@@ -207,9 +207,11 @@ mod tests {
         assert!(validate(&request).is_err());
     }
     #[test]
-    fn every_app_requires_an_explicit_valid_selection() {
+    fn empty_selection_defers_to_current_per_app_scope_and_actor_checks() {
         let mut request = batch(2);
         request.applications[1].org_ids.clear();
+        assert!(validate(&request).is_ok());
+        request.applications[1].org_ids = vec!["tos".to_owned(); 1001];
         assert!(validate(&request).is_err());
         request.applications[1].org_ids = vec!["tos".to_owned(), "tos".to_owned()];
         assert!(validate(&request).is_err());

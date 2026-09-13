@@ -41,6 +41,12 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
     .execute(&pool)
     .await
     .context("webhook scope boundaries")?;
+    sqlx::raw_sql(include_str!(
+        "../../../tests/sql/account_onboarding_login.sql"
+    ))
+    .execute(&pool)
+    .await
+    .context("zero-organization Carbon onboarding and membership isolation")?;
     let app = Uuid::from_u128(0x11);
     let target = Uuid::from_u128(0x12);
     let actor = Uuid::from_u128(1);

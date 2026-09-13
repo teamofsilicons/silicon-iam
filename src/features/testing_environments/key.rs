@@ -87,7 +87,13 @@ pub(crate) async fn select_plane(
     };
     support::touch(&state.pool, selected.id).await;
 
-    testing_plane::scope(selected, next.run(request)).await
+    testing_plane::scope(selected, async {
+        if let Err(error) = super::scope_policy::revalidate(&state).await {
+            return error.into_response();
+        }
+        next.run(request).await
+    })
+    .await
 }
 
 /// Reserves an idempotency key for a mutation authorized by the environment

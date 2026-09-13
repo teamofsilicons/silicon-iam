@@ -190,7 +190,13 @@ pub(super) async fn create_role_change_request(
         .map(|value| validation::bounded_text("reason", value, 0, 2_000, true))
         .transpose()?;
     require_silicon_governance_request(authenticated.0.subject.actor_type)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.job_role_changes.request",
+    )
+    .await?;
     let lease = match support::claim(
         &mut scope.transaction,
         &state,
@@ -334,7 +340,9 @@ pub(super) async fn create_role_change_request(
         },
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Approval,
         &mut scope.transaction,
         &state,
         lease,
@@ -367,7 +375,13 @@ pub(super) async fn replace_member_job_role(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     input.job_role = validation::job_role(std::mem::take(&mut input.job_role))?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.job_roles.update",
+    )
+    .await?;
     require_direct_governance_control(&authenticated, &scope.access, Capability::RolesApprove)?;
     let lease = match support::claim_resource(
         &mut scope.transaction,
@@ -469,7 +483,9 @@ pub(super) async fn replace_member_job_role(
         "silicon.job_role_replaced",
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Member,
         &mut scope.transaction,
         &state,
         lease,
@@ -494,7 +510,13 @@ pub(super) async fn replace_member_tags(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     validation::direct_tag_set(&mut input)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.member_tags.update",
+    )
+    .await?;
     require_direct_governance_control(&authenticated, &scope.access, Capability::TagsManage)?;
     let lease = match support::claim_resource(
         &mut scope.transaction,
@@ -609,7 +631,9 @@ pub(super) async fn replace_member_tags(
         "silicon.tags_replaced",
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Member,
         &mut scope.transaction,
         &state,
         lease,
@@ -630,7 +654,9 @@ fn require_direct_governance_control(
     access: &crate::infrastructure::postgres::authorization::OrganizationAccess,
     capability: Capability,
 ) -> Result<(), AppError> {
-    support::require_carbon(authenticated)?;
+    if authenticated.0.subject.actor_type != ActorType::Carbon {
+        return Err(AppError::Forbidden);
+    }
     if !matches!(access.authority.org_role, OrgRole::Owner | OrgRole::Admin) {
         return Err(AppError::Forbidden);
     }
@@ -647,7 +673,13 @@ pub(super) async fn create_tag_change_request(
     let org_id = validation::organization_id(&org_id)?.to_string();
     validation::tag_change_request(&mut input)?;
     require_silicon_governance_request(authenticated.0.subject.actor_type)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.tag_changes.request",
+    )
+    .await?;
     let claim = TagChangeClaim {
         target_membership_id: membership_id,
         add_tag_ids: &input.add_tag_ids,
@@ -847,7 +879,9 @@ pub(super) async fn create_tag_change_request(
         },
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Approval,
         &mut scope.transaction,
         &state,
         lease,
@@ -869,7 +903,10 @@ pub(super) async fn list_approval_requests(
     Path(org_id): Path<String>,
     Query(query): Query<ApprovalQuery>,
 ) -> Result<Response, AppError> {
-    ReadScopes::for_actor(&authenticated).require("organization.governance.read")?;
+    ReadScopes::for_actor(&authenticated).require_any(&[
+        "organization.governance.read",
+        "organization.change_requests.read",
+    ])?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     validate_approval_filters(&query)?;
     let (cursor, limit) = validation::page_parts(query.cursor.as_deref(), query.limit)?;
@@ -882,6 +919,11 @@ pub(super) async fn list_approval_requests(
         .bind(query.kind.as_deref())
         .bind(query.actionable_by_me.unwrap_or(false))
         .bind(scope.access.membership_id)
+        .bind(
+            ReadScopes::for_actor(&authenticated).has("organization.governance.read")
+                || ReadScopes::for_actor(&authenticated)
+                    .has("organization.silicons.credentials.rotate"),
+        )
         .fetch_all(&mut *scope.transaction)
         .await
         .map_err(support::database)?;
@@ -900,7 +942,10 @@ pub(super) async fn get_approval_request(
     authenticated: Authenticated,
     Path((org_id, request_id)): Path<(String, Uuid)>,
 ) -> Result<Response, AppError> {
-    ReadScopes::for_actor(&authenticated).require("organization.governance.read")?;
+    ReadScopes::for_actor(&authenticated).require_any(&[
+        "organization.governance.read",
+        "organization.change_requests.read",
+    ])?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let approval = fetch_approval(
@@ -909,6 +954,12 @@ pub(super) async fn get_approval_request(
         request_id,
     )
     .await?;
+    if approval.kind == "silicon_token_rotation" {
+        ReadScopes::for_actor(&authenticated).require_any(&[
+            "organization.governance.read",
+            "organization.silicons.credentials.rotate",
+        ])?;
+    }
     scope
         .transaction
         .commit()
@@ -933,7 +984,13 @@ pub(super) async fn decide_approval_request(
         .take()
         .map(|value| validation::bounded_text("comment", value, 0, 2_000, true))
         .transpose()?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.change_requests.decide",
+    )
+    .await?;
     let lease = match support::claim_resource(
         &mut scope.transaction,
         &state,
@@ -973,6 +1030,10 @@ pub(super) async fn decide_approval_request(
     )
     .await?;
     let step_up_assertion_id = if approval.kind == "silicon_token_rotation" {
+        support::require_application_scope(
+            &authenticated,
+            "organization.silicons.credentials.rotate",
+        )?;
         let silicon_id = approval
             .immutable_payload
             .get("silicon_id")
@@ -1323,7 +1384,9 @@ pub(super) async fn decide_approval_request(
         },
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Approval,
         &mut scope.transaction,
         &state,
         lease,
@@ -1345,7 +1408,10 @@ pub(super) async fn list_job_role_history(
     Path((org_id, membership_id)): Path<(String, Uuid)>,
     Query(query): Query<PageQuery>,
 ) -> Result<Response, AppError> {
-    ReadScopes::for_actor(&authenticated).require("organization.governance.read")?;
+    ReadScopes::for_actor(&authenticated).require_any(&[
+        "organization.governance.read",
+        "organization.job_role_history.read",
+    ])?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page(&query)?;
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
@@ -1399,7 +1465,10 @@ pub(super) async fn list_tag_history(
     Path((org_id, membership_id)): Path<(String, Uuid)>,
     Query(query): Query<PageQuery>,
 ) -> Result<Response, AppError> {
-    ReadScopes::for_actor(&authenticated).require("organization.governance.read")?;
+    ReadScopes::for_actor(&authenticated).require_any(&[
+        "organization.governance.read",
+        "organization.tag_history.read",
+    ])?;
     let org_id = validation::organization_id(&org_id)?.to_string();
     let (cursor, limit) = validation::page(&query)?;
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
@@ -1459,7 +1528,13 @@ pub(super) async fn request_silicon_token_rotation(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     validate_global_silicon(&silicon_handle, &org_id)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.silicons.credentials.rotate",
+    )
+    .await?;
     support::require_capability(&scope.access, Capability::SiliconsRotateToken)?;
     let lease = match support::claim_resource(
         &mut scope.transaction,
@@ -1578,7 +1653,9 @@ pub(super) async fn request_silicon_token_rotation(
         },
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Approval,
         &mut scope.transaction,
         &state,
         lease,
@@ -1602,7 +1679,13 @@ pub(super) async fn complete_silicon_token_rotation(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     validate_global_silicon(&silicon_handle, &org_id)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.silicons.credentials.rotate",
+    )
+    .await?;
     support::require_capability(&scope.access, Capability::SiliconsRotateToken)?;
     let resource_scope = format!("{silicon_handle}:{request_id}");
     let lease = match support::claim_resource(
@@ -1841,7 +1924,9 @@ pub(super) async fn complete_silicon_token_rotation(
         &after_member,
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Credential,
         &mut scope.transaction,
         &state,
         lease,
@@ -2859,6 +2944,7 @@ const APPROVAL_LIST_SQL: &str = r"
     WHERE request.organization_id = $1 AND ($2::uuid IS NULL OR request.id > $2)
       AND ($4::text IS NULL OR CASE WHEN request.status = 'applied' THEN 'completed' ELSE request.status END = $4)
       AND ($5::text IS NULL OR request.request_kind = $5)
+      AND ($8::boolean OR request.request_kind <> 'silicon_token_rotation')
       AND (NOT $6 OR EXISTS (
           SELECT 1 FROM iam.approval_requirements requirement
           WHERE requirement.approval_request_id = request.id

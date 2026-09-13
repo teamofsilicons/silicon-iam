@@ -5,10 +5,12 @@ Carbon accounts, organization-scoped Silicon identities, applications,
 OAuth, delegated OBO access, governance, WorkOS SSO, audit, and reliable
 webhook delivery.
 
-The backend is a Rust 2024 modular monolith with two independently scalable
+The backend is a Rust 2024 modular monolith with three independently scalable
 runtime processes and three one-shot operator binaries:
 
 - `iam-api` serves the public and administrative HTTP contract.
+- `iam-scoped-api` serves only application-scoped IAM actions, with no OBO or
+  administrative routes; see the [scoped backend guide](docs/SCOPED_BACKEND.md).
 - `iam-worker` processes durable notifications, subscription-aware outbox
   expansion, and ordered application and Silicon webhook deliveries.
 - `iam-migrate` is a privileged one-shot forward migrator.
@@ -52,7 +54,8 @@ overwrite an existing file. Compose then:
 2. creates separate migrator, API, worker, and key-operator database principals;
 3. runs every migration once;
 4. applies reviewed runtime grants; and
-5. starts the API on `127.0.0.1:8080` plus the asynchronous worker.
+5. starts the API on `127.0.0.1:8080`, the scoped API on `127.0.0.1:8081`,
+   and the asynchronous worker.
 
 Check process and dependency health with:
 

@@ -936,7 +936,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Organization' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/Organization' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
@@ -979,7 +979,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Organization' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/Organization' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1082,7 +1082,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Membership' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/Membership' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1153,7 +1153,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/MembershipAuthorization' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/MembershipAuthorization' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1181,7 +1181,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/MembershipAuthorization' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/MembershipAuthorization' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1214,7 +1214,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/MembershipAuthorization' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/MembershipAuthorization' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1231,8 +1231,8 @@ paths:
       description: >-
         Read-only directory projection. Human/Silicon bearers and authenticated
         Application access tokens may use this endpoint. Application tokens are
-        resolved through the token subject's active membership and cannot call
-        directory or governance mutation endpoints.
+        resolved through the token subject's current selected membership and granted read scopes.
+        Mutations require their separately approved IAM permissions and the actor's current authority.
       security: [{ iamBearer: [] }]
       parameters:
         - { $ref: '#/components/parameters/OrgIdPath' }
@@ -1339,7 +1339,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Invite' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/Invite' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1453,7 +1453,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Membership' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/Membership' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1505,7 +1505,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/SiliconCreated' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/SiliconCreated' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1551,7 +1551,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Silicon' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/Silicon' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1827,7 +1827,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApprovalRequest' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/ApprovalRequest' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1911,7 +1911,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Tag' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/Tag' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1957,7 +1957,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Tag' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/Tag' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -2055,7 +2055,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/TrustValue' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/TrustValue' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -2104,7 +2104,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/TrustRule' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/TrustRule' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -2151,7 +2151,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/TrustRule' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/TrustRule' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -2231,7 +2231,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApprovalRequest' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/ApprovalRequest' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
@@ -2315,7 +2315,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApprovalRequest' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/ApprovalRequest' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -2354,7 +2354,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Membership' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/Membership' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -2413,7 +2413,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ApprovalRequest' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/ApprovalRequest' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -2450,7 +2450,7 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Membership' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/Membership' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -4758,11 +4758,11 @@ components:
         app_id: { $ref: '#/components/schemas/AppId' }
         org_ids:
           type: array
-          minItems: 1
+          minItems: 0
           maxItems: 1000
           uniqueItems: true
           items: { $ref: '#/components/schemas/OrgId' }
-          description: Explicit user selection for this app; existing grants are preserved.
+          description: Explicit user selection for this app; existing grants are preserved. Empty is allowed only for a Carbon approving an active organizations.create or organizations.join scope.
     BatchLoginRequest:
       type: object
       additionalProperties: false
@@ -4810,7 +4810,7 @@ components:
         app_id: { $ref: '#/components/schemas/AppId' }
         org_ids:
           type: array
-          minItems: 1
+          minItems: 0
           maxItems: 1000
           uniqueItems: true
           items: { $ref: '#/components/schemas/OrgId' }
@@ -4825,8 +4825,11 @@ components:
         authorized: { type: boolean }
     LoginOrganizations:
       type: object
-      required: [app_id, items, scope_version, consent_required, scopes]
+      required: [app_id, items, scope_version, consent_required, scopes, allow_empty_organization_selection]
       properties:
+        allow_empty_organization_selection:
+          type: boolean
+          description: Whether this Carbon may continue without selecting organizations using an approved organizations.create or organizations.join permission. Empty selection adds no organization grants.
         scope_version: { type: integer, minimum: 1 }
         consent_required: { type: boolean }
         scopes: { type: array, items: { $ref: '#/components/schemas/ApplicationConsentScope' } }
@@ -6211,7 +6214,7 @@ components:
       required: [iam, external]
       additionalProperties: false
       properties:
-        iam: { type: array, uniqueItems: true, items: { type: string }, description: IAM permissions; defaults to self.identity.read and self.profile.read on creation. }
+        iam: { type: array, uniqueItems: true, items: { type: string }, description: IAM permissions from GET /api/v1/application-scopes; defaults to self.identity.read and self.profile.read on creation. Mutation permissions require approval, current organization availability, user consent, and the represented actor authority. Some permissions may be unavailable to an application. }
         external: { type: array, items: { $ref: '#/components/schemas/ApplicationExternalScope' } }
     ApplicationExternalScope:
       type: object
@@ -6412,6 +6415,25 @@ components:
         app_secret: { type: string, description: Audience test credential forwarded only for this isolated downstream request. }
         iam_test_key: { type: string }
 
+    ApplicationMutationObject:
+      type: object
+      additionalProperties: true
+      description: >-
+        Scope-projected response for an ordinary application mutation. Write scopes
+        do not imply read access. Without the corresponding read scopes, existing
+        profile, role, tag, contact, trust, and governance fields are omitted;
+        the response may be an empty object. Applicable identifiers, org_id,
+        membership_id, version, status, and kind may remain as operation receipts.
+        Independently approved read scopes add only their authorized fields, with
+        the same projections as application reads. Silicon creation returns its
+        nested silicon receipt and the explicitly requested one-time silicon_token
+        plus secret_replay_expires_at. Completed credential rotation retains its
+        separate full one-time credential response. Missing fields mean undisclosed,
+        not null/default values. Direct IAM callers receive the full resource schema.
+      examples:
+        - { id: '00000000-0000-0000-0000-000000000001', org_id: acme, version: 1, status: active }
+        - { membership_id: '00000000-0000-0000-0000-000000000002', version: 2 }
+        - {}
     ApplicationReadObject:
       type: object
       additionalProperties: true

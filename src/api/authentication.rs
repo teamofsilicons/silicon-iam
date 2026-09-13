@@ -83,6 +83,12 @@ impl FromRequestParts<ApiState> for Authenticated {
         parts: &mut Parts,
         state: &ApiState,
     ) -> Result<Self, Self::Rejection> {
+        // The scoped router authenticates before its application-only gate.
+        // Reuse that request-local context in the handler; it was checked in
+        // this request's selected data plane and is never cached across requests.
+        if let Some(authenticated) = parts.extensions.get::<Self>() {
+            return Ok(authenticated.clone());
+        }
         let access = authenticate_bearer(state, &parts.headers).await?;
         if let Some(application_id) = access.client_application_id {
             crate::features::testing_environments::touch_application_activity(

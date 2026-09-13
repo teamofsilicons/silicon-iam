@@ -139,7 +139,24 @@ pub(super) async fn update_member_directory(
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     validation::member_patch(&mut input, state.settings.environment)?;
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    for (present, permission) in [
+        (input.tag_ids.is_some(), "organization.member_tags.update"),
+        (
+            input.first_silicon_membership_id.is_some()
+                || input.extra_silicon_membership_ids.is_some(),
+            "organization.silicon_access.update",
+        ),
+        (input.default_trust.is_some(), "organization.trust.update"),
+        (
+            input.reports_to_membership_id.is_some() || input.profile_photo.is_some(),
+            "organization.silicons.update",
+        ),
+    ] {
+        if present {
+            support::require_application_scope(&authenticated, permission)?;
+        }
+    }
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
     let lease = match support::claim_resource(
         &mut scope.transaction,
         &state,
@@ -366,7 +383,9 @@ pub(super) async fn update_member_directory(
         .ok_or(AppError::Internal {
             category: "directory_member_response",
         })?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Member,
         &mut scope.transaction,
         &state,
         lease,
@@ -411,7 +430,13 @@ pub(super) async fn remove_member(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.carbons.remove",
+    )
+    .await?;
     let lease = match support::claim_resource(
         &mut scope.transaction,
         &state,
@@ -730,7 +755,17 @@ async fn change_admin_role(
     promote: bool,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        if promote {
+            "organization.admins.promote"
+        } else {
+            "organization.admins.demote"
+        },
+    )
+    .await?;
     support::require_capability(
         &scope.access,
         if promote {
@@ -840,7 +875,9 @@ async fn change_admin_role(
         &authorization,
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Authorization(membership_id == scope.access.membership_id),
         &mut scope.transaction,
         &state,
         lease,
@@ -867,7 +904,13 @@ async fn replace_capabilities(
     capabilities: Vec<String>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
-    let mut scope = support::begin_organization(&state, &authenticated, &org_id).await?;
+    let mut scope = support::begin_scoped_organization(
+        &state,
+        &authenticated,
+        &org_id,
+        "organization.capabilities.update",
+    )
+    .await?;
     support::require_capability(&scope.access, Capability::AdminsManage)?;
     let lease = match support::claim_resource(
         &mut scope.transaction,
@@ -952,7 +995,9 @@ async fn replace_capabilities(
         &authorization,
     )
     .await?;
-    let body = support::finish_json(
+    let body = support::finish_mutation(
+        &authenticated,
+        support::MutationView::Authorization(membership_id == scope.access.membership_id),
         &mut scope.transaction,
         &state,
         lease,
