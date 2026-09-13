@@ -52,6 +52,16 @@ installer now provisions its own persistent spool as well.
   skipped locally; workspace Clippy and formatting passed. Frontend final tests:
   34 passed, production Vercel bundle built. Documentation links/assets checked.
 - Both published crates passed Cargo's packaged-source verification.
+- The dependency-policy check identified the two additional transitive versions
+  required by Space Station: `base64@0.23.1` and `webpki-roots@0.26.11`.
+  They now have narrow, documented duplicate-version exceptions, matching the
+  existing policy. `cargo deny --locked check` passes advisories, bans, licenses
+  and sources with the released lockfile.
+
+The ASG reports the instance InService/Healthy. Its pre-existing target-group
+reference could not be resolved by ELB during verification; public DNS resolves
+to `44.209.29.33`, and external readiness checks succeed. This release preserved
+that routing configuration; it did not modify or recreate an edge resource.
 
 ## Rollback
 

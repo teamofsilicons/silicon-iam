@@ -6,6 +6,10 @@ yanked = "deny"
 multiple-versions = "deny"
 wildcards = "deny"
 skip = [
+  # Space Station's shared protocol uses base64 0.23 while the IAM/HTTP stack
+  # still requires 0.22; Tungstenite's 0.26 roots wrapper depends on 1.0 roots.
+  "base64@0.23.1",
+  "webpki-roots@0.26.11",
   # SQLx 0.9 uses the next RustCrypto generation while AEAD remains on the
   # audited 0.10 generation.
   "block-buffer@0.12.1",
