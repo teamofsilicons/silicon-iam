@@ -1,6 +1,10 @@
 import { collectTelemetry, deploymentTelemetryEnabled } from "./telemetry.ts";
 import { testApplicationView } from "./test-view.ts";
 import {
+  scopeReviewDestination,
+  scopeReviewRequest,
+} from "../src/scope-review-link.ts";
+import {
   apiHeaders,
   fail,
   finish,
@@ -88,6 +92,20 @@ export async function gateway(
     );
   if (![config.console.origin, config.auth.origin].includes(url.origin))
     return fail("untrusted_host", "This frontend host is not allowed.", 403);
+  const scopeRequest = scopeReviewRequest(url);
+  if (
+    request.method === "GET" &&
+    scopeRequest &&
+    (path === "/applications" ||
+      (path === "/scope-reviews" && url.origin !== config.console.origin))
+  )
+    return finish(
+      Response.redirect(
+        scopeReviewDestination(scopeRequest, config.console.origin),
+        303,
+      ),
+      config,
+    );
   if (path === "/api/web/telemetry") return collectTelemetry(request, env);
   if (path === "/api/config" && request.method === "GET")
     return finish(
@@ -182,6 +200,7 @@ export async function gateway(
       "org_id",
       "org_ids",
       "next",
+      "request",
     ]) {
       for (const value of url.searchParams.getAll(key))
         target.searchParams.append(key, value);
@@ -197,6 +216,15 @@ export async function gateway(
         url.searchParams.get("next") === "join" ? "/join" : "/",
         config.console,
       );
+      if (url.searchParams.get("next") === "scope-reviews" && scopeRequest)
+        return finish(
+          Response.redirect(
+            scopeReviewDestination(scopeRequest, config.console.origin),
+            303,
+          ),
+          config,
+          changed,
+        );
       const organization = url.searchParams.get("org_id");
       if (destination.pathname === "/join" && organization)
         destination.searchParams.set("org_id", organization);

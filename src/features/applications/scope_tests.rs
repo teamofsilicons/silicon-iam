@@ -161,10 +161,19 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
         "permission removal must be immediate"
     );
     tx.commit().await?;
-    let notifications=sqlx::query_scalar::<_,i64>("SELECT count(*) FROM iam.notification_jobs WHERE notification_kind='application_scope_review'").fetch_one(&pool).await?;
+    let notifications = sqlx::query_as::<_, (Uuid, i64)>(
+        "SELECT c.carbon_id, count(*) FROM iam.notification_jobs j \
+         JOIN iam.carbon_contacts c ON c.id=j.recipient_contact_id \
+         JOIN iam.application_scope_messages m ON m.id=j.context_id \
+         WHERE j.notification_kind='application_scope_review' AND m.request_id=$1 \
+         AND c.kind='email' GROUP BY c.carbon_id ORDER BY c.carbon_id",
+    )
+    .bind(request)
+    .fetch_all(&pool)
+    .await?;
     ensure!(
-        notifications >= 2,
-        "review acknowledgment and updates must be queued transactionally"
+        notifications == vec![(actor, 3), (Uuid::from_u128(2), 3)],
+        "submission, decision, and reply must each email the owner and admin once, even when both apps share an organization"
     );
     Ok(())
 }

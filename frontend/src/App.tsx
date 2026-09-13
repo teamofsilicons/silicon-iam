@@ -11,12 +11,21 @@ import { createResource } from "./resource";
 import { request, type Configuration, type SessionState } from "./api";
 import Auth from "./Auth";
 import { invitationLocation } from "./invitation-flow";
+import { scopeReviewRequest } from "./scope-review-link";
 import Console from "./Console";
 import { Brand, ErrorBox, Loading } from "./ui";
 
 export default function App() {
   const invitation = invitationLocation(location.href);
   if (invitation) history.replaceState(null, "", invitation);
+  const reviewLocation = new URL(location.href);
+  if (
+    reviewLocation.pathname === "/scope-reviews" &&
+    scopeReviewRequest(reviewLocation)
+  ) {
+    reviewLocation.searchParams.set("next", "scope-reviews");
+    history.replaceState(null, "", reviewLocation);
+  }
   const [config] = createResource(() => request<Configuration>("/api/config"));
   const [session, { refetch, mutate }] = createResource(() =>
     request<SessionState>("/api/session"),

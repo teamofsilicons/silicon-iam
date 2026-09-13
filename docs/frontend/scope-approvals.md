@@ -29,3 +29,13 @@ Validation: frontend tests cover sender/target matching, cross-page discovery,
 and cursor failures; the PostgreSQL lifecycle test checks current non-critical
 scope context, exclusion of other providers, message authorship, and unchanged
 critical approval enforcement.
+
+Scope request submissions enqueue email for every active owner/admin in the
+requesting and target applications' organizations, using each person's active
+primary email. IAM scope requests notify platform reviewers. Replies and decisions
+notify the other side; recipients shared by both organizations are deduplicated.
+The worker delivers these durable jobs through Postmark.
+
+Email links (`/applications?scope_request=...`) redirect to the console's Scope
+Reviews thread. The request is preserved through sign-in and signup. Both existing
+emails and new notices use this route; no historical notices are resent.

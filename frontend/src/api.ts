@@ -196,6 +196,7 @@ export function authDestination(config: Configuration, signup = false): string {
     "org_id",
     "org_ids",
     "next",
+    "request",
   ]) {
     for (const value of current.searchParams.getAll(name))
       result.searchParams.append(name, value);
@@ -214,6 +215,7 @@ export function continueDestination(): string {
     "org_id",
     "org_ids",
     "next",
+    "request",
   ]) {
     for (const value of current.searchParams.getAll(name))
       result.searchParams.append(name, value);
