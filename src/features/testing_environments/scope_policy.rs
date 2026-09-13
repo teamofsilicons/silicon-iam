@@ -18,6 +18,10 @@ use crate::{
 use super::support;
 
 #[derive(sqlx::FromRow)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the local application, source application and organization identifiers bind import provenance"
+)]
 struct ImportedSource {
     application_id: Uuid,
     source_application_id: Uuid,
