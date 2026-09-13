@@ -205,3 +205,12 @@ test("browser preference defaults on, persists off, and reaches native request d
   assert.equal(headers.get("x-iam-telemetry"), "off");
   assert.equal(headers.get("cookie"), null);
 });
+
+test("private telemetry environment keys tolerate a trailing file newline", async () => {
+  const { loadTelemetryKey } = await import("../server/telemetry-config");
+  assert.equal(loadTelemetryKey({ IAM_TELEMETRY_KEY: ` ${key}\n` }), key);
+  assert.equal(
+    loadTelemetryKey({ IAM_TELEMETRY: " off ", IAM_TELEMETRY_KEY: key }),
+    undefined,
+  );
+});

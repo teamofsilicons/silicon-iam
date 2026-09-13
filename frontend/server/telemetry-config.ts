@@ -5,7 +5,7 @@ export function loadTelemetryKey(
 ): string | undefined {
   if (/^(off|false|0|no)$/i.test(env.IAM_TELEMETRY?.trim() || ""))
     return undefined;
-  if (env.IAM_TELEMETRY_KEY) return env.IAM_TELEMETRY_KEY;
+  if (env.IAM_TELEMETRY_KEY?.trim()) return env.IAM_TELEMETRY_KEY.trim();
   const root = `${env.SILICON_HOME || env.HOME}/.silicon-iam`;
   let home = env.SILICON_IAM_HOME || root;
   if (!env.SILICON_IAM_HOME) {
