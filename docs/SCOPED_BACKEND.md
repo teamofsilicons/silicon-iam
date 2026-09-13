@@ -183,9 +183,12 @@ Do not replay those templates to install this service.
    missing-scope denial, direct-IAM/OBO rejection, and that excluded paths return
    404. Confirm the main IAM endpoint and worker remain healthy.
 
-Production defaults allow only `https://interface.teamofsilicons.com` in scoped
-CORS. Add another exact HTTPS origin through the installer's `--cors-origins`
-argument when necessary. The container port is loopback-only; public clients
+Production CORS includes `https://interface.teamofsilicons.com` and the canonical
+IAM authentication origin, `https://auth.iam.teamofsilicons.com`. IAM's shared
+production configuration requires the authentication origin even on the scoped
+service. When replacing the list through `--cors-origins`, retain that origin and
+add any other required exact HTTPS origins. Application bearer authentication
+remains mandatory for every business route. The container port is loopback-only; public clients
 reach it through TLS. API logs use the existing IAM CloudWatch log group with
 the `scoped-api` tag, while the new nginx host disables access logging.
 

@@ -18,7 +18,7 @@ pub(super) static DOCUMENTS: &[Document] = &[
         topic: "scoped-backend",
         title: "Separate scoped IAM backend",
         source: "docs/SCOPED_BACKEND.md",
-        source_sha256: "4e0eb85f3a79872a0618980c286df5cc86565bc294fe1748989365817a51aa9d",
+        source_sha256: "f6543756d79d2d5b6275f0615dba37995c7cb7f5272855413b6b828d5504019a",
         format: "markdown",
         aliases: &[],
         content: include_str!("manual_assets/scoped-backend.md"),

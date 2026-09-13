@@ -5,7 +5,7 @@ set -euo pipefail
 umask 077
 
 SCOPED_IMAGE=""
-SCOPED_ORIGINS="https://interface.teamofsilicons.com"
+SCOPED_ORIGINS="https://interface.teamofsilicons.com,https://auth.iam.teamofsilicons.com"
 SCOPED_REGION="${AWS_REGION:-us-east-1}"
 SCOPED_TLS=false
 SCOPED_HOST="scoped.backend.iam.teamofsilicons.com"
@@ -17,7 +17,7 @@ while (($#)); do
     --cors-origins) SCOPED_ORIGINS="${2:?missing origins}"; shift 2 ;;
     --tls) SCOPED_TLS=true; shift ;;
     -h|--help)
-      echo 'Usage: install.sh --image <registry/repository@sha256:digest> [--cors-origins https://interface.teamofsilicons.com] [--tls]'
+      echo 'Usage: install.sh --image <registry/repository@sha256:digest> [--cors-origins https://interface.teamofsilicons.com,https://auth.iam.teamofsilicons.com] [--tls]'
       exit 0 ;;
     *) echo "Unknown argument: $1" >&2; exit 64 ;;
   esac
