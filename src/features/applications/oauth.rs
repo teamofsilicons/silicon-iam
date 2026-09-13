@@ -892,12 +892,17 @@ pub(super) async fn app_tokens(
         return Err(ApiError::internal("oauth_token_idempotency"));
     };
     let outcome = if let Some(slt) = form.slt.as_deref() {
-        let response =
-            if crate::infrastructure::testing_plane::is_active() && !slt.starts_with("oac_") {
-                exchange_testing_actor(&mut transaction, &state, &client, slt).await?
-            } else {
-                exchange_authorization_code(&mut transaction, &state, &client, &form).await?
-            };
+        let issued_code = slt.strip_prefix("oac_").is_some_and(|code| {
+            code.len() == 43
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        });
+        let response = if crate::infrastructure::testing_plane::is_active() && !issued_code {
+            exchange_testing_actor(&mut transaction, &state, &client, slt).await?
+        } else {
+            exchange_authorization_code(&mut transaction, &state, &client, &form).await?
+        };
         RefreshExchange::Issued(Box::new(response))
     } else {
         exchange_refresh_token(&mut transaction, &state, &client, &form).await?

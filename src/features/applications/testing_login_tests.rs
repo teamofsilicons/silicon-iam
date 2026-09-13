@@ -62,6 +62,10 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
     crate::infrastructure::postgres::migrate_testing(&testing).await?;
     super::super::live_tests::seed_protocol_rows(&testing).await?;
     sqlx::raw_sql(r"
+        INSERT INTO iam.principals (id,kind,status,activated_at) VALUES ('00000000-0000-0000-0000-000000000003','carbon','active',transaction_timestamp());
+        INSERT INTO iam.carbons (id,carbon_id,display_name) VALUES ('00000000-0000-0000-0000-000000000003','oac_test_admin','Prefix test actor');
+        INSERT INTO iam.carbon_contacts (id,carbon_id,kind,ciphertext,nonce,encryption_key_version,verified_at)
+        SELECT CASE WHEN kind='email' THEN '00000000-0000-0000-0000-000000000202'::uuid ELSE '00000000-0000-0000-0000-000000000203'::uuid END, '00000000-0000-0000-0000-000000000003'::uuid, kind, ciphertext, nonce, encryption_key_version, verified_at FROM iam.carbon_contacts WHERE carbon_id='00000000-0000-0000-0000-000000000001';
         INSERT INTO iam.principals (id,kind,status,activated_at) VALUES
             ('00000000-0000-0000-0000-000000000501','silicon','active',transaction_timestamp());
         INSERT INTO iam.organization_memberships (id,organization_id,principal_id,principal_kind,org_role)
@@ -136,7 +140,7 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
             organization_id: Uuid::from_u128(0x21),
         },
         async {
-            for actor in ["test_carbon", "worker:test_org"] {
+            for actor in ["test_carbon", "worker:test_org", "oac_test_admin"] {
                 let key = format!("actor-login-{actor}");
                 let (status, tokens) = exchange(&state, actor, &key).await?;
                 ensure!(status == StatusCode::OK, "actor exchange failed: {tokens}");
