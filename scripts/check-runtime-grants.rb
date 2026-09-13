@@ -15,6 +15,7 @@ EXCLUDED_TEST_PATHS = %w[
   src/features/applications/live_tests.rs
   src/features/applications/login_history_tests.rs
   src/features/applications/scope_catalog_tests.rs
+  src/features/applications/testing_login_tests.rs
   src/infrastructure/postgres/key_rotation_tests.rs
 ].freeze
 
@@ -70,7 +71,7 @@ DML_VERBS = %w[SELECT INSERT UPDATE DELETE].freeze
 def strip_test_modules(path)
   source = File.read(path)
   source = source.gsub(
-    /^[ \t]*#\[cfg\(test\)\][ \t]*\r?\n[ \t]*mod[ \t]+[a-zA-Z0-9_]+[ \t]*;[ \t]*$/,
+    /^[ \t]*#\[cfg\(test\)\][ \t]*\r?\n(?:[ \t]*#\[path[ \t]*=[ \t]*"[^"\r\n]+"\][ \t]*\r?\n)?[ \t]*mod[ \t]+[a-zA-Z0-9_]+[ \t]*;[ \t]*$/,
     ""
   )
   source = source.sub(

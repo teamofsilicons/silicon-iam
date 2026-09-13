@@ -28,7 +28,7 @@ let sandbox = Client::new("https://backend.iam.teamofsilicons.com")?
 
 ## Bootstrap the empty environment
 
-Use the CLI or raw control-plane API to run the normal signup and IAM-session login sequence. Email and SMS are not sent; pass `000000` to each verification call. Keep the returned control-plane tokens under the environment UUID, never in your production token slot. When testing the Application itself, complete the IAM-hosted Application login and pass only its SLT to `OAuth::login`.
+Use the CLI or raw control-plane API to run the normal signup and IAM-session login sequence. Email and SMS are not sent; pass `000000` to each verification call. Keep the returned control-plane tokens under the environment UUID, never in your production token slot. When testing the Application itself, pass an IAM-issued test SLT or an existing Carbon/Silicon ID (such as `alice` or `worker:tos`) to `OAuth::login` using the paired environment key and test Application secret. Actor-ID login selects current active organizations and approved Application scopes. Production requires an issued SLT.
 
 From there, attach the access token and create organizations, tags, Silicons, invitations, and governance state with the same client methods used in production. Expiry, failed-attempt cooldowns, idempotency, ETags, step-up, and authorization are still real; only delivery and the fixed verification code differ.
 

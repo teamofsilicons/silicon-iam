@@ -58,10 +58,17 @@ async fn bundle_availability_and_organization_pages_preserve_authority() -> anyh
             );
             base.run(&pool).await?;
             if testing {
-                sqlx::migrate!("./migrations/testing")
-                    .set_ignore_missing(true)
-                    .run(&pool)
-                    .await?;
+                // Freeze the overlay alongside the historical base schema.
+                sqlx::migrate::Migrator::with_migrations(
+                    sqlx::migrate!("./migrations/testing")
+                        .iter()
+                        .filter(|migration| migration.version <= 9004)
+                        .cloned()
+                        .collect(),
+                )
+                .set_ignore_missing(true)
+                .run(&pool)
+                .await?;
             }
             seed(&pool).await?;
         }

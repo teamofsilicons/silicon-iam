@@ -397,7 +397,12 @@ paths:
       description: |
         The application authenticates itself the same way in both cases, so
         which one it is asking for is simply which credential it presented.
-        Present exactly one of `slt` and `refresh_token`.
+        Present exactly one of `slt` and `refresh_token`. With a verified testing
+        environment key and its test Application secret, `slt` accepts either an
+        IAM-issued one-time code or an existing Carbon/Silicon public ID. Actor-ID
+        login selects current active organizations and approved Application scopes.
+        Production accepts only IAM-issued codes. Reuse the same idempotency key
+        and input after an uncertain response.
       security: [{ applicationBasic: [] }]
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
@@ -4846,7 +4851,7 @@ components:
         - required: [refresh_token]
       properties:
         app_id: { $ref: '#/components/schemas/AppId' }
-        slt: { type: string, minLength: 32, maxLength: 512 }
+        slt: { type: string, minLength: 3, maxLength: 101, description: "IAM-issued one-time code, or an existing Carbon/Silicon ID in a verified testing environment." }
         refresh_token: { type: string, minLength: 32, maxLength: 512 }
     OAuthTokenResponse:
       type: object

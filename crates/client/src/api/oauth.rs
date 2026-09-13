@@ -16,7 +16,10 @@ impl OAuth<'_> {
     /// This is the only Application-login entry point. The Application never
     /// receives or submits the principal's OTP or any other authentication
     /// credential; IAM completes that ceremony and hands the Application the
-    /// single-use `slt`.
+    /// single-use `slt`. In a verified testing environment, `slt` may also be
+    /// an existing Carbon ID (`alice`) or Silicon ID (`worker:tos`). This test
+    /// shortcut selects the actor's current active organizations and the
+    /// Application's approved scopes; production accepts only issued codes.
     ///
     /// # Errors
     ///
