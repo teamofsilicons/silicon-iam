@@ -1,6 +1,7 @@
 import { createSignal, For, Show } from "solid-js";
 import { createResource } from "./resource";
 import { date, mutation, request, segment } from "./api";
+import { scopeReviewPage, type ReviewDirection } from "./scope-review-page";
 import {
   Badge,
   Empty,
@@ -12,21 +13,54 @@ import {
   usePage,
 } from "./ui";
 
-export default function ScopeReviews() {
-  const [status, setStatus] = createSignal("pending"),
+export default function ScopeReviews(props: { appId?: string } = {}) {
+  const [direction, setDirection] = createSignal<ReviewDirection>(
+    props.appId ? "incoming" : "all",
+  );
+  const [status, setStatus] = createSignal(props.appId ? "" : "pending"),
     [selected, setSelected] = createSignal(
       new URL(location.href).searchParams.get("request") || "",
     );
   const page = usePage(
     () =>
       `/api/v1/application-scope-requests${status() ? `?status=${status()}` : ""}`,
+    () => ["all", "incoming", "outgoing"].indexOf(direction()),
+    (url) => scopeReviewPage(url, props.appId, direction(), request),
   );
   return (
     <>
-      <PageTitle
-        title="Scope reviews"
-        subtitle="Review critical permissions and keep the conversation in one place."
-      />
+      <Show when={!props.appId}>
+        <PageTitle
+          title="Scope reviews"
+          subtitle="Review critical permissions and keep the conversation in one place."
+        />
+      </Show>
+      <div class="panel-toolbar">
+        <p class="muted">
+          {props.appId
+            ? "Incoming requests ask to use this app’s critical OBO endpoints. Its organization owner or admin can approve or deny them. Sent requests ask IAM or other apps for access."
+            : "Scope reviews include requests sent by your apps and requests you can approve for apps your organization owns."}
+        </p>
+        <select
+          aria-label="Scope request direction"
+          value={direction()}
+          onChange={(e) => {
+            setDirection(e.currentTarget.value as ReviewDirection);
+            setSelected("");
+            const url = new URL(location.href);
+            url.searchParams.delete("request");
+            history.replaceState(null, "", url);
+          }}
+        >
+          <option value="incoming">
+            {props.appId ? "Incoming requests" : "Needs your review"}
+          </option>
+          <Show when={props.appId}>
+            <option value="outgoing">Sent requests</option>
+          </Show>
+          <option value="all">All requests</option>
+        </select>
+      </div>
       <div class="scope-review-layout">
         <section class="panel">
           <div class="panel-toolbar">
@@ -47,9 +81,16 @@ export default function ScopeReviews() {
             <Show
               when={page.data()?.items.length}
               fallback={
-                <Empty title="No scope reviews">
-                  Requests from your applications and applications requesting
-                  access to your endpoints appear here.
+                <Empty
+                  title={
+                    direction() === "incoming"
+                      ? "No incoming requests"
+                      : "No scope reviews"
+                  }
+                >
+                  {direction() === "incoming"
+                    ? "No requests match this status. A caller must submit a critical scope review for your app’s endpoints before it appears here."
+                    : "Requests sent by this app appear here, including IAM and other application scope approvals."}
                 </Empty>
               }
             >
@@ -163,6 +204,13 @@ function ReviewThread(props: { id: string; refresh: () => unknown }) {
               </div>
               <Badge value={value().status} />
             </div>
+            <h3>Critical scopes in this request ({value().scopes.length})</h3>
+            <p class="muted">
+              This decision covers only these scopes for{" "}
+              {value().target_app_id || "Silicon IAM"}. Non-critical scopes do
+              not need approval. Critical scopes owned by another provider have
+              their own review.
+            </p>
             <ul>
               <For each={value().scopes}>
                 {(scope: string) => (
@@ -172,14 +220,64 @@ function ReviewThread(props: { id: string; refresh: () => unknown }) {
                 )}
               </For>
             </ul>
+            <Show when={value().current_scope_context}>
+              <section class="stack">
+                <h3>
+                  All currently declared scopes for{" "}
+                  {value().target_app_id || "Silicon IAM"}
+                </h3>
+                <p class="muted">
+                  Current configuration, including non-critical scopes. This may
+                  have changed since the request was submitted; it does not
+                  change the decision above.
+                </p>
+                <ul class="scope-list">
+                  <For each={value().current_scope_context}>
+                    {(scope) => (
+                      <li>
+                        <div>
+                          <code>{scope.scope}</code>
+                          <small>
+                            {scope.description || "Scope details unavailable"}
+                          </small>
+                        </div>
+                        <span class="badge">
+                          {scope.in_review
+                            ? "In this request"
+                            : scope.critical === false
+                              ? "No approval required"
+                              : scope.critical === true
+                                ? "Critical · outside this request"
+                                : "No longer published"}
+                        </span>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+                <Show when={!value().current_scope_context.length}>
+                  <p>
+                    No scopes for this provider remain in the caller’s current
+                    configuration.
+                  </p>
+                </Show>
+              </section>
+            </Show>
             <div class="review-thread" aria-label="Review discussion">
               <For each={value().messages}>
                 {(item) => (
-                  <article>
+                  <article
+                    classList={{
+                      "message-sent": item.is_own === true,
+                      "message-system": item.author?.type === "system",
+                    }}
+                  >
                     <header>
                       <strong>
-                        {item.author?.public_id ||
-                          (item.author ? "Reviewer" : "Review instructions")}
+                        {item.author?.type === "system" || !item.author
+                          ? "Review instructions"
+                          : item.is_own === true
+                            ? `You · Sent (${item.author.public_id})`
+                            : `Received · ${item.author.public_id || "Participant"}`}
                       </strong>
                       <time>{date(item.created_at)}</time>
                     </header>

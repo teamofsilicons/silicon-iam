@@ -391,11 +391,11 @@ export function StepUp(props: {
 export function usePage(
   path: Accessor<string | undefined>,
   revision: Accessor<number> = () => 0,
+  read: (url: string) => Promise<Page> = request<Page>,
 ) {
   const [data, controls] = createResource(
     () => (path() ? ([path()!, revision()] as const) : undefined),
-    ([url]) =>
-      request<Page>(url + (url.includes("?") ? "&" : "?") + "limit=30"),
+    ([url]) => read(url + (url.includes("?") ? "&" : "?") + "limit=30"),
   );
   const [moreBusy, setMoreBusy] = createSignal(false),
     [moreError, setMoreError] = createSignal<unknown>();
@@ -405,17 +405,18 @@ export function usePage(
   });
   async function more() {
     const current = data(),
-      source = path();
+      source = path(),
+      sourceRevision = revision();
     if (!source || !current?.page?.next_cursor || moreBusy()) return;
     setMoreBusy(true);
     setMoreError();
     try {
-      const next = await request<Page>(
+      const next = await read(
         source +
           (source.includes("?") ? "&" : "?") +
           `limit=30&cursor=${encodeURIComponent(current.page.next_cursor)}`,
       );
-      if (path() === source)
+      if (path() === source && revision() === sourceRevision)
         controls.mutate({ ...next, items: [...current.items, ...next.items] });
     } catch (e) {
       setMoreError(e);

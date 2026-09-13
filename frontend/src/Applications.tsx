@@ -22,6 +22,7 @@ import {
 import { OperationForm, type Operation } from "./forms";
 import { ApplicationScopes, ScopePicker, WebhookScopePicker } from "./Scopes";
 import { defaultAppScope } from "./scope-model";
+import ScopeReviews from "./ScopeReviews";
 import {
   Badge,
   Empty,
@@ -361,7 +362,11 @@ export default function Applications(props: {
 function ApplicationDetail(props: { appId: string; config: Configuration }) {
   const path = `/api/v1/applications/${segment(props.appId)}`,
     [app, { refetch }] = createResource(() => request(path));
-  const [tab, setTab] = createSignal("Overview"),
+  const [tab, setTab] = createSignal(
+      new URL(location.href).searchParams.get("tab") === "approvals"
+        ? "Approvals"
+        : "Overview",
+    ),
     [operation, setOperation] = createSignal<Operation>(),
     [secret, setSecret] = createSignal<RecordValue>(),
     [notice, setNotice] = createSignal("");
@@ -369,6 +374,7 @@ function ApplicationDetail(props: { appId: string; config: Configuration }) {
     "Overview",
     "Authentication",
     "Permissions",
+    "Approvals",
     "OBO endpoints",
     "Testing",
     "Webhook",
@@ -412,7 +418,17 @@ function ApplicationDetail(props: { appId: string; config: Configuration }) {
               <button
                 role="tab"
                 aria-selected={tab() === item}
-                onClick={() => setTab(item)}
+                onClick={() => {
+                  setTab(item);
+                  const url = new URL(location.href);
+                  if (item === "Approvals")
+                    url.searchParams.set("tab", "approvals");
+                  else {
+                    url.searchParams.delete("tab");
+                    url.searchParams.delete("request");
+                  }
+                  history.replaceState(null, "", url);
+                }}
               >
                 {item}
               </button>
@@ -498,6 +514,9 @@ function ApplicationDetail(props: { appId: string; config: Configuration }) {
               <Show keyed when={app()}>
                 {(value) => <ApplicationScopes app={value} refresh={refetch} />}
               </Show>
+            </Match>
+            <Match when={tab() === "Approvals"}>
+              <ScopeReviews appId={props.appId} />
             </Match>
             <Match when={tab() === "OBO endpoints"}>
               <Endpoints app={app()!} refresh={refetch} />

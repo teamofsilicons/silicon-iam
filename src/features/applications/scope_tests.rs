@@ -51,13 +51,13 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
     let target = Uuid::from_u128(0x12);
     let actor = Uuid::from_u128(1);
     let org = Uuid::from_u128(0x21);
-    sqlx::query("INSERT INTO iam.application_obo_endpoints(organization_id,application_id,endpoint_id,path,metadata_definition,critical) VALUES($1,$2,'files.read','/files','{}',true)").bind(org).bind(target).execute(&pool).await?;
+    sqlx::query("INSERT INTO iam.application_obo_endpoints(organization_id,application_id,endpoint_id,path,metadata_definition,critical) VALUES($1,$2,'files.read','/files','{}',true),($1,$2,'files.list','/files/list','{}',false)").bind(org).bind(target).execute(&pool).await?;
     let mut tx = pool.begin().await?;
     sqlx::query("SET LOCAL ROLE silicon_iam_api")
         .execute(&mut *tx)
         .await?;
     sqlx::query("SELECT set_config('iam.principal_id',$1,true),set_config('iam.organization_id',$2,true),set_config('iam.application_id',$3,true)").bind(actor.to_string()).bind(org.to_string()).bind(app.to_string()).execute(&mut *tx).await?;
-    let scope = json!({"iam":["self.identity.read","self.profile.read"],"external":[{"app_id":"test_org>app-beta","endpoint_id":"files.read"}]});
+    let scope = json!({"iam":["self.identity.read","self.profile.read"],"external":[{"app_id":"test_org>app-beta","endpoint_id":"files.read"},{"app_id":"test_org>app-beta","endpoint_id":"files.list"}]});
     sqlx::query("SELECT iam_private.configure_application_scopes($1,$2,$3)")
         .bind(app)
         .bind(Json(&scope))
@@ -67,7 +67,12 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
         .context("configure explicitly declared scopes")?;
     let active=sqlx::query_scalar::<_,String>("SELECT scope FROM iam.application_approved_scopes WHERE application_id=$1 AND revoked_at IS NULL ORDER BY scope").bind(app).fetch_all(&mut *tx).await?;
     ensure!(
-        active == vec!["self.identity.read", "self.profile.read"],
+        active
+            == vec![
+                "obo:test_org>app-beta:files.list",
+                "self.identity.read",
+                "self.profile.read"
+            ],
         "an unreviewed external critical endpoint acquired authority"
     );
     let status =
@@ -104,6 +109,27 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
         "initial instructions and request message missing"
     );
     ensure!(detail["target_app_id"] == "test_org>app-beta");
+    let context = detail["current_scope_context"]
+        .as_array()
+        .context("scope context")?;
+    ensure!(
+        context.len() == 2,
+        "review context must include non-critical scopes but exclude IAM scopes"
+    );
+    ensure!(context[0]["scope"] == "obo:test_org>app-beta:files.list");
+    ensure!(context[0]["critical"] == false && context[0]["in_review"] == false);
+    ensure!(context[1]["in_review"] == true);
+    let messages = detail["messages"].as_array().context("messages")?;
+    ensure!(
+        messages
+            .iter()
+            .any(|message| message["author"]["type"] == "system" && message["is_own"] == false)
+    );
+    ensure!(
+        messages
+            .iter()
+            .any(|message| message["author"]["type"] == "carbon" && message["is_own"] == true)
+    );
     let version = detail["version"].as_i64().context("version")?;
     let approved=sqlx::query_scalar::<_,Json<Value>>("SELECT iam_private.mutate_application_scope_request($1,$2,$3,'approve','Approved for project organization.')").bind(request).bind(actor).bind(version).fetch_one(&mut *tx).await?.0;
     ensure!(approved["status"] == "approved");
@@ -115,7 +141,7 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
     .await?
     .0;
     ensure!(policy["consent_required"] == true);
-    ensure!(policy["scopes"].as_array().context("scope policy")?.len() == 3);
+    ensure!(policy["scopes"].as_array().context("scope policy")?.len() == 4);
     let version = approved["version"].as_i64().context("approved version")?;
     let reply=sqlx::query_scalar::<_,Json<Value>>("SELECT iam_private.mutate_application_scope_request($1,$2,$3,'message','Thank you; implementation is ready.')").bind(request).bind(actor).bind(version).fetch_one(&mut *tx).await?.0;
     ensure!(

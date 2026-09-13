@@ -1437,6 +1437,10 @@ pub struct ApplicationScopeMessage {
     /// The contract's `created_at`.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// Whether the current authenticated Carbon authored this message. System
+    /// instructions are always false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_own: Option<bool>,
 }
 
 /// Contract type `ApplicationScopeMessageAuthor`.
@@ -1484,6 +1488,11 @@ pub struct ApplicationScopeRequest {
     pub messages: Vec<ApplicationScopeMessage>,
     /// The contract's `can_decide`.
     pub can_decide: bool,
+    /// The caller's current declared scopes for this reviewing provider only,
+    /// including non-critical scopes. This is not a submission snapshot and
+    /// does not change the request decision boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_scope_context: Option<Vec<ApplicationScopeReviewContext>>,
 }
 
 /// Contract type `ApplicationScopeRequestCreate`.
@@ -1500,6 +1509,20 @@ pub struct ApplicationScopeRequestCreate {
 pub struct ApplicationScopeRequestList {
     /// The contract's `items`.
     pub items: Vec<ApplicationScopeRequest>,
+}
+
+/// Contract type `ApplicationScopeReviewContext`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApplicationScopeReviewContext {
+    /// The contract's `scope`.
+    pub scope: String,
+    /// The contract's `description`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Null if the scope is no longer published.
+    pub critical: Option<bool>,
+    /// Whether this scope is part of the immutable request decision.
+    pub in_review: bool,
 }
 
 /// Contract type `ApplicationSecretRotated`.

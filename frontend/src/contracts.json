@@ -1056,13 +1056,13 @@
       },
       "org_ids": {
         "type": "array",
-        "minItems": 1,
+        "minItems": 0,
         "maxItems": 1000,
         "uniqueItems": true,
         "items": {
           "$ref": "#/components/schemas/OrgId"
         },
-        "description": "Explicit user selection for this app; existing grants are preserved."
+        "description": "Explicit user selection for this app; existing grants are preserved. Empty is allowed only for a Carbon approving an active organizations.create or organizations.join scope."
       }
     }
   },
@@ -1176,7 +1176,7 @@
       },
       "org_ids": {
         "type": "array",
-        "minItems": 1,
+        "minItems": 0,
         "maxItems": 1000,
         "uniqueItems": true,
         "items": {
@@ -1217,9 +1217,14 @@
       "items",
       "scope_version",
       "consent_required",
-      "scopes"
+      "scopes",
+      "allow_empty_organization_selection"
     ],
     "properties": {
+      "allow_empty_organization_selection": {
+        "type": "boolean",
+        "description": "Whether this Carbon may continue without selecting organizations using an approved organizations.create or organizations.join permission. Empty selection adds no organization grants."
+      },
       "scope_version": {
         "type": "integer",
         "minimum": 1
@@ -1291,8 +1296,9 @@
       },
       "slt": {
         "type": "string",
-        "minLength": 32,
-        "maxLength": 512
+        "minLength": 3,
+        "maxLength": 101,
+        "description": "IAM-issued one-time code, or an existing Carbon/Silicon ID in a verified testing environment."
       },
       "refresh_token": {
         "type": "string",
@@ -5114,7 +5120,10 @@
         "items": {
           "type": "string"
         },
-        "description": "IAM permissions; defaults to self.identity.read and self.profile.read on creation."
+        "description": "IAM permissions from GET /api/v1/application-scopes; defaults to self.identity.read and self.profile.read on creation. Mutation permissions require approval",
+        "current organization availability": null,
+        "user consent": null,
+        "and the represented actor authority. Some permissions may be unavailable to an application.": null
       },
       "external": {
         "type": "array",
@@ -5218,6 +5227,130 @@
       }
     }
   },
+  "TestingEnvironmentMetadata": {
+    "type": "object",
+    "required": [
+      "environment_id",
+      "org_id",
+      "name",
+      "version",
+      "key_generation",
+      "created_at",
+      "creator_type",
+      "creator_id"
+    ],
+    "properties": {
+      "environment_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "org_id": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "key_generation": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "cleaned_at": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time"
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "creator_type": {
+        "type": "string"
+      },
+      "creator_id": {
+        "type": "string"
+      }
+    }
+  },
+  "ApplicationTestingContext": {
+    "type": "object",
+    "required": [
+      "environment_id",
+      "application"
+    ],
+    "properties": {
+      "environment_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "application": {
+        "$ref": "#/components/schemas/TestingApplicationView"
+      },
+      "environment": {
+        "$ref": "#/components/schemas/TestingEnvironmentMetadata"
+      },
+      "webhook_key_digest": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      }
+    }
+  },
+  "TestingApplicationView": {
+    "type": "object",
+    "required": [
+      "app_id",
+      "base_url",
+      "app_scope",
+      "webhook_scope",
+      "testing_idle_days"
+    ],
+    "properties": {
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      },
+      "app_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "app_logo": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uri"
+      },
+      "base_url": {
+        "type": "string",
+        "format": "uri"
+      },
+      "app_scope": {
+        "$ref": "#/components/schemas/ApplicationScope"
+      },
+      "webhook_scope": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "testing_idle_days": {
+        "type": "integer",
+        "minimum": 1
+      }
+    }
+  },
   "ApplicationTestingEnvironmentCreate": {
     "type": "object",
     "required": [
@@ -5298,7 +5431,10 @@
       "org_id",
       "name",
       "last_activity_at",
-      "retention_days"
+      "retention_days",
+      "status",
+      "version",
+      "can_manage"
     ],
     "properties": {
       "environment_id": {
@@ -5324,6 +5460,28 @@
       "retention_days": {
         "type": "integer",
         "minimum": 1
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "active",
+          "deleted"
+        ]
+      },
+      "purge_after": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time"
+      },
+      "version": {
+        "type": "integer",
+        "format": "int64"
+      },
+      "can_manage": {
+        "type": "boolean",
+        "description": "True only for the application that created this environment."
       }
     }
   },
@@ -5381,6 +5539,40 @@
       "created_at": {
         "type": "string",
         "format": "date-time"
+      },
+      "is_own": {
+        "type": "boolean",
+        "description": "Whether the current authenticated Carbon authored this message. System instructions are always false."
+      }
+    }
+  },
+  "ApplicationScopeReviewContext": {
+    "type": "object",
+    "required": [
+      "scope",
+      "critical",
+      "in_review"
+    ],
+    "properties": {
+      "scope": {
+        "type": "string"
+      },
+      "description": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "critical": {
+        "type": [
+          "boolean",
+          "null"
+        ],
+        "description": "Null if the scope is no longer published."
+      },
+      "in_review": {
+        "type": "boolean",
+        "description": "Whether this scope is part of the immutable request decision."
       }
     }
   },
@@ -5446,6 +5638,13 @@
       },
       "can_decide": {
         "type": "boolean"
+      },
+      "current_scope_context": {
+        "type": "array",
+        "description": "The caller's current declared scopes for this reviewing provider only, including non-critical scopes. This is not a submission snapshot and does not change the request decision boundary.",
+        "items": {
+          "$ref": "#/components/schemas/ApplicationScopeReviewContext"
+        }
       }
     }
   },
@@ -5689,6 +5888,25 @@
         "type": "string"
       }
     }
+  },
+  "ApplicationMutationObject": {
+    "type": "object",
+    "additionalProperties": true,
+    "description": "Scope-projected response for an ordinary application mutation. Write scopes do not imply read access. Without the corresponding read scopes, existing profile, role, tag, contact, trust, and governance fields are omitted; the response may be an empty object. Applicable identifiers, org_id, membership_id, version, status, and kind may remain as operation receipts. Independently approved read scopes add only their authorized fields, with the same projections as application reads. Silicon creation returns its nested silicon receipt and the explicitly requested one-time silicon_token plus secret_replay_expires_at. Completed credential rotation retains its separate full one-time credential response. Missing fields mean undisclosed, not null/default values. Direct IAM callers receive the full resource schema.",
+    "examples": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "org_id": "acme",
+        "version": 1,
+        "status": "active"
+      },
+      {
+        "membership_id": "00000000-0000-0000-0000-000000000002",
+        "version": 2
+      },
+      {
+      }
+    ]
   },
   "ApplicationReadObject": {
     "type": "object",

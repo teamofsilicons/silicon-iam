@@ -1477,6 +1477,15 @@ legend {
   gap: 0.5rem;
   font-size: 0.85rem;
 }
+.review-thread article.message-sent {
+  margin-left: 2rem;
+  background: #e2eaf6;
+  border-left: 3px solid var(--blue);
+}
+.review-thread article.message-system {
+  border: 1px dashed var(--line, #dce0e6);
+  background: transparent;
+}
 .review-thread p,
 .review-text {
   white-space: pre-wrap;
@@ -1493,7 +1502,22 @@ legend {
   }
 }
 
-.telemetry-settings { margin: 1rem auto; padding: .75rem 1rem; max-width: 46rem; color: var(--muted, #64748b); font-size: .8rem; }
-.telemetry-settings summary { cursor: pointer; }
-.telemetry-settings label { display: flex; gap: .5rem; align-items: center; margin-top: .75rem; }
-.telemetry-settings input { width: auto; }
+.telemetry-settings {
+  margin: 1rem auto;
+  padding: 0.75rem 1rem;
+  max-width: 46rem;
+  color: var(--muted, #64748b);
+  font-size: 0.8rem;
+}
+.telemetry-settings summary {
+  cursor: pointer;
+}
+.telemetry-settings label {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.75rem;
+}
+.telemetry-settings input {
+  width: auto;
+}
