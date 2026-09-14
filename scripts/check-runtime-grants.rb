@@ -14,9 +14,13 @@ EXCLUDED_TEST_PATHS = %w[
   src/features/applications/bundle_availability_tests.rs
   src/features/applications/live_tests.rs
   src/features/applications/login_history_tests.rs
+  src/features/applications/obo_disclosure_tests.rs
   src/features/organizations/scoped_tests.rs
   src/features/testing_environments/scope_policy_tests.rs
+  src/features/testing_environments/scoped_tests.rs
+  src/features/applications/scope_tests.rs
   src/features/applications/scope_catalog_tests.rs
+  src/features/applications/scoped_auth_tests.rs
   src/features/applications/testing_login_tests.rs
   src/infrastructure/postgres/key_rotation_tests.rs
 ].freeze
@@ -27,6 +31,7 @@ EXCLUDED_NON_API_BINARY_PATHS = %w[
   src/bin/iam_activate_key_version.rs
   src/bin/iam_bootstrap_admin.rs
   src/bin/iam_migrate.rs
+  src/bin/iam_scoped_auth_init.rs
   src/bin/iam_worker.rs
 ].freeze
 

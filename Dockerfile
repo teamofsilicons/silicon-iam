@@ -6,6 +6,9 @@ ARG BUILD_REVISION=unknown
 FROM rust:${RUST_VERSION}-bookworm AS builder
 
 ARG BUILD_REVISION
+# Bound linker concurrency on the ARM release builder.
+ARG CARGO_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 
 WORKDIR /workspace
 
@@ -23,12 +26,14 @@ COPY crates ./crates
 # compile time via include_str!, so the build fails loudly if any of them is
 # missing rather than shipping an image whose docs have drifted from its binary.
 COPY docs ./docs
+COPY deploy/scoped ./deploy/scoped
 
 RUN --mount=type=cache,id=silicon-iam-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=silicon-iam-target,target=/workspace/target,sharing=locked \
     cargo build --locked --release --bins \
     && install -D -m 0755 target/release/iam-api /opt/silicon-iam/iam-api \
     && install -D -m 0755 target/release/iam-scoped-api /opt/silicon-iam/iam-scoped-api \
+    && install -D -m 0755 target/release/iam-scoped-auth-init /opt/silicon-iam/iam-scoped-auth-init \
     && install -D -m 0755 target/release/iam-worker /opt/silicon-iam/iam-worker \
     && install -D -m 0755 target/release/iam-migrate /opt/silicon-iam/iam-migrate \
     && install -D -m 0755 target/release/iam-bootstrap-admin /opt/silicon-iam/iam-bootstrap-admin \
@@ -52,6 +57,7 @@ RUN apt-get update \
 
 COPY --from=builder /opt/silicon-iam/iam-api /usr/local/bin/iam-api
 COPY --from=builder /opt/silicon-iam/iam-scoped-api /usr/local/bin/iam-scoped-api
+COPY --from=builder /opt/silicon-iam/iam-scoped-auth-init /usr/local/bin/iam-scoped-auth-init
 COPY --from=builder /opt/silicon-iam/iam-worker /usr/local/bin/iam-worker
 COPY --from=builder /opt/silicon-iam/iam-migrate /usr/local/bin/iam-migrate
 COPY --from=builder /opt/silicon-iam/iam-bootstrap-admin /usr/local/bin/iam-bootstrap-admin

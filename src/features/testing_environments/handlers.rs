@@ -186,18 +186,31 @@ pub(super) async fn create_environment(
     headers: HeaderMap,
     Json(mut input): Json<EnvironmentCreate>,
 ) -> Result<Response, AppError> {
-    let plane = support::plane(&state)?;
-    let max_per_organization = i64::from(plane.settings.max_per_organization);
+    support::plane(&state)?;
     validation::create(&mut input)?;
 
-    let mut scope = organizations::begin_organization(&state, &authenticated, &org_id).await?;
+    let scope = organizations::begin_organization(&state, &authenticated, &org_id).await?;
+    create_in_scope(&state, &authenticated, &headers, input, scope, "collection").await
+}
+
+/// Shared creation preserves the represented actor and the existing root-key lifecycle.
+#[allow(clippy::too_many_lines)]
+pub(super) async fn create_in_scope(
+    state: &ApiState,
+    authenticated: &Authenticated,
+    headers: &HeaderMap,
+    input: EnvironmentCreate,
+    mut scope: organizations::support::OrganizationTransaction<'_>,
+    replay_scope: &str,
+) -> Result<Response, AppError> {
+    let max_per_organization = i64::from(support::plane(state)?.settings.max_per_organization);
     let lease = match support::claim(
         &mut scope.transaction,
-        &state,
-        actor(&authenticated),
-        &headers,
+        state,
+        actor(authenticated),
+        headers,
         CREATE_ROUTE,
-        "collection",
+        replay_scope,
         &input,
         true,
     )
@@ -207,6 +220,16 @@ pub(super) async fn create_environment(
         Claim::Acquired(lease) => lease,
     };
 
+    // Serialize both direct and scoped creation so concurrent calls cannot
+    // exceed the organization's configured environment quota.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!(
+            "testing-environment-create:{}",
+            scope.access.organization_id
+        ))
+        .execute(&mut *scope.transaction)
+        .await
+        .map_err(support::database)?;
     let live = sqlx::query_scalar::<_, i64>(
         r"
         SELECT count(*)
@@ -231,7 +254,7 @@ pub(super) async fn create_environment(
         .map_err(|_| AppError::Internal {
             category: "testing_environment_key_generate",
         })?;
-    let stored = support::store_key(&state, scope.access.organization_id, environment_id, &key)?;
+    let stored = support::store_key(state, scope.access.organization_id, environment_id, &key)?;
 
     sqlx::query(
         r"
@@ -260,7 +283,7 @@ pub(super) async fn create_environment(
     support::record_audit(
         &mut scope.transaction,
         support::AuditEvent {
-            actor: Some(actor(&authenticated)),
+            actor: Some(actor(authenticated)),
             authentication_session_id: Some(authenticated.0.authentication_session_id),
             organization_id: scope.access.organization_id,
             action: "testing_environment.created",
@@ -268,23 +291,19 @@ pub(super) async fn create_environment(
             version: environment.version,
             before_state: None,
             after_state: redacted(&environment)?,
-            metadata: &json!({ "name": environment.name }),
+            metadata: &json!({ "name": environment.name,
+                "client_application_id": authenticated.0.client_application_id }),
         },
     )
     .await?;
 
     let response = EnvironmentWithKey {
         environment,
-        key: support::read_key(
-            &state,
-            scope.access.organization_id,
-            environment_id,
-            &stored,
-        )?,
+        key: support::read_key(state, scope.access.organization_id, environment_id, &stored)?,
     };
     let body = support::finish(
         &mut scope.transaction,
-        &state,
+        state,
         lease,
         StatusCode::CREATED,
         &response,

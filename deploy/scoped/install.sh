@@ -93,7 +93,7 @@ done
 [[ "$SCOPED_READY" == true ]] || { echo 'Scoped API did not become ready.' >&2; exit 1; }
 
 # Before DNS or TLS cutover, verify excluded routes really are absent.
-for path in /api/v1/obo-access/exchanges /api/v1/applications /api/v1/admin/applications /api/v1/auth/login /api/v1/provider-webhooks/workos; do
+for path in /api/v1/obo-access/exchanges /api/v1/applications /api/v1/admin/applications /api/v1/auth/register /api/v1/provider-webhooks/workos; do
   SCOPED_STATUS=$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "http://127.0.0.1:8081$path")
   [[ "$SCOPED_STATUS" == 404 ]] || { echo "Unexpected scoped route: $path ($SCOPED_STATUS)" >&2; exit 1; }
 done

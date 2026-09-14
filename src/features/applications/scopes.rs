@@ -280,6 +280,7 @@ pub(super) const IAM_SCOPES: &[&str] = &[
     "organization.invitations.create",
     "organization.invitations.revoke",
     "organization.silicons.create",
+    "organization.testing_environments.create",
     "organization.silicons.update",
     "organization.carbons.remove",
     "organization.silicons.remove",

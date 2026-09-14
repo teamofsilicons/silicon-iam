@@ -284,10 +284,12 @@ async fn request_tokens(
     let mut headers = HeaderMap::new();
     headers.insert("idempotency-key", key.parse()?);
     let client = ApplicationClient {
-        application_id: APP,
-        app_id: "test_org>app-alpha".to_owned(),
-        organization_id: Uuid::from_u128(0x21),
-        auth_epoch: 1,
+        identity: crate::features::applications::security::ApplicationIdentity {
+            application_id: APP,
+            app_id: "test_org>app-alpha".to_owned(),
+            organization_id: Uuid::from_u128(0x21),
+            auth_epoch: 1,
+        },
         authenticated_secret: SecretString::from("synthetic-secret".to_owned()),
     };
     let response = app_tokens(State(state.clone()), client, headers, Form(input))
