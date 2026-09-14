@@ -6385,6 +6385,15 @@ components:
         author: { $ref: '#/components/schemas/ApplicationScopeMessageAuthor' }
         message: { type: string }
         created_at: { type: string, format: date-time }
+        is_own: { type: boolean, description: Whether the current authenticated Carbon authored this message. System instructions are always false. }
+    ApplicationScopeReviewContext:
+      type: object
+      required: [scope, critical, in_review]
+      properties:
+        scope: { type: string }
+        description: { type: [string, 'null'] }
+        critical: { type: [boolean, 'null'], description: Null if the scope is no longer published. }
+        in_review: { type: boolean, description: Whether this scope is part of the immutable request decision. }
     ApplicationScopeRequest:
       type: object
       required: [id, app_id, scopes, status, version, created_at, updated_at, messages, can_decide]
@@ -6399,6 +6408,10 @@ components:
         updated_at: { type: string, format: date-time }
         messages: { type: array, items: { $ref: '#/components/schemas/ApplicationScopeMessage' } }
         can_decide: { type: boolean }
+        current_scope_context:
+          type: array
+          description: The caller's current declared scopes for this reviewing provider only, including non-critical scopes. This is not a submission snapshot and does not change the request decision boundary.
+          items: { $ref: '#/components/schemas/ApplicationScopeReviewContext' }
     ApplicationScopeRequestList:
       type: object
       required: [items]
