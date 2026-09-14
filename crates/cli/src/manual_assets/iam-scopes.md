@@ -2,9 +2,11 @@
 
 Applications declare permissions in `app_scope.iam`; discover their exact names,
 descriptions and critical labels with `GET /api/v1/application-scopes`. Every new
-mutation permission is critical and requires review. Some permissions may be
-unavailable to an application; user consent cannot make an unavailable permission
-available.
+production mutation permission is critical and requires review. The isolated-world
+creation permission `organization.testing_environments.create` is non-critical;
+it still requires an explicit application declaration and user consent. Some
+permissions may be unavailable to an application; user consent cannot make an
+unavailable permission available.
 
 Call the API with the application's ordinary, self-audience access token. IAM
 checks its current approved and consented scopes, the user's selected organizations,

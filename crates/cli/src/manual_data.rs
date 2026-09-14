@@ -27,7 +27,7 @@ pub(super) static DOCUMENTS: &[Document] = &[
         topic: "iam-scopes",
         title: "IAM read and mutation permissions",
         source: "docs/IAM_SCOPES.md",
-        source_sha256: "c169fcb3e6a493edb58be2b55eed35c937a7eb8bff8743cd8aa52d5f1c636746",
+        source_sha256: "620f3d5b5c2417b8fac949db5c5430959460f9c297821820cf755d5c91203d92",
         format: "markdown",
         aliases: &["scopes", "permissions"],
         content: include_str!("manual_assets/iam-scopes.md"),
