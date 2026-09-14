@@ -62,7 +62,7 @@ function links(body, source) {
     if (!target.startsWith("/")) {
       const key = decodeURIComponent(parsed.pathname.replace(/^\/docs\//, ""));
       if (bySource.has(key)) parsed.pathname = bySource.get(key);
-      else if (key === "openapi.yaml") parsed.pathname = "/openapi.yaml";
+      else if (["openapi.yaml", "scoped-auth-openapi.yaml"].includes(key)) parsed.pathname = `/${key}`;
       else if (!parsed.pathname.startsWith("/docs/")) return `href="${escape(`https://github.com/teamofsilicons/silicon-iam/blob/main${parsed.pathname}${parsed.hash}`)}"`;
     }
     if (parsed.pathname === "/docs" || parsed.pathname === "/docs/") parsed.pathname = "/";
@@ -99,6 +99,7 @@ for (const page of pages) {
   await writeFile(join(directory, "index.html"), document(page));
 }
 await cp(join(docs, "openapi.yaml"), join(output, "openapi.yaml"));
+await cp(join(docs, "scoped-auth-openapi.yaml"), join(output, "scoped-auth-openapi.yaml"));
 await writeFile(join(output, "robots.txt"), `User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
 await writeFile(join(output, "sitemap.xml"), `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${pages.map((page) => `<url><loc>${origin}${page.route}</loc></url>`).join("")}</urlset>`);
 await writeFile(join(output, "404.html"), document({ route: "/404.html", title: "Page not found", body: '<p>This documentation page does not exist.</p><p><a href="/">Return to documentation home</a></p>' }));
