@@ -172,3 +172,16 @@ web_route_count = File.exist?(WEB_ROUTER) ? extract_routes(WEB_ROUTER).length : 
 puts "OpenAPI and Axum agree on #{expected.length} paths and #{expected_operations.length} " \
   "operations; idempotent success responses expose replay state; " \
   "#{web_route_count} HTML surface routes are correctly outside the contract."
+
+# The scoped adapter uses several paths that also exist on main IAM with
+# deliberately different authentication contracts. Validate its own host-bound
+# document separately instead of merging those operations into main IAM.
+scoped_document = YAML.safe_load(File.read("docs/scoped-auth-openapi.yaml"), aliases: true)
+scoped_expected = scoped_document.fetch("paths").transform_values do |item|
+  HTTP_METHODS.select { |method| item.key?(method) }
+end
+scoped_actual = extract_routes("src/features/applications/scoped_auth.rs")
+unless scoped_expected == scoped_actual
+  raise "Scoped authentication OpenAPI and scoped-only routes disagree"
+end
+puts "Scoped authentication OpenAPI and Axum agree on #{scoped_actual.length} paths."

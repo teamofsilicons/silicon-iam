@@ -3,7 +3,7 @@
 use sqlx::{Postgres, Transaction, types::Json};
 use uuid::Uuid;
 
-use super::{error::ApiError, model::ApplicationAuthorization, security::ApplicationClient};
+use super::{error::ApiError, model::ApplicationAuthorization, security::ApplicationIdentity};
 
 /// The caller has authenticated the token or proof and installed its exact
 /// subject context. A constrained definer helper locks/rechecks that chain;
@@ -16,7 +16,7 @@ pub(super) async fn load(
     subject_id: Uuid,
     organization_id: Uuid,
     membership_id: Uuid,
-    audience: &ApplicationClient,
+    audience: &ApplicationIdentity,
     proof_id: Option<Uuid>,
 ) -> Result<Option<ApplicationAuthorization>, ApiError> {
     sqlx::query_scalar::<_, Option<Json<ApplicationAuthorization>>>(
@@ -53,7 +53,7 @@ pub(super) async fn load_all(
     transaction: &mut Transaction<'_, Postgres>,
     token_id: Uuid,
     subject_id: Uuid,
-    audience: &ApplicationClient,
+    audience: &ApplicationIdentity,
 ) -> Result<Option<Vec<ApplicationAuthorization>>, ApiError> {
     sqlx::query_scalar::<_, Option<Json<Vec<ApplicationAuthorization>>>>(
         "SELECT iam_private.list_current_application_authorizations($1, $2, $3, $4)",

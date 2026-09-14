@@ -189,13 +189,33 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
 
+  scoped-auth-init:
+    build:
+      context: .
+    command: ["iam-scoped-auth-init"]
+    depends_on:
+      grant-runtime-access:
+        condition: service_completed_successfully
+    environment:
+      <<: *telemetry-environment
+      IAM_ENVIRONMENT: development
+      IAM_LOG_FILTER: silicon_iam=info
+      IAM_MIGRATOR_DATABASE_URL: postgres://silicon_iam_migrator:${IAM_LOCAL_MIGRATOR_DATABASE_PASSWORD}@postgres:5432/silicon_iam
+      IAM_MIGRATOR_DATABASE_MAX_CONNECTIONS: 2
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: "no"
+
   scoped-api:
     <<: *runtime-hardening
     build:
       context: .
     command: ["iam-scoped-api"]
     depends_on:
-      grant-runtime-access:
+      scoped-auth-init:
         condition: service_completed_successfully
     environment:
       <<: *runtime-environment

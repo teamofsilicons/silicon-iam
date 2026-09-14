@@ -139,6 +139,15 @@ impl Surface {
 
 async fn serve_surface(settings: Settings, surface: Surface) -> anyhow::Result<()> {
     let pool = postgres::connect(&settings.database, surface.process_name()).await?;
+    if matches!(surface, Surface::Scoped) {
+        let initialized: bool = sqlx::query_scalar(
+            "SELECT COALESCE(has_function_privilege(to_regprocedure('iam_private.resolve_scoped_iam_application()'), 'EXECUTE'), false)",
+        ).fetch_one(&pool).await?;
+        anyhow::ensure!(
+            initialized,
+            "Run iam-scoped-auth-init before starting scoped application authentication"
+        );
+    }
     postgres::register_runtime_key_versions(&pool, &settings.security).await?;
     let bind_addr = settings.server.bind_addr;
     let crypto = CryptoService::from_settings(&settings.security)?;
@@ -320,7 +329,9 @@ fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
             .merge(crate::features::applications::router())
             .merge(crate::features::sso::router())
             .merge(crate::features::testing_environments::data_plane_router()),
-        Surface::Scoped => scoped::router(state.clone()),
+        Surface::Scoped => {
+            scoped::router(state.clone()).merge(crate::features::applications::scoped_auth_router())
+        }
     }
     .layer(middleware::from_fn_with_state(
         state.clone(),

@@ -697,6 +697,10 @@ DECLARE
         'sunset_idle_contract_versions'
     ];
 BEGIN
+    -- Optional scoped-only bootstrap is deliberately outside the shared ledger.
+    IF to_regprocedure('iam_private.resolve_scoped_iam_application()') IS NOT NULL THEN
+        api_function_names := api_function_names || ARRAY['resolve_scoped_iam_application'];
+    END IF;
     IF to_regprocedure('iam_private.current_testing_environment_id()') IS NOT NULL THEN
         api_function_names := api_function_names || ARRAY[
             'register_test_application_selector', 'resolve_test_application_selector',

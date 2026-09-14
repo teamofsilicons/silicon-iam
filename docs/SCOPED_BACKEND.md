@@ -8,10 +8,9 @@ store or issue unrestricted IAM credentials.
 
 ## Application and bundle integration
 
-Register the application through the **main IAM** application-management API or
-frontend. The scoped host itself does not expose application creation or
-administration. The owning organization and application ID are chosen at
-registration; the hosted service does not reserve or automatically register one.
+The hosted scoped service's registered application is **`tos>iam`**. Register
+and manage it through main IAM; the scoped host does not create or administer
+applications. Include `tos>iam` in Interface's `tos>interface` bundle.
 
 Set the application's `base_url` to
 `https://scoped.backend.iam.teamofsilicons.com`, declare the IAM permissions that
@@ -21,12 +20,51 @@ For this application, configure the scoped service's `POST /webhooks/iam`
 receiver as described below and register
 `https://scoped.backend.iam.teamofsilicons.com/webhooks/iam` as its webhook URL.
 
-An organization with bundle configuration available can include that application in its existing bundle.
-The bundle issues the usual separate, single-use SLT for that application.
-Interface's backend exchanges the SLT with the application's client secret at
-**main IAM** `/api/v1/app-auth/tokens`. The resulting ordinary application access
-token authorizes calls to the scoped backend. The app secret and refresh token
-belong in the application's backend session storage.
+The bundle issues a separate, single-use SLT for `tos>iam`. Interface sends it
+to the scoped host's `POST /api/v1/auth/login` as JSON `{ "slt": "oac_..." }`.
+The scoped process resolves its own fixed application identity through IAM's
+trusted database connection and reuses IAM's existing token machinery. **Neither
+Interface nor scoped IAM requires an application client secret for this flow.**
+There is no caller-selected application ID, destination, or secret parameter.
+
+Main IAM remains responsible for the initial Carbon/Silicon login, consent, and
+SLT issuance. Its public `/api/v1/app-auth/tokens`, `/api/v1/oauth/introspect`, and
+`/api/v1/oauth/revoke` contracts still require application Basic authentication.
+The scoped adapter does not weaken those endpoints or mint first-party tokens.
+Other applications keep their existing authentication contracts.
+
+### Scoped application session endpoints
+
+The machine-readable adapter contract is [scoped-auth-openapi.yaml](scoped-auth-openapi.yaml).
+
+| Scoped-only endpoint | Input | Success |
+| --- | --- | --- |
+| `POST /api/v1/auth/login` | JSON `{ "slt": "oac_..." }` | IAM token response with access token, refresh token, expiry, scopes, and actor |
+| `POST /api/v1/auth/refresh` | JSON `{ "refresh_token": "ort_..." }` | Rotated IAM token response |
+| `POST /api/v1/auth/logout` | JSON `{ "refresh_token": "ort_..." }` | `200`, empty body; repeat/unknown/other-app tokens are safe no-ops |
+| `POST /api/v1/auth/introspect` | `Authorization: Bearer oat_...`, optional `X-Org-ID`; no body | Current IAM introspection and authorization snapshot |
+
+Login, refresh, and logout require `Idempotency-Key`. Preserve the same key and
+body after a transport failure; exchange and rotation preserve IAM's encrypted
+replay receipts and refresh-reuse protection. A fresh key cannot redeem a spent
+SLT again. Unknown JSON fields, repeated security headers, query parameters,
+incorrect credential types, and bodies over 4 KiB are rejected. Auth throttling
+is keyed to an HMAC digest of each credential and route, so garbage credentials
+cannot consume one shared login allowance for every user. The adapter is
+production-only: it does not accept testing actor IDs or select a testing plane.
+The separate testing plane remains available on the existing scoped business APIs.
+
+Introspection accepts only an active, ordinary `tos>iam` application token for
+a Carbon or Silicon. Other applications, OBO tokens, first-party sessions, and
+cookies cannot authorize it. It returns only that token's current grants;
+`X-Org-ID` selects an authorized organization and never expands its reach.
+Unavailable or suspended `tos>iam` registration fails closed. Approved scopes,
+consent, current actor/session epochs, selected memberships, and role/capability
+checks remain enforced by IAM's existing revocation-aware machinery.
+
+Keep application access and refresh credentials in the consuming application's
+server session storage. The SolidJS frontend needs only its Interface session.
+The signed webhook receiver below retains its separate webhook keyring.
 
 The application needs critical-scope approval through the usual IAM review
 workflow. Application permission availability still applies;
@@ -113,8 +151,9 @@ All abbreviated organization paths above begin with
 is no `PATCH /api/v1/me`, ownership transfer, Silicon webhook administration,
 application administration, provider webhook, platform admin, or HTML surface.
 
-Login, refresh, SLT exchange, first-party step-up challenges, and the WorkOS
-callback stay on main IAM. A critical operation that requires step-up consumes
+Initial identity login, consent, SLT issuance, first-party step-up challenges,
+and the WorkOS callback stay on main IAM. The scoped session endpoints above
+complete and maintain only the `tos>iam` application login. A critical operation that requires step-up consumes
 `X-Step-Up-Token` from IAM's existing verified-channel flow, bound to the same
 underlying authentication session, action, and resource. IAM's provider callback
 remains `https://backend.iam.teamofsilicons.com/api/v1/sso/callback`; the scoped
@@ -185,6 +224,25 @@ connections; its pool is separate from the main API pool.
 For a native process, use the same IAM environment and override `IAM_BIND_ADDR`
 to an unused address before `cargo run --bin iam-scoped-api`. Keep the canonical
 main IAM backend and authentication URLs for provider callbacks and invitations.
+
+## Scoped authentication bootstrap
+
+Run the one-shot `iam-scoped-auth-init` binary with the existing private
+`IAM_MIGRATOR_DATABASE_URL` before starting the updated scoped service. It applies
+`deploy/scoped/application-identity.sql` to the production database only. The
+scoped process checks that the helper is installed and executable at startup. The idempotent SQL installs one argument-free, fixed-search-path
+resolver for active, verified `tos>iam` in the active `tos` organization. Only
+the existing trusted `silicon_iam_api` database role can execute it; PUBLIC
+execution is revoked. The resolver never returns secret material and cannot
+select another application. The shared OAuth core rechecks current authority
+inside each credential transaction.
+
+This scoped-owned bootstrap deliberately leaves `_sqlx_migrations` unchanged:
+main IAM and worker readiness validate their exact embedded migration ledger.
+No main IAM restart or deployment is required. The runtime grant manifest
+preserves the optional resolver grant when it is installed. Include the bootstrap
+in scoped provisioning after ordinary IAM runtime grants. Rollback the scoped
+binary independently; leaving this narrow helper installed is safe.
 
 ## Production installation
 

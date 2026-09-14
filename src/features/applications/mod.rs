@@ -13,6 +13,7 @@ mod model;
 mod oauth;
 mod obo;
 mod scope_reviews;
+mod scoped_auth;
 mod scopes;
 pub(crate) mod security;
 mod validation;
@@ -20,6 +21,7 @@ mod webhooks;
 
 pub(crate) use applications::{load_detail, webhook_secret_fingerprint};
 pub(crate) use model::ApplicationDetail;
+pub(crate) use scoped_auth::router as scoped_auth_router;
 pub(crate) use scopes::scoped_router;
 
 #[cfg(test)]
