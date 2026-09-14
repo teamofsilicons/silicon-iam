@@ -6,6 +6,9 @@ ARG BUILD_REVISION=unknown
 FROM rust:${RUST_VERSION}-bookworm AS builder
 
 ARG BUILD_REVISION
+# Bound linker concurrency on the ARM release builder.
+ARG CARGO_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 
 WORKDIR /workspace
 
