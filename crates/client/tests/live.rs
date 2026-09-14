@@ -1392,8 +1392,21 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
     assert_eq!(verified.issuer_app_id, created.app_id);
     assert_eq!(
         verified.authorization.scopes,
-        vec![format!("obo:{}:operation", apps[1].application.app_id)]
+        vec![
+            format!("obo:{}:operation", apps[1].application.app_id),
+            "self.identity.read".to_owned(),
+        ]
     );
+    assert!(matches!(
+        verified.authorization.actor_type,
+        Some(models::ApplicationAuthorizationActorType::Carbon)
+    ));
+    assert_eq!(
+        verified.authorization.public_id.as_deref(),
+        Some(handle.as_str())
+    );
+    assert!(verified.authorization.org_role.is_none());
+    assert!(verified.authorization.tags.is_none());
     assert!(
         audience.obo().verify(&verification).await.is_err(),
         "proof is single use"
