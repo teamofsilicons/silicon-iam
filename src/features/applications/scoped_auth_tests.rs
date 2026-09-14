@@ -120,7 +120,7 @@ async fn boundary_rejects_queries_duplicates_basic_auth_and_testing_plane() -> a
 }
 
 #[tokio::test]
-#[ignore = "requires an empty disposable IAM_TEST_DATABASE_URL and synthetic CI IAM settings"]
+#[ignore = "requires Docker or an empty disposable IAM_TEST_DATABASE_URL and synthetic CI IAM settings"]
 async fn scoped_slt_lifecycle_preserves_issuer_and_authorization_boundaries() -> anyhow::Result<()>
 {
     use crate::{
@@ -129,7 +129,31 @@ async fn scoped_slt_lifecycle_preserves_issuer_and_authorization_boundaries() ->
     };
     use sqlx::postgres::PgPoolOptions;
     use std::sync::Arc;
-    let url = std::env::var("IAM_TEST_DATABASE_URL")?;
+    use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
+    use testcontainers_modules::postgres::Postgres as PostgresImage;
+    let native_url = std::env::var("IAM_TEST_DATABASE_URL").ok();
+    let container = if native_url.is_none() {
+        Some(
+            PostgresImage::default()
+                .with_tag("16-alpine")
+                .start()
+                .await?,
+        )
+    } else {
+        None
+    };
+    let url = if let Some(url) = native_url {
+        url
+    } else {
+        let container = container
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("missing disposable database"))?;
+        format!(
+            "postgres://postgres:postgres@{}:{}/postgres",
+            container.get_host().await?,
+            container.get_host_port_ipv4(5432).await?
+        )
+    };
     let admin = PgPoolOptions::new()
         .max_connections(4)
         .connect(&url)
