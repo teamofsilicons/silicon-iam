@@ -31,6 +31,8 @@ pub(crate) mod live_tests;
 #[cfg(test)]
 mod login_history_tests;
 #[cfg(test)]
+mod obo_disclosure_tests;
+#[cfg(test)]
 mod scope_catalog_tests;
 #[cfg(test)]
 mod scope_tests;
