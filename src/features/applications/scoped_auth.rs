@@ -60,16 +60,13 @@ struct Refresh {
 }
 
 async fn request_boundary(request: Request, next: Next) -> Result<Response, ApiError> {
-    // No query token, app selector, destination override, or testing actor-ID
-    // shortcut may turn this fixed production service into a general relay.
+    // No query token, app selector or destination override can turn this fixed
+    // service into a general relay. Testing plane selection occurs separately.
     if request.uri().query().is_some() {
         return Err(ApiError::bad_request(
             "invalid_request",
             "Query parameters are not accepted.",
         ));
-    }
-    if testing_plane::is_active() {
-        return Err(ApiError::forbidden("scoped_auth_production_only"));
     }
     if request.uri().path() != "/api/v1/auth/introspect"
         && request.headers().contains_key(header::AUTHORIZATION)
@@ -95,7 +92,14 @@ async fn login(
     headers: HeaderMap,
     Json(input): Json<Login>,
 ) -> Result<Response, ApiError> {
-    require_credential(&input.slt, "oac_")?;
+    if !testing_plane::is_active() {
+        require_credential(&input.slt, "oac_")?;
+    } else if input.slt.is_empty() || input.slt.len() > 101 {
+        return Err(ApiError::bad_request(
+            "invalid_grant",
+            "The testing actor is invalid.",
+        ));
+    }
     let client = service_identity(&state, "login", &input.slt).await?;
     let form = AppTokenForm {
         app_id: Some(APP_ID.into()),
@@ -238,9 +242,14 @@ async fn service_identity(
         .map_err(|_| ApiError::internal("scoped_auth_context"))?;
     // This private, argument-free database helper discloses only the identity
     // bound to this service. It never reads, decrypts, or returns an app secret.
-    let identity = sqlx::query_as::<_, (uuid::Uuid, String, uuid::Uuid, i64)>(
+    let query = if testing_plane::is_active() {
+        "SELECT application_id, app_id, organization_id, auth_epoch FROM iam_private.resolve_testing_scoped_iam_application()"
+    } else {
         "SELECT application_id, app_id, organization_id, auth_epoch FROM iam_private.resolve_scoped_iam_application()"
-    ).fetch_optional(&mut *tx).await
+    };
+    let identity = sqlx::query_as::<_, (uuid::Uuid, String, uuid::Uuid, i64)>(query)
+        .fetch_optional(&mut *tx)
+        .await
         .map_err(|_| ApiError::internal("scoped_auth_registration"))?
         .ok_or_else(|| ApiError::forbidden("scoped_auth_application_unavailable"))?;
     tx.commit()

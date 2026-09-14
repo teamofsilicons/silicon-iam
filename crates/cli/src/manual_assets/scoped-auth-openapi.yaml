@@ -1,11 +1,13 @@
 openapi: 3.1.0
 info:
   title: Scoped IAM application sessions
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Session adapter for the IAM-owned tos>iam application. No app secret or
     caller-selected app ID is accepted. Main IAM issues the SLT; this scoped
-    adapter reuses the existing IAM token and authorization machinery.
+    adapter reuses the existing IAM token and authorization machinery. With a
+    verified X-Testing-Environment-Key, the fixed imported tos>iam application
+    accepts an existing test actor public ID; no production fallback exists.
 servers:
   - url: https://scoped.backend.iam.teamofsilicons.com
 paths:
@@ -14,6 +16,7 @@ paths:
       operationId: scopedApplicationLogin
       parameters:
         - $ref: './openapi.yaml#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/TestingRoot'
       requestBody:
         required: true
         content:
@@ -23,11 +26,14 @@ paths:
               additionalProperties: false
               required: [slt]
               properties:
-                slt: {type: string, pattern: '^oac_[A-Za-z0-9_-]{43}$'}
+                slt:
+                  type: string
+                  maxLength: 101
+                  description: Real oac_ SLT in production; an existing actor public ID is also accepted only in a verified test world.
       responses:
         '200': {$ref: '#/components/responses/Tokens'}
         '400': {description: Invalid, expired, spent, or other-application SLT}
-        '403': {description: Scoped service registration unavailable or testing plane selected}
+        '403': {description: Scoped service registration unavailable in the selected plane}
         '422': {description: Invalid JSON or Idempotency-Key}
         '429': {description: Authentication request limit reached}
   /api/v1/auth/refresh:
@@ -35,17 +41,19 @@ paths:
       operationId: scopedApplicationRefresh
       parameters:
         - $ref: './openapi.yaml#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/TestingRoot'
       requestBody: {$ref: '#/components/requestBodies/Refresh'}
       responses:
         '200': {$ref: '#/components/responses/Tokens'}
         '400': {description: Invalid, expired, revoked, reused, or other-application refresh token}
-        '403': {description: Scoped service registration unavailable or testing plane selected}
+        '403': {description: Scoped service registration unavailable in the selected plane}
         '422': {description: Invalid JSON or Idempotency-Key}
   /api/v1/auth/logout:
     post:
       operationId: scopedApplicationLogout
       parameters:
         - $ref: './openapi.yaml#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/TestingRoot'
       requestBody: {$ref: '#/components/requestBodies/Refresh'}
       responses:
         '200':
@@ -53,7 +61,7 @@ paths:
           headers:
             Idempotency-Replayed: {schema: {type: string, enum: ['true']}}
         '400': {description: Invalid refresh token format}
-        '403': {description: Scoped service registration unavailable or testing plane selected}
+        '403': {description: Scoped service registration unavailable in the selected plane}
         '422': {description: Invalid JSON or Idempotency-Key}
   /api/v1/auth/introspect:
     post:
@@ -63,6 +71,7 @@ paths:
         Silicon token. X-Org-ID cannot expand its organization grants.
       security: [{scopedBearer: []}]
       parameters:
+        - $ref: '#/components/parameters/TestingRoot'
         - name: X-Org-ID
           in: header
           schema: {type: string}
@@ -74,8 +83,15 @@ paths:
               schema: {$ref: './openapi.yaml#/components/schemas/TokenIntrospection'}
         '400': {description: Body, query parameters, or repeated security headers supplied}
         '401': {description: Missing, malformed, expired, or revoked bearer}
-        '403': {description: Wrong application, first-party or OBO session, unavailable registration, or testing plane}
+        '403': {description: Wrong application, first-party or OBO session, unavailable registration}
 components:
+  parameters:
+    TestingRoot:
+      name: X-Testing-Environment-Key
+      in: header
+      required: false
+      description: Root of the isolated test world; retain for every test request. Production credentials never cross this boundary.
+      schema: {type: string, minLength: 32, maxLength: 32}
   securitySchemes:
     scopedBearer: {type: http, scheme: bearer}
   requestBodies:

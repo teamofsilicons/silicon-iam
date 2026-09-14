@@ -343,7 +343,9 @@ fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
             .layer(middleware::from_fn(
                 crate::features::testing_environments::reject_application_selector,
             )),
-        Surface::Scoped => scoped_webhook::router()?,
+        Surface::Scoped => {
+            scoped_webhook::router()?.merge(scoped::control_plane_router(state.clone()))
+        }
     };
     let web = match surface {
         Surface::Full => crate::web::router(),

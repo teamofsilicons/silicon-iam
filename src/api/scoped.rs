@@ -25,6 +25,12 @@ pub(crate) fn router(state: ApiState) -> Router<ApiState> {
         .route_layer(middleware::from_fn_with_state(state, require_application))
 }
 
+/// Production control operations stay outside testing database selection.
+pub(crate) fn control_plane_router(state: ApiState) -> Router<ApiState> {
+    crate::features::testing_environments::scoped_router()
+        .route_layer(middleware::from_fn_with_state(state, require_application))
+}
+
 async fn require_application(
     Authenticated(access): Authenticated,
     mut request: Request,

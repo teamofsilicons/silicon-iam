@@ -23,6 +23,7 @@ mod key;
 mod manager;
 mod model;
 mod scope_policy;
+mod scoped;
 mod support;
 mod validation;
 
@@ -30,12 +31,15 @@ mod validation;
 mod live_tests;
 #[cfg(test)]
 mod scope_policy_tests;
+#[cfg(test)]
+mod scoped_tests;
 
 pub(crate) use graph::{
     obo_context, record_rotated_application_secret, touch_application_activity,
 };
 
 pub(crate) use key::{ENVIRONMENT_KEY_HEADER, select_plane};
+pub(crate) use scoped::router as scoped_router;
 
 use axum::{
     Router,

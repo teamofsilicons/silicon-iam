@@ -19,6 +19,7 @@ behavior.
 | `organizations.join` | Send an invitation verification code, accept the verified invitation, or start SSO admission |
 | `organization.profile.update` | Update organization name, logo and description |
 | `organization.invitations.create` / `.revoke` | Issue or revoke Carbon invitations |
+| `organization.testing_environments.create` | Non-critical: create an isolated test world for the selected organization and receive its root for test bootstrap/import/data management; active Carbon members only |
 | `organization.silicons.create` / `.update` / `.remove` | Create Silicons, edit their profile/reporting relationships, or remove them |
 | `organization.carbons.remove` | Remove a Carbon membership |
 | `organization.tags.create` / `.update` / `.delete` | Manage tag definitions |

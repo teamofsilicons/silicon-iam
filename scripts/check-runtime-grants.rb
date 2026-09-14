@@ -16,6 +16,7 @@ EXCLUDED_TEST_PATHS = %w[
   src/features/applications/login_history_tests.rs
   src/features/organizations/scoped_tests.rs
   src/features/testing_environments/scope_policy_tests.rs
+  src/features/testing_environments/scoped_tests.rs
   src/features/applications/scope_tests.rs
   src/features/applications/scope_catalog_tests.rs
   src/features/applications/scoped_auth_tests.rs

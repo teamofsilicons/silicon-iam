@@ -50,9 +50,9 @@ replay receipts and refresh-reuse protection. A fresh key cannot redeem a spent
 SLT again. Unknown JSON fields, repeated security headers, query parameters,
 incorrect credential types, and bodies over 4 KiB are rejected. Auth throttling
 is keyed to an HMAC digest of each credential and route, so garbage credentials
-cannot consume one shared login allowance for every user. The adapter is
-production-only: it does not accept testing actor IDs or select a testing plane.
-The separate testing plane remains available on the existing scoped business APIs.
+cannot consume one shared login allowance for every user. Production login accepts
+only a real issued SLT. In a verified testing plane, the same adapter accepts an
+existing test Carbon/Silicon public ID through IAM’s existing testing login core.
 
 Introspection accepts only an active, ordinary `tos>iam` application token for
 a Carbon or Silicon. Other applications, OBO tokens, first-party sessions, and
@@ -93,8 +93,56 @@ Public operational routes are `/healthz`, `/readyz`, `/api/version`,
 data. The backend retains normal version negotiation, CORS, size limits,
 timeouts, admission control, structured errors, sensitive-header redaction,
 request IDs, and no-store responses. Testing-environment credentials select the
-same isolated testing data plane before authentication, but testing-environment
-administration is available only through main IAM.
+same isolated testing data plane before authentication. The explicit delegated
+creation operation below runs only on the production control plane; other
+testing-environment administration remains available through main IAM.
+
+## Delegated testing-environment creation
+
+`POST /api/v1/organizations/{org_id}/testing-environments` accepts JSON
+`{ "name": "Interface testing", "description": "Optional description" }` and
+requires an ordinary application **Carbon** bearer with the exact non-critical
+`organization.testing_environments.create` scope. Declare this permission in the
+application's `app_scope.iam` and obtain fresh user consent. The migration defines
+its availability and classification; it does not grant it to any application.
+
+The represented Carbon must remain an active member of the selected organization.
+`X-Org-ID`, when supplied, must match the path. App approval, live consent, session,
+actor epochs and selected membership are rechecked under transaction locks before
+creation or idempotent receipt recovery. Another organization, app or login session
+cannot recover that receipt. `Idempotency-Key` is required; identical retries return
+the same encrypted receipt, while a changed payload conflicts. Concurrent creation
+observes the organization's existing testing quota.
+
+The `201` response is the existing flat `EnvironmentWithKey` object: environment
+fields including `id`, `org_id`, `name`, `created_by_membership_id`, `version`,
+`key_generation`, timestamps and **`key`**, the 32-character environment root.
+This permission explicitly delegates creation and possession of the new test-world
+root, including its existing bootstrap/import/test-data authority. It confers no
+production identity or access management. Keep the root and test credentials in
+the application gateway's server session. Responses are never cacheable. A root or
+application testing selector on this production mutation is rejected.
+
+### Bootstrap and use the isolated world
+
+Use the returned root as `X-Testing-Environment-Key` on main IAM's existing testing
+signup, organization creation and application import routes. These create test
+identities and import application configuration; they do not copy production users
+or production app secrets. Import `tos>iam` before using scoped application login.
+Then call scoped `POST /api/v1/auth/login` with `{ "slt": "<test Carbon public ID>" }`
+and the same root header. IAM creates an ordinary revocable test application
+session for that existing actor. Real issued test SLTs are also supported.
+
+Keep the root header on **every** scoped test login, refresh, logout, introspection
+and business request. Resolution is fixed to the verified, active imported
+`tos>iam` record in that selected world and its current import policy. A missing
+import, another world or a production credential cannot trigger a production
+fallback. Production calls without a root continue to require real SLTs and
+production application sessions. No production app client secret is needed.
+
+Deploy the matching main and scoped images plus base migration `0092` and testing
+overlay `9007` together so registration, consent and readiness use the same native
+catalog and migration ledger. Preserve the existing database credentials/keyrings.
 
 ## Signed application webhook receiver
 

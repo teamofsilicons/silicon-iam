@@ -82,7 +82,7 @@ fn introspection_requires_the_same_ordinary_application_and_actor() {
 }
 
 #[tokio::test]
-async fn boundary_rejects_queries_duplicates_basic_auth_and_testing_plane() -> anyhow::Result<()> {
+async fn boundary_rejects_queries_duplicates_and_basic_auth() -> anyhow::Result<()> {
     let app = Router::new()
         .route(
             "/api/v1/auth/login",
@@ -115,7 +115,7 @@ async fn boundary_rejects_queries_duplicates_basic_auth_and_testing_plane() -> a
         app.oneshot(Request::post("/api/v1/auth/login").body(Body::empty())?),
     )
     .await?;
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
     Ok(())
 }
 
