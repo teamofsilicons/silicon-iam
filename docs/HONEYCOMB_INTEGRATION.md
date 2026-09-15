@@ -34,6 +34,9 @@ Configure the IAM API:
 - `IAM_HONEYCOMB_APP_ID`: the Honeycomb authentication app ID.
 - `IAM_HONEYCOMB_CREDENTIAL_SHA256`: lowercase SHA-256 hex of the complete random
   `hck_` credential. Only Honeycomb stores the plaintext service credential.
+- `IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS`: default `false`; set `true` only after
+  Honeycomb adoption and replacement management flows are ready. Service API
+  credentials can be provisioned while legacy writers remain available.
 - `IAM_HONEYCOMB_SCHEDULED_TESTING`: default `false`; explicitly enable to allow
   service-authored maintenance on environments already assigned to Honeycomb.
 
@@ -180,10 +183,12 @@ appear behind a cursor. Use notifications plus periodic full inventory/current
 record reconciliation, including after a disconnected period.
 
 Roll out databases and IAM first, then provision the API integration and worker
-subscription when Honeycomb's adapter is ready. Provisioning the API integration
-retires legacy production app/bundle/review/test lifecycle writers with
+subscription when Honeycomb's adapter is ready. Enabling
+`IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS=true` retires legacy production
+app/bundle/review/test lifecycle writers with
 `410 management_moved_to_honeycomb`; IAM's identity, login and runtime APIs stay
-available. The console directs users to Honeycomb for the moved management surfaces.
+available. The new console directs users to Honeycomb for the moved management surfaces;
+retain the existing frontend until those replacement flows are ready.
 
 Enumerate existing records, preserve IDs and read current revisions. Existing
 apps retain visibility `public`, IDs, credentials and accepted scopes. Existing

@@ -247,9 +247,8 @@ Environments deliver no email or SMS, and their verification steps accept the
 fixed code `000000`. Test webhooks are delivered in an explicit `test` envelope
 that carries the environment key and nests the ordinary metadata and data.
 Receivers must verify the signature over the exact outer bytes and redact that
-root key. The worker also erases an environment whose recovery window has
-closed. Environments idle for `IAM_TESTING_IDLE_DAYS` are retired automatically,
-stay recoverable for `IAM_TESTING_RECOVERY_DAYS`, and are then destroyed.
+root key. Honeycomb coordinates retention, cleaning and purging through explicit
+lifecycle instructions; IAM no longer independently retires idle environments.
 
 `docs/API_DOCS.md` documents the lifecycle and authority model in full.
 

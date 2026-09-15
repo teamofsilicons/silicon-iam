@@ -258,14 +258,18 @@ async fn operation(
     Ok(Json(value.0))
 }
 
-/// Compatibility boundary enabled after the dedicated integration is provisioned.
+/// Explicit writer cutover, independent of provisioned service API credentials.
 pub(crate) async fn legacy_writer_guard(
     State(state): State<ApiState>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::response::IntoResponse as _;
-    if state.settings.honeycomb.is_some()
+    if state
+        .settings
+        .honeycomb
+        .as_ref()
+        .is_some_and(|settings| settings.retire_legacy_writers)
         && request.method() == axum::http::Method::POST
         && request
             .extensions()
@@ -274,7 +278,11 @@ pub(crate) async fn legacy_writer_guard(
     {
         return ApiError::management_moved().into_response();
     }
-    if state.settings.honeycomb.is_some()
+    if state
+        .settings
+        .honeycomb
+        .as_ref()
+        .is_some_and(|settings| settings.retire_legacy_writers)
         && !testing_plane::is_active()
         && !matches!(
             *request.method(),

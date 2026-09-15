@@ -63,6 +63,8 @@ pub struct HoneycombSettings {
     pub credential_sha256: SecretString,
     /// Explicit permission for actorless scheduled test lifecycle instructions.
     pub scheduled_testing: bool,
+    /// Disable legacy management writers only after Honeycomb adoption is complete.
+    pub retire_legacy_writers: bool,
 }
 
 /// Dedicated management subscription; never uses an application's webhook key.
@@ -450,6 +452,7 @@ fn honeycomb_settings() -> Result<Option<HoneycombSettings>, SettingsError> {
         app_id,
         credential_sha256: SecretString::from(digest),
         scheduled_testing: parse_or("IAM_HONEYCOMB_SCHEDULED_TESTING", "false")?,
+        retire_legacy_writers: parse_or("IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS", "false")?,
     }))
 }
 

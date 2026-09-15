@@ -21,7 +21,7 @@ Neither architecture document was edited by this implementation.
   current key versions, cleaning generations and isolated test-data fences.
 - [x] Adoption of existing identities/environments, protected bootstrap output,
   fresh and upgraded test database isolation and retirement of legacy writers
-  when the dedicated integration is provisioned.
+  when the explicit writer-cutover flag is enabled.
 - [x] Removal of independent testing retirement and runtime library/CLI updating.
 - [x] Stateless Rust management client, generated OpenAPI types, CLI/console
   ownership guidance, offline documentation and deterministic six-target

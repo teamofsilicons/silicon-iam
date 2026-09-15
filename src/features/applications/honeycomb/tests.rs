@@ -72,6 +72,7 @@ async fn management_is_authenticated_revision_bound_and_durably_replayable() -> 
         app_id: "test_org>app-alpha".into(),
         credential_sha256: hex::encode(Sha256::digest(service_secret.as_bytes())).into(),
         scheduled_testing: false,
+        retire_legacy_writers: false,
     });
     let crypto = Arc::new(CryptoService::from_settings(&settings.security)?);
     let actor = crypto.generate_secret(SecretKind::ApplicationAccessToken)?;
@@ -128,6 +129,40 @@ async fn management_is_authenticated_revision_bound_and_durably_replayable() -> 
         }),
         settings: Arc::new(settings),
     };
+    for retired in [false, true] {
+        let mut cutover_state = state.clone();
+        Arc::make_mut(&mut cutover_state.settings)
+            .honeycomb
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("integration settings"))?
+            .retire_legacy_writers = retired;
+        let legacy = axum::Router::new()
+            .route(
+                "/api/v1/applications",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route_layer(axum::middleware::from_fn_with_state(
+                cutover_state,
+                super::legacy_writer_guard,
+            ));
+        let response = legacy
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/applications")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        ensure!(
+            response.status()
+                == if retired {
+                    StatusCode::GONE
+                } else {
+                    StatusCode::OK
+                },
+            "service provisioning must not implicitly cut over legacy writers"
+        );
+    }
     let app = super::router().with_state(state.clone());
     let id = Uuid::now_v7();
     let configuration = json!({"operation_id":id,"expected_iam_revision":0,"configuration_revision":1,"environment_id":null,
