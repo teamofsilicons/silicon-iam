@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_lines)]
 
-use std::{num::NonZeroU32, time::Duration};
+use std::{num::NonZeroU32, ops::Deref, time::Duration};
 
 use axum::{
     extract::FromRequestParts,
@@ -42,12 +42,19 @@ pub(super) struct BrowserSession {
     pub(super) csrf_token: String,
 }
 
-#[derive(Debug)]
-pub(crate) struct ApplicationClient {
+/// App identity admitted by a trusted authentication boundary. It carries no
+/// credential and cannot authenticate an external request by itself.
+#[derive(Clone, Debug)]
+pub(crate) struct ApplicationIdentity {
     pub(crate) application_id: Uuid,
     pub(crate) app_id: String,
     pub(crate) organization_id: Uuid,
     pub(crate) auth_epoch: i64,
+}
+
+#[derive(Debug)]
+pub(crate) struct ApplicationClient {
+    pub(crate) identity: ApplicationIdentity,
     pub(crate) authenticated_secret: SecretString,
 }
 
@@ -84,6 +91,14 @@ impl FromRequestParts<ApiState> for DirectoryCaller {
                 .await
                 .map(|bearer| Self::User(bearer.0))
         }
+    }
+}
+
+impl Deref for ApplicationClient {
+    type Target = ApplicationIdentity;
+
+    fn deref(&self) -> &Self::Target {
+        &self.identity
     }
 }
 
@@ -378,10 +393,12 @@ impl FromRequestParts<ApiState> for ApplicationClient {
             )
             .await;
             return Ok(Self {
-                application_id,
-                app_id,
-                organization_id,
-                auth_epoch,
+                identity: ApplicationIdentity {
+                    application_id,
+                    app_id,
+                    organization_id,
+                    auth_epoch,
+                },
                 authenticated_secret: supplied,
             });
         }
@@ -393,7 +410,7 @@ impl FromRequestParts<ApiState> for ApplicationClient {
     }
 }
 
-async fn enforce_request_rate_limit(
+pub(super) async fn enforce_request_rate_limit(
     state: &ApiState,
     name: &'static str,
     scope: SecretString,

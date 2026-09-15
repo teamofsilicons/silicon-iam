@@ -546,6 +546,11 @@ Resources:
                 "IAM_IRIS_BASE_URL=" + .IAM_IRIS_BASE_URL,
                 "IAM_TELEMETRY_KEY=" + (.IAM_TELEMETRY_KEY // "") ] | .[]
             ' >> /etc/silicon-iam/api.env
+            printf '%s' "$APP_SECRET_JSON" | jq -r '
+              to_entries[] | select(.key == "IAM_HONEYCOMB_APP_ID" or .key == "IAM_HONEYCOMB_CREDENTIAL_SHA256" or
+                .key == "IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS" or .key == "IAM_HONEYCOMB_SCHEDULED_TESTING") |
+              .key + "=" + (.value | tostring)
+            ' >> /etc/silicon-iam/api.env
 
             cat > /etc/silicon-iam/worker.env <<EOF
             IAM_ENVIRONMENT=production
@@ -573,6 +578,10 @@ Resources:
                 "IAM_TWILIO_MESSAGING_SERVICE_SID=" + .IAM_TWILIO_MESSAGING_SERVICE_SID,
                 "IAM_IRIS_BASE_URL=" + .IAM_IRIS_BASE_URL,
                 "IAM_TELEMETRY_KEY=" + (.IAM_TELEMETRY_KEY // "") ] | .[]
+            ' >> /etc/silicon-iam/worker.env
+            printf '%s' "$APP_SECRET_JSON" | jq -r '
+              to_entries[] | select(.key == "IAM_HONEYCOMB_APP_ID" or .key == "IAM_HONEYCOMB_NOTIFICATION_URL" or
+                .key == "IAM_HONEYCOMB_NOTIFICATION_SIGNING_KEY") | .key + "=" + (.value | tostring)
             ' >> /etc/silicon-iam/worker.env
             chmod 0600 /etc/silicon-iam/api.env /etc/silicon-iam/worker.env
 

@@ -35,7 +35,9 @@ use super::{
         AppTokenForm, IntrospectionResponse, LoginQuery, LoginStatusQuery, PublicActor,
         ShortLivedTokenRequest, ShortLivedTokenResponse, TokenInput, TokenResponse,
     },
-    security::{ApplicationClient, Bearer, BrowserSession, MaybeBrowserSession},
+    security::{
+        ApplicationClient, ApplicationIdentity, Bearer, BrowserSession, MaybeBrowserSession,
+    },
     validation,
 };
 
@@ -885,6 +887,16 @@ pub(super) async fn app_tokens(
     headers: HeaderMap,
     Form(form): Form<AppTokenForm>,
 ) -> Result<Response, ApiError> {
+    tokens_for_application(state, client.identity, headers, form).await
+}
+
+/// Shared protocol machinery; caller identity must already be authenticated.
+pub(super) async fn tokens_for_application(
+    state: ApiState,
+    client: ApplicationIdentity,
+    headers: HeaderMap,
+    form: AppTokenForm,
+) -> Result<Response, ApiError> {
     if form.app_id.as_deref() != Some(client.app_id.as_str()) {
         return Err(ApiError::invalid_client());
     }
@@ -988,6 +1000,16 @@ pub(super) async fn introspect(
     client: ApplicationClient,
     headers: HeaderMap,
     Form(input): Form<TokenInput>,
+) -> Result<Json<IntrospectionResponse>, ApiError> {
+    introspect_for_application(state, client.identity, headers, input).await
+}
+
+/// Shared protocol machinery; caller identity must already be authenticated.
+pub(super) async fn introspect_for_application(
+    state: ApiState,
+    client: ApplicationIdentity,
+    headers: HeaderMap,
+    input: TokenInput,
 ) -> Result<Json<IntrospectionResponse>, ApiError> {
     validate_token_type_hint(input.token_type_hint.as_deref())?;
     if input.token.starts_with("ort_") {
@@ -1218,7 +1240,7 @@ pub(super) async fn introspect(
 
 async fn introspect_refresh_token(
     state: &ApiState,
-    client: &ApplicationClient,
+    client: &ApplicationIdentity,
     headers: &HeaderMap,
     raw_token: &str,
 ) -> Result<Json<IntrospectionResponse>, ApiError> {
@@ -1383,6 +1405,16 @@ pub(super) async fn revoke(
     headers: HeaderMap,
     Form(input): Form<TokenInput>,
 ) -> Result<Response, ApiError> {
+    revoke_for_application(state, client.identity, headers, input).await
+}
+
+/// Shared protocol machinery; caller identity must already be authenticated.
+pub(super) async fn revoke_for_application(
+    state: ApiState,
+    client: ApplicationIdentity,
+    headers: HeaderMap,
+    input: TokenInput,
+) -> Result<Response, ApiError> {
     validate_token_type_hint(input.token_type_hint.as_deref())?;
     if input.token.len() > 4_096 || input.token.len() < 32 {
         return Err(ApiError::bad_request(
@@ -1483,7 +1515,7 @@ struct TestingLoginActor {
 async fn exchange_testing_actor(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    client: &ApplicationClient,
+    client: &ApplicationIdentity,
     actor_id: &str,
 ) -> Result<TokenResponse, ApiError> {
     // The SQL implementation exists only in the testing database. The
@@ -1550,7 +1582,7 @@ async fn exchange_testing_actor(
 async fn exchange_authorization_code(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    client: &ApplicationClient,
+    client: &ApplicationIdentity,
     form: &AppTokenForm,
 ) -> Result<TokenResponse, ApiError> {
     let code = form
@@ -1671,7 +1703,7 @@ async fn exchange_authorization_code(
 
 async fn lock_current_application_client(
     transaction: &mut Transaction<'_, Postgres>,
-    client: &ApplicationClient,
+    client: &ApplicationIdentity,
 ) -> Result<bool, ApiError> {
     // A scalar function always answers with a row, so the absence of a match
     // arrives as NULL rather than as no row at all.
@@ -1711,7 +1743,7 @@ async fn lock_current_application_oauth_subject_authority(
 async fn exchange_refresh_token(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    client: &ApplicationClient,
+    client: &ApplicationIdentity,
     form: &AppTokenForm,
 ) -> Result<RefreshExchange, ApiError> {
     let raw = form
@@ -1943,7 +1975,7 @@ struct TokenSubject {
 async fn issue_tokens(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    client: &ApplicationClient,
+    client: &ApplicationIdentity,
     subject: TokenSubject,
     scopes: &[String],
     existing_family_id: Option<Uuid>,
@@ -2368,7 +2400,7 @@ async fn refresh_family_scopes(
 async fn revoke_access_token(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    client: &ApplicationClient,
+    client: &ApplicationIdentity,
     supplied: &SecretString,
 ) -> Result<Option<Uuid>, ApiError> {
     let digests = state
@@ -2408,7 +2440,7 @@ async fn revoke_access_token(
 async fn revoke_refresh_family(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    client: &ApplicationClient,
+    client: &ApplicationIdentity,
     supplied: &SecretString,
 ) -> Result<Option<Uuid>, ApiError> {
     let digests = state
@@ -2527,7 +2559,7 @@ async fn compromise_refresh_family(
 
 async fn protocol_event(
     transaction: &mut Transaction<'_, Postgres>,
-    client: &ApplicationClient,
+    client: &ApplicationIdentity,
     action: &'static str,
     target_type: &'static str,
     target_id: Uuid,

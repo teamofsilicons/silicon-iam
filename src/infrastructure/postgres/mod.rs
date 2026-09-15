@@ -22,6 +22,8 @@ pub mod tokens;
 #[cfg(test)]
 mod key_rotation_tests;
 #[cfg(test)]
+mod membership_planning_tests;
+#[cfg(test)]
 mod readiness_tests;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");

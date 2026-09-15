@@ -510,6 +510,7 @@ DECLARE
     matched_function_count integer;
     function_record record;
     api_function_names text[] := ARRAY[
+        'authorize_scoped_testing_environment_creation',
         'create_testing_actor_login',
         'discover_application_obo_endpoints',
         'resolve_application_obo_memberships',
@@ -739,13 +740,16 @@ DECLARE
         'sunset_idle_contract_versions'
     ];
 BEGIN
+    -- Optional scoped-only bootstrap is deliberately outside the shared ledger.
+    IF to_regprocedure('iam_private.resolve_scoped_iam_application()') IS NOT NULL THEN
+        api_function_names := api_function_names || ARRAY['resolve_scoped_iam_application'];
+    END IF;
     IF to_regprocedure('iam_private.current_testing_environment_id()') IS NOT NULL THEN
         non_api_definer_names := non_api_definer_names || ARRAY['stamp_testing_outbox_generation'];
         api_function_names := api_function_names || ARRAY[
-            'register_test_application_selector',
-        'set_testing_runtime_state',
-        'lock_testing_runtime_state', 'resolve_test_application_selector',
-            'test_application_selector_backfill'
+            'register_test_application_selector', 'resolve_test_application_selector',
+            'set_testing_runtime_state', 'lock_testing_runtime_state',
+            'test_application_selector_backfill', 'resolve_testing_scoped_iam_application'
         ];
     END IF;
     FOREACH allowed_function_name IN ARRAY api_function_names

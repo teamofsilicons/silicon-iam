@@ -2,9 +2,11 @@
 
 Applications declare permissions in `app_scope.iam`; discover their exact names,
 descriptions and critical labels with `GET /api/v1/application-scopes`. Every new
-mutation permission is critical and requires review. Some permissions may be
-unavailable to an application; user consent cannot make an unavailable permission
-available.
+production mutation permission is critical and requires review. The isolated-world
+creation permission `organization.testing_environments.create` is non-critical;
+it still requires an explicit application declaration and user consent. Some
+permissions may be unavailable to an application; user consent cannot make an
+unavailable permission available.
 
 Call the API with the application's ordinary, self-audience access token. IAM
 checks its current approved and consented scopes, the user's selected organizations,
@@ -19,6 +21,7 @@ behavior.
 | `organizations.join` | Send an invitation verification code, accept the verified invitation, or start SSO admission |
 | `organization.profile.update` | Update organization name, logo and description |
 | `organization.invitations.create` / `.revoke` | Issue or revoke Carbon invitations |
+| `organization.testing_environments.create` | Non-critical: create an isolated test world for the selected organization and receive its root for test bootstrap/import/data management; active Carbon members only |
 | `organization.silicons.create` / `.update` / `.remove` | Create Silicons, edit their profile/reporting relationships, or remove them |
 | `organization.carbons.remove` | Remove a Carbon membership |
 | `organization.tags.create` / `.update` / `.delete` | Manage tag definitions |

@@ -1155,3 +1155,6 @@ RETURNS uuid LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog
 $$;
 REVOKE ALL ON FUNCTION iam_private.testing_import_webhook_endpoint(uuid,bytea) FROM PUBLIC;
 DO $$ BEGIN IF to_regrole('silicon_iam_api') IS NOT NULL THEN GRANT EXECUTE ON FUNCTION iam_private.testing_import_webhook_endpoint(uuid,bytea) TO silicon_iam_api; END IF; END $$;
+
+-- Preserve the deployed point-lookup planner bound after replacing its body.
+ALTER FUNCTION iam_private.application_token_allows_membership(uuid,uuid) SET join_collapse_limit=1;

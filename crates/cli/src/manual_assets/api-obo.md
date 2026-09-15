@@ -70,6 +70,10 @@ The exchange is idempotent: retry its exact payload with the original key after 
 
 Verification rechecks the user, active membership, parent session, calling and receiving applications, endpoint configuration, current scope approvals, consent, and authorization epochs. Its response includes actor, selected `org_id`, endpoint, metadata, expiry, consumption time, and `authorization`. Optional role and tag information remains scope-filtered; an undisclosed value grants no default authority. The proof authorizes only its registered endpoint and exact request. The recipient still decides whether that user may act on the requested resource.
 
+The delegated `authorization.scopes` contains the exact `obo:{recipient_app_id}:{endpoint_id}` scope, plus only `self.identity.read`, `self.membership.read` and `self.tags.read` when each remains present in the parent access token, that token's exact current session-bound consent, and both applications' current approved scopes. No unrelated IAM or external scope is forwarded. The exact consent row remains locked through proof consumption so concurrent re-consent cannot preserve removed disclosures.
+
+`self.identity.read` permits the nested authorization's `actor_type` and `public_id`; otherwise those optional fields are omitted. The top-level verified `actor` remains the proof's represented identity. `self.membership.read` permits `org_role`, and `self.tags.read` permits `tags`. Undisclosed role/tags are `null`; a disclosed membership with no active tags returns `[]`. These disclosures describe the subject for the exact verified request and grant no additional operation authority.
+
 ## Publishing endpoints
 
 ```

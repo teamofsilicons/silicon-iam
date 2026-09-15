@@ -100,7 +100,10 @@ let proof = caller.obo()
   <code>verified.authorization</code> binds the represented actor to the current
   membership ID/version, authorization epoch, organization, audience and testing
   environment. Its role/tag disclosure is limited to the intersection of the
-  parent token's scopes and the recipient's currently approved scopes:
+  parent token's scopes, its exact current session-bound consent, and both
+  applications' currently approved scopes. Only these self disclosures and the
+  exact delegated endpoint scope appear in the nested scope list:
+  <code>self.identity.read</code> includes nested actor type/public ID,
   <code>self.membership.read</code> reveals <code>org_role</code> and
   <code>self.tags.read</code> reveals <code>tags</code>. Null means undisclosed,
   not baseline member or empty tags. Apply your application's authorization
