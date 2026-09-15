@@ -605,6 +605,11 @@
           },
           {
             "SingleHeader": {
+              "Name": "x-honeycomb-actor-token"
+            }
+          },
+          {
+            "SingleHeader": {
               "Name": "x-step-up-token"
             }
           },
