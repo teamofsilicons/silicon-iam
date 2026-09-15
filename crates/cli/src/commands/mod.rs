@@ -34,7 +34,7 @@ pub async fn dispatch(context: &Context, command: Command) -> Result<()> {
         Command::Report { message, pr } => {
             discovery::report(context.format, &message, pr.as_deref())
         }
-        Command::Daemon(command) => crate::daemon::run(&command, context.format).await,
+        Command::Daemon(command) => crate::daemon::run(&command, context.format),
         Command::Login(args) => auth::login(context, args).await,
         Command::BatchLogin(args) => auth::batch_login(context, args).await,
         Command::SiliconLogin(args) => auth::silicon_login(context, args).await,

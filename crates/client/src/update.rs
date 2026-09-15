@@ -7,9 +7,7 @@
 //! hour per client and its clones. No idle background timer or daemon runs.
 
 use std::{
-    ffi::OsString,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     time::Duration,
 };
 
@@ -28,24 +26,18 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 /// Whether a package should maintain itself from crates.io.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum UpdatePolicy {
-    /// Check crates.io and apply a newer stable release when one exists.
-    #[default]
+    /// Legacy setting, retained for source compatibility; runtime updates are disabled.
     Automatic,
     /// Do not contact crates.io or invoke Cargo.
+    #[default]
     Disabled,
 }
 
 impl UpdatePolicy {
-    /// Resolves the client policy from `SILICON_IAM_CLIENT_AUTO_UPDATE`.
-    ///
-    /// `0`, `false`, `no`, and `off` disable updates. Missing or unrecognized
-    /// values retain automatic updates.
+    /// Runtime dependency maintenance is always disabled.
     #[must_use]
     pub fn from_environment() -> Self {
-        match std::env::var("SILICON_IAM_CLIENT_AUTO_UPDATE") {
-            Ok(value) if is_false(&value) => Self::Disabled,
-            _ => Self::Automatic,
-        }
+        Self::Disabled
     }
 }
 
@@ -98,6 +90,11 @@ pub enum UpdateStatus {
 /// An update check or Cargo operation failed.
 #[derive(Debug, thiserror::Error)]
 pub enum UpdateError {
+    /// Dependency versions belong to the consuming project; CLI releases belong to Honeycomb.
+    #[error(
+        "Runtime updates are disabled. Update Rust dependencies through your project, or run honeycomb update <configured-iam-app-id> for the CLI."
+    )]
+    ManagedExternally,
     /// The crates.io endpoint could not be represented as a URL.
     #[error("invalid crates.io URL: {0}")]
     Url(#[from] url::ParseError),
@@ -167,87 +164,29 @@ pub async fn check(package: &str, current: &str) -> Result<Release, UpdateError>
 /// Returns an error when Cargo cannot run or rejects the update, including
 /// when the manifest pins an incompatible exact version.
 pub fn update_dependency(
-    manifest: &Path,
-    package: &str,
-    version: &Version,
+    _manifest: &Path,
+    _package: &str,
+    _version: &Version,
 ) -> Result<(), UpdateError> {
-    let Some(project) = manifest.parent() else {
-        return Err(UpdateError::InvalidManifest(manifest.to_path_buf()));
-    };
-    let status = Command::new(cargo_program())
-        .current_dir(project)
-        // A library must not inject Cargo progress into its host process's
-        // stdout/stderr, and a registry outage must not retry for minutes
-        // after the caller's actual IAM request has already finished.
-        .env("CARGO_HTTP_TIMEOUT", "10")
-        .env("CARGO_NET_RETRY", "0")
-        .arg("update")
-        .arg("--manifest-path")
-        .arg(manifest)
-        .arg("-p")
-        .arg(package)
-        .arg("--precise")
-        .arg(version.to_string())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(UpdateError::CargoFailed {
-            package: package.to_owned(),
-            version: version.clone(),
-        })
-    }
+    Err(UpdateError::ManagedExternally)
 }
 
-/// Installs an exact binary crate release through Cargo.
-///
+/// Compatibility entry point. Use Honeycomb to install CLI releases.
 /// # Errors
-///
-/// Returns an error when Cargo cannot run or the installation fails.
-pub fn install_binary(package: &str, version: &Version) -> Result<(), UpdateError> {
-    install_binary_command(package, version, None)
+/// Always returns [`UpdateError::ManagedExternally`].
+pub fn install_binary(_package: &str, _version: &Version) -> Result<(), UpdateError> {
+    Err(UpdateError::ManagedExternally)
 }
 
-/// Install a binary into a specific Cargo root, keeping custom installations updated.
-///
+/// Compatibility entry point. Use Honeycomb to install CLI releases.
 /// # Errors
-/// Returns an error when Cargo cannot run or the installation fails.
-pub fn install_binary_in(package: &str, version: &Version, root: &Path) -> Result<(), UpdateError> {
-    install_binary_command(package, version, Some(root))
-}
-
-fn install_binary_command(
-    package: &str,
-    version: &Version,
-    root: Option<&Path>,
+/// Always returns [`UpdateError::ManagedExternally`].
+pub fn install_binary_in(
+    _package: &str,
+    _version: &Version,
+    _root: &Path,
 ) -> Result<(), UpdateError> {
-    let mut command = Command::new(cargo_program());
-    if let Some(root) = root {
-        command.arg("install").arg("--root").arg(root);
-    } else {
-        command.arg("install");
-    }
-    let status = command
-        .arg(package)
-        .arg("--version")
-        .arg(format!("={version}"))
-        .arg("--locked")
-        .arg("--force")
-        // Maintenance cannot consume the caller's input or append Cargo output
-        // to an already-completed JSON command result.
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(UpdateError::CargoFailed {
-            package: package.to_owned(),
-            version: version.clone(),
-        })
-    }
+    Err(UpdateError::ManagedExternally)
 }
 
 /// Finds the nearest Cargo project at or above a starting directory.
@@ -270,24 +209,13 @@ struct CratesIoPackage {
     max_stable_version: Option<String>,
 }
 
-fn cargo_program() -> OsString {
-    std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
-}
-
-fn is_false(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "0" | "false" | "no" | "off"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
     use semver::Version;
 
-    use super::{CratesIoResponse, Release, UpdateStatus, find_manifest, is_false};
+    use super::{CratesIoResponse, Release, UpdateStatus, find_manifest};
 
     #[test]
     fn release_comparison_never_downgrades() {
@@ -296,14 +224,6 @@ mod tests {
             latest: Version::new(1, 1, 9),
         };
         assert!(!release.update_available());
-    }
-
-    #[test]
-    fn opt_out_values_are_unambiguous() {
-        assert!(is_false("false"));
-        assert!(is_false(" OFF "));
-        assert!(!is_false("true"));
-        assert!(!is_false("sometimes"));
     }
 
     #[test]

@@ -40,7 +40,6 @@ use super::{
     validation,
 };
 
-const PROOF_LIFETIME_SECONDS: i64 = 60;
 const SIGNATURE_TOLERANCE_SECONDS: u64 = 60;
 const TIMESTAMP_HEADER: &str = "x-obo-timestamp";
 const SIGNATURE_HEADER: &str = "x-obo-signature";
@@ -49,6 +48,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 #[derive(FromRow)]
 struct ExchangeAuthorityRow {
+    ttl_seconds: i32,
     audience_application_id: Uuid,
     endpoint_path: String,
     metadata_definition: sqlx::types::Json<Value>,
@@ -226,8 +226,8 @@ pub(super) async fn exchange(
         r"
         SELECT audience_application_id, endpoint_path, metadata_definition,
                endpoint_version, audience_auth_epoch, subject_auth_epoch,
-               membership_authz_epoch
-        FROM iam_private.lock_current_application_obo_exchange_authority(
+               membership_authz_epoch, ttl_seconds
+        FROM iam_private.lock_current_application_obo_exchange_authority_v2(
             $1, $2, $3, $4, $5::iam.principal_kind, $6, $7, $8, $9
         )
         ",
@@ -347,7 +347,7 @@ pub(super) async fn exchange(
     .bind(client.auth_epoch)
     .bind(authority.audience_auth_epoch)
     .bind(issuance_now)
-    .bind(PROOF_LIFETIME_SECONDS)
+    .bind(i64::from(authority.ttl_seconds))
     .fetch_one(&mut *transaction)
     .await
     .map_err(|_| ApiError::internal("obo_proof_insert"))?;
@@ -360,7 +360,8 @@ pub(super) async fn exchange(
         .map_err(|_| ApiError::internal("obo_testing_context"))?,
         access_proof: raw_proof.expose_secret().to_owned(),
         proof_id,
-        expires_in: u64::try_from(PROOF_LIFETIME_SECONDS).unwrap_or(60),
+        expires_in: u64::try_from(authority.ttl_seconds)
+            .map_err(|_| ApiError::internal("obo_endpoint_ttl"))?,
         expires_at,
     };
     let expires_at_wire = expires_at

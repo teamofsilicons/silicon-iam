@@ -504,3 +504,38 @@ async fn scoped_silicon_creation_keeps_the_one_time_credential_and_sparse_identi
     assert_eq!(body, json!({"silicon_id":"helper","job_role":"Assistant"}));
     server.join().expect("mock completed");
 }
+
+#[tokio::test]
+async fn honeycomb_service_keeps_actor_and_step_up_separate_on_the_wire() {
+    let id = Uuid::now_v7();
+    let (base, capture, server) = service(
+        json!({"operation_id":id,"state":"accepted","iam_revision":8,"credential_version":2}),
+    );
+    let credential = format!("hck_{}", "a".repeat(43));
+    let actor = format!("oat_{}", "b".repeat(43));
+    let client = silicon_iam_client::honeycomb::ManagementClient::new(
+        base.base_url().as_str(),
+        credential.clone().into(),
+    )
+    .expect("management client");
+    let input: models::HoneycombSecretRotation =
+        serde_json::from_value(json!({"operation_id":id,"expected_iam_revision":7}))
+            .expect("rotation input");
+    let mutation =
+        Mutation::with_key(IdempotencyKey::parse(id.to_string()).expect("idempotency key"))
+            .step_up("sup_test_assertion");
+    let receipt = client
+        .rotate_secret("test_org>app", &actor.clone().into(), &input, &mutation)
+        .await
+        .expect("rotation receipt");
+    assert_eq!(receipt.credential_version, Some(2));
+    let (headers, body) = capture
+        .recv_timeout(Duration::from_secs(5))
+        .expect("captured request");
+    assert!(headers.contains(&format!("authorization: Bearer {credential}")));
+    assert!(headers.contains(&format!("x-honeycomb-actor-token: {actor}")));
+    assert!(!headers.contains("x-testing-environment-key"));
+    assert!(headers.contains("x-step-up-token: sup_test_assertion"));
+    assert_eq!(body["operation_id"], id.to_string());
+    server.join().expect("mock server");
+}

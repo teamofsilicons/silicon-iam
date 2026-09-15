@@ -1,6 +1,6 @@
 # Local state and concurrent CLI use
 
-The CLI stores profiles, sessions and updater state under `$SILICON_HOME/.silicon-iam` when `SILICON_HOME` is set, otherwise `~/.silicon-iam`. A home may be shared by concurrent CLI processes; production sessions and each testing-environment session remain separate.
+The CLI stores profiles, sessions and legacy updater state under `$SILICON_HOME/.silicon-iam` when `SILICON_HOME` is set, otherwise `~/.silicon-iam`. A home may be shared by concurrent CLI processes; production sessions and each testing-environment session remain separate.
 
 State changes lock the complete read/modify/write operation across processes and merge into the latest document. Readers see a complete old or new JSON document, never a truncated intermediate write. Each write creates a unique temporary file, syncs it, then atomically renames it into place. On Unix, new directories are `0700`, files are `0600` from creation, and the containing directory is synced after rename.
 
@@ -100,11 +100,8 @@ In a shell, save `$?` immediately after the invocation, before running another
 command. A process runner should retain each child's exit code or signal and
 stderr separately, rather than only counting failures. Automatic maintenance
 runs in the daemon and never appends output to ordinary commands. Use
-`iam config set auto-update off` to pause future background installations during
-a diagnostic session; an installation already running may finish.
-Do not run a remote logout again merely to gather diagnostics: it changes
-server state. Preserve the original evidence first, then choose recovery based
-on the reported failure.
+Honeycomb manages installed CLI updates. IAM no longer performs background
+installations; legacy updater-state files are retained only for compatibility.
 
 Never share `credentials.json`, tokens, OTPs, testing-environment keys, raw
 process environments, or unreviewed command lines. A test environment UUID is

@@ -51,6 +51,42 @@ pub(crate) struct ApplicationClient {
     pub(crate) authenticated_secret: SecretString,
 }
 
+/// Discovery permits anonymous public reads and validates every supplied credential.
+pub(super) enum DirectoryCaller {
+    Anonymous,
+    User(AccessContext),
+    Application(ApplicationClient),
+}
+
+impl FromRequestParts<ApiState> for DirectoryCaller {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &ApiState,
+    ) -> Result<Self, Self::Rejection> {
+        let Some(value) = parts.headers.get(header::AUTHORIZATION) else {
+            return Ok(Self::Anonymous);
+        };
+        if parts.headers.get_all(header::AUTHORIZATION).iter().count() != 1 {
+            return Err(ApiError::unauthenticated());
+        }
+        let value = value.to_str().map_err(|_| ApiError::unauthenticated())?;
+        if value
+            .split_once(' ')
+            .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("Basic"))
+        {
+            ApplicationClient::from_request_parts(parts, state)
+                .await
+                .map(Self::Application)
+        } else {
+            Bearer::from_request_parts(parts, state)
+                .await
+                .map(|bearer| Self::User(bearer.0))
+        }
+    }
+}
+
 #[derive(FromRow)]
 struct ClientSecretRow {
     application_id: Uuid,

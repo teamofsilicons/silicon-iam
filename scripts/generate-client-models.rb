@@ -260,7 +260,7 @@ generator.structs.sort.each do |name, schema|
   end
   out << "\n"
   out << doc_lines(schema["description"], "", "Contract type `#{name}`.").join("\n")
-  out << "\n#[derive(Clone, Debug, Serialize, Deserialize)]\n"
+  out << (schema["x-redact-debug"] ? "\n#[derive(Clone, Serialize, Deserialize)]\n" : "\n#[derive(Clone, Debug, Serialize, Deserialize)]\n")
   if merge_patch_nullable
     out << "#[allow(clippy::option_option, reason = \"JSON Merge Patch distinguishes omitted fields from explicit null\")]\n"
   end
@@ -297,6 +297,9 @@ generator.structs.sort.each do |name, schema|
     out << "    pub #{ident}: #{rust},\n"
   end
   out << "}\n"
+  if schema["x-redact-debug"]
+    out << "impl std::fmt::Debug for #{name} { fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { formatter.write_str(\"#{name}(<redacted>)\") } }\n"
+  end
 end
 
 File.write(OUTPUT, out)

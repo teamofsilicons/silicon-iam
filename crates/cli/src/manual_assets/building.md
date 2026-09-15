@@ -8,11 +8,11 @@ Your app's CLI authenticates using only a short-lived token (SLT).
 ## Register and log in
 
 1. Sign in with the official IAM CLI and select your owning organization.
-2. Run `iam app create --help`. Register the application's backend URL and a
-   webhook receiver with its signing secret. Store the generated application
+2. Register the application in Honeycomb, including a webhook receiver and its
+   signing secret. A backend origin is required when publishing OBO endpoints. Store the generated application
    client secret on the backend. Declare exactly the IAM and external scopes
    needed; complete any required scope and webhook review. Follow
-   [application registration](api/applications.html).
+   [accepted IAM configuration](HONEYCOMB_INTEGRATION.md).
 3. Implement `app iam --json` with the canonical `app_id`, IAM/auth URL, docs,
    source repository and package links. This command must work before login.
 4. Implement `app login '<SLT>'`. The user obtains the token using
@@ -47,11 +47,10 @@ optional `ISI` as additional context where it affects application behavior;
 identity and authorization must continue working when it is absent. IAM itself
 has no ISI-specific domain behavior and does not attach ISI to credentials.
 
-Offer settings with documented defaults and flag/environment overrides. Provide
-an hourly updater inside the app daemon, with persistent opt-out, attempt
-throttling and a single concurrent installer. An update must not depend on a
-user running commands or corrupt their result output. Do not hot-swap a loaded
-Rust library: update dependencies for the next build.
+Offer settings with documented defaults and flag/environment overrides. Package
+the CLI as a Honeycomb archive and let Honeycomb manage its installation and
+updates. Rust dependencies follow the consuming project's Cargo configuration.
+Do not run a second updater or modify dependency lockfiles at runtime.
 
 Use `silicon_iam_client::support::report(message, optional_pr)` to submit an
 explicitly requested IAM bug report through authenticated GitHub CLI. It also
@@ -66,8 +65,9 @@ cache. Maintain revocation-aware authorization; OBO proofs bind an exact
 request and are consumed once. Follow [webhooks](api/webhooks.html) and
 [OBO](api/obo.html).
 
-Create an IAM testing environment, retain its key privately, and import the
-application and dependencies. Use the same endpoints and the selected testing
+Create a shared testing environment in Honeycomb. Honeycomb prepares IAM,
+imports the accepted app and dependency configuration, and coordinates activation.
+Retain its root key privately. Use the same endpoints and the selected testing
 environment, rather than a separate imitation API. When your backend receives
 the test application secret in the request, select that isolated testing plane
 and validate it through IAM. Never mix production and testing credentials,
@@ -78,5 +78,7 @@ storage, sessions or webhook envelopes. Follow the complete
 Install the official CLI to discover and exercise these contracts:
 
 ```sh
-curl -fsSL https://docs.iam.teamofsilicons.com/install.sh | sh
+honeycomb install <configured-iam-app-id>
 ```
+
+For initial deployment without a catalog, see [direct bootstrap](HONEYCOMB_RELEASE.md).

@@ -11,7 +11,7 @@ and `iam -o json commands` for machine-readable command discovery. Help and bund
 ## Start using IAM
 
 ```sh
-curl -fsSL https://docs.iam.teamofsilicons.com/install.sh | sh
+honeycomb install <configured-iam-app-id>
 iam iam --json
 iam login --carbon-id <your-carbon-id>       # Carbon: enter the IAM verification code
 # Or, for a Silicon: iam silicon-login --sid <handle:org>
@@ -19,9 +19,9 @@ iam login status --json
 iam --org <org> member self
 ```
 
-The installer sets up Rust if needed, installs IAM and enables its user updater
-on macOS/Linux. It does not authenticate. The 1.9.0 installer requires that
-release to be published. See `iam --help`, then a noun such as `iam app --help`,
+Before Honeycomb is available, use the [direct bootstrap path](../HONEYCOMB_RELEASE.md).
+The direct installer sets up Rust and IAM without starting an updater or logging in.
+See `iam --help`, then a noun such as `iam app --help`,
 then a verb such as `iam app create --help`. Every level includes purpose,
 arguments and related documentation. `iam commands --json` exposes the tree to agents.
 
@@ -78,61 +78,19 @@ OBO preserves one explicitly selected user organization per operation, even when
 belong to different organizations.
 Only selected active memberships are returned. See [the consent guide](../ORGANIZATION_CONSENT.md).
 
-## Installation
+## CLI updates
+
+Honeycomb manages installed IAM CLI releases:
 
 ```sh
-cargo install silicon-iam-cli --version ">=1.9.0" --locked
-iam daemon install
+honeycomb update <configured-iam-app-id>
 ```
 
-The CLI requires Rust 1.98 or newer and speaks HTTP API major `v1`. Package
-SemVer and HTTP API versions are separate. Inspect the installed binary with
-`iam --version`, negotiate with `iam system version`, and inspect supported
-contract lifecycle states with `iam api contracts`.
-
-The IAM home must be owned by the current user and private (`0700` on Unix).
-See [credential storage](storage.md) for its format and ownership checks.
-
-Automatic updates are on by default. The installer starts a user service:
-launchd on macOS, systemd on Linux. It checks immediately, then hourly even
-without IAM commands being run. A supervisor restarts a failed worker and
-starts it again at login. On Linux, configure user lingering separately if the
-service must also run while logged out; on headless systems or other platforms,
-supervise `iam daemon run` yourself.
-
-The worker re-reads settings every minute and spawns the installed binary for
-each maintenance pass, so future passes load newly installed code. It reserves
-the hourly attempt before contacting crates.io, throttles failures, and holds
-a cross-process lock through installation. Cargo updates the same installation
-root, including a custom `CARGO_INSTALL_ROOT`. Development builds outside a
-`bin` directory cannot self-update. Commands no longer wait for an installation.
-
-```sh
-iam daemon install             # enable/start the current installed binary
-iam daemon status --json       # worker presence, policy, last attempt and home
-iam config set auto-update off # persistent opt-out; worker stays available
-iam config unset auto-update   # restore default-on policy
-iam system update              # force a check, even while opted out
-iam daemon uninstall           # stop and remove the service
-```
-
-The opt-out takes effect on the next maintenance pass; an installation already
-running may finish. `SILICON_IAM_AUTO_UPDATE=false` overrides automatic policy
-in a manually supervised worker. For an installed service use `config set`;
-changing a shell variable does not modify an already running service.
-Re-enabling does not reset the hourly throttle. `system update` bypasses opt-out
-and the throttle but retains the installation lock. Help and docs stay offline.
-
-There is one OS user service. Its configuration captures the selected IAM home,
-PATH, CARGO_HOME, RUSTUP_HOME and RUSTUP_TOOLCHAIN; it contains no authentication credentials.
-Run `iam daemon install` again after changing `iam config home`, `SILICON_HOME`,
-`SILICON_IAM_HOME`, or the installation path. `SILICON_HOME` remains the base
-for `.silicon-iam`; OS service registration lives in the OS user's service directory.
-Inspect Linux service errors with `journalctl --user -u silicon-iam-updater`.
-For a foreground diagnostic run, uninstall the managed worker and run
-`iam daemon run`; failures appear on stderr. On macOS use the updater log in
-the IAM home. A stateless Rust client continues using its separate lockfile
-update policy; it does not install a host service.
+IAM never updates itself. Remove a legacy updater service with `iam daemon
+uninstall`; old `iam daemon check` invocations perform no update work.
+`iam system update` and enabling `auto-update` return actionable Honeycomb
+instructions. Rust dependency versions follow the consuming Cargo project.
+See [release packaging and direct bootstrap](../HONEYCOMB_RELEASE.md).
 
 ## Report and contribute a fix
 
@@ -473,8 +431,8 @@ requires both the environment selection and a signed-in test Carbon.
 | `iam config` | `<subcommand>` | Local profile/configuration namespace. |
 | `iam config show` | None | Local only; shows resolved profile, URL, org, test selection, sign-in state, and store path. |
 | `iam config profiles` | None | Local only; lists stored profiles and whether each has credentials. |
-| `iam config set` | `<key> <value>` | Key is `url`, `org`, or `auto-update`. Local only. Service URLs require HTTPS except literal loopback; auto-update accepts on/off forms. With `--test`, org is stored only for that environment. |
-| `iam config unset` | `<key>` | Key is `org` or `auto-update`. Local only. With `--test`, clears only that environment's org; unsetting auto-update restores default-on. |
+| `iam config set` | `<key> <value>` | Key is `url`, `org`, or `auto-update`. Local only. Service URLs require HTTPS except literal loopback; auto-update accepts off; enabling it returns Honeycomb instructions. With `--test`, org is stored only for that environment. |
+| `iam config unset` | `<key>` | Key is `org` or `auto-update`. Local only. With `--test`, clears only that environment's org; unsetting auto-update retains disabled IAM self-updates. |
 | `iam config use` | `<profile>` | Local only; creates the profile with defaults when missing and makes it current. |
 | `iam system` | `<subcommand>` | Service/CLI maintenance namespace. |
 | `iam system version` | None | No session required; validates service identity and negotiates API major `v1`. |
@@ -1211,3 +1169,11 @@ iam app testing view 'acme>checkout'
 This returns the environment UUID and test configuration without returning credentials. The `view` command does not grant a production IAM session or user-data authority.
 
 Telemetry defaults on when configured. Use `iam config set telemetry off` to disable collection, or `iam docs telemetry` for [setup and delivery details](../TELEMETRY.md).
+
+## Management ownership
+
+Use Honeycomb for production app configuration, scope reviews, bundles and shared
+testing lifecycles. Legacy IAM management commands remain for migration-era
+servers; after the dedicated integration is provisioned they receive
+`410 management_moved_to_honeycomb`. IAM continues to provide identity, login,
+consent and test-plane authentication. See [the service contract](../HONEYCOMB_INTEGRATION.md).

@@ -57,6 +57,7 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
         .await?;
     crate::infrastructure::postgres::migrate(&pool).await?;
     seed_protocol_rows(&pool).await?;
+    private_application_authority_and_endpoint_lifetime(&pool).await?;
 
     unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(&pool).await?;
     selected_login_additions_preserve_existing_organizations(&pool).await?;
@@ -79,6 +80,119 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     organization_management_authority_tracks_current_roles(&pool).await?;
     application_list_authority_lock_blocks_concurrent_demotion(&pool).await?;
     application_tenancy_and_creator_are_immutable(&pool).await?;
+    Ok(())
+}
+
+/// Private authority is checked live, including existing grants and app callers.
+async fn private_application_authority_and_endpoint_lifetime(pool: &PgPool) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "SELECT set_config('iam.principal_id','',true),set_config('iam.application_id','',true)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    let public = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM iam_private.discover_application_origin('test_org>app-alpha',NULL)",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    ensure!(
+        public == 1,
+        "public origins must be anonymously discoverable"
+    );
+    sqlx::query("UPDATE iam.applications SET visibility='private' WHERE id=$1")
+        .bind(APP_A_ID)
+        .execute(&mut *tx)
+        .await?;
+    let hidden = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM iam_private.discover_application_origin('test_org>app-alpha',NULL)",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    ensure!(hidden == 0, "private origins must not leak anonymously");
+    sqlx::query("SELECT set_config('iam.principal_id',$1,true)")
+        .bind(CARBON_ID.to_string())
+        .execute(&mut *tx)
+        .await?;
+    ensure!(
+        sqlx::query_scalar::<_, bool>("SELECT iam_private.application_is_discoverable($1,NULL)")
+            .bind(APP_A_ID)
+            .fetch_one(&mut *tx)
+            .await?,
+        "owner can discover private application"
+    );
+    sqlx::query(
+        "SELECT set_config('iam.principal_id',$1,true),set_config('iam.application_id',$1,true)",
+    )
+    .bind(APP_B_ID.to_string())
+    .execute(&mut *tx)
+    .await?;
+    ensure!(
+        !sqlx::query_scalar::<_, bool>("SELECT iam_private.application_is_discoverable($1,NULL)")
+            .bind(APP_A_ID)
+            .fetch_one(&mut *tx)
+            .await?,
+        "an arbitrary app secret is not private discovery authority"
+    );
+    sqlx::query(
+        "SELECT set_config('iam.principal_id',$1,true),set_config('iam.application_id',$1,true)",
+    )
+    .bind(APP_A_ID.to_string())
+    .execute(&mut *tx)
+    .await?;
+    ensure!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT iam_private.application_private_token_is_current($1)"
+        )
+        .bind(Uuid::from_u128(0x101))
+        .fetch_one(&mut *tx)
+        .await?,
+        "owning membership authorizes existing private token"
+    );
+    ensure!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM iam_private.lock_current_application_oauth_subject_authority($1,$2,$3,$4,'carbon',NULL,NULL)").bind(APP_A_ID).bind(CONSENT_ID).bind(Uuid::from_u128(0x41)).bind(CARBON_ID).fetch_one(&mut *tx).await? == 1, "private refresh/introspection chain is live");
+    // Suspend within a rollback-only transaction; no production data is involved.
+    sqlx::query("UPDATE iam.organization_memberships SET status='suspended',suspended_at=transaction_timestamp() WHERE id=$1").bind(OWNER_MEMBERSHIP_ID).execute(&mut *tx).await?;
+    ensure!(
+        !sqlx::query_scalar::<_, bool>(
+            "SELECT iam_private.application_private_token_is_current($1)"
+        )
+        .bind(Uuid::from_u128(0x101))
+        .fetch_one(&mut *tx)
+        .await?,
+        "membership removal invalidates private bearer authority"
+    );
+    ensure!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM iam_private.lock_current_application_oauth_subject_authority($1,$2,$3,$4,'carbon',NULL,NULL)").bind(APP_A_ID).bind(CONSENT_ID).bind(Uuid::from_u128(0x41)).bind(CARBON_ID).fetch_one(&mut *tx).await? == 0, "membership loss invalidates refresh and introspection");
+    tx.rollback().await?;
+
+    let mut tx = pool.begin().await?;
+    let before = sqlx::query_as::<_, (i32,i64)>("SELECT ttl_seconds,version FROM iam.application_obo_endpoints WHERE application_id=$1 AND endpoint_id='trust.manage'").bind(APP_B_ID).fetch_one(&mut *tx).await?;
+    ensure!(
+        before.0 == 300,
+        "existing endpoints migrate to five minutes"
+    );
+    let expiry = sqlx::query_scalar::<_, time::OffsetDateTime>(
+        "SELECT expires_at FROM iam.obo_proofs WHERE id=$1",
+    )
+    .bind(PROOF_ID)
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE iam.application_obo_endpoints SET ttl_seconds=900 WHERE application_id=$1 AND endpoint_id='trust.manage'").bind(APP_B_ID).execute(&mut *tx).await?;
+    let after = sqlx::query_as::<_, (i32,i64)>("SELECT ttl_seconds,version FROM iam.application_obo_endpoints WHERE application_id=$1 AND endpoint_id='trust.manage'").bind(APP_B_ID).fetch_one(&mut *tx).await?;
+    ensure!(
+        after == (900, before.1),
+        "TTL changes do not revoke earlier proofs by changing endpoint authority version"
+    );
+    ensure!(
+        sqlx::query_scalar::<_, time::OffsetDateTime>(
+            "SELECT expires_at FROM iam.obo_proofs WHERE id=$1"
+        )
+        .bind(PROOF_ID)
+        .fetch_one(&mut *tx)
+        .await?
+            == expiry,
+        "existing proof expiry is unchanged"
+    );
+    tx.rollback().await?;
     Ok(())
 }
 

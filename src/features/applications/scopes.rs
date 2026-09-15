@@ -189,7 +189,12 @@ pub(super) async fn catalog(
     }
     let mut tx = crate::infrastructure::postgres::context::begin(
         state.db(),
-        crate::infrastructure::postgres::context::DatabaseContext::principal(access.subject.id),
+        crate::infrastructure::postgres::context::DatabaseContext {
+            principal_id: Some(access.subject.id),
+            application_id: access.client_application_id,
+            organization_id: None,
+            signup_session_id: None,
+        },
     )
     .await
     .map_err(|_| ApiError::internal("scope_catalog_context"))?;
@@ -221,6 +226,7 @@ pub(super) async fn catalog_items(
             WHERE application.app_id = $1
               AND application.review_status = 'verified'
               AND application.deleted_at IS NULL
+              AND iam_private.application_is_discoverable(application.id,NULL)
         ) THEN (
             SELECT COALESCE(jsonb_agg(to_jsonb(catalog) ORDER BY catalog.scope), '[]'::jsonb)
             FROM iam_private.application_scope_catalog($1) AS catalog

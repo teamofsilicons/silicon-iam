@@ -96,6 +96,11 @@ jobs:
       - name: Validate runtime database grants
         run: ruby scripts/check-runtime-grants.rb
 
+      - name: Validate Honeycomb packaging and IAM service handoff
+        run: |
+          python3 scripts/test-honeycomb-package.py
+          cargo test --locked --bin iam-bootstrap-apps bootstrap_reuses_identity_and_private_credentials -- --ignored
+
       - name: Provision restricted runtime roles
         env:
           IAM_LOCAL_API_DATABASE_PASSWORD: api-test-password

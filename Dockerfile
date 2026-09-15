@@ -32,6 +32,7 @@ RUN --mount=type=cache,id=silicon-iam-cargo-registry,target=/usr/local/cargo/reg
     && install -D -m 0755 target/release/iam-worker /opt/silicon-iam/iam-worker \
     && install -D -m 0755 target/release/iam-migrate /opt/silicon-iam/iam-migrate \
     && install -D -m 0755 target/release/iam-bootstrap-admin /opt/silicon-iam/iam-bootstrap-admin \
+    && install -D -m 0755 target/release/iam-bootstrap-apps /opt/silicon-iam/iam-bootstrap-apps \
     && install -D -m 0755 target/release/iam-activate-key-version /opt/silicon-iam/iam-activate-key-version
 
 FROM debian:bookworm-slim AS runtime
@@ -55,6 +56,7 @@ COPY --from=builder /opt/silicon-iam/iam-scoped-api /usr/local/bin/iam-scoped-ap
 COPY --from=builder /opt/silicon-iam/iam-worker /usr/local/bin/iam-worker
 COPY --from=builder /opt/silicon-iam/iam-migrate /usr/local/bin/iam-migrate
 COPY --from=builder /opt/silicon-iam/iam-bootstrap-admin /usr/local/bin/iam-bootstrap-admin
+COPY --from=builder /opt/silicon-iam/iam-bootstrap-apps /usr/local/bin/iam-bootstrap-apps
 COPY --from=builder /opt/silicon-iam/iam-activate-key-version /usr/local/bin/iam-activate-key-version
 # Keep the production grant manifest beside the binaries so an immutable image
 # contains everything required to initialize a replacement instance. The

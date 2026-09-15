@@ -126,20 +126,15 @@ impl Applications<'_> {
         self.0.get(&["applications", app_id]).await
     }
 
-    /// Discovers a verified application's public backend base URL.
+    /// Discovers a public application's accepted backend origin anonymously.
     ///
-    /// This intentionally crosses organization boundaries. The client must
-    /// carry the requesting application's own
-    /// [`Credential::Application`](crate::Credential::Application); the
-    /// target is the canonical `{org_id}>{handle}` id.
-    ///
-    /// Inside a testing environment, both the requesting credential and the
-    /// target resolve only in that environment.
+    /// Private applications require an authorized user or application credential.
+    /// Supplied credentials are validated even for public targets. Testing context
+    /// confines both the caller and the target to the selected environment.
     ///
     /// # Errors
-    ///
-    /// Returns an error when the requesting application cannot authenticate,
-    /// or the target is not a verified application in the selected plane.
+    /// Returns an error for invalid credentials, unavailable targets or unauthorized
+    /// private access, without revealing the private origin.
     pub async fn discover_base_url(&self, app_id: &str) -> Result<models::ApplicationBaseUrl> {
         self.0.get(&["application-directory", app_id]).await
     }

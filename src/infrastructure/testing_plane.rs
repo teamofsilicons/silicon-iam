@@ -41,11 +41,28 @@ pub struct SelectedEnvironment {
 
 tokio::task_local! {
     static SELECTED: SelectedEnvironment;
+    static RUNTIME_VERSION: Option<(i64,i32)>;
 }
 
 /// Runs a request future inside one testing environment.
 pub async fn scope<T>(selected: SelectedEnvironment, future: impl Future<Output = T>) -> T {
     SELECTED.scope(selected, future).await
+}
+
+/// Selects a runtime request with its accepted generation and root-key version.
+pub async fn scope_runtime<T>(
+    selected: SelectedEnvironment,
+    version: Option<(i64, i32)>,
+    future: impl Future<Output = T>,
+) -> T {
+    RUNTIME_VERSION
+        .scope(version, scope(selected, future))
+        .await
+}
+/// Returns the immutable lifecycle version captured for this runtime request.
+#[must_use]
+pub fn runtime_version() -> Option<(i64, i32)> {
+    RUNTIME_VERSION.try_with(|version| *version).ok().flatten()
 }
 
 /// Returns the testing environment selected by the current request.

@@ -336,7 +336,7 @@ pub(super) fn obo_metadata(field: &'static str, value: &serde_json::Value) -> Re
     validate_json_shape(value, 0, &mut nodes, field)
 }
 
-fn obo_endpoints(values: &[model::ApplicationOboEndpoint]) -> Result<(), ApiError> {
+pub(super) fn obo_endpoints(values: &[model::ApplicationOboEndpoint]) -> Result<(), ApiError> {
     if values.len() > MAX_OBO_ENDPOINTS {
         return Err(ApiError::validation(
             "obo_endpoints",
@@ -346,6 +346,12 @@ fn obo_endpoints(values: &[model::ApplicationOboEndpoint]) -> Result<(), ApiErro
     let mut identifiers = BTreeSet::new();
     let mut paths = BTreeSet::new();
     for endpoint in values {
+        if endpoint.ttl_seconds <= 0 {
+            return Err(ApiError::validation(
+                "obo_endpoints.ttl_seconds",
+                "must be a positive integer in seconds",
+            ));
+        }
         obo_endpoint_id(&endpoint.endpoint_id)?;
         if !identifiers.insert(endpoint.endpoint_id.as_str()) {
             return Err(ApiError::validation(
@@ -522,7 +528,7 @@ pub(super) fn org_id(value: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn optional_text(
+pub(super) fn optional_text(
     field: &'static str,
     value: Option<&str>,
     min: usize,
@@ -537,7 +543,7 @@ fn optional_text(
     Ok(())
 }
 
-fn optional_https_uri(
+pub(super) fn optional_https_uri(
     field: &'static str,
     value: Option<&str>,
     max: usize,
@@ -645,8 +651,29 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_lifetime_defaults_and_rejects_nonpositive_values() {
+        let value =
+            json!({"endpoint_id":"files.read", "path":"/files", "metadata":{}, "critical":false});
+        let Ok(endpoint) = serde_json::from_value::<ApplicationOboEndpoint>(value.clone()) else {
+            panic!("valid endpoint");
+        };
+        assert_eq!(endpoint.ttl_seconds, 300);
+        for ttl in [0, -1] {
+            let mut invalid = endpoint.clone();
+            invalid.ttl_seconds = ttl;
+            assert!(obo_endpoints(&[invalid]).is_err());
+        }
+        for ttl in [json!(1.5), json!("300"), json!(2_147_483_648_u64)] {
+            let mut invalid = value.clone();
+            invalid["ttl_seconds"] = ttl;
+            assert!(serde_json::from_value::<ApplicationOboEndpoint>(invalid).is_err());
+        }
+    }
+
+    #[test]
     fn obo_endpoint_registry_requires_unique_stable_absolute_paths() {
         let endpoint = ApplicationOboEndpoint {
+            ttl_seconds: 300,
             critical: false,
             endpoint_id: "documents.read".to_owned(),
             path: "/v1/documents/read".to_owned(),
@@ -718,6 +745,7 @@ mod tests {
     #[test]
     fn obo_endpoint_registry_rejects_invalid_declared_types() {
         let endpoint = ApplicationOboEndpoint {
+            ttl_seconds: 300,
             critical: false,
             endpoint_id: "documents.read".to_owned(),
             path: "/v1/documents/read".to_owned(),

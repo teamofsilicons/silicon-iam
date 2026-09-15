@@ -72,57 +72,13 @@ If you want the stateful version — a token store, automatic refresh, a
 configured default service — that is the `silicon-iam-cli` crate, which is
 built on nothing but this one.
 
-## Automatic crate updates
+## Dependency versions
 
-Automatic dependency maintenance is on by default. After an IAM request
-finishes and its response has been decoded, the client compares its compiled
-version with the newest stable `silicon-iam-client` release on crates.io if no
-attempt is recorded or the last attempt was at least one hour ago. There is no
-idle timer or daemon: another completed request triggers the next due check.
-When it finds a newer release
-and can locate a `Cargo.toml` from the process working directory, it runs the
-equivalent of:
-
-```sh
-cargo update --manifest-path /path/to/Cargo.toml \
-  -p silicon-iam-client --precise <latest-version>
-```
-
-That advances the consuming project's `Cargo.lock`. Rust cannot replace a
-library already compiled into a running process, so the current process
-finishes on its existing version and the next Cargo build uses the update.
-Registry or Cargo failures are best-effort and never fail the IAM request;
-inspect `client.update_status()` after a request to see whether the client
-was current, updated, skipped, or could not update at its latest check.
-
-Clones share an in-memory last-attempt time and only one check can run at a
-time; concurrent requests do not wait for another request's check. The request
-that performs due maintenance waits for it before returning, but maintenance
-never changes its IAM result. Failed or cancelled attempts retain the hourly
-throttle. Cancellation releases the single-flight slot; a Cargo operation
-already started keeps that slot until it finishes on a blocking worker.
-Separately built clients have independent schedules, and restarting the process
-resets this in-memory schedule. No maintenance runs while the client is idle,
-and compiled code changes only after rebuilding.
-
-Disable every check and Cargo invocation in code:
-
-```rust
-let client = Client::builder("https://backend.iam.teamofsilicons.com")?
-    .auto_update(false)
-    .build()?;
-```
-
-Or opt out for a deployed process without recompiling it:
-
-```sh
-SILICON_IAM_CLIENT_AUTO_UPDATE=false ./your-application
-```
-
-If the application starts outside its project directory, point the updater at
-the correct manifest with `.update_manifest("/path/to/Cargo.toml")`. If there
-is no manifest, the client reports `UpdateStatus::NoCargoProject` and leaves
-the installed application alone.
+The client never runs Cargo, changes a lockfile, or checks for updates during
+API requests. Choose dependency versions in your project and rebuild after
+reviewing updates. Legacy `auto_update` and `update_manifest` settings are no-ops;
+`update_status()` always returns `Disabled`. Honeycomb manages installed CLI
+releases. See [release management](updates.html).
 
 ## Your first Application login
 
@@ -754,3 +710,10 @@ contract versions and compatibility. Breaking changes receive a new major API ve
 a deprecated version can sunset after seven days without requests.
 
 The client supports sanitized Space Station request diagnostics when configured. Use `.telemetry(false)` on the builder to opt out. See [telemetry](../TELEMETRY.md) for keys, buffering and propagated preferences.
+
+## Honeycomb service integration
+
+The server-only `honeycomb::ManagementClient` uses a dedicated service credential,
+with a separate live actor token and `Mutation` step-up assertion for authorized
+changes. See [the integration contract](../HONEYCOMB_INTEGRATION.md). Ordinary
+application clients retain login, discovery, consent and runtime OBO.

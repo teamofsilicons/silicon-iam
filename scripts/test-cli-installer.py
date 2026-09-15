@@ -45,12 +45,12 @@ chmod +x "$CARGO_INSTALL_ROOT/bin/iam"
             calls = (root / "calls").read_text()
             return result, calls
 
-    def test_starts_daemon_after_installing_into_custom_root(self):
+    def test_installs_into_custom_root_without_an_independent_updater(self):
         result, calls = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--version >=1.9.0 --locked --force --root", calls)
         self.assertIn("custom install", calls)
-        self.assertTrue(calls.rstrip().endswith("iam daemon install"))
+        self.assertNotIn("iam daemon install", calls)
         self.assertNotIn("auth", calls)
 
     def test_failed_install_does_not_register_a_service(self):

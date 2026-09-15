@@ -18,6 +18,7 @@ mod application_layer;
 mod application_view;
 mod graph;
 mod handlers;
+pub(crate) mod honeycomb;
 mod imports;
 mod key;
 mod manager;

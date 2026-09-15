@@ -50,7 +50,7 @@ The request body itself never goes to IAM; it travels directly to the audience A
 
 ## What the proof is bound to
 
-IAM binds the proof to the source and audience Applications, subject token, actor, organization, endpoint, metadata, method, registered path and exact body digest. It is valid for one verification or at most 60 seconds, whichever comes first. Exchange immediately before the downstream request.
+IAM binds the proof to the source and audience Applications, subject token, actor, organization, endpoint, metadata, method, registered path and exact body digest. It is valid for one verification or the provider-configured ttl_seconds (default 300 seconds), whichever comes first. Exchange immediately before the downstream request.
 
 ## Consume it against the actual request
 
@@ -91,7 +91,7 @@ IAM does not prescribe a downstream proof header or body field. The two Applicat
 | `403` | The endpoint was not declared or consented, a critical grant is missing, or the subject token no longer authorizes the selected organization. | Re-check the selected user organization, current membership, app declaration, critical approval, and user consent. |
 | `404 not_found` | The target or endpoint is nonexistent or unavailable in this production/testing environment. | Correct the audience and environment. Do not retry unchanged. |
 | `409` | The proof was consumed, or an idempotency key was reused with different exchange input. | Do not retry verification. For an exchange conflict, recover the original input or use a new key for a genuinely new operation. |
-| `410 proof_expired` | The proof's 60-second life elapsed. | Exchange a new proof for a new downstream attempt. |
+| `410 proof_expired` | The proof's configured lifetime elapsed. | Exchange a new proof for a new downstream attempt. |
 | `422` | The metadata or presented request binding does not satisfy the registered contract. | Re-read the catalog and compare the actual request. |
 
 See the HTTP OBO contract (`iam docs api/obo`) for the complete signature and authorization checks.

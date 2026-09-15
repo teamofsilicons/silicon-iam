@@ -21,7 +21,7 @@ signature = lowercase_hex(HMAC_SHA256(
   app_secret,
   timestamp + "." + method + "." + registered_path + "." + body_sha256 + "." + idempotency_key
 ))</code></pre>
-<p>The OBO signature is raw lowercase hexadecimal; it does not use the webhook signature's <code>v1=</code> prefix. Use the exact <code>Idempotency-Key</code> header in the signed input. Timestamp checks reject stale signatures. A proof expires after at most 60 seconds and cannot authorize another method, path, body, subject, or audience.</p>
+<p>The OBO signature is raw lowercase hexadecimal; it does not use the webhook signature's <code>v1=</code> prefix. Use the exact <code>Idempotency-Key</code> header in the signed input. Timestamp checks reject stale signatures. A proof expires after its provider-configured ttl_seconds (default 300 seconds) and cannot authorize another method, path, body, subject, or audience.</p>
 <h2>Single-use verification</h2>
 <pre><code>POST /api/v1/obo-access/verify
 Authorization: Basic &lt;recipient application credentials&gt;

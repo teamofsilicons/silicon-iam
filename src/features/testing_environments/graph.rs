@@ -30,7 +30,7 @@ pub(super) async fn load(
     while !pending.is_empty() {
         let requested = std::mem::take(&mut pending);
         let sources = sqlx::query_as::<_, ProductionApplication>(
-            "SELECT * FROM iam_private.get_testing_application_import_v1($1)",
+            "SELECT * FROM iam_private.get_testing_application_import_v2($1)",
         )
         .bind(requested.iter().cloned().collect::<Vec<_>>())
         .fetch_all(&state.pool)
@@ -96,6 +96,26 @@ pub(super) async fn import_all(
     graph: &BTreeMap<String, ProductionApplication>,
     root: &str,
 ) -> Result<BTreeMap<String, ImportedApplication>, AppError> {
+    import_graph(transaction, state, graph, root, false).await
+}
+
+/// Explicitly refreshes requested imported revisions and their test credentials.
+pub(super) async fn import_exact(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    graph: &BTreeMap<String, ProductionApplication>,
+    root: &str,
+) -> Result<BTreeMap<String, ImportedApplication>, AppError> {
+    import_graph(transaction, state, graph, root, true).await
+}
+
+async fn import_graph(
+    transaction: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    graph: &BTreeMap<String, ProductionApplication>,
+    root: &str,
+    refresh: bool,
+) -> Result<BTreeMap<String, ImportedApplication>, AppError> {
     let selected = testing_plane::current().ok_or(AppError::Forbidden)?;
     // Serialize all import entry points within this environment, including a
     // failed cross-database retry. IDs and credentials can then be reused.
@@ -113,7 +133,20 @@ pub(super) async fn import_all(
         .fetch_optional(&mut **transaction)
         .await
         .map_err(support::database)?;
-        let application = if let Some(existing) = existing {
+        let refresh_id = if let Some(existing) = &existing {
+            let revision: i64 =
+                sqlx::query_scalar("SELECT iam_private.testing_import_revision($1)")
+                    .bind(existing.application_id)
+                    .fetch_one(&mut **transaction)
+                    .await
+                    .map_err(support::database)?;
+            (refresh && revision != source.source_revision).then_some(existing.application_id)
+        } else {
+            None
+        };
+        let application = if let Some(id) = refresh_id {
+            create_one(transaction, state, source, selected.id, Some(id)).await?
+        } else if let Some(existing) = existing {
             let plaintext = state
                 .crypto
                 .decrypt(
@@ -137,7 +170,7 @@ pub(super) async fn import_all(
                 )?),
             }
         } else {
-            create_one(transaction, state, source, selected.id).await?
+            create_one(transaction, state, source, selected.id, None).await?
         };
         super::discovery::register(
             transaction,
@@ -170,9 +203,9 @@ async fn create_one(
     state: &ApiState,
     source: &ProductionApplication,
     environment_id: Uuid,
+    existing: Option<Uuid>,
 ) -> Result<ImportedApplication, AppError> {
-    let application_id = Uuid::now_v7();
-    let endpoint_id = Uuid::now_v7();
+    let application_id = existing.unwrap_or_else(Uuid::now_v7);
     let signing_key_id = Uuid::now_v7();
     let app_secret = state
         .crypto
@@ -229,6 +262,15 @@ async fn create_one(
         .map_err(|_| AppError::Internal {
             category: "testing_import_webhook_decrypt",
         })?;
+    let endpoint_id = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT iam_private.testing_import_webhook_endpoint($1,$2)",
+    )
+    .bind(application_id)
+    .bind(Sha256::digest(&webhook_url).as_slice())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(support::database)?
+    .unwrap_or_else(Uuid::now_v7);
     let url = state
         .crypto
         .encrypt(
@@ -256,11 +298,11 @@ async fn create_one(
             category: "testing_import_webhook_encrypt",
         })?;
     let config = json!({
-        "application_id": application_id, "source_application_id": source.source_application_id,
+        "application_id": application_id, "source_application_id": source.source_application_id, "source_revision":source.source_revision,
         "app_id": source.app_id, "org_id": source.org_id, "organization_name": source.organization_name,
         "organization_logo": source.organization_logo_uri, "organization_description": source.organization_description,
         "app_name": source.app_name, "app_logo": source.app_logo_uri, "base_url": source.base_url,
-        "app_scope": source.app_scope, "webhook_scope": source.webhook_scope, "testing_idle_days": source.testing_idle_days,
+        "visibility": source.visibility, "app_scope": source.app_scope, "webhook_scope": source.webhook_scope, "testing_idle_days": source.testing_idle_days,
         "obo_endpoints": source.obo_endpoints, "endpoint_id": endpoint_id, "signing_key_id": signing_key_id,
         "webhook_secret_version": source.webhook_secret_version,
         "webhook_fingerprint": crate::features::applications::webhook_secret_fingerprint(std::str::from_utf8(&webhook_secret)

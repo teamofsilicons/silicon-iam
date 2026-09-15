@@ -50,7 +50,8 @@ fn show(context: &Context) -> Result<()> {
     let signed_in = context.session().ok();
     match context.format {
         Format::Json => json(&serde_json::json!({
-            "auto_update": config.auto_update,
+            "auto_update": false,
+            "update_manager": "honeycomb",
             "telemetry": config.telemetry,
             "telemetry_effective": silicon_iam_client::telemetry::enabled(config.telemetry),
             "profile": context.profile_name,
@@ -63,7 +64,7 @@ fn show(context: &Context) -> Result<()> {
         Format::Text => {
             let mut table = Table::new(["field", "value"]);
             table.row(["telemetry", if config.telemetry { "on" } else { "off" }]);
-            table.row(["auto_update", if config.auto_update { "on" } else { "off" }]);
+            table.row(["auto_update", "off (managed by Honeycomb)"]);
             table.row(["profile", &context.profile_name]);
             table.row(["url", &context.profile.url]);
             table.row(["org", &or_dash(context.organization_if_set())]);
@@ -141,15 +142,20 @@ fn set(context: &Context, key: &str, value: String) -> Result<()> {
         );
     }
     if key == "auto-update" {
-        config.auto_update = parse_switch(&value)?;
+        if parse_switch(&value)? {
+            return Err(CliError::Usage(
+                "IAM updates are managed by Honeycomb. Configure the update policy in Honeycomb."
+                    .into(),
+            ));
+        }
+        config.auto_update = false;
         store.save_config(&config)?;
-        let reported_value = serde_json::Value::Bool(config.auto_update);
-        let message = if config.auto_update {
-            "Automatic updates are on."
-        } else {
-            "Automatic updates are off."
-        };
-        return report_setting(context, key, Some(&reported_value), message);
+        return report_setting(
+            context,
+            key,
+            Some(&serde_json::Value::Bool(false)),
+            "IAM self-updates are disabled; Honeycomb manages releases.",
+        );
     }
     let profile = config
         .profiles
@@ -206,14 +212,14 @@ fn unset(context: &Context, key: &str) -> Result<()> {
         );
     }
     if key == "auto-update" {
-        config.auto_update = true;
+        config.auto_update = false;
         store.save_config(&config)?;
-        let reported_value = serde_json::Value::Bool(true);
+        let reported_value = serde_json::Value::Bool(false);
         return report_setting(
             context,
             key,
             Some(&reported_value),
-            "Automatic updates are on (default).",
+            "IAM self-updates are disabled; Honeycomb manages releases.",
         );
     }
     let Some(profile) = config.profiles.get_mut(&context.profile_name) else {

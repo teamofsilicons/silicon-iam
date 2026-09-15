@@ -133,11 +133,19 @@ pub(super) async fn select(
     .await
     .map_err(support::database)?
     .ok_or(AppError::Unauthenticated)?;
-    testing_plane::scope(
+    let (generation, key_version): (Option<i64>, i32) =
+        sqlx::query_as("SELECT * FROM iam_private.testing_runtime_version($1)")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(support::database)?
+            .ok_or(AppError::Unauthenticated)?;
+    Box::pin(testing_plane::scope_runtime(
         SelectedEnvironment {
             id,
             organization_id,
         },
+        generation.map(|generation| (generation, key_version)),
         async {
             super::scope_policy::revalidate(&state).await?;
             let (mut parts, body) = request.into_parts();
@@ -193,7 +201,7 @@ pub(super) async fn select(
             support::touch(&state.pool, id).await;
             Ok(next.run(Request::from_parts(parts, body)).await)
         },
-    )
+    ))
     .await
 }
 

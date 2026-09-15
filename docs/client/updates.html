@@ -1,72 +1,10 @@
-<p class="lede">
-  <code>silicon-iam-client</code> compares its compiled version with the newest stable release on
-  crates.io and maintains the consuming Cargo project's lockfile. The policy is automatic by
-  default and explicitly opt-out.
-</p>
-
-<h2>What automatic means for a Rust library</h2>
-
-<p>
-  Code already compiled into a running process cannot be replaced safely. After an IAM request
-  finishes and its response has been decoded, the client checks crates.io if it has never
-  attempted a check or its last attempt was at least one hour ago. No idle timer or daemon runs;
-  another completed request triggers the next due check. If a newer stable release exists, it finds the
-  nearest <code>Cargo.toml</code> at or above the process working directory and runs the equivalent
-  of:
-</p>
-
-<pre><code>cargo update --manifest-path /path/to/Cargo.toml \
-  -p silicon-iam-client --precise &lt;latest-version&gt;</code></pre>
-
-<p>
-  The current process completes with its compiled version. The next Cargo build uses the updated
-  lockfile. This avoids making the false promise that a Rust library can hot-swap itself.
-</p>
-
-<h2>Opt out</h2>
-
-<pre><code>let client = Client::builder("https://backend.iam.teamofsilicons.com")?
-    .auto_update(false)
-    .build()?;</code></pre>
-
-<p>Or disable it for one deployment without rebuilding:</p>
-
-<pre><code>SILICON_IAM_CLIENT_AUTO_UPDATE=false ./your-application</code></pre>
-
-<p>
-  Values <code>0</code>, <code>false</code>, <code>no</code>, and <code>off</code> disable the updater.
-  The default is automatic. When an application starts outside its source directory, select the
-  manifest explicitly with <code>.update_manifest("/path/to/Cargo.toml")</code>.
-</p>
-
-<h2>Observe the result</h2>
-
-<p>
-  After an IAM call, <code>client.update_status()</code> reports the latest result: <code>Current</code>,
-  <code>Updated</code>, <code>Disabled</code>, <code>NoCargoProject</code>, or <code>Failed</code>.
-  A registry timeout, absent manifest, incompatible version constraint, or failed Cargo command
-  never changes the IAM request's result. The registry check has a three-second timeout.
-  One client and its clones share an in-memory last-attempt time with only one check running at a
-  time; concurrent requests do not wait for another request's check. The request performing due
-  maintenance waits for it before returning, without changing its IAM result. Failed or cancelled
-  attempts retain the hourly throttle. Cancellation releases the single-flight slot; a Cargo
-  operation already started retains the slot until it finishes on a blocking worker. Separately
-  constructed clients have independent schedules, and restarting the process resets that
-  in-memory state. There is no maintenance while the client is idle.
-</p>
-
-<div class="banner banner-info">
-  <div>
-    <strong>The CLI has its own updater.</strong>
-    The installer enables a user service that checks hourly without CLI activity.
-    Use <code>iam daemon install</code> after a Cargo-only installation and
-    <code>iam daemon status --json</code> to inspect it. Each maintenance pass
-    launches a fresh binary, reads the persisted policy and attempt time, and
-    shares the installation lock with manual updates. Failed attempts are also
-    throttled. Updates target the same Cargo installation root; normal commands
-    never wait for an update. Use <code>iam config set auto-update off</code> to
-    opt out or <code>iam daemon uninstall</code> to remove the service.
-    <code>iam system update</code> bypasses opt-out and the hourly throttle.
-    See <a href="/cli/">CLI installation and service operation</a>.
-  </div>
-</div>
+<p class="lede">IAM dependencies follow the consuming project's Cargo configuration. The Rust client never updates itself or changes a lockfile at runtime.</p>
+<h2>Rust dependencies</h2>
+<p>Choose a compatible client version in Cargo.toml, review dependency updates and rebuild your application. The old auto_update and update_manifest builder settings remain accepted for source compatibility but have no effect. update_status always reports Disabled.</p>
+<h2>CLI releases</h2>
+<p>Install and update the CLI through Honeycomb using the configured IAM application ID:</p>
+<pre><code>honeycomb install &lt;configured-iam-app-id&gt;
+honeycomb update &lt;configured-iam-app-id&gt;</code></pre>
+<p>IAM does not run a second updater. Existing daemon check commands do no update work; system update returns instructions for Honeycomb. Remove a legacy updater service with iam daemon uninstall.</p>
+<h2>Before Honeycomb is available</h2>
+<p>Build and install the CLI from a pinned source checkout using cargo install --path crates/cli --locked. The direct installer remains available without starting an updater. Backend deployment and migration are separate from CLI installation.</p>

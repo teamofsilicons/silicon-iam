@@ -55,6 +55,9 @@ DECLARE
     matched_table_count integer;
     unclassified_table_names text[];
     select_table_names text[] := ARRAY[
+        'honeycomb_operations',
+        'honeycomb_management_events',
+
         'access_token_scopes',
         'access_tokens',
         'application_approved_scopes',
@@ -140,6 +143,9 @@ DECLARE
         'application_bundles'
     ];
     insert_table_names text[] := ARRAY[
+        'honeycomb_operations',
+        'honeycomb_management_events',
+
         'access_token_scopes',
         'access_tokens',
         'application_approved_scopes',
@@ -210,6 +216,8 @@ DECLARE
         'trust_rules'
     ];
     update_table_names text[] := ARRAY[
+        'honeycomb_operations',
+
         'access_tokens',
         'application_approved_scopes',
         'application_obo_endpoints',
@@ -530,6 +538,32 @@ DECLARE
         'active_organization_membership_id',
         'apply_approved_tag_change',
         'application_token_allows_membership',
+        'application_allows_subject',
+        'resolve_honeycomb_application',
+        'honeycomb_operation_status',
+        'honeycomb_application_record',
+        'honeycomb_scope_decision',
+        'testing_import_revision',
+        'testing_import_webhook_endpoint',
+        'honeycomb_scope_catalog',
+        'honeycomb_bundle_revision',
+        'honeycomb_bundle_record',
+        'honeycomb_inventory',
+        'honeycomb_testing_record',
+        'honeycomb_testing_start',
+        'honeycomb_testing_finish',
+        'honeycomb_testing_key',
+        'honeycomb_testing_purge_receipts',
+        'resolve_testing_environment_v2',
+        'testing_runtime_version',
+        'honeycomb_testing_actor',
+        'honeycomb_testing_organization',
+        'replay_honeycomb_management_event',
+        'honeycomb_management_events',
+        'application_is_discoverable',
+        'discover_application_origin',
+        'application_private_token_is_current',
+        'application_private_consent_is_current',
         'apply_workos_connection_event',
         'archive_organization_tag',
         'assert_active_carbon_contacts',
@@ -560,6 +594,7 @@ DECLARE
         'get_organization_invitation_destination',
         'get_testing_application_import',
         'get_testing_application_import_v1',
+        'get_testing_application_import_v2',
         'grant_application_scope_catalogue',
         'has_organization_capability',
         'has_platform_capability',
@@ -581,6 +616,7 @@ DECLARE
         'lock_current_application_client',
         'lock_current_application_oauth_subject_authority',
         'lock_current_application_obo_exchange_authority',
+        'lock_current_application_obo_exchange_authority_v2',
         'lock_governance_request_target',
         'lock_invitation_verification_challenge',
         'lock_login_organization_selection',
@@ -638,6 +674,12 @@ DECLARE
         'application_webhook_has_event_scope'
     ];
     non_api_definer_names text[] := ARRAY[
+        'organization_iam_scope_allowed',
+        'get_worker_testing_environment_webhook_key_v2',
+        'claim_honeycomb_management_events',
+        'finish_honeycomb_management_event',
+        'enforce_private_application_activation',
+        'lock_application_private_consent',
         'enforce_application_iam_scope_policy',
         'revoke_unavailable_iam_scopes',
         'list_testing_application_orphan_candidates',
@@ -698,8 +740,11 @@ DECLARE
     ];
 BEGIN
     IF to_regprocedure('iam_private.current_testing_environment_id()') IS NOT NULL THEN
+        non_api_definer_names := non_api_definer_names || ARRAY['stamp_testing_outbox_generation'];
         api_function_names := api_function_names || ARRAY[
-            'register_test_application_selector', 'resolve_test_application_selector',
+            'register_test_application_selector',
+        'set_testing_runtime_state',
+        'lock_testing_runtime_state', 'resolve_test_application_selector',
             'test_application_selector_backfill'
         ];
     END IF;
@@ -800,6 +845,9 @@ DECLARE
     matched_function_count integer;
     function_record record;
     worker_function_names text[] := ARRAY[
+        'get_worker_testing_environment_webhook_key_v2',
+        'claim_honeycomb_management_events',
+        'finish_honeycomb_management_event',
         'list_testing_application_orphan_candidates',
         'testing_environment_record_exists',
         'list_idle_application_testing_candidates',

@@ -59,6 +59,10 @@ pub type CarbonId = String;
 /// containing zero.
 pub type ExistingCarbonId = String;
 
+/// Accepted IAM state or durable operation status. Never contains credentials
+/// or actor tokens.
+pub type HoneycombRecord = serde_json::Value;
+
 /// Lowercase hexadecimal SHA-256 digest of the exact downstream request body
 /// bytes.
 pub type OboBodySha256 = String;
@@ -201,6 +205,20 @@ pub enum ApplicationTestingEnvironmentStatus {
     Other(String),
 }
 
+/// Accepted application visibility.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplicationVisibility {
+    /// `private`
+    Private,
+    /// `public`
+    Public,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
 /// Closed vocabulary from the contract.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -327,6 +345,91 @@ pub enum DirectoryRoleOrgRole {
     Admin,
     /// `member`
     Member,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoneycombConfigurationAvailability {
+    /// `active`
+    Active,
+    /// `disabled`
+    Disabled,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoneycombConfigurationVisibility {
+    /// `private`
+    Private,
+    /// `public`
+    Public,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoneycombReceiptState {
+    /// `pending`
+    Pending,
+    /// `accepted`
+    Accepted,
+    /// `rejected`
+    Rejected,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoneycombScopeDecisionDecision {
+    /// `approve`
+    Approve,
+    /// `revoke`
+    Revoke,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoneycombTestingInstructionOperation {
+    /// `prepare`
+    Prepare,
+    /// `import`
+    Import,
+    /// `rotate-key`
+    #[serde(rename = "rotate-key")]
+    RotateKey,
+    /// `clean`
+    Clean,
+    /// `disable`
+    Disable,
+    /// `restore`
+    Restore,
+    /// `purge`
+    Purge,
+    /// `activate`
+    Activate,
     /// A value this crate predates. Held verbatim rather than
     /// failing the response it arrived in.
     #[serde(untagged)]
@@ -1043,6 +1146,9 @@ pub struct ApiVersionNegotiation {
 /// does not confer management authority.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Application {
+    /// Accepted application visibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<ApplicationVisibility>,
     /// The contract's `app_scope`.
     pub app_scope: ApplicationScope,
     /// The contract's `webhook_scope`.
@@ -1330,6 +1436,9 @@ pub struct ApplicationExternalScope {
 /// the Application's organization.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApplicationOboEndpoint {
+    /// Provider-configured proof lifetime in seconds; fixed at issuance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_seconds: Option<i64>,
     /// Whether calling this endpoint requires approval from the audience
     /// application.
     pub critical: bool,
@@ -2110,6 +2219,256 @@ pub struct DirectoryRole {
 pub struct EmailInput {
     /// The contract's `email`.
     pub email: String,
+}
+
+/// Contract type `HoneycombBundleConfiguration`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombBundleConfiguration {
+    /// The contract's `operation_id`.
+    pub operation_id: Uuid,
+    /// The contract's `expected_iam_revision`.
+    pub expected_iam_revision: i64,
+    /// The contract's `environment_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<Uuid>,
+    /// The contract's `configuration_revision`.
+    pub configuration_revision: i64,
+    /// The contract's `app_name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    /// The contract's `app_logo`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_logo: Option<String>,
+    /// The contract's `app_ids`.
+    pub app_ids: Vec<String>,
+    /// The contract's `deleted`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted: Option<bool>,
+}
+
+/// Contract type `HoneycombConfiguration`.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct HoneycombConfiguration {
+    /// The contract's `operation_id`.
+    pub operation_id: Uuid,
+    /// The contract's `expected_iam_revision`.
+    pub expected_iam_revision: i64,
+    /// The contract's `environment_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<Uuid>,
+    /// The contract's `configuration_revision`.
+    pub configuration_revision: i64,
+    /// The contract's `app_id`.
+    pub app_id: String,
+    /// The contract's `org_id`.
+    pub org_id: String,
+    /// The contract's `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The contract's `logo_url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_url: Option<String>,
+    /// The contract's `base_url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// The contract's `visibility`.
+    pub visibility: HoneycombConfigurationVisibility,
+    /// The contract's `availability`.
+    pub availability: HoneycombConfigurationAvailability,
+    /// The contract's `publication_approved`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_approved: Option<bool>,
+    /// The contract's `webhook`.
+    pub webhook: HoneycombWebhook,
+    /// The contract's `app_scope`.
+    pub app_scope: ApplicationScope,
+    /// The contract's `obo_endpoints`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obo_endpoints: Option<Vec<ApplicationOboEndpoint>>,
+    /// The contract's `obo_review_message`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obo_review_message: Option<String>,
+    /// The contract's `testing_idle_days`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub testing_idle_days: Option<i64>,
+}
+impl std::fmt::Debug for HoneycombConfiguration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("HoneycombConfiguration(<redacted>)")
+    }
+}
+
+/// Contract type `HoneycombReceipt`.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct HoneycombReceipt {
+    /// The contract's `operation_id`.
+    pub operation_id: Uuid,
+    /// The contract's `state`.
+    pub state: HoneycombReceiptState,
+    /// The contract's `iam_revision`.
+    pub iam_revision: i64,
+    /// The contract's `effective_configuration`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_configuration: Option<serde_json::Value>,
+    /// The contract's `environment`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<serde_json::Value>,
+    /// One-time secret. Replayable for ten minutes; absent from
+    /// reconciliation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_secret: Option<String>,
+    /// Protected test root key, returned only by preparation and rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// The contract's `secret_replay_expired`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_replay_expired: Option<bool>,
+    /// The contract's `app_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    /// The contract's `application_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<Uuid>,
+    /// The contract's `configuration_revision`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration_revision: Option<i64>,
+    /// The contract's `credential_version`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_version: Option<i64>,
+    /// The contract's `webhook_secret_version`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_secret_version: Option<i64>,
+    /// The contract's `webhook_endpoint_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_endpoint_id: Option<Uuid>,
+    /// The contract's `environment_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<Uuid>,
+    /// The contract's `iam_completion`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iam_completion: Option<bool>,
+    /// The contract's `source_revisions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_revisions: Option<serde_json::Value>,
+    /// The contract's `required_approvals`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_approvals: Option<serde_json::Value>,
+}
+impl std::fmt::Debug for HoneycombReceipt {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("HoneycombReceipt(<redacted>)")
+    }
+}
+
+/// Contract type `HoneycombScopeDecision`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombScopeDecision {
+    /// The contract's `operation_id`.
+    pub operation_id: Uuid,
+    /// The contract's `expected_iam_revision`.
+    pub expected_iam_revision: i64,
+    /// The contract's `environment_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<Uuid>,
+    /// The contract's `target_app_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_app_id: Option<String>,
+    /// The contract's `scopes`.
+    pub scopes: Vec<String>,
+    /// The contract's `decision`.
+    pub decision: HoneycombScopeDecisionDecision,
+}
+
+/// Contract type `HoneycombSecretRotation`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombSecretRotation {
+    /// The contract's `operation_id`.
+    pub operation_id: Uuid,
+    /// The contract's `expected_iam_revision`.
+    pub expected_iam_revision: i64,
+    /// The contract's `environment_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<Uuid>,
+}
+
+/// Contract type `HoneycombTestingInstruction`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombTestingInstruction {
+    /// The contract's `operation_id`.
+    pub operation_id: Uuid,
+    /// The contract's `expected_iam_revision`.
+    pub expected_iam_revision: i64,
+    /// The contract's `environment_id`.
+    pub environment_id: Uuid,
+    /// The contract's `generation`.
+    pub generation: i64,
+    /// The contract's `operation`.
+    pub operation: HoneycombTestingInstructionOperation,
+    /// The contract's `org_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_id: Option<String>,
+    /// The contract's `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The contract's `description`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The contract's `app_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    /// The contract's `source_revisions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_revisions: Option<serde_json::Value>,
+}
+
+/// Contract type `HoneycombWebhook`.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct HoneycombWebhook {
+    /// The contract's `url`.
+    pub url: String,
+    /// The contract's `secret`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// The contract's `scope`.
+    pub scope: Vec<String>,
+}
+impl std::fmt::Debug for HoneycombWebhook {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("HoneycombWebhook(<redacted>)")
+    }
+}
+
+/// Contract type `HoneycombWebhookApproval`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombWebhookApproval {
+    /// The contract's `operation_id`.
+    pub operation_id: Uuid,
+    /// The contract's `expected_iam_revision`.
+    pub expected_iam_revision: i64,
+    /// The contract's `environment_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<Uuid>,
+    /// The contract's `pending_endpoint_id`.
+    pub pending_endpoint_id: Uuid,
+}
+
+/// Contract type `HoneycombWebhookSecretRotation`.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct HoneycombWebhookSecretRotation {
+    /// The contract's `operation_id`.
+    pub operation_id: Uuid,
+    /// The contract's `expected_iam_revision`.
+    pub expected_iam_revision: i64,
+    /// The contract's `environment_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<Uuid>,
+    /// The contract's `webhook_secret`.
+    pub webhook_secret: String,
+}
+impl std::fmt::Debug for HoneycombWebhookSecretRotation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("HoneycombWebhookSecretRotation(<redacted>)")
+    }
 }
 
 /// Contract type `IamTokenResponse`.

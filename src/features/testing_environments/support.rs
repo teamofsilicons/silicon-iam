@@ -29,6 +29,7 @@ use super::validation;
 
 /// A live environment together with the authority the caller has over it.
 pub(super) struct AdministeredEnvironment {
+    pub(super) runtime_version: Option<(i64, i32)>,
     pub(super) id: Uuid,
     pub(super) organization_id: Uuid,
 }
@@ -158,20 +159,21 @@ pub(super) async fn resolve_key(
         .map(|digest| digest.as_bytes().to_vec())
         .collect::<Vec<_>>();
 
-    let resolved = sqlx::query_as::<_, (Uuid, Uuid, i16)>(
-        "SELECT * FROM iam_private.resolve_testing_environment($1)",
+    let resolved = sqlx::query_as::<_, (Uuid, Uuid, i16, Option<i64>, i32)>(
+        "SELECT * FROM iam_private.resolve_testing_environment_v2($1)",
     )
     .bind(&digests)
     .fetch_optional(pool)
     .await
     .map_err(database)?;
 
-    Ok(
-        resolved.map(|(id, organization_id, _)| AdministeredEnvironment {
+    Ok(resolved.map(
+        |(id, organization_id, _, generation, key_version)| AdministeredEnvironment {
+            runtime_version: generation.map(|generation| (generation, key_version)),
             id,
             organization_id,
-        }),
-    )
+        },
+    ))
 }
 
 /// Marks an environment as used, so the idle sweep leaves it alone.

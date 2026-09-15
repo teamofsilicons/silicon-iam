@@ -41,11 +41,11 @@ struct PublicError {
 }
 
 impl ApiError {
-    pub(super) fn bad_request(code: &'static str, message: &'static str) -> Self {
+    pub(crate) fn bad_request(code: &'static str, message: &'static str) -> Self {
         Self::new(StatusCode::BAD_REQUEST, code, message)
     }
 
-    pub(super) fn validation(field: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn validation(field: &'static str, message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNPROCESSABLE_ENTITY,
             code: "validation_failed",
@@ -63,11 +63,11 @@ impl ApiError {
     ///
     /// The login route treats that as a state to act on rather than a failure
     /// to report, and must not confuse it with any other error.
-    pub(super) const fn is_unauthenticated(&self) -> bool {
+    pub(crate) const fn is_unauthenticated(&self) -> bool {
         matches!(self.status, StatusCode::UNAUTHORIZED)
     }
 
-    pub(super) fn unauthenticated() -> Self {
+    pub(crate) fn unauthenticated() -> Self {
         let mut error = Self::new(
             StatusCode::UNAUTHORIZED,
             "unauthenticated",
@@ -77,7 +77,7 @@ impl ApiError {
         error
     }
 
-    pub(super) fn invalid_client() -> Self {
+    pub(crate) fn invalid_client() -> Self {
         let mut error = Self::new(
             StatusCode::UNAUTHORIZED,
             "invalid_client",
@@ -87,7 +87,7 @@ impl ApiError {
         error
     }
 
-    pub(super) fn forbidden(code: &'static str) -> Self {
+    pub(crate) fn forbidden(code: &'static str) -> Self {
         Self::new(
             StatusCode::FORBIDDEN,
             code,
@@ -95,7 +95,7 @@ impl ApiError {
         )
     }
 
-    pub(super) fn not_found() -> Self {
+    pub(crate) fn not_found() -> Self {
         Self::new(
             StatusCode::NOT_FOUND,
             "not_found",
@@ -103,7 +103,7 @@ impl ApiError {
         )
     }
 
-    pub(super) fn conflict(code: &'static str) -> Self {
+    pub(crate) fn conflict(code: &'static str) -> Self {
         Self::new(
             StatusCode::CONFLICT,
             code,
@@ -111,7 +111,15 @@ impl ApiError {
         )
     }
 
-    pub(super) fn gone(code: &'static str) -> Self {
+    pub(crate) fn management_moved() -> Self {
+        Self::new(
+            StatusCode::GONE,
+            "management_moved_to_honeycomb",
+            "Manage applications, bundles, scope reviews and testing environments in Honeycomb.",
+        )
+    }
+
+    pub(crate) fn gone(code: &'static str) -> Self {
         Self::new(
             StatusCode::GONE,
             code,
@@ -119,7 +127,7 @@ impl ApiError {
         )
     }
 
-    pub(super) fn precondition_failed() -> Self {
+    pub(crate) fn precondition_failed() -> Self {
         Self::new(
             StatusCode::PRECONDITION_FAILED,
             "version_mismatch",
@@ -127,11 +135,11 @@ impl ApiError {
         )
     }
 
-    pub(super) fn precondition(code: &'static str, message: &'static str) -> Self {
+    pub(crate) fn precondition(code: &'static str, message: &'static str) -> Self {
         Self::new(StatusCode::PRECONDITION_FAILED, code, message)
     }
 
-    pub(super) fn precondition_required(precondition: &'static str) -> Self {
+    pub(crate) fn precondition_required(precondition: &'static str) -> Self {
         Self {
             status: StatusCode::PRECONDITION_REQUIRED,
             code: "precondition_required",
@@ -145,7 +153,7 @@ impl ApiError {
         }
     }
 
-    pub(super) fn rate_limited(
+    pub(crate) fn rate_limited(
         limit: u64,
         remaining: u64,
         reset_after_seconds: u64,
@@ -171,7 +179,7 @@ impl ApiError {
         }
     }
 
-    pub(super) fn internal(category: &'static str) -> Self {
+    pub(crate) fn internal(category: &'static str) -> Self {
         tracing::error!(error.category = category, "applications feature failure");
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -48,8 +48,32 @@ pub struct Settings {
     pub worker: WorkerSettings,
     /// Testing-environment plane, absent when the feature is not deployed.
     pub testing: Option<TestingSettings>,
+    /// Dedicated Honeycomb integration, disabled until explicitly provisioned.
+    pub honeycomb: Option<HoneycombSettings>,
     /// Tracing filter directive.
     pub log_filter: String,
+}
+
+/// Server-to-server credentials never reuse the Honeycomb application's secret.
+#[derive(Clone, Debug)]
+pub struct HoneycombSettings {
+    /// Canonical application identity to which acting-user tokens must be issued.
+    pub app_id: String,
+    /// SHA-256 digest of a random 32-byte integration credential, lowercase hex.
+    pub credential_sha256: SecretString,
+    /// Explicit permission for actorless scheduled test lifecycle instructions.
+    pub scheduled_testing: bool,
+}
+
+/// Dedicated management subscription; never uses an application's webhook key.
+#[derive(Clone, Debug)]
+pub struct HoneycombNotificationSettings {
+    /// Honeycomb application receiving this subscription.
+    pub app_id: String,
+    /// Operator-configured HTTPS destination.
+    pub url: Url,
+    /// Independent HMAC-SHA256 signing key, at least 32 bytes.
+    pub signing_key: SecretString,
 }
 
 /// Shared testing database and testing-environment lifecycle policy.
@@ -62,9 +86,9 @@ pub struct Settings {
 pub struct TestingSettings {
     /// Pool settings for the shared testing database.
     pub database: DatabaseSettings,
-    /// Days without activity after which an environment is auto-deleted.
+    /// Legacy default inactivity policy supplied to Honeycomb; IAM does not schedule deletion.
     pub idle_days: u16,
-    /// Days a deleted environment remains recoverable before permanent purge.
+    /// Legacy recovery policy; Honeycomb sends explicit restore or purge instructions.
     pub recovery_days: u16,
     /// Environments one organization may hold at once.
     pub max_per_organization: u16,
@@ -117,6 +141,8 @@ pub struct WorkerProcessSettings {
     pub worker: WorkerSettings,
     /// Testing-environment plane, absent when the feature is not deployed.
     pub testing: Option<TestingSettings>,
+    /// Optional independent signed management subscription.
+    pub honeycomb_notifications: Option<HoneycombNotificationSettings>,
     /// Tracing filter directive.
     pub log_filter: String,
 }
@@ -344,6 +370,89 @@ pub enum SettingsError {
     },
 }
 
+fn honeycomb_notification_settings() -> Result<Option<HoneycombNotificationSettings>, SettingsError>
+{
+    let url = optional("IAM_HONEYCOMB_NOTIFICATION_URL");
+    let key = optional("IAM_HONEYCOMB_NOTIFICATION_SIGNING_KEY");
+    if url.is_none() && key.is_none() {
+        return Ok(None);
+    }
+    let url: Url = url
+        .ok_or(SettingsError::Missing("IAM_HONEYCOMB_NOTIFICATION_URL"))?
+        .parse()
+        .map_err(|_| invalid("IAM_HONEYCOMB_NOTIFICATION_URL", "expected an HTTPS URL"))?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(invalid(
+            "IAM_HONEYCOMB_NOTIFICATION_URL",
+            "expected HTTPS without user info, query or fragment",
+        ));
+    }
+    let key = key.ok_or(SettingsError::Missing(
+        "IAM_HONEYCOMB_NOTIFICATION_SIGNING_KEY",
+    ))?;
+    if key.len() < 32 || key.len() > 512 {
+        return Err(invalid(
+            "IAM_HONEYCOMB_NOTIFICATION_SIGNING_KEY",
+            "expected 32-512 bytes of independently generated secret material",
+        ));
+    }
+    Ok(Some(HoneycombNotificationSettings {
+        app_id: required("IAM_HONEYCOMB_APP_ID")?,
+        url,
+        signing_key: key.into(),
+    }))
+}
+
+fn honeycomb_settings() -> Result<Option<HoneycombSettings>, SettingsError> {
+    let app = optional("IAM_HONEYCOMB_APP_ID");
+    let digest = optional("IAM_HONEYCOMB_CREDENTIAL_SHA256");
+    if app.is_none() && digest.is_none() {
+        return Ok(None);
+    }
+    let app_id = app.ok_or(SettingsError::Missing("IAM_HONEYCOMB_APP_ID"))?;
+    let valid = app_id.split_once('>').is_some_and(|(org, app)| {
+        !org.is_empty()
+            && !app.is_empty()
+            && [org, app].iter().all(|part| {
+                part.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'_' | b'-')
+                })
+            })
+    });
+    if !valid {
+        return Err(SettingsError::Invalid {
+            name: "IAM_HONEYCOMB_APP_ID",
+            reason: "expected a canonical org>app identifier".into(),
+        });
+    }
+    let digest = digest.ok_or(SettingsError::Missing("IAM_HONEYCOMB_CREDENTIAL_SHA256"))?;
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(SettingsError::Invalid {
+            name: "IAM_HONEYCOMB_CREDENTIAL_SHA256",
+            reason:
+                "expected the lowercase SHA-256 hex digest of the dedicated integration credential"
+                    .into(),
+        });
+    }
+    Ok(Some(HoneycombSettings {
+        app_id,
+        credential_sha256: SecretString::from(digest),
+        scheduled_testing: parse_or("IAM_HONEYCOMB_SCHEDULED_TESTING", "false")?,
+    }))
+}
+
 impl Settings {
     /// Loads and validates settings from the current process environment.
     ///
@@ -359,6 +468,7 @@ impl Settings {
         let providers = provider_settings()?;
         let worker = worker_settings()?;
         let testing = testing_settings(environment)?;
+        let honeycomb = honeycomb_settings()?;
 
         validate_environment_safety(environment, &server, &database, &providers)?;
         let log_filter = string_in_range(
@@ -376,6 +486,7 @@ impl Settings {
             providers,
             worker,
             testing,
+            honeycomb,
             log_filter,
         })
     }
@@ -397,6 +508,7 @@ impl WorkerProcessSettings {
         let providers = worker_provider_settings()?;
         let worker = worker_settings()?;
         let testing = testing_settings(environment)?;
+        let honeycomb_notifications = honeycomb_notification_settings()?;
         let log_filter = string_in_range(
             "IAM_LOG_FILTER",
             value_or("IAM_LOG_FILTER", "silicon_iam=info"),
@@ -422,6 +534,7 @@ impl WorkerProcessSettings {
             providers,
             worker,
             testing,
+            honeycomb_notifications,
             log_filter,
         })
     }

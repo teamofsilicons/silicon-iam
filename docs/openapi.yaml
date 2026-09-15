@@ -478,7 +478,7 @@ paths:
       operationId: listLoginOrganizations
       summary: Validate an application and list organization choices for the IAM user.
       description: Direct IAM Carbon/Silicon bearer only. Application credentials cannot list unselected organizations. Previously selected organizations on this parent IAM session are marked authorized.
-      security: [{ bearerAuth: [] }]
+      security: [{ iamBearer: [] }]
       parameters:
         - { name: app_id, in: query, required: true, schema: { $ref: '#/components/schemas/AppId' } }
       responses:
@@ -498,7 +498,7 @@ paths:
       operationId: listBatchLoginOrganizations
       summary: Validate 1–100 apps and list the IAM user's organization choices for each.
       description: Direct IAM Carbon/Silicon session only. Rejects unknown, unverified, duplicate or malformed apps as a whole. Does not grant consent or mint tokens.
-      security: [{ bearerAuth: [] }]
+      security: [{ iamBearer: [] }]
       parameters:
         - { name: app_ids, in: query, required: true, schema: { type: string }, description: Comma-separated canonical app IDs; 1–100 unique apps. }
       responses:
@@ -519,7 +519,7 @@ paths:
       operationId: issueBatchShortLivedTokens
       summary: Atomically authorize 1–100 applications from one direct IAM session.
       description: Each app receives independent additive organization consent and a two-minute single-use SLT. Every selection must be explicit and active. Any failure rolls back the whole batch. Replay is bound to the exact request and parent IAM session; it never extends token expiry. Applications exchange only their own SLT with their own secret at the existing token endpoint.
-      security: [{ bearerAuth: [] }]
+      security: [{ iamBearer: [] }]
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
@@ -553,7 +553,7 @@ paths:
         another login. The token is valid for two minutes and for a single
         exchange, and the application completes it at /api/v1/app-auth/tokens
         exactly as it would one delivered through a redirect.
-      security: [{ bearerAuth: [] }]
+      security: [{ iamBearer: [] }]
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
@@ -3052,13 +3052,13 @@ paths:
       tags: [Applications]
       operationId: discoverApplicationBaseUrl
       description: >-
-        Returns the public backend base URL of a verified Application. Any
-        authenticated Application may discover any other Application,
-        including one outside its organization. The caller is derived only
-        from HTTP Basic credentials. With an X-Testing-Environment-Key, both
-        the caller credential and target resolve exclusively inside that
-        environment.
-      security: [{ applicationBasic: [] }]
+        Returns the accepted backend origin. Public applications are discoverable
+        without authentication. Private applications require current owning-organization
+        membership and an authorized user grant, or the application's own credential
+        or a same-organization application with an effective external scope for it.
+        Supplied credentials are always validated. Invalid or unauthorized private
+        lookups do not disclose the origin. Testing selection never falls back to production.
+      security: [{}, { applicationBasic: [] }, { iamBearer: [] }]
       parameters: [{ $ref: '#/components/parameters/AppIdPath' }]
       responses:
         '200':
@@ -3478,7 +3478,7 @@ paths:
             schema: { $ref: '#/components/schemas/OboExchangeRequest' }
       responses:
         '201':
-          description: Random single-use proof bound to same-organization source, audience, subject token, actor, registered endpoint, method, path, body digest, and exact metadata; valid for at most 60 seconds.
+          description: Random single-use proof bound to same-organization source, audience, subject token, actor, registered endpoint, method, path, body digest, and exact metadata; valid for the provider-configured ttl_seconds (default 300 seconds).
           headers:
             Cache-Control: { schema: { const: no-store } }
             Pragma: { schema: { const: no-cache } }
@@ -4064,6 +4064,630 @@ paths:
                   policy: { type: object, additionalProperties: true }
 
 
+  /api/v1/honeycomb/inventory:
+    get:
+      tags: [Honeycomb integration]
+      operationId: honeycombInventory
+      summary: Enumerate existing authentication records for adoption and reconciliation
+      security: [{ HoneycombService: [] }]
+      parameters:
+      - { name: kind, in: query, required: true, schema: { type: string, enum: [applications, bundles, testing-environments] } }
+      - { name: after, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Up to 100 secret-free items and an optional next_after cursor. Includes retired records; reconcile each current record.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HoneycombRecord' }
+  /api/v1/honeycomb/bundles/{bundle_id}:
+    get:
+      tags: [Honeycomb integration]
+      operationId: honeycombBundle
+      summary: Reconcile accepted bundle membership and revision
+      security: [{ HoneycombService: [] }]
+      parameters:
+      - { name: bundle_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Secret-free accepted bundle configuration, including deletion state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HoneycombRecord' }
+
+  "/api/v1/honeycomb/scope-catalog":
+    get:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombScopeCatalog
+      summary: Honeycomb scope catalog
+      security:
+      - HoneycombService: []
+      parameters:
+      - { name: app_id, in: query, schema: { type: string }, description: Filter external provider app. }
+      - { name: org_id, in: query, schema: { type: string }, description: Include organization eligibility. }
+      responses:
+        '200':
+          description: IAM accepted state or operation receipt. Responses must not be
+            cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombRecord"
+        default:
+          description: Structured IAM rejection. A conflict does not imply that an earlier
+            pending operation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+  "/api/v1/honeycomb/applications/{app_id}":
+    get:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombApplication
+      summary: Honeycomb application
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: IAM accepted state or operation receipt. Responses must not be
+            cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombRecord"
+        default:
+          description: Structured IAM rejection. A conflict does not imply that an earlier
+            pending operation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+  "/api/v1/honeycomb/operations/{operation_id}":
+    get:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombOperation
+      summary: Honeycomb operation
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: operation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: IAM accepted state or operation receipt. Responses must not be
+            cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombRecord"
+        default:
+          description: Structured IAM rejection. A conflict does not imply that an earlier
+            pending operation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+  "/api/v1/honeycomb/applications/{app_id}/configuration":
+    put:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombConfigureApplication
+      summary: Honeycomb configure application
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: true
+        schema:
+          type: string
+        description: Current IAM oat_ token issued to the configured Honeycomb app.
+          Required for user actions. Scheduled maintenance requires explicit service
+          authority.
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '200':
+          description: IAM accepted state or operation receipt. Responses must not be
+            cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombReceipt"
+        default:
+          description: Structured IAM rejection. A conflict does not imply that an earlier
+            pending operation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombConfiguration"
+  "/api/v1/honeycomb/applications/{app_id}/secret-rotations":
+    post:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombRotateSecret
+      summary: Honeycomb rotate secret
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: true
+        schema:
+          type: string
+        description: Current IAM oat_ token issued to the configured Honeycomb app.
+          Required for user actions. Scheduled maintenance requires explicit service
+          authority.
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      - name: X-Step-Up-Token
+        in: header
+        schema:
+          type: string
+        description: Verified-channel assertion bound to the target application UUID;
+          required by secret rotation and webhook approval.
+      responses:
+        '200':
+          description: IAM accepted state or operation receipt. Responses must not be
+            cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombReceipt"
+        default:
+          description: Structured IAM rejection. A conflict does not imply that an earlier
+            pending operation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombSecretRotation"
+  "/api/v1/honeycomb/applications/{app_id}/webhook-secret-rotations":
+    post:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombRotateWebhookSecret
+      summary: Honeycomb rotate secret
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: true
+        schema:
+          type: string
+        description: Current IAM oat_ token issued to the configured Honeycomb app.
+          Required for user actions. Scheduled maintenance requires explicit service
+          authority.
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      - name: X-Step-Up-Token
+        in: header
+        schema:
+          type: string
+        description: Verified-channel assertion bound to the target application UUID;
+          required by secret rotation and webhook approval.
+      responses:
+        '200':
+          description: IAM accepted state or operation receipt. Responses must not be
+            cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombReceipt"
+        default:
+          description: Structured IAM rejection. A conflict does not imply that an earlier
+            pending operation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombWebhookSecretRotation"
+  "/api/v1/honeycomb/applications/{app_id}/scope-decisions":
+    post:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombScopeDecision
+      summary: Honeycomb scope decision
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: true
+        schema:
+          type: string
+        description: Current IAM oat_ token issued to the configured Honeycomb app.
+          Required for user actions. Scheduled maintenance requires explicit service
+          authority.
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '200':
+          description: IAM accepted state or operation receipt. Responses must not be
+            cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombReceipt"
+        default:
+          description: Structured IAM rejection. A conflict does not imply that an earlier
+            pending operation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombScopeDecision"
+  "/api/v1/honeycomb/applications/{app_id}/webhook-approvals":
+    post:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombApproveWebhook
+      summary: Honeycomb approve webhook
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: true
+        schema:
+          type: string
+        description: Current IAM oat_ token issued to the configured Honeycomb app.
+          Required for user actions. Scheduled maintenance requires explicit service
+          authority.
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      - name: X-Step-Up-Token
+        in: header
+        schema:
+          type: string
+        description: Verified-channel assertion bound to the target application UUID;
+          required by secret rotation and webhook approval.
+      responses:
+        '200':
+          description: IAM accepted state or operation receipt. Responses must not be
+            cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombReceipt"
+        default:
+          description: Structured IAM rejection. A conflict does not imply that an earlier
+            pending operation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombWebhookApproval"
+  "/api/v1/honeycomb/bundles/{bundle_id}/configuration":
+    put:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombConfigureBundle
+      summary: Honeycomb configure bundle
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: bundle_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: true
+        schema:
+          type: string
+        description: Current IAM oat_ token issued to the configured Honeycomb app.
+          Required for user actions. Scheduled maintenance requires explicit service
+          authority.
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '200':
+          description: IAM accepted state or operation receipt. Responses must not be
+            cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombReceipt"
+        default:
+          description: Structured IAM rejection. A conflict does not imply that an earlier
+            pending operation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombBundleConfiguration"
+  "/api/v1/honeycomb/events":
+    get:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombEvents
+      summary: Honeycomb events
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: after
+        in: query
+        schema:
+          type: string
+          format: uuid
+        description: Archive pagination only. Concurrent writes require signed notifications
+          and periodic current-record reconciliation.
+      responses:
+        '200':
+          description: IAM accepted state or operation receipt. Responses must not be
+            cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombRecord"
+        default:
+          description: Structured IAM rejection. A conflict does not imply that an earlier
+            pending operation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+  "/api/v1/honeycomb/events/{event_id}/replay":
+    post:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombReplayEvent
+      summary: Honeycomb replay event
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: IAM accepted state or operation receipt. Responses must not be
+            cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombRecord"
+        default:
+          description: Structured IAM rejection. A conflict does not imply that an earlier
+            pending operation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+  "/api/v1/honeycomb/testing-environments/{environment_id}":
+    get:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombTestingRecord
+      summary: Honeycomb testing record
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: environment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: IAM accepted state or operation receipt. Responses must not be
+            cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombRecord"
+        default:
+          description: Structured IAM rejection. A conflict does not imply that an earlier
+            pending operation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+  "/api/v1/honeycomb/testing-environments/{environment_id}/operations":
+    post:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombTestingInstruction
+      summary: Honeycomb testing instruction
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: environment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: false
+        schema:
+          type: string
+        description: Current IAM oat_ token issued to the configured Honeycomb app.
+          Required for user actions. Scheduled maintenance requires explicit service
+          authority.
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '200':
+          description: IAM accepted state or operation receipt. Responses must not be
+            cached.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombReceipt"
+        default:
+          description: Structured IAM rejection. A conflict does not imply that an earlier
+            pending operation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombTestingInstruction"
 webhooks:
   applicationEvent:
     post:
@@ -4114,6 +4738,11 @@ webhooks:
 
 components:
   securitySchemes:
+    HoneycombService:
+      type: http
+      scheme: bearer
+      bearerFormat: hck_
+      description: Dedicated provisioned service credential. Ordinary app credentials cannot grant this authority.
     iamBearer:
       type: http
       scheme: bearer
@@ -5792,6 +6421,7 @@ components:
       required: [id, app_id, org_id, created_by, base_url, requested_scopes, approved_scopes, obo_endpoints, status, webhook, has_pending_changes, version, created_at, updated_at, app_scope, effective_app_scope, webhook_scope, scope_version, testing_idle_days]
       description: Organization-owned Application. created_by is immutable provenance and does not confer management authority.
       properties:
+        visibility: { type: string, enum: [private, public], description: Accepted application visibility. }
         app_scope: { $ref: '#/components/schemas/ApplicationScope' }
         webhook_scope: { type: array, uniqueItems: true, items: { $ref: '#/components/schemas/ApplicationWebhookScope' } }
         obo_review_message: { type: string, maxLength: 10000 }
@@ -6043,9 +6673,11 @@ components:
             testing_key: { $ref: '#/components/schemas/TestingEnvironmentKeyValue' }
             metadata:
               type: object
-              required: [spec_version, event_id, event_type, occurred_at, organization_id, aggregate]
+              required: [spec_version, event_id, event_type, occurred_at, organization_id, aggregate, environment_id, generation]
               additionalProperties: false
               properties:
+                environment_id: { type: string, format: uuid }
+                generation: { type: integer, format: int64, minimum: 1 }
                 spec_version: { const: '1.0' }
                 event_id: { type: string, format: uuid }
                 event_type:
@@ -6133,6 +6765,7 @@ components:
       additionalProperties: false
       description: Callable endpoint definition configurable only by a current owner/admin of the Application's organization.
       properties:
+        ttl_seconds: { type: integer, format: int32, minimum: 1, maximum: 2147483647, default: 300, description: Provider-configured proof lifetime in seconds; fixed at issuance. }
         critical: { type: boolean, description: Whether calling this endpoint requires approval from the audience application. }
         endpoint_id:
           type: string
@@ -6229,7 +6862,7 @@ components:
         testing_context: { $ref: '#/components/schemas/OboTestingContext' }
         access_proof: { type: string, pattern: '^obo_[A-Za-z0-9_-]{43}$' }
         proof_id: { type: string, format: uuid }
-        expires_in: { type: integer, minimum: 1, maximum: 60, default: 60 }
+        expires_in: { type: integer, minimum: 1, maximum: 2147483647, default: 300 }
         expires_at: { type: string, format: date-time }
     OboVerifyRequest:
       type: object
@@ -6513,3 +7146,278 @@ components:
       type: object
       additionalProperties: true
       description: Scope-filtered application bearer response. Fields absent from approved user scopes are omitted. An omitted field is undisclosed and grants no authority.
+    HoneycombWebhook:
+      x-redact-debug: true
+      type: object
+      additionalProperties: false
+      required:
+      - url
+      - scope
+      properties:
+        url:
+          type: string
+        secret:
+          type: string
+          nullable: true
+          writeOnly: true
+        scope:
+          type: array
+          items:
+            type: string
+    HoneycombConfiguration:
+      x-redact-debug: true
+      type: object
+      additionalProperties: false
+      required:
+      - operation_id
+      - expected_iam_revision
+      - configuration_revision
+      - app_id
+      - org_id
+      - visibility
+      - availability
+      - webhook
+      - app_scope
+      properties:
+        operation_id: &1
+          type: string
+          format: uuid
+        expected_iam_revision: &2
+          type: integer
+          format: int64
+          minimum: 0
+        environment_id: &3
+          type: string
+          format: uuid
+          nullable: true
+        configuration_revision:
+          type: integer
+          format: int64
+          minimum: 1
+        app_id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+          nullable: true
+        logo_url:
+          type: string
+          nullable: true
+        base_url:
+          type: string
+          nullable: true
+        visibility:
+          type: string
+          enum:
+          - private
+          - public
+        availability:
+          type: string
+          enum:
+          - active
+          - disabled
+        publication_approved:
+          type: boolean
+          default: false
+        webhook:
+          "$ref": "#/components/schemas/HoneycombWebhook"
+        app_scope:
+          "$ref": "#/components/schemas/ApplicationScope"
+        obo_endpoints:
+          type: array
+          items:
+            "$ref": "#/components/schemas/ApplicationOboEndpoint"
+        obo_review_message:
+          type: string
+          nullable: true
+        testing_idle_days:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 36500
+          default: 30
+    HoneycombSecretRotation:
+      type: object
+      additionalProperties: false
+      required:
+      - operation_id
+      - expected_iam_revision
+      properties:
+        operation_id: *1
+        expected_iam_revision: *2
+        environment_id: *3
+    HoneycombScopeDecision:
+      type: object
+      additionalProperties: false
+      required:
+      - operation_id
+      - expected_iam_revision
+      - scopes
+      - decision
+      properties:
+        operation_id: *1
+        expected_iam_revision: *2
+        environment_id: *3
+        target_app_id:
+          type: string
+          nullable: true
+        scopes:
+          type: array
+          items:
+            type: string
+        decision:
+          type: string
+          enum:
+          - approve
+          - revoke
+    HoneycombWebhookApproval:
+      type: object
+      additionalProperties: false
+      required:
+      - operation_id
+      - expected_iam_revision
+      - pending_endpoint_id
+      properties:
+        operation_id: *1
+        expected_iam_revision: *2
+        environment_id: *3
+        pending_endpoint_id:
+          type: string
+          format: uuid
+    HoneycombBundleConfiguration:
+      type: object
+      additionalProperties: false
+      required:
+      - operation_id
+      - expected_iam_revision
+      - configuration_revision
+      - app_ids
+      properties:
+        operation_id: *1
+        expected_iam_revision: *2
+        environment_id: *3
+        configuration_revision:
+          type: integer
+          format: int64
+          minimum: 1
+        app_name:
+          type: string
+          nullable: true
+        app_logo:
+          type: string
+          nullable: true
+        app_ids:
+          type: array
+          items:
+            type: string
+        deleted:
+          type: boolean
+          default: false
+    HoneycombTestingInstruction:
+      type: object
+      additionalProperties: false
+      required:
+      - operation_id
+      - expected_iam_revision
+      - environment_id
+      - generation
+      - operation
+      properties:
+        operation_id: *1
+        expected_iam_revision: *2
+        environment_id: *3
+        generation:
+          type: integer
+          format: int64
+          minimum: 1
+        operation:
+          type: string
+          enum:
+          - prepare
+          - import
+          - rotate-key
+          - clean
+          - disable
+          - restore
+          - purge
+          - activate
+        org_id:
+          type: string
+          nullable: true
+        name:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        app_id:
+          type: string
+          nullable: true
+        source_revisions:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+            minimum: 1
+    HoneycombReceipt:
+      x-redact-debug: true
+      type: object
+      additionalProperties: true
+      required:
+      - operation_id
+      - state
+      - iam_revision
+      properties:
+        operation_id:
+          type: string
+          format: uuid
+        state:
+          type: string
+          enum:
+          - pending
+          - accepted
+          - rejected
+        iam_revision:
+          type: integer
+          format: int64
+          minimum: 0
+        effective_configuration:
+          type: object
+          additionalProperties: true
+        environment:
+          type: object
+          additionalProperties: true
+        app_secret:
+          type: string
+          description: One-time secret. Replayable for ten minutes; absent from reconciliation.
+        key:
+          type: string
+          description: Protected test root key, returned only by preparation and rotation.
+        secret_replay_expired:
+          type: boolean
+        app_id: { type: string }
+        application_id: { type: string, format: uuid }
+        configuration_revision: { type: integer, format: int64 }
+        credential_version: { type: integer, format: int64 }
+        webhook_secret_version: { type: integer, format: int64 }
+        webhook_endpoint_id: { type: string, format: uuid }
+        environment_id: { type: string, format: uuid }
+        iam_completion: { type: boolean }
+        source_revisions: { type: object, additionalProperties: { type: integer, format: int64 } }
+        required_approvals: { type: object, additionalProperties: true }
+    HoneycombRecord:
+      type: object
+      additionalProperties: true
+      description: Accepted IAM state or durable operation status. Never contains credentials
+        or actor tokens.
+    HoneycombWebhookSecretRotation:
+      type: object
+      x-redact-debug: true
+      additionalProperties: false
+      required: [operation_id, expected_iam_revision, webhook_secret]
+      properties:
+        operation_id: { type: string, format: uuid }
+        expected_iam_revision: { type: integer, format: int64, minimum: 0 }
+        environment_id: { type: [string, 'null'], format: uuid }
+        webhook_secret: { type: string, minLength: 32, maxLength: 512, writeOnly: true }

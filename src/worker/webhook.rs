@@ -28,6 +28,7 @@ use super::{
 struct ClaimedDelivery {
     delivery_id: Uuid,
     testing_environment_id: Option<Uuid>,
+    testing_generation: i64,
     cycle_attempt_count: i32,
     outbox_event_id: Uuid,
     recipient_kind: String,
@@ -110,6 +111,8 @@ struct TestEvent<'a> {
 
 #[derive(Serialize)]
 struct EventMetadata<'a> {
+    environment_id: Option<Uuid>,
+    generation: i64,
     spec_version: &'static str,
     event_id: Uuid,
     event_type: &'a str,
@@ -240,6 +243,7 @@ async fn process_pool(context: &WorkerContext, pool: &PgPool) -> Result<(), AppE
             claimed.id AS delivery_id,
             (to_jsonb(event) ->> 'testing_environment_id')::uuid
                 AS testing_environment_id,
+            event.testing_generation,
             claimed.cycle_attempt_count,
             claimed.outbox_event_id,
             recipient.recipient_kind,
@@ -336,21 +340,23 @@ async fn process_delivery(
         })?;
     let wire_event_type = wire_event_type(&delivery.event_type, delivery.schema_version)?;
     let testing_key = match delivery.testing_environment_id {
-        Some(environment_id) => match load_testing_key(context, environment_id).await {
-            Ok(key) => Some(key),
-            Err(error) => {
-                finish_failure(
-                    context,
-                    pool,
-                    delivery,
-                    error.code(),
-                    error.retryable(),
-                    None,
-                )
-                .await?;
-                return Ok(());
+        Some(environment_id) => {
+            match load_testing_key(context, environment_id, delivery.testing_generation).await {
+                Ok(key) => Some(key),
+                Err(error) => {
+                    finish_failure(
+                        context,
+                        pool,
+                        delivery,
+                        error.code(),
+                        error.retryable(),
+                        None,
+                    )
+                    .await?;
+                    return Ok(());
+                }
             }
-        },
+        }
         None => None,
     };
     let body = serialize_event(
@@ -600,6 +606,8 @@ fn serialize_event(
             test: TestEvent {
                 testing_key: testing_key.expose_secret(),
                 metadata: EventMetadata {
+                    environment_id: delivery.testing_environment_id,
+                    generation: delivery.testing_generation,
                     spec_version: "1.0",
                     event_id: delivery.outbox_event_id,
                     event_type,
@@ -640,11 +648,13 @@ fn serialize_event(
 async fn load_testing_key(
     context: &WorkerContext,
     testing_environment_id: Uuid,
+    generation: i64,
 ) -> Result<SecretString, WebhookError> {
     let material = sqlx::query_as::<_, TestingEnvironmentKeyMaterial>(
-        "SELECT * FROM iam_private.get_worker_testing_environment_webhook_key($1)",
+        "SELECT * FROM iam_private.get_worker_testing_environment_webhook_key_v2($1,$2)",
     )
     .bind(testing_environment_id)
+    .bind(generation)
     .fetch_optional(&context.pool)
     .await
     .map_err(|_| WebhookError::Unavailable)?
@@ -949,6 +959,7 @@ mod tests {
         ClaimedDelivery {
             delivery_id: Uuid::from_u128(1),
             testing_environment_id,
+            testing_generation: 1,
             cycle_attempt_count: 1,
             outbox_event_id: Uuid::from_u128(2),
             recipient_kind: "application".to_owned(),

@@ -2,7 +2,6 @@
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -15,10 +14,7 @@ use crate::{
     error::{ApiError, Envelope, Error, Result},
     models,
     request::Mutation,
-    update::{
-        CLIENT_CRATE, CLIENT_VERSION, Release, UpdatePolicy, UpdateStatus, check, find_manifest,
-        update_dependency,
-    },
+    update::UpdateStatus,
 };
 
 /// The API version this client speaks.
@@ -28,16 +24,14 @@ const SUPPORTED_VERSIONS_HEADER: &str = "silicon-iam-supported-api-versions";
 const SELECTED_VERSION_HEADER: &str = "silicon-iam-api-version";
 const ENVIRONMENT_KEY_HEADER: &str = "x-testing-environment-key";
 const MAX_RESPONSE_BODY_BYTES: usize = 4 * 1024 * 1024;
-const UPDATE_CHECK_INTERVAL: Duration = Duration::from_hours(1);
 
 /// A configured Silicon IAM client.
 ///
 /// The client stores no IAM session state, never caches an API response, and
 /// never refreshes a credential on your behalf -- a token that expires
-/// produces an error, and renewing it is the caller's decision. Its automatic
-/// dependency updater may advance the consuming Cargo project's lockfile; it
-/// is independently opt-out and never changes the running code. One client
-/// can be shared across tasks and threads.
+/// produces an error, and renewing it is the caller's decision. Dependency
+/// versions are controlled by the consuming project. This client never updates
+/// its own code or the project lockfile. It can be shared across tasks and threads.
 #[derive(Clone, Debug)]
 pub struct Client {
     http: reqwest::Client,
@@ -45,7 +39,6 @@ pub struct Client {
     credential: Credential,
     environment: Option<EnvironmentKey>,
     testing_application: Option<Credential>,
-    updater: Arc<AutomaticUpdater>,
     telemetry: Option<crate::telemetry::Telemetry>,
     telemetry_enabled: bool,
 }
@@ -59,8 +52,6 @@ pub struct ClientBuilder {
     testing_application: Option<Credential>,
     timeout: Duration,
     user_agent: Option<String>,
-    update_policy: UpdatePolicy,
-    update_manifest: Option<PathBuf>,
     telemetry_enabled: bool,
 }
 
@@ -103,18 +94,10 @@ impl Client {
         self.environment.as_ref()
     }
 
-    /// The result of this client's latest automatic update. Clones share the
-    /// same last-check time and result; independently built clients do not.
-    ///
-    /// After an IAM request completes, the client checks and updates only if
-    /// it has never checked or its previous attempt was at least one hour ago.
-    /// No timer or idle background task runs. The request's original result is
-    /// preserved even if the update fails. Updating a lockfile cannot replace
-    /// code in the running process, so [`UpdateStatus::Updated`] means the next
-    /// Cargo build will load the new release.
+    /// Runtime dependency updates are disabled, including for older builder settings.
     #[must_use]
     pub fn update_status(&self) -> UpdateStatus {
-        self.updater.status()
+        UpdateStatus::Disabled
     }
 
     /// The same client, presenting a different credential.
@@ -407,7 +390,7 @@ impl Client {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<R> {
-        let result = async {
+        async {
             let body = self.send(request).await?;
             if body.is_empty() {
                 return Err(Error::Decode(
@@ -417,22 +400,18 @@ impl Client {
             serde_json::from_slice(&body)
                 .map_err(|error| Error::Decode(format!("unexpected response shape: {error}")))
         }
-        .await;
-        self.updater.run().await;
-        result
+        .await
     }
 
     pub(crate) async fn send_empty(&self, request: reqwest::RequestBuilder) -> Result<()> {
-        let result = self.send(request).await.map(|_| ());
-        self.updater.run().await;
-        result
+        self.send(request).await.map(|_| ())
     }
 
     pub(crate) async fn send_negotiation(
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<models::ApiVersionNegotiation> {
-        let result = async {
+        async {
             let (headers, body) = self.send_response(request).await?;
             if body.is_empty() {
                 return Err(Error::Decode(
@@ -448,9 +427,7 @@ impl Client {
             validate_negotiation(&headers, &negotiated)?;
             Ok(negotiated)
         }
-        .await;
-        self.updater.run().await;
-        result
+        .await
     }
 
     /// Sends one request and turns anything other than success into an error.
@@ -689,8 +666,6 @@ impl ClientBuilder {
             testing_application: None,
             timeout: Duration::from_secs(30),
             user_agent: None,
-            update_policy: UpdatePolicy::Automatic,
-            update_manifest: None,
             telemetry_enabled: true,
         })
     }
@@ -726,23 +701,9 @@ impl ClientBuilder {
         self
     }
 
-    /// Enables or disables automatic client dependency updates.
-    ///
-    /// Enabled by default. After the first IAM request finishes, the client
-    /// checks crates.io and advances the nearest Cargo project's lockfile
-    /// when a newer stable `silicon-iam-client` exists. Later requests repeat
-    /// the check only if the previous attempt was at least one hour ago.
-    /// There is no idle timer or daemon, and updates never replace the IAM
-    /// request's result. Set this to `false`, or set
-    /// `SILICON_IAM_CLIENT_AUTO_UPDATE=false`, to make no update request and
-    /// invoke no Cargo process.
+    /// Compatibility setting. Runtime dependency updates are always disabled.
     #[must_use]
-    pub const fn auto_update(mut self, enabled: bool) -> Self {
-        self.update_policy = if enabled {
-            UpdatePolicy::Automatic
-        } else {
-            UpdatePolicy::Disabled
-        };
+    pub const fn auto_update(self, _enabled: bool) -> Self {
         self
     }
 
@@ -753,14 +714,9 @@ impl ClientBuilder {
         self
     }
 
-    /// Selects the Cargo manifest whose lockfile automatic updates maintain.
-    ///
-    /// Without this, the client searches from the process working directory
-    /// toward the filesystem root. A directory is interpreted as containing
-    /// `Cargo.toml`; a file path is used verbatim.
+    /// Compatibility setting. The client never reads or changes this manifest.
     #[must_use]
-    pub fn update_manifest(mut self, path: impl Into<PathBuf>) -> Self {
-        self.update_manifest = Some(path.into());
+    pub fn update_manifest(self, _path: impl Into<PathBuf>) -> Self {
         self
     }
 
@@ -785,14 +741,6 @@ impl ClientBuilder {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(Error::Transport)?;
-        let environment_policy = UpdatePolicy::from_environment();
-        let update_policy = if self.update_policy == UpdatePolicy::Disabled
-            || environment_policy == UpdatePolicy::Disabled
-        {
-            UpdatePolicy::Disabled
-        } else {
-            UpdatePolicy::Automatic
-        };
         let telemetry_enabled = crate::telemetry::enabled(self.telemetry_enabled);
         let telemetry = crate::telemetry::Telemetry::from_env("rust-client", telemetry_enabled)
             .ok()
@@ -805,162 +753,8 @@ impl ClientBuilder {
             credential: self.credential,
             environment: self.environment,
             testing_application: self.testing_application,
-            updater: Arc::new(AutomaticUpdater::new(update_policy, self.update_manifest)),
         })
     }
-}
-
-#[derive(Debug)]
-struct AutomaticUpdater {
-    policy: UpdatePolicy,
-    manifest: Option<PathBuf>,
-    state: Mutex<AutomaticUpdateState>,
-}
-
-#[derive(Debug, Default)]
-struct AutomaticUpdateState {
-    running: bool,
-    checked_at: Option<Instant>,
-    status: UpdateStatus,
-}
-
-/// Releases the single-flight slot even if the requesting future is cancelled.
-struct AutomaticUpdateRun {
-    updater: Arc<AutomaticUpdater>,
-}
-
-impl AutomaticUpdateRun {
-    fn complete(self, status: UpdateStatus) {
-        if let Ok(mut state) = self.updater.state.lock() {
-            state.status = status;
-        }
-    }
-}
-
-impl Drop for AutomaticUpdateRun {
-    fn drop(&mut self) {
-        if let Ok(mut state) = self.updater.state.lock() {
-            state.running = false;
-        }
-    }
-}
-
-impl AutomaticUpdater {
-    fn new(policy: UpdatePolicy, manifest: Option<PathBuf>) -> Self {
-        Self {
-            policy,
-            manifest,
-            state: Mutex::new(AutomaticUpdateState::default()),
-        }
-    }
-
-    fn status(&self) -> UpdateStatus {
-        self.state.lock().map_or_else(
-            |_| UpdateStatus::Failed {
-                reason: "automatic update status lock was poisoned".to_owned(),
-            },
-            |state| state.status.clone(),
-        )
-    }
-
-    fn set_status(&self, next: UpdateStatus) {
-        if let Ok(mut state) = self.state.lock() {
-            state.status = next;
-        }
-    }
-
-    fn try_start(self: &Arc<Self>) -> Option<AutomaticUpdateRun> {
-        let mut state = self.state.lock().ok()?;
-        if state.running
-            || state
-                .checked_at
-                .is_some_and(|checked_at| checked_at.elapsed() < UPDATE_CHECK_INTERVAL)
-        {
-            return None;
-        }
-        state.running = true;
-        // Record the attempt before any await. A registry failure or cancelled
-        // request must not turn the next IAM call into an immediate retry.
-        state.checked_at = Some(Instant::now());
-        Some(AutomaticUpdateRun {
-            updater: Arc::clone(self),
-        })
-    }
-
-    async fn run(self: &Arc<Self>) {
-        if self.policy == UpdatePolicy::Disabled
-            || UpdatePolicy::from_environment() == UpdatePolicy::Disabled
-        {
-            self.set_status(UpdateStatus::Disabled);
-            return;
-        }
-        // Unit tests exercise request construction without reaching outside
-        // the test process or mutating this workspace's lockfile.
-        if cfg!(test) {
-            return;
-        }
-        self.check_due().await;
-    }
-
-    async fn check_due(self: &Arc<Self>) {
-        let Some(run) = self.try_start() else {
-            return;
-        };
-
-        let manifest = self
-            .manifest
-            .clone()
-            .and_then(normalize_manifest)
-            .or_else(|| {
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|directory| find_manifest(&directory))
-            });
-        let Some(manifest) = manifest else {
-            run.complete(UpdateStatus::NoCargoProject);
-            return;
-        };
-
-        let status = match check(CLIENT_CRATE, CLIENT_VERSION).await {
-            Ok(release) if release.update_available() => {
-                // Keep the single-flight guard inside the blocking operation:
-                // cancelling the caller must not permit a second Cargo update.
-                let _ = tokio::task::spawn_blocking(move || {
-                    run.complete(apply_client_release(&manifest, release));
-                })
-                .await;
-                return;
-            }
-            Ok(release) => UpdateStatus::Current {
-                version: release.current,
-            },
-            Err(error) => UpdateStatus::Failed {
-                reason: error.to_string(),
-            },
-        };
-        run.complete(status);
-    }
-}
-
-fn apply_client_release(manifest: &std::path::Path, release: Release) -> UpdateStatus {
-    match update_dependency(manifest, CLIENT_CRATE, &release.latest) {
-        Ok(()) => UpdateStatus::Updated {
-            from: release.current,
-            to: release.latest,
-        },
-        Err(error) => UpdateStatus::Failed {
-            reason: error.to_string(),
-        },
-    }
-}
-
-fn normalize_manifest(path: PathBuf) -> Option<PathBuf> {
-    let manifest = if path.is_dir() {
-        path.join("Cargo.toml")
-    } else {
-        path
-    };
-    manifest.is_file().then_some(manifest)
 }
 
 /// Recovers the service's envelope without inventing IAM errors for a proxy.
@@ -1028,14 +822,16 @@ mod tests {
 
     use crate::{Credential, EnvironmentKey};
 
-    use super::{AutomaticUpdater, Client, decode_envelope, offered_versions};
-    use crate::update::{UpdatePolicy, UpdateStatus};
+    use super::{Client, decode_envelope, offered_versions};
+    use crate::update::UpdateStatus;
 
-    #[tokio::test]
-    async fn disabling_updates_is_observable_and_does_no_work() {
-        let updater = std::sync::Arc::new(AutomaticUpdater::new(UpdatePolicy::Disabled, None));
-        updater.run().await;
-        assert_eq!(updater.status(), UpdateStatus::Disabled);
+    #[test]
+    fn runtime_updates_cannot_be_enabled() -> crate::Result<()> {
+        let client = Client::builder("https://example.test")?
+            .auto_update(true)
+            .build()?;
+        assert_eq!(client.update_status(), UpdateStatus::Disabled);
+        Ok(())
     }
 
     #[test]

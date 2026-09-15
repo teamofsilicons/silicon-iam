@@ -2470,9 +2470,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.43"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -2855,7 +2855,7 @@ dependencies = [
 
 [[package]]
 name = "silicon-iam-cli"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "clap",
  "http",
@@ -2874,9 +2874,10 @@ dependencies = [
 
 [[package]]
 name = "silicon-iam-client"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "base64 0.22.1",
+ "hex",
  "hmac 0.12.1",
  "http",
  "reqwest",

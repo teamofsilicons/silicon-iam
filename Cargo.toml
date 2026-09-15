@@ -80,6 +80,10 @@ name = "iam-migrate"
 path = "src/bin/iam_migrate.rs"
 
 [[bin]]
+name = "iam-bootstrap-apps"
+path = "src/bin/iam_bootstrap_apps.rs"
+
+[[bin]]
 name = "iam-bootstrap-admin"
 path = "src/bin/iam_bootstrap_admin.rs"
 

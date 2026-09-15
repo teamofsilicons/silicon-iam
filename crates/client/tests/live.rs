@@ -1040,6 +1040,7 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
                     webhook_secret: "testing-webhook-secret-at-least-32-characters".to_owned(),
                     base_url: "https://testing.example.test".to_owned(),
                     obo_endpoints: Some(vec![models::ApplicationOboEndpoint {
+                        ttl_seconds: Some(900),
                         critical: true,
                         endpoint_id: "operation".to_owned(),
                         path: "/operation".to_owned(),
@@ -1366,6 +1367,10 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
         .exchange_signed(&exchange, &catalog, &Mutation::new())
         .await
         .expect("declared and consented cross-org test OBO");
+    assert_eq!(
+        proof.expires_in, 900,
+        "test imports preserve provider lifetime"
+    );
     let context = proof.testing_context.expect("audience test credentials");
     assert_eq!(context.app_id, apps[1].application.app_id);
     assert_ne!(context.app_secret, apps[1].app_secret);

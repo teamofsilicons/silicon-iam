@@ -257,6 +257,7 @@ fn cors_layer(state: &ApiState) -> anyhow::Result<CorsLayer> {
             http::HeaderName::from_static("x-iam-telemetry"),
             http::HeaderName::from_static("x-request-id"),
             http::HeaderName::from_static("x-step-up-token"),
+            http::HeaderName::from_static("x-honeycomb-actor-token"),
             http::HeaderName::from_static(
                 crate::features::testing_environments::ENVIRONMENT_KEY_HEADER,
             ),
@@ -276,6 +277,7 @@ fn cors_layer(state: &ApiState) -> anyhow::Result<CorsLayer> {
         .max_age(std::time::Duration::from_mins(10)))
 }
 
+#[allow(clippy::too_many_lines, reason = "declarative router composition")]
 fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
     let max_body_bytes = state.settings.server.max_body_bytes;
     let request_timeout = state.settings.server.request_timeout;
@@ -292,6 +294,7 @@ fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
         http::HeaderName::from_static("idempotency-key"),
         http::HeaderName::from_static("x-csrf-token"),
         http::HeaderName::from_static("x-step-up-token"),
+        http::HeaderName::from_static("x-honeycomb-actor-token"),
         http::HeaderName::from_static("workos-signature"),
         http::HeaderName::from_static("x-silicon-iam-signature"),
     ];
@@ -324,11 +327,19 @@ fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
     }
     .layer(middleware::from_fn_with_state(
         state.clone(),
+        crate::features::applications::honeycomb::legacy_writer_guard,
+    ))
+    .layer(middleware::from_fn_with_state(
+        state.clone(),
         crate::features::testing_environments::select_plane,
     ));
     let control_plane = match surface {
         Surface::Full => Router::new()
             .merge(crate::features::testing_environments::router())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                crate::features::applications::honeycomb::legacy_writer_guard,
+            ))
             .layer(middleware::from_fn(
                 crate::features::testing_environments::reject_application_selector,
             )),

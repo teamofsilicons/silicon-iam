@@ -1,9 +1,9 @@
 //! Durable outbox, webhook, notification, and maintenance worker.
 
+mod honeycomb;
 mod maintenance;
 mod notification;
 mod outbox;
-mod testing_environments;
 mod webhook;
 
 use std::sync::{Arc, atomic::AtomicUsize};
@@ -190,17 +190,13 @@ async fn run_maintenance(context: &WorkerContext) {
     if let Err(error) = maintenance::process_batch(context).await {
         error!(error = %error, worker.stage = "retention_maintenance", "worker stage failed");
     }
-    if let Err(error) = testing_environments::process_batch(context).await {
-        error!(
-            error = %error,
-            worker.stage = "testing_environment_maintenance",
-            "worker stage failed"
-        );
-    }
 }
 
 async fn run_once(context: &WorkerContext) {
     static LAST_HEARTBEAT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if let Err(error) = honeycomb::process_batch(context).await {
+        error!(error = %error, worker.stage="honeycomb_notifications", "management notification batch failed");
+    }
 
     let started = std::time::Instant::now();
     let (

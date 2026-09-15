@@ -363,7 +363,7 @@ pub(super) async fn login_choices(
     app_id: &str,
 ) -> Result<super::model::LoginOrganizationsResponse, ApiError> {
     let app = sqlx::query_as::<_, AuthorizeApplicationRow>(
-        "SELECT a.id, a.app_id, a.app_name FROM iam.applications a JOIN iam.principals p ON p.id = a.id WHERE a.app_id = $1 AND a.review_status = 'verified' AND a.deleted_at IS NULL AND p.status = 'active'",
+        "SELECT a.id, a.app_id, a.app_name FROM iam.applications a JOIN iam.principals p ON p.id = a.id WHERE a.app_id = $1 AND a.review_status = 'verified' AND a.deleted_at IS NULL AND p.status = 'active' AND iam_private.application_allows_subject(a.id,iam_private.current_principal_id(),NULL)",
     ).bind(app_id).fetch_optional(&mut **transaction).await
         .map_err(|_| ApiError::internal("login_choices_application"))?
         .ok_or_else(|| ApiError::bad_request("invalid_request", "The application is unknown or not verified."))?;
@@ -378,6 +378,7 @@ pub(super) async fn login_choices(
         FROM iam.organization_memberships m
         JOIN iam.organizations o ON o.id = m.organization_id AND o.status = 'active'
         WHERE m.principal_id = $1 AND m.status = 'active'
+          AND iam_private.application_allows_subject($2,$1,o.id)
         ORDER BY o.org_id
     ",
     )
@@ -637,6 +638,7 @@ pub(super) async fn issue_for_selection(
         WHERE application.app_id = $1
           AND application.review_status = 'verified'
           AND application.deleted_at IS NULL
+          AND iam_private.application_allows_subject(application.id,iam_private.current_principal_id(),NULL)
         ",
     )
     .bind(&input.app_id)
@@ -2158,7 +2160,11 @@ async fn approve_request(
     sqlx::query(
         r"
         UPDATE iam.oauth_consent_grants SET selected_membership_ids = ARRAY(
-            SELECT DISTINCT member_id FROM unnest(selected_membership_ids || $2::uuid[]) member_id
+            SELECT DISTINCT member_id FROM unnest(
+                CASE WHEN EXISTS(SELECT 1 FROM iam.applications app
+                    WHERE app.id=application_id AND app.visibility='private')
+                THEN $2::uuid[] ELSE selected_membership_ids || $2::uuid[] END
+            ) member_id
             ORDER BY member_id
         ) WHERE id = $1
     ",

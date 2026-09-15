@@ -37,8 +37,8 @@ use super::{
         PageInfo, PageQuery, PublicActor,
     },
     security::{
-        ApplicationClient, Bearer, expected_version, lock_step_up_actor, organization_filter,
-        require_carbon, require_platform_capability, require_step_up,
+        Bearer, expected_version, lock_step_up_actor, organization_filter, require_carbon,
+        require_platform_capability, require_step_up,
     },
     validation,
 };
@@ -81,7 +81,7 @@ pub(super) const APPLICATION_LIST_QUERY: &str = r"
     LIMIT $5
 ";
 
-async fn resolve_creation_organization(
+pub(super) async fn resolve_creation_organization(
     transaction: &mut Transaction<'_, Postgres>,
     carbon_id: Uuid,
     organization_handle: &str,
@@ -523,38 +523,45 @@ pub(super) async fn get(
     json_with_etag(StatusCode::OK, &detail, detail.version)
 }
 
-/// Resolves one configured backend location for an authenticated Application.
-///
-/// Application credentials establish the caller, but deliberately do not
-/// constrain the target to the caller's organization: qualified identifiers
-/// are global and the directory exists specifically for cross-Application
-/// discovery. Only a currently usable target is visible.
+/// Resolves a public origin anonymously or a private origin with current authority.
 pub(super) async fn discover(
     State(state): State<ApiState>,
-    client: ApplicationClient,
+    caller: super::security::DirectoryCaller,
     Path(path): Path<AppPath>,
 ) -> Result<Json<ApplicationDirectoryEntry>, ApiError> {
     validation::app_id(&path.app_id)?;
-    let mut transaction = context::begin(
-        state.db(),
-        DatabaseContext::application(client.application_id, client.application_id),
-    )
-    .await
-    .map_err(|_| ApiError::internal("application_directory_context"))?;
+    let (context, token) = match caller {
+        super::security::DirectoryCaller::Anonymous => (
+            DatabaseContext {
+                principal_id: None,
+                application_id: None,
+                organization_id: None,
+                signup_session_id: None,
+            },
+            None,
+        ),
+        super::security::DirectoryCaller::User(access) => (
+            DatabaseContext {
+                principal_id: Some(access.subject.id),
+                application_id: access.client_application_id,
+                organization_id: None,
+                signup_session_id: None,
+            },
+            Some(access.token_id),
+        ),
+        super::security::DirectoryCaller::Application(client) => (
+            DatabaseContext::application(client.application_id, client.application_id),
+            None,
+        ),
+    };
+    let mut transaction = context::begin(state.db(), context)
+        .await
+        .map_err(|_| ApiError::internal("application_directory_context"))?;
     let entry = sqlx::query_as::<_, ApplicationDirectoryEntry>(
-        r"
-        SELECT application.app_id, application.base_url
-        FROM iam.applications AS application
-        JOIN iam.principals AS principal
-          ON principal.id = application.id
-         AND principal.kind = 'application'
-         AND principal.status = 'active'
-        WHERE application.app_id = $1
-          AND application.review_status = 'verified'
-          AND application.deleted_at IS NULL
-        ",
+        "SELECT app_id, base_url FROM iam_private.discover_application_origin($1,$2)",
     )
     .bind(&path.app_id)
+    .bind(token)
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|_| ApiError::internal("application_directory_read"))?
@@ -1408,7 +1415,7 @@ pub(crate) async fn load_detail(
     .map_err(|_| ApiError::internal("application_approved_scopes"))?;
     let obo_endpoints = sqlx::query_as::<_, ApplicationOboEndpoint>(
         r"
-        SELECT endpoint_id, path, metadata_definition AS metadata, critical
+        SELECT endpoint_id, path, metadata_definition AS metadata, critical, ttl_seconds
         FROM iam.application_obo_endpoints
         WHERE application_id = $1 AND status = 'active'
         ORDER BY endpoint_id
@@ -1450,9 +1457,10 @@ pub(crate) async fn load_detail(
     let webhook =
         super::webhooks::load_webhook(transaction, state, application_id, application.version)
             .await?;
-    let (app_scope,webhook_scope,obo_review_message,testing_idle_days) = sqlx::query_as::<_,(sqlx::types::Json<super::model::ApplicationScope>,Vec<String>,Option<String>,i32)>("SELECT app_scope,webhook_scope,obo_review_message,testing_idle_days FROM iam.applications WHERE id=$1")
+    let (app_scope,webhook_scope,obo_review_message,testing_idle_days,visibility) = sqlx::query_as::<_,(sqlx::types::Json<super::model::ApplicationScope>,Vec<String>,Option<String>,i32,String)>("SELECT app_scope,webhook_scope,obo_review_message,testing_idle_days,visibility FROM iam.applications WHERE id=$1")
         .bind(application_id).fetch_one(&mut **transaction).await.map_err(|_|ApiError::internal("application_scope_configuration"))?;
     Ok(ApplicationDetail {
+        visibility,
         id: application.id,
         app_id: application.app_id,
         org_id: application.org_id,
@@ -1975,7 +1983,7 @@ fn input_as_json(input: &ApplicationPatch) -> serde_json::Value {
     serde_json::Value::Object(object)
 }
 
-async fn replace_obo_endpoints(
+pub(super) async fn replace_obo_endpoints(
     transaction: &mut Transaction<'_, Postgres>,
     application_id: Uuid,
     endpoints: &[ApplicationOboEndpoint],
@@ -1984,13 +1992,14 @@ async fn replace_obo_endpoints(
         let result = sqlx::query(
             r"
             INSERT INTO iam.application_obo_endpoints (
-                organization_id, application_id, endpoint_id, path, metadata_definition, critical
+                organization_id, application_id, endpoint_id, path, metadata_definition, critical, ttl_seconds
             )
-            SELECT application.organization_id, application.id, $2, $3, $4, $5
+            SELECT application.organization_id, application.id, $2, $3, $4, $5, $6
             FROM iam.applications AS application
             WHERE application.id = $1
             ON CONFLICT (application_id, endpoint_id) DO UPDATE
             SET metadata_definition = EXCLUDED.metadata_definition, critical=EXCLUDED.critical,
+                ttl_seconds = EXCLUDED.ttl_seconds,
                 status = 'active',
                 retired_at = NULL
             WHERE application_obo_endpoints.path = EXCLUDED.path
@@ -2001,6 +2010,7 @@ async fn replace_obo_endpoints(
         .bind(&endpoint.path)
         .bind(sqlx::types::Json(&endpoint.metadata))
         .bind(endpoint.critical)
+        .bind(endpoint.ttl_seconds)
         .execute(&mut **transaction)
         .await
         .map_err(|error| map_obo_endpoint_write(&error))?;

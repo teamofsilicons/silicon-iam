@@ -122,7 +122,7 @@ struct BundleRow {
     document: SqlJson<Value>,
 }
 
-fn database_error(error: &sqlx::Error) -> ApiError {
+pub(super) fn database_error(error: &sqlx::Error) -> ApiError {
     match error
         .as_database_error()
         .and_then(sqlx::error::DatabaseError::code)

@@ -2027,13 +2027,13 @@ pub enum ConfigCommand {
         /// One of `url`, `org`, `auto-update`, `telemetry`.
         #[arg(value_parser = ["url", "org", "auto-update", "telemetry"])]
         key: String,
-        /// The value to store. For auto-update use on/off; URL follows --url's
+        /// The value to store. For auto-update use off; URL follows --url's
         /// security rules; org is an organization handle.
         value: String,
     },
     /// Clear a value on the current profile.
     Unset {
-        /// `org`, or `auto-update` to restore its default-on policy.
+        /// `org`, or `auto-update` to clear its legacy preference.
         #[arg(value_parser = ["org", "auto-update", "telemetry"])]
         key: String,
     },
@@ -2964,7 +2964,7 @@ mod tests {
     }
 }
 
-/// Persistent updater lifecycle; installation starts it and enables login startup.
+/// Optional telemetry daemon and legacy service cleanup. Honeycomb manages updates.
 #[derive(Debug, Subcommand)]
 pub enum DaemonCommand {
     /// Install and start the current binary as a per-user background service.
@@ -2975,7 +2975,7 @@ pub enum DaemonCommand {
     Status,
     /// Run the worker in the foreground under a process supervisor.
     Run,
-    /// Perform one automatic check using current settings and throttle state.
+    /// Compatibility no-op for old updater services; Honeycomb manages updates.
     #[command(hide = true)]
     Check,
 }

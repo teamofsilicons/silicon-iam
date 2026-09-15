@@ -120,6 +120,12 @@ pub(super) struct ApplicationOboEndpoint {
     pub(super) path: String,
     pub(super) metadata: serde_json::Value,
     pub(super) critical: bool,
+    #[serde(default = "default_obo_ttl_seconds")]
+    pub(super) ttl_seconds: i32,
+}
+
+const fn default_obo_ttl_seconds() -> i32 {
+    300
 }
 
 #[derive(Clone, Deserialize)]
@@ -186,6 +192,7 @@ pub(super) struct ApplicationView {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct ApplicationDetail {
+    pub(super) visibility: String,
     pub(super) id: Uuid,
     pub(super) app_id: String,
     pub(super) org_id: String,
@@ -757,6 +764,7 @@ mod tests {
     #[test]
     fn application_projection_uses_wire_compatible_timestamps() {
         let value = serde_json::to_value(ApplicationDetail {
+            visibility: "public".to_owned(),
             id: Uuid::nil(),
             app_id: "tos>briefcase".to_owned(),
             org_id: "tos".to_owned(),

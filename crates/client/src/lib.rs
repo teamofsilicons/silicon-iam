@@ -18,14 +18,9 @@
 //! stores tokens under `~/.silicon-iam/` and refreshes them, using nothing but
 //! this crate to talk to the service.
 //!
-//! Dependency maintenance is the deliberate exception. On its first API
-//! request, the client checks crates.io for a newer stable release and, when
-//! running from a Cargo project, advances that project's lockfile. Already
-//! compiled code cannot be hot-swapped; the next build loads the update. Use
-//! [`ClientBuilder::auto_update`] or
-//! `SILICON_IAM_CLIENT_AUTO_UPDATE=false` to opt out, and inspect
-//! [`Client::update_status`] after the first call. A missing manifest, offline
-//! registry, or failed Cargo command never blocks the IAM request.
+//! Dependency versions follow the consuming project's Cargo configuration.
+//! The library never runs Cargo, checks for updates during API requests, or
+//! changes a lockfile. Honeycomb manages installed IAM CLI releases.
 //!
 //! # Getting started
 //!
@@ -149,6 +144,7 @@ pub mod api;
 pub mod client;
 pub mod credentials;
 pub mod error;
+pub mod honeycomb;
 pub mod models;
 mod models_manual;
 pub mod request;

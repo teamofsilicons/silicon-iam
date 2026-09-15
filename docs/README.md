@@ -16,8 +16,8 @@ iam --help
 
 For a Silicon, use `iam silicon-login --sid <handle:org>` in the official IAM
 CLI. Application CLIs receive only app-bound short-lived tokens. Installation
-sets up the CLI and an hourly updater; it does not log in. Requires the 1.9.0
-release to be published. Follow [the CLI guide](cli/README.md) for practical
+sets up the CLI without logging in. Honeycomb manages installed CLI updates;
+see [installation and bootstrap](HONEYCOMB_RELEASE.md). Follow [the CLI guide](cli/README.md) for practical
 workflows, settings, offline help and reporting a bug.
 
 ## Build an application
@@ -30,7 +30,7 @@ references below to understand each authorization and testing boundary.
 | Task | Guide |
 | --- | --- |
 | Understand the HTTP contract | [API reference](API_DOCS.md) and [OpenAPI](openapi.yaml) |
-| Register an application and request permissions | [Applications](api/applications.html) |
+| Register an application and request permissions | [Honeycomb integration](HONEYCOMB_INTEGRATION.md) |
 | Perform IAM actions from an application | [IAM permissions](IAM_SCOPES.md) and [scoped backend](SCOPED_BACKEND.md) |
 | Implement permission and organization consent | [Consent](ORGANIZATION_CONSENT.md) |
 | Sign in to several applications | [Batch login](BATCH_LOGIN.md) or [bundles](BUNDLES.md) |

@@ -1,5 +1,7 @@
 # Applications, registration and current authorization
 
+**Honeycomb management:** Production application editing, reviews, bundles and shared test lifecycle operations are managed by Honeycomb. See the [service integration contract](../HONEYCOMB_INTEGRATION.md). The legacy management examples below apply only before that integration is provisioned; runtime authentication and isolated test APIs remain available.
+
 An application is an organization-owned confidential client. Its declared permissions determine which IAM information and external application endpoints it can use. Users approve that access in IAM and choose the organizations to share.
 
 ## Registration

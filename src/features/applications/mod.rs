@@ -6,8 +6,9 @@ mod authorization;
 mod batch_login;
 mod bundles;
 mod cursor;
-mod error;
+pub(crate) mod error;
 mod events;
+pub(crate) mod honeycomb;
 mod idempotency;
 mod model;
 mod oauth;
@@ -51,6 +52,7 @@ use crate::api::ApiState;
 pub fn router() -> Router<ApiState> {
     Router::new()
         .merge(bundle_router())
+        .merge(honeycomb::router())
         .route("/api/v1/application-scopes", get(scopes::catalog))
         .route(
             "/api/v1/application-scope-requests",

@@ -43,7 +43,7 @@ signature = lowercase_hex(HMAC_SHA256(
 ))
 ```
 
-The OBO signature is raw lowercase hexadecimal; it does not use the webhook signature's `v1=` prefix. Use the exact `Idempotency-Key` header in the signed input. Timestamp checks reject stale signatures. A proof expires after at most 60 seconds and cannot authorize another method, path, body, subject, or audience.
+The OBO signature is raw lowercase hexadecimal; it does not use the webhook signature's `v1=` prefix. Use the exact `Idempotency-Key` header in the signed input. Timestamp checks reject stale signatures. A proof expires after its provider-configured ttl_seconds (default 300 seconds) and cannot authorize another method, path, body, subject, or audience.
 
 ## Single-use verification
 

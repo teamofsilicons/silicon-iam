@@ -65,7 +65,7 @@ pub(crate) async fn select_plane(
 ) -> Response {
     match super::discovery::presented(request.headers()) {
         Ok(Some(credential)) => {
-            return super::discovery::select(state, request, next, credential)
+            return Box::pin(super::discovery::select(state, request, next, credential))
                 .await
                 .unwrap_or_else(axum::response::IntoResponse::into_response);
         }
@@ -96,7 +96,7 @@ pub(crate) async fn select_plane(
     };
     support::touch(&state.pool, selected.id).await;
 
-    testing_plane::scope(selected, async {
+    testing_plane::scope_runtime(selected, resolved.runtime_version, async {
         if let Err(error) = super::scope_policy::revalidate(&state).await {
             return error.into_response();
         }

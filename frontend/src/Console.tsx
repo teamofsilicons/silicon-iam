@@ -19,10 +19,7 @@ import {
   type RecordValue,
   type SessionState,
 } from "./api";
-import Applications, { Activity } from "./Applications";
-import ScopeReviews from "./ScopeReviews";
-import Bundles from "./Bundles";
-import { bundleAccessAllowed, type BundleAvailability } from "./bundle-model";
+import { Activity } from "./Applications";
 import { OperationForm, type Operation } from "./forms";
 import {
   Badge,
@@ -59,27 +56,6 @@ export default function Console(props: {
     [join, setJoin] = createSignal(page === "join");
   const selectedOrg = () =>
     org() || organizations.data()?.items[0]?.org_id || "";
-  const [bundleAvailability, { refetch: refreshBundleAvailability }] =
-    createResource(
-      () => selectedOrg() || undefined,
-      async (orgId): Promise<BundleAvailability> => {
-        const result = await request<{ available: boolean }>(
-          `${orgPath(orgId)}/application-bundle-availability`,
-        );
-        if (typeof result.available !== "boolean")
-          throw new Error(
-            "Bundle availability could not be confirmed. Please retry.",
-          );
-        return { orgId, available: result.available };
-      },
-    );
-  const bundlesAvailable = () =>
-    bundleAccessAllowed(
-      selectedOrg(),
-      bundleAvailability(),
-      bundleAvailability.loading,
-      bundleAvailability.error,
-    );
   const navigation = [
     { href: "/", id: "overview", title: "Overview", icon: "◫" },
     {
@@ -120,7 +96,7 @@ export default function Console(props: {
     },
   ];
   const visibleNavigation = () =>
-    navigation.filter((item) => item.id !== "bundles" || bundlesAvailable());
+    navigation;
   const send = mutation();
   async function logout() {
     setBusy(true);
@@ -201,7 +177,7 @@ export default function Console(props: {
     context.registerTool({
       name: names[2],
       description:
-        "Open the application creation form for the user to complete and confirm. Never submits it.",
+        "Show where application management is available in Honeycomb.",
       inputSchema: {
         type: "object",
         properties: {},
@@ -215,7 +191,7 @@ export default function Console(props: {
           content: [
             {
               type: "text",
-              text: "Opening the create application form; nothing has been created.",
+              text: "Opening the Honeycomb management information.",
             },
           ],
         };
@@ -331,54 +307,11 @@ export default function Console(props: {
             retry={organizations.refresh}
           />
           <Switch>
-            <Match when={page === "scope-reviews"}>
-              <ScopeReviews />
-            </Match>
-            <Match when={page === "bundles"}>
-              <Show
-                when={bundlesAvailable() && selectedOrg()}
-                keyed
-                fallback={
-                  <Show
-                    when={!bundleAvailability.loading}
-                    fallback={<Loading />}
-                  >
-                    <Empty title="Application bundles unavailable">
-                      {selectedOrg()
-                        ? "Application bundles are not available for the selected organization. Choose another organization to continue."
-                        : "Choose an organization to continue."}
-                    </Empty>
-                    <Show when={bundleAvailability.error}>
-                      <ErrorBox
-                        error={
-                          new Error(
-                            "Bundle availability could not be confirmed. Please retry.",
-                          )
-                        }
-                        retry={refreshBundleAvailability}
-                      />
-                    </Show>
-                  </Show>
-                }
-              >
-                {(orgId) => (
-                  <Bundles
-                    config={props.config}
-                    organization={organizations
-                      .data()
-                      ?.items.find((item) => item.org_id === orgId)}
-                    selectedOrg={orgId}
-                    refreshAvailability={refreshBundleAvailability}
-                  />
-                )}
-              </Show>
-            </Match>
-            <Match when={page === "applications"}>
-              <Applications
-                config={props.config}
-                orgs={organizations.data()?.items || []}
-                selectedOrg={selectedOrg()}
-              />
+            <Match when={["applications", "scope-reviews", "bundles", "testing"].includes(page)}>
+              <PageTitle title="Manage in Honeycomb" subtitle="Applications, app bundles, scope reviews and testing environments are managed in Honeycomb." />
+              <Empty title="Continue in Honeycomb">
+                IAM provides login, consent, credentials and identity inside your testing environments. Open Honeycomb to manage their configuration.
+              </Empty>
             </Match>
             <Match when={page === "account"}>
               <Account {...props} />
@@ -491,11 +424,11 @@ export default function Console(props: {
                 </a>
                 <a href={href("/applications")}>
                   <h3>Connect your apps ↗</h3>
-                  <p>Set up SLT login, signed webhooks, and OBO endpoints.</p>
+                  <p>Manage app authentication configuration in Honeycomb.</p>
                 </a>
                 <a href={href("/testing")}>
                   <h3>Test in isolation ↗</h3>
-                  <p>Manage disposable testing environments and their keys.</p>
+                  <p>Manage testing environments in Honeycomb.</p>
                 </a>
               </section>
             </Match>

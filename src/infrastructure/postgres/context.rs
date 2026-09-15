@@ -135,6 +135,7 @@ pub async fn begin(
     )
     .execute(&mut *transaction)
     .await?;
+    check_testing_generation(&mut transaction).await?;
     Ok(transaction)
 }
 
@@ -177,6 +178,24 @@ pub async fn apply_testing_scope(
         )
         .execute(&mut **transaction)
         .await?;
+    check_testing_generation(transaction).await?;
+    Ok(())
+}
+
+async fn check_testing_generation(
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<(), sqlx::Error> {
+    if let (Some(id), Some((generation, key_version))) = (
+        testing_plane::current_id(),
+        testing_plane::runtime_version(),
+    ) {
+        sqlx::query("SELECT iam_private.lock_testing_runtime_state($1,$2,$3)")
+            .bind(id)
+            .bind(generation)
+            .bind(key_version)
+            .execute(&mut **transaction)
+            .await?;
+    }
     Ok(())
 }
 

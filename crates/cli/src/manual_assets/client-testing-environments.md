@@ -1,5 +1,7 @@
 # Rust client testing environment workflow
 
+**Honeycomb management:** Production application editing, reviews, bundles and shared test lifecycle operations are managed by Honeycomb. See the [service integration contract](../HONEYCOMB_INTEGRATION.md). The legacy management examples below apply only before that integration is provisioned; runtime authentication and isolated test APIs remain available.
+
 The Rust client uses one switch for an entire isolated IAM world: `Client::with_environment`. Every ordinary API group then keeps the same methods and paths while the client adds the environment root key to each request.
 
 ## Connect an Application with its test secret alone

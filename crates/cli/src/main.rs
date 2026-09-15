@@ -95,7 +95,7 @@ async fn run(mut cli: Cli) -> error::Result<()> {
     // Reference commands also remain usable with a broken credential store.
     match &cli.command {
         cli::Command::Iam => return commands::discovery::run(cli.global.output),
-        cli::Command::Daemon(command) => return daemon::run(command, cli.global.output).await,
+        cli::Command::Daemon(command) => return daemon::run(command, cli.global.output),
         cli::Command::Report { message, pr } => {
             return commands::discovery::report(cli.global.output, message, pr.as_deref());
         }

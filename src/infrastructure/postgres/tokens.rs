@@ -243,6 +243,7 @@ pub async fn authenticate(
           ON audience_principal.id = token.audience_application_id
          AND audience_principal.kind = 'application'
         WHERE token.id = $1
+          AND iam_private.application_private_token_is_current(token.id)
           AND token.token_class = $2
           AND token.revoked_at IS NULL
           AND token.expires_at > transaction_timestamp()

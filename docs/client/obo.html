@@ -75,7 +75,7 @@ let proof = caller.obo()
 <p>
   IAM binds the proof to the source and audience Applications, subject token, actor,
   organization, endpoint, metadata, method, registered path and exact body digest. It is valid for
-  one verification or at most 60 seconds, whichever comes first. Exchange immediately before the
+  one verification or the provider-configured ttl_seconds (default 300 seconds), whichever comes first. Exchange immediately before the
   downstream request.
 </p>
 
@@ -154,7 +154,7 @@ let proof = caller.obo()
     <tr><td><code>409</code></td><td>The proof was consumed, or an idempotency key was reused with
       different exchange input.</td><td>Do not retry verification. For an exchange conflict,
       recover the original input or use a new key for a genuinely new operation.</td></tr>
-    <tr><td><code>410 proof_expired</code></td><td>The proof's 60-second life elapsed.</td>
+    <tr><td><code>410 proof_expired</code></td><td>The proof's configured lifetime elapsed.</td>
       <td>Exchange a new proof for a new downstream attempt.</td></tr>
     <tr><td><code>422</code></td><td>The metadata or presented request binding does not satisfy
       the registered contract.</td><td>Re-read the catalog and compare the actual request.</td></tr>

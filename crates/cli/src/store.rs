@@ -40,8 +40,8 @@ pub struct Config {
     /// Collect operational telemetry by default; never send credentials or command arguments.
     #[serde(default = "enabled")]
     pub telemetry: bool,
-    /// Whether the installed CLI maintains itself from crates.io.
-    #[serde(default = "enabled")]
+    /// Legacy preference, ignored: Honeycomb manages CLI releases.
+    #[serde(default)]
     pub auto_update: bool,
     /// Profile used when `--profile` is not given.
     #[serde(default)]
@@ -54,7 +54,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            auto_update: true,
+            auto_update: false,
             telemetry: true,
             current_profile: None,
             profiles: BTreeMap::new(),
@@ -345,33 +345,6 @@ impl LockedStore {
 /// Returns an error when the state exists but cannot be read or parsed.
 pub fn load_update_state() -> Result<UpdateState> {
     StoreDirectory::open()?.read_json(UPDATE_FILE)
-}
-
-/// Stores automatic-update throttle state without any credentials.
-///
-/// # Errors
-///
-/// Returns an error when the state cannot be written.
-pub fn save_update_state(state: &UpdateState) -> Result<()> {
-    let store = lock()?;
-    let previous: UpdateState = store.directory.read_json(UPDATE_FILE)?;
-    // A slower concurrent check must not move the last-attempt clock
-    // backwards. A future value, however, must be repairable after clock skew.
-    if previous.checked_at > state.checked_at
-        && previous.checked_at <= Some(OffsetDateTime::now_utc())
-    {
-        return Ok(());
-    }
-    store.directory.write_json(UPDATE_FILE, state)
-}
-
-/// Attempts to serialize an updater check and installation for this home.
-///
-/// # Errors
-///
-/// Returns an error for an unsafe home/lock path or an operating-system failure.
-pub fn try_lock_updater_check() -> Result<Option<File>> {
-    StoreDirectory::open()?.try_lock("updater-check.lock")
 }
 
 /// Holds a lifetime lock so only one daemon runs for this home.
@@ -815,9 +788,9 @@ mod tests {
 
     #[test]
     fn automatic_updates_default_on_for_new_and_old_configs() {
-        assert!(Config::default().auto_update);
+        assert!(!Config::default().auto_update);
         let decoded = serde_json::from_str::<Config>("{}");
-        assert!(decoded.is_ok_and(|config| config.auto_update));
+        assert!(decoded.is_ok_and(|config| !config.auto_update));
     }
 
     #[test]

@@ -1,5 +1,10 @@
 # Silicon IAM backend
 
+Application configuration, releases, bundles and shared testing lifecycles are
+managed by Honeycomb. IAM retains identity, consent, permissions and runtime
+authentication. The [Honeycomb integration contract](docs/HONEYCOMB_INTEGRATION.md)
+covers service credentials, accepted revisions, bootstrap and migration.
+
 Silicon IAM is a security-first identity and access-management backend for
 Carbon accounts, organization-scoped Silicon identities, applications,
 OAuth, delegated OBO access, governance, WorkOS SSO, audit, and reliable
@@ -8,8 +13,8 @@ webhook delivery.
 To use IAM, start with the [CLI usage guide](docs/cli/README.md). To build an
 application, follow the [step-by-step builder guide](docs/BUILDING.md), then the
 [API and Rust references](docs/README.md). The CLI bundles these guides under
-`iam docs`, exposes discovery with `iam iam --json`, and supports a persistent
-hourly updater through `iam daemon install`.
+`iam docs`, exposes discovery with `iam iam --json`, and receives CLI releases
+through Honeycomb. See [installation and bootstrap](docs/HONEYCOMB_RELEASE.md).
 
 The backend is a Rust 2024 modular monolith with three independently scalable
 runtime processes and three one-shot operator binaries:
@@ -258,20 +263,15 @@ caller action in the contract. Its wire types are generated from
 `docs/openapi.yaml` by `scripts/generate-client-models.rb`, and CI regenerates
 them and fails on a diff, so they cannot drift from the service. IAM runtime
 state stays with the caller -- no session store, response cache, or credential
-refresh behind its back. Its default-on updater may advance the consuming
-project's `Cargo.lock` after an IAM request completes, at most once per hour
-per client and its clones. There is no idle timer or daemon. The next build
-loads that release, and applications can disable the behavior through the
-builder or environment.
+refresh behind its back. Dependency versions follow the consuming project's
+Cargo configuration; the client never modifies its own dependencies at runtime.
 
 `crates/cli` is `silicon-iam-cli`, installing the `iam` binary. It is a shell
 over the client and has no capability the client lacks; what it adds is the
 state the client refuses to hold: a profile, a service URL, and a session under
-`~/.silicon-iam/` that it renews when it is close to expiring. Its supervised daemon checks
-crates.io hourly and updates the Cargo-installed binary for the next invocation.
-Run `iam daemon install` to enable it, or use
-`iam config set auto-update off` to opt out of updates. Use
-`iam --test <environment-uuid> <command>` to run the same command in a test
+`~/.silicon-iam/` that it renews when it is close to expiring. Honeycomb manages
+CLI releases. IAM's optional daemon supports telemetry but never updates the CLI.
+Use `iam --test <environment-uuid> <command>` to run the same command in a test
 plane; the CLI resolves the UUID through an owner-only stored root key and
 keeps every environment's session separate from production.
 

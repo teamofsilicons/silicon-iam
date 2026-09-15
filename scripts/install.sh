@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the CLI and start its per-user updater. No authentication is performed.
+# Direct bootstrap installation. Honeycomb manages ordinary CLI installs and updates.
 set -eu
 case "$(uname -s)" in
   Darwin|Linux) ;;
@@ -27,6 +27,5 @@ else
   cargo install silicon-iam-cli --version ">=1.9.0" --locked --force --root "$iam_install_root"
 fi
 export PATH="$iam_install_root/bin:$PATH"
-"$iam_install_root/bin/iam" daemon install
 printf '\nInstalled IAM. Add %s/bin to PATH if needed.\n' "$iam_install_root"
-printf 'Start with: iam --help\nVerify updater: iam daemon status --json\nNo IAM login was performed.\n'
+printf 'Start with: iam --help\nUpdates: honeycomb update <configured-iam-app-id>\nNo IAM login was performed.\n'

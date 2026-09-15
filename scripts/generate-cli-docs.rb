@@ -15,6 +15,8 @@ MANIFEST = "crates/cli/src/manual_data.rs"
 ASSETS = "crates/cli/src/manual_assets"
 
 CATALOG = [
+  ["honeycomb", "Honeycomb service integration and migration", "docs/HONEYCOMB_INTEGRATION.md", %w[management lifecycle]],
+  ["releases", "Honeycomb installation and direct IAM bootstrap", "docs/HONEYCOMB_RELEASE.md", %w[install packaging]],
   ["telemetry", "Space Station collection, opt-out and delivery", "docs/TELEMETRY.md", %w[diagnostics]],
   ["building", "Build an IAM application step by step", "docs/BUILDING.md", %w[development integration]],
   ["iam-scopes", "IAM read and mutation permissions", "docs/IAM_SCOPES.md", %w[scopes permissions]],
@@ -50,7 +52,7 @@ CATALOG = [
   ["client/webhooks", "Rust client webhook verification", "docs/client/webhooks.html", []],
   ["client/testing-environments", "Rust client testing environment workflow", "docs/client/testing-environments.html", []],
   ["client/errors", "Rust client errors and safe retry policy", "docs/client/errors.html", []],
-  ["client/updates", "Client and CLI automatic updates", "docs/client/updates.html", %w[updates]]
+  ["client/updates", "Dependency and CLI release management", "docs/client/updates.html", %w[updates]]
 ].freeze
 
 # The HTML guides are controlled fragments rather than complete browser pages.
@@ -131,6 +133,8 @@ excluded = %w[
   docs/SESSION_BOUND_CONSENT_FIX.md
   docs/frontend/deployment.md
   docs/frontend/manual-qa.md
+  docs/frontend/scope-approvals.md
+  docs/HONEYCOMB_IMPLEMENTATION.md
 ]
 canonical = Dir[File.join(ROOT, "docs/**/*.{md,html,yaml}")].map do |path|
   path.delete_prefix("#{ROOT}/")

@@ -1,5 +1,7 @@
 # Testing environments and isolation
 
+**Honeycomb management:** Production application editing, reviews, bundles and shared test lifecycle operations are managed by Honeycomb. See the [service integration contract](../HONEYCOMB_INTEGRATION.md). The legacy management examples below apply only before that integration is provisioned; runtime authentication and isolated test APIs remain available.
+
 Testing environments run the IAM contract against isolated data. An application can create an environment for its own tests or attach to an existing IAM environment, recursively preparing the external applications it depends on.
 
 ## One API, isolated data
@@ -108,7 +110,7 @@ Verify the signature over the complete raw outer body before interpreting it. Va
 
 ## Inactivity and cleanup
 
-The default application testing retention is 30 idle days. An application's owner/admin can configure `testing_idle_days` on its registration or update. IAM tracks activity for individual application-environment links and retires idle test instances according to that application's setting. Retiring one instance does not authorize deleting another application's active test data.
+IAM records activity and accepted `testing_idle_days` policy. Honeycomb coordinates inactivity decisions and sends explicit lifecycle instructions. IAM no longer independently retires or purges idle environments. An IAM cleanup receipt covers only IAM data.
 
 IAM environments also default to soft deletion after 30 idle days, followed by a 30-day recovery window. Active application links with longer configured retention keep their environment available while they are still within that retention period. List responses expose activity and retention so applications can clean their own isolated storage on the same lifecycle.
 

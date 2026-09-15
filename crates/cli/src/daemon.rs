@@ -13,29 +13,23 @@ use std::{
 
 const LABEL: &str = "com.teamofsilicons.iam-updater";
 
-pub async fn run(command: &DaemonCommand, format: Format) -> Result<()> {
+pub fn run(command: &DaemonCommand, format: Format) -> Result<()> {
     match command {
         DaemonCommand::Run => worker(),
-        DaemonCommand::Check => {
-            let outcome = crate::updater::automatic().await?;
-            if outcome != crate::updater::Outcome::Skipped {
-                eprintln!("IAM updater: {outcome:?}");
-            }
-            Ok(())
-        }
+        DaemonCommand::Check => Ok(()),
         DaemonCommand::Install => install(format),
         DaemonCommand::Uninstall => uninstall(format),
         DaemonCommand::Status => {
             let running = store::try_lock_daemon()?.is_none();
             let state = store::load_update_state()?;
-            let enabled = store::load_config()?.auto_update;
+            let enabled = false;
             match format {
                 Format::Json => json(
-                    &serde_json::json!({"running": running, "auto_update": enabled, "last_check": state.checked_at, "home": store::home()?}),
+                    &serde_json::json!({"running": running, "auto_update": enabled, "update_manager": "honeycomb", "last_check": state.checked_at, "home": store::home()?}),
                 ),
                 Format::Text => {
                     println!(
-                        "Updater running: {running}\nAutomatic updates configured: {enabled}\nHome: {}",
+                        "IAM daemon running: {running}\nIAM automatic updates: {enabled} (managed by Honeycomb)\nHome: {}",
                         store::home()?.display()
                     );
                     Ok(())
@@ -49,7 +43,6 @@ fn worker() -> Result<()> {
     let Some(_lock) = store::try_lock_daemon()? else {
         return Ok(());
     };
-    let executable = std::env::current_exe()?;
     // Keep the recording daemon alive between short-lived CLI/update children.
     // It can replay their durable spool even while no commands are being run.
     let mut telemetry: Option<silicon_iam_client::telemetry::Telemetry> = None;
@@ -67,21 +60,6 @@ fn worker() -> Result<()> {
             if let Some(sender) = &telemetry {
                 sender.record("lifecycle", "daemon.started", serde_json::json!({}));
             }
-        }
-        // A fresh child loads the newest binary after Cargo replaces it. The
-        // hourly reservation and install lock are shared with explicit updates.
-        // Re-read the selected home's settings each minute, including opt-out.
-        match Command::new(&executable)
-            .args(["daemon", "check"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .status()
-        {
-            Ok(status) if status.success() => {}
-            Ok(status) => eprintln!(
-                "IAM maintenance failed ({status}); see the service log. The next check remains throttled."
-            ),
-            Err(error) => eprintln!("Cannot launch IAM maintenance: {error}"),
         }
         std::thread::sleep(std::time::Duration::from_secs(60));
     }
