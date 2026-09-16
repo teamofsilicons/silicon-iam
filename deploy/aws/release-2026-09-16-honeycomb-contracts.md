@@ -58,8 +58,11 @@ The deployed ledgers contain107production and120testing entries with exact
 source checksums. Both backups were verified before migration. An old-image-only
 rollback after migration is unsafe.
 
-Keep scheduled-testing and legacy-writer-cutover flags false until Honeycomb's
-real adapter and participant acknowledgements are ready. These flags grant
-service maintenance authority; neither is an end-user testing-enable key.
+After Honeycomb0.1.1 deployed healthy, enabled scheduled-testing authority in
+SecretsManager and all three runtime environments. SSM command
+`40a80be2-b294-47fc-a72e-b8ddb1febaec` verified readiness and the effective flags.
+Legacy writer cutover remains false. Scheduled authority lets the authenticated
+coordinator finalize only after participant acknowledgements; it is not an
+end-user testing-enable key.
 Public publication requires an explicitly designated validator; no administrator
 is automatically granted that separate capability and no consent is fabricated.

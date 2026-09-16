@@ -43,8 +43,11 @@ Neither architecture document was edited by this implementation.
   credentials and environment links under the restricted runtime role.
 
 SDK source is committed and handed to Honeycomb. The native six-target release
-build runs independently. Backend release and participant activation remain
-separate verified steps; the sections below record the preceding rollout checks.
+build runs independently. Backend11e49a0 is deployed with107production/120testing migration entries.
+Main/scoped readiness, worker health and preserved application identities passed.
+Honeycomb0.1.1 is deployed healthy and scheduled finalizers are enabled;
+participant acknowledgements still gate each environment activation.
+The sections below also record the preceding rollout checks.
 
 ## Prior validation
 
@@ -85,6 +88,7 @@ The preceding production rollout provisioned the service integration and signed
 management notification receiver. The missing-webhook app-list hotfix is deployed
 at `72767708d9ac2e7bf11873aee9bc8800da3c4835`; main/scoped readiness, worker health
 and owner-console recovery were verified without changing migration ledgers.
-The additional September16 migrations remain pending until the final release gate.
+The additional September16 migrations0100–0107 and testing overlays9010–9013
+are deployed. See the committed production release record for evidence.
 Honeycomb owns normal IAM app registration and publication; preserve existing app
 identities and require current approval/renewed consent for expanded access.
