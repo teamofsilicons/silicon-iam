@@ -93,7 +93,7 @@ pub(super) async fn private_import_allowed(
         .map_err(database)
 }
 
-fn key_digests(state: &ApiState, headers: &HeaderMap) -> Result<Vec<Vec<u8>>, ApiError> {
+pub(super) fn key_digests(state: &ApiState, headers: &HeaderMap) -> Result<Vec<Vec<u8>>, ApiError> {
     Ok(if let Some(key) = headers.get("x-honeycomb-testing-key") {
         if headers.get_all("x-honeycomb-testing-key").iter().count() != 1 {
             return Err(ApiError::forbidden("testing_key_invalid"));

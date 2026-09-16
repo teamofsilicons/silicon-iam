@@ -312,8 +312,11 @@ Reads require query fields `generation`, `key_version` and
 rotation omits it and names the current configuration revision. Environment and
 application revisions are separate preconditions.
 
-Service-only reads are secret-free. Writes require the live human environment
-manager or a production app acting on only its own immutable source identity;
+Service-only reads are secret-free. Configuration and secret rotation also accept
+`ManagementAuthority::Environment` with the current root key, generation, key
+version and environment revision; this grants authority only inside that environment.
+Test login tokens must never be presented as production actor tokens. Other writes
+require the live human environment manager or a production app acting on only its own immutable source identity;
 an attached app additionally presents the matching root key. Environment ownership
 does not let a production app read or change another app's credential. A human
 environment manager registers new test-only apps. Registration uses revision zero, requires

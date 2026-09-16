@@ -577,6 +577,14 @@ async fn exercise_root(
         status == StatusCode::OK && reimported["app_secret"] == imported["app_secret"],
         "new root did not preserve linked app credential: {status} {reimported}"
     );
+    exercise_root_app_management(
+        app,
+        admin,
+        credential,
+        environment,
+        &reimported["iam_revision"],
+    )
+    .await?;
     let clean = json!({"operation":"clean","operation_id":Uuid::now_v7(),
         "environment_id":environment,"generation":1,"expected_key_version":2,
         "expected_iam_revision":reimported["iam_revision"]});
@@ -651,6 +659,141 @@ async fn exercise_root(
     Ok(())
 }
 
+async fn exercise_root_app_management(
+    app: &axum::Router,
+    admin: &sqlx::PgPool,
+    credential: &str,
+    environment: Uuid,
+    revision: &Value,
+) -> anyhow::Result<()> {
+    let endpoint = format!(
+        "/api/v1/honeycomb/testing-environments/{environment}/applications/test_org%3Eroot-only/configuration"
+    );
+    let config = json!({"org_id":"test_org","name":"Root test app","logo_url":null,"base_url":null,"visibility":"private","availability":"active","webhook":{"url":"https://root-test.example.test/webhook","secret":"z".repeat(48),"scope":["membership"]},"app_scope":{"iam":["self.identity.read"],"external":[]},"obo_endpoints":[]});
+    let mut body = json!({"operation_id":Uuid::now_v7(),"environment_id":environment,"generation":1,"key_version":2,"expected_environment_revision":revision,"expected_iam_revision":0,"configuration_revision":1,"configuration":config});
+    for key in [None, Some("J".repeat(32)), Some("Z".repeat(32))] {
+        let (status, _) =
+            root_method(app, credential, key.as_deref(), "PUT", &endpoint, &body).await?;
+        ensure!(
+            !status.is_success(),
+            "test app accepted absent/retired/wrong root"
+        );
+    }
+    for (field, value) in [
+        ("generation", json!(2)),
+        ("key_version", json!(1)),
+        ("expected_environment_revision", json!(999)),
+    ] {
+        let mut stale = body.clone();
+        stale[field] = value;
+        let (status, _) = root_method(
+            app,
+            credential,
+            Some(&"K".repeat(32)),
+            "PUT",
+            &endpoint,
+            &stale,
+        )
+        .await?;
+        ensure!(!status.is_success(), "test app accepted stale {field}");
+    }
+    let collision = endpoint.replace("root-only", "testing-driver");
+    let (status, _) = root_method(
+        app,
+        credential,
+        Some(&"K".repeat(32)),
+        "PUT",
+        &collision,
+        &body,
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::CONFLICT,
+        "test-only registration claimed production app ID"
+    );
+    let (status, created) = root_method(
+        app,
+        credential,
+        Some(&"K".repeat(32)),
+        "PUT",
+        &endpoint,
+        &body,
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::OK && created["app_secret"].is_string(),
+        "root app creation failed: {status} {created}"
+    );
+    let (_, replayed) = root_method(
+        app,
+        credential,
+        Some(&"K".repeat(32)),
+        "PUT",
+        &endpoint,
+        &body,
+    )
+    .await?;
+    ensure!(
+        created == replayed,
+        "root app creation replay changed credentials"
+    );
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM iam.applications WHERE app_id='test_org>root-only'",
+    )
+    .fetch_one(admin)
+    .await?;
+    ensure!(count == 0, "root test app leaked to production");
+    body["operation_id"] = json!(Uuid::now_v7());
+    body["expected_iam_revision"] = created["iam_revision"].clone();
+    body["configuration_revision"] = json!(2);
+    body["configuration"]["name"] = json!("Root app edited");
+    let (status, updated) = root_method(
+        app,
+        credential,
+        Some(&"K".repeat(32)),
+        "PUT",
+        &endpoint,
+        &body,
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::OK,
+        "root update failed: {status} {updated}"
+    );
+    body["operation_id"] = json!(Uuid::now_v7());
+    body["expected_iam_revision"] = updated["iam_revision"].clone();
+    body.as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("mutation"))?
+        .remove("configuration");
+    let rotate = endpoint.replace("/configuration", "/secret-rotations");
+    let (status, rotated) = root_method(
+        app,
+        credential,
+        Some(&"K".repeat(32)),
+        "POST",
+        &rotate,
+        &body,
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::OK
+            && rotated["app_secret"].is_string()
+            && rotated["app_secret"] != created["app_secret"],
+        "root app rotation failed: {status} {rotated}"
+    );
+    let (_, replay) = root_method(
+        app,
+        credential,
+        Some(&"K".repeat(32)),
+        "POST",
+        &rotate,
+        &body,
+    )
+    .await?;
+    ensure!(replay == rotated, "root app secret rotated twice on replay");
+    Ok(())
+}
+
 async fn root_send(
     app: &axum::Router,
     credential: &str,
@@ -658,8 +801,19 @@ async fn root_send(
     path: &str,
     value: &Value,
 ) -> anyhow::Result<(StatusCode, Value)> {
+    root_method(app, credential, key, "POST", path, value).await
+}
+
+async fn root_method(
+    app: &axum::Router,
+    credential: &str,
+    key: Option<&str>,
+    method: &str,
+    path: &str,
+    value: &Value,
+) -> anyhow::Result<(StatusCode, Value)> {
     let mut request = Request::builder()
-        .method("POST")
+        .method(method)
         .uri(path)
         .header("authorization", format!("Bearer {credential}"))
         .header(

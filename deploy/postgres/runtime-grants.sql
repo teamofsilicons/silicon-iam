@@ -564,6 +564,7 @@ DECLARE
         'honeycomb_adoption_key',
         'honeycomb_remember_testing_key',
         'honeycomb_testing_root_authority',
+        'honeycomb_testing_root_app_authority',
         'honeycomb_testing_link_imports',
         'honeycomb_retention_start',
         'honeycomb_retention_finish',

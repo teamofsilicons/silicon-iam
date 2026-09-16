@@ -90,16 +90,26 @@ async fn authorize<'a>(
     if client.as_ref().is_some_and(|client| client.app_id != app) {
         return Err(ApiError::forbidden("testing_application_identity_required"));
     }
-    let access =
-        if client.is_none() && (!service_read || headers.contains_key("x-honeycomb-actor-token")) {
-            Some(service.actor(state, headers).await?)
-        } else {
-            None
-        };
+    let root_authority = client.is_none()
+        && !headers.contains_key("x-honeycomb-actor-token")
+        && headers.contains_key("x-honeycomb-testing-key");
+    let access = if client.is_none()
+        && !root_authority
+        && (!service_read || headers.contains_key("x-honeycomb-actor-token"))
+    {
+        Some(service.actor(state, headers).await?)
+    } else {
+        None
+    };
     let actor = if let Some(client) = &client {
         ActorRef {
             actor_type: ActorType::Application,
             id: client.application_id,
+        }
+    } else if root_authority {
+        ActorRef {
+            actor_type: ActorType::Service,
+            id: service.application_id,
         }
     } else {
         access.as_ref().map_or(
@@ -119,6 +129,22 @@ async fn authorize<'a>(
         .execute(&mut *tx)
         .await
         .map_err(database)?;
+    if root_authority {
+        let allowed: bool = sqlx::query_scalar(
+            "SELECT iam_private.honeycomb_testing_root_app_authority($1,$2,$3,$4,$5)",
+        )
+        .bind(service.application_id)
+        .bind(environment)
+        .bind(version.generation)
+        .bind(version.key_version)
+        .bind(authority::key_digests(state, headers)?)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(database)?;
+        if !allowed {
+            return Err(ApiError::forbidden("testing_key_invalid"));
+        }
+    }
     if let Some(client) = &client {
         let instruction:Instruction=serde_json::from_value(json!({"operation_id":Uuid::nil(),"expected_iam_revision":version.expected_environment_revision,"environment_id":environment,"generation":version.generation,"operation":if client.app_id==app {"import"}else{"test-app"},"app_id":app})).map_err(|_|ApiError::internal("testing_app_authority_instruction"))?;
         authority::authorize(&mut tx, state, service, client, &instruction, headers).await?;
@@ -297,6 +323,15 @@ async fn mutate(
     let (mut tx, selected, actor, client) =
         authorize(&state, &service, &headers, env, &app, &version, false).await?;
     if !rotation && !recovery && input.expected_iam_revision == 0 {
+        let production: Option<Uuid> =
+            sqlx::query_scalar("SELECT iam_private.resolve_honeycomb_application($1)")
+                .bind(&app)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(database)?;
+        if production.is_some() {
+            return Err(ApiError::conflict("testing_application_import_required"));
+        }
         let environment: Option<sqlx::types::Json<Value>> =
             sqlx::query_scalar("SELECT iam_private.honeycomb_testing_record($1,$2)")
                 .bind(service.application_id)
