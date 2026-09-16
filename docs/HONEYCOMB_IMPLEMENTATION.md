@@ -25,10 +25,28 @@ Neither architecture document was edited by this implementation.
 - [x] Removal of independent testing retirement and runtime library/CLI updating.
 - [x] Stateless Rust management client, generated OpenAPI types, CLI/console
   ownership guidance, offline documentation and deterministic six-target
-  Honeycomb archive packaging. Client/CLI source version is 1.10.0.
+  Honeycomb archive packaging. Client/CLI source version is 1.11.0.
 - [x] Rustls patched to 0.23.45 to satisfy the dependency advisory check.
 
-## Validation
+## September 16 integration update
+
+- Typed publication plans, exact gate decisions, current-reviewer checks and
+  immutable acceptance receipts; no boolean publication bypass.
+- Consent-bound membership and tag disclosure, accepted webhook destination
+  reconciliation, and paginated organization notification recipients.
+- Shared per-environment keys with no testing-enable key; public root-key imports,
+  fenced key rotation, app-owned environments and cross-organization attachment.
+- Preserved dependency pins, additive activation, immutable source UUID checks,
+  isolated test configuration and application-owned credential recovery.
+- Protected legacy adoption, selective retention and replay-safe key non-reuse.
+- Populated0099/9009 database upgrade regression preserves source identities,
+  credentials and environment links under the restricted runtime role.
+
+SDK source is committed and handed to Honeycomb. The native six-target release
+build runs independently. Backend release and participant activation remain
+separate verified steps; the sections below record the preceding rollout checks.
+
+## Prior validation
 
 Final local validation passed 496 workspace tests, all 33 live PostgreSQL tests,
 and the separate bootstrap replay test. Backend and CLI binaries built locally;
@@ -63,6 +81,10 @@ Provision production credentials and the notification subscription, migrate both
 IAM databases, adopt existing records, then switch legacy writers in a coordinated
 rollout. IAM only acknowledges its own test cleanup.
 
-No production migration, deployment, credential provisioning, package publication
-or Honeycomb source change is included. Build the six native release binaries,
-package and validate the archive, then register/publish it through Honeycomb.
+The preceding production rollout provisioned the service integration and signed
+management notification receiver. The missing-webhook app-list hotfix is deployed
+at `72767708d9ac2e7bf11873aee9bc8800da3c4835`; main/scoped readiness, worker health
+and owner-console recovery were verified without changing migration ledgers.
+The additional September16 migrations remain pending until the final release gate.
+Honeycomb owns normal IAM app registration and publication; preserve existing app
+identities and require current approval/renewed consent for expanded access.

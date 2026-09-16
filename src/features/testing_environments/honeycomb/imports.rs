@@ -37,10 +37,49 @@ pub(super) async fn snapshot(
         serde_json::from_slice(&plaintext)
             .map_err(|_| ApiError::internal("testing_snapshot_decode"))?
     } else {
-        super::super::graph::load(state, root)
+        let plane = state
+            .testing
+            .as_ref()
+            .ok_or_else(|| ApiError::internal("testing_plane_required"))?;
+        let mut test_tx = plane.pool.begin().await.map_err(database)?;
+        sqlx::query("SELECT set_config('iam.testing_environment_id',$1,true)")
+            .bind(input.environment_id.to_string())
+            .execute(&mut *test_tx)
+            .await
+            .map_err(database)?;
+        let snapshots: Vec<sqlx::types::Json<super::super::imports::ProductionApplication>> =
+            sqlx::query_scalar("SELECT * FROM iam_private.honeycomb_testing_source_snapshots()")
+                .fetch_all(&mut *test_tx)
+                .await
+                .map_err(database)?;
+        test_tx.commit().await.map_err(database)?;
+        let pins = snapshots
+            .into_iter()
+            .map(|snapshot| (snapshot.0.app_id.clone(), snapshot.0))
+            .collect();
+        super::super::graph::load_with_pins(state, root, &pins, &input.refresh_app_ids)
             .await
             .map_err(|_| ApiError::conflict("testing_import_source_unavailable"))?
     };
+    if actor.actor_type == crate::domain::actor::ActorType::Application
+        && graph
+            .get(root)
+            .is_none_or(|source| source.source_application_id != actor.id)
+    {
+        return Err(ApiError::forbidden(
+            "testing_application_source_identity_required",
+        ));
+    }
+    if input
+        .refresh_app_ids
+        .iter()
+        .any(|id| !graph.contains_key(id))
+    {
+        return Err(ApiError::validation(
+            "refresh_app_ids",
+            "refresh targets must belong to the requested dependency graph",
+        ));
+    }
     if graph.len() != input.source_revisions.len()
         || graph
             .iter()
@@ -52,14 +91,19 @@ pub(super) async fn snapshot(
         .values()
         .filter(|source| source.visibility == "private")
     {
-        let allowed: bool =
+        let allowed: bool = if actor.actor_type == crate::domain::actor::ActorType::Service {
+            false
+        } else if actor.actor_type == crate::domain::actor::ActorType::Application {
+            super::authority::private_import_allowed(tx, actor.id, &source.org_id).await?
+        } else {
             sqlx::query_scalar("SELECT iam_private.honeycomb_testing_actor(NULL,$1,$2,$3)")
                 .bind(actor.id)
                 .bind(token)
                 .bind(&source.org_id)
                 .fetch_one(&mut **tx)
                 .await
-                .map_err(database)?;
+                .map_err(database)?
+        };
         if !allowed {
             return Err(ApiError::forbidden("private_import_membership_required"));
         }

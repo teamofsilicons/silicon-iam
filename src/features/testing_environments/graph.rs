@@ -25,21 +25,43 @@ pub(super) async fn load(
     state: &ApiState,
     root: &str,
 ) -> Result<BTreeMap<String, ProductionApplication>, AppError> {
+    load_with_pins(state, root, &BTreeMap::new(), &BTreeSet::new()).await
+}
+
+pub(super) async fn load_with_pins(
+    state: &ApiState,
+    root: &str,
+    pins: &BTreeMap<String, ProductionApplication>,
+    refresh: &BTreeSet<String>,
+) -> Result<BTreeMap<String, ProductionApplication>, AppError> {
     let mut graph = BTreeMap::new();
     let mut pending = BTreeSet::from([root.to_owned()]);
     while !pending.is_empty() {
         let requested = std::mem::take(&mut pending);
-        let sources = sqlx::query_as::<_, ProductionApplication>(
+        let from_production = requested
+            .iter()
+            .filter(|id| !pins.contains_key(*id) || refresh.contains(*id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut sources = sqlx::query_as::<_, ProductionApplication>(
             "SELECT * FROM iam_private.get_testing_application_import_v2($1)",
         )
-        .bind(requested.iter().cloned().collect::<Vec<_>>())
+        .bind(&from_production)
         .fetch_all(&state.pool)
         .await
         .map_err(support::database)?;
-        if sources.len() != requested.len() {
+        if sources.len() != from_production.len() {
             return Err(AppError::Conflict {
                 code: "testing_dependency_unavailable".into(),
             });
+        }
+        for id in requested
+            .iter()
+            .filter(|id| pins.contains_key(*id) && !refresh.contains(*id))
+        {
+            if let Some(source) = pins.get(id) {
+                sources.push(source.clone());
+            }
         }
         for source in sources {
             for dependency in dependencies(&source.app_scope)? {
@@ -85,6 +107,7 @@ pub(super) struct ImportedApplication {
     pub(super) application_id: Uuid,
     pub(super) app_secret: SecretString,
     pub(super) created: bool,
+    pub(super) refreshed: bool,
 }
 
 /// The control plane has already verified the production app and environment.
@@ -96,7 +119,7 @@ pub(super) async fn import_all(
     graph: &BTreeMap<String, ProductionApplication>,
     root: &str,
 ) -> Result<BTreeMap<String, ImportedApplication>, AppError> {
-    import_graph(transaction, state, graph, root, false).await
+    import_graph(transaction, state, graph, root, &BTreeSet::new()).await
 }
 
 /// Explicitly refreshes requested imported revisions and their test credentials.
@@ -105,16 +128,21 @@ pub(super) async fn import_exact(
     state: &ApiState,
     graph: &BTreeMap<String, ProductionApplication>,
     root: &str,
+    refresh: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, ImportedApplication>, AppError> {
-    import_graph(transaction, state, graph, root, true).await
+    import_graph(transaction, state, graph, root, refresh).await
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one transaction preserves graph identity, credentials, and accepted pins"
+)]
 async fn import_graph(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     graph: &BTreeMap<String, ProductionApplication>,
     root: &str,
-    refresh: bool,
+    refresh: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, ImportedApplication>, AppError> {
     let selected = testing_plane::current().ok_or(AppError::Forbidden)?;
     // Serialize all import entry points within this environment, including a
@@ -126,6 +154,14 @@ async fn import_graph(
         .map_err(support::database)?;
     let mut imported = BTreeMap::new();
     for (app_id, source) in graph {
+        let imported_source = sqlx::query_scalar::<_, Uuid>(
+            "SELECT source_application_id FROM iam_private.honeycomb_testing_application_source($1)")
+            .bind(app_id).fetch_optional(&mut **transaction).await.map_err(support::database)?;
+        if imported_source.is_some_and(|identity| identity != source.source_application_id) {
+            return Err(AppError::Conflict {
+                code: "testing_source_identity_conflict".into(),
+            });
+        }
         let existing = sqlx::query_as::<_, StoredImport>(
             "SELECT * FROM iam_private.get_testing_application_secret($1)",
         )
@@ -140,7 +176,8 @@ async fn import_graph(
                     .fetch_one(&mut **transaction)
                     .await
                     .map_err(support::database)?;
-            (refresh && revision != source.source_revision).then_some(existing.application_id)
+            (refresh.contains(app_id) && revision != source.source_revision)
+                .then_some(existing.application_id)
         } else {
             None
         };
@@ -163,6 +200,7 @@ async fn import_graph(
             ImportedApplication {
                 application_id: existing.application_id,
                 created: false,
+                refreshed: false,
                 app_secret: SecretString::from(String::from_utf8(plaintext.to_vec()).map_err(
                     |_| AppError::Internal {
                         category: "testing_application_secret_encoding",
@@ -178,6 +216,21 @@ async fn import_graph(
             &application.app_secret,
         )
         .await?;
+        // The pinned source contains only already-encrypted webhook material.
+        // It lets later additive imports retain accepted dependency revisions.
+        if application.created || application.refreshed {
+            let snapshot = serde_json::to_value(source).map_err(|_| AppError::Internal {
+                category: "testing_snapshot_encode",
+            })?;
+            // This helper exists only on upgraded testing databases.
+            sqlx::query("SELECT iam_private.honeycomb_testing_store_snapshot($1,$2,$3)")
+                .bind(application.application_id)
+                .bind(source.source_revision)
+                .bind(snapshot)
+                .execute(&mut **transaction)
+                .await
+                .map_err(support::database)?;
+        }
         imported.insert(app_id.clone(), application);
     }
     if !imported.contains_key(root) {
@@ -198,7 +251,7 @@ async fn import_graph(
 }
 
 #[allow(clippy::too_many_lines)]
-async fn create_one(
+pub(super) async fn create_one(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     source: &ProductionApplication,
@@ -233,7 +286,9 @@ async fn create_one(
         .decrypt(
             EncryptionContext::tenant(
                 ProtectedField::ApplicationWebhookUrl,
-                source.source_application_id,
+                source
+                    .encryption_application_id
+                    .unwrap_or(source.source_application_id),
                 source.source_webhook_endpoint_id,
             ),
             &encrypted(
@@ -250,7 +305,9 @@ async fn create_one(
         .decrypt(
             EncryptionContext::tenant(
                 ProtectedField::ApplicationWebhookSigningSecret,
-                source.source_application_id,
+                source
+                    .encryption_application_id
+                    .unwrap_or(source.source_application_id),
                 source.source_webhook_signing_key_id,
             ),
             &encrypted(
@@ -324,7 +381,8 @@ async fn create_one(
     Ok(ImportedApplication {
         application_id,
         app_secret,
-        created: true,
+        created: existing.is_none(),
+        refreshed: existing.is_some(),
     })
 }
 

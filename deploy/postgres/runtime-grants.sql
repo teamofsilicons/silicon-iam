@@ -277,6 +277,8 @@ DECLARE
         'silicon_webhook_subscriptions'
     ];
     denied_table_names text[] := ARRAY[
+        'honeycomb_publication_plans',
+        'honeycomb_publication_decisions',
         'application_testing_environments',
         'testing_application_imports',
         'contact_blind_indexes',
@@ -438,6 +440,7 @@ DECLARE
         'outbox_events_global_sequence_seq'
     ];
     denied_sequence_names text[] := ARRAY[
+        'honeycomb_publication_decisions_ordinal_seq',
         'runtime_key_activations_id_seq'
     ];
 BEGIN
@@ -540,6 +543,30 @@ DECLARE
         'apply_approved_tag_change',
         'application_token_allows_membership',
         'application_allows_subject',
+        'honeycomb_webhook_destinations',
+        'honeycomb_publication_plan',
+        'honeycomb_publication_read',
+        'honeycomb_publication_decide',
+        'honeycomb_publication_accept',
+        'honeycomb_publication_complete_pending',
+        'honeycomb_publication_recipients',
+        'honeycomb_organization_recipients',
+        'honeycomb_reviewer_eligible',
+        'honeycomb_testing_app_control_ready',
+        'honeycomb_testing_application_authority',
+        'honeycomb_testing_application_import_allowed',
+        'honeycomb_configure_testing_application',
+        'honeycomb_testing_application_source',
+        'honeycomb_testing_application_record',
+        'honeycomb_testing_application_webhook',
+        'honeycomb_rotate_testing_application_secret',
+        'honeycomb_adoption_export',
+        'honeycomb_adoption_key',
+        'honeycomb_remember_testing_key',
+        'honeycomb_testing_root_authority',
+        'honeycomb_testing_link_imports',
+        'honeycomb_retention_start',
+        'honeycomb_retention_finish',
         'resolve_honeycomb_application',
         'honeycomb_operation_status',
         'honeycomb_application_record',
@@ -675,6 +702,9 @@ DECLARE
         'application_webhook_has_event_scope'
     ];
     non_api_definer_names text[] := ARRAY[
+        'honeycomb_publication_gates',
+        'honeycomb_publication_is_current',
+        'honeycomb_publication_reused_current',
         'organization_iam_scope_allowed',
         'get_worker_testing_environment_webhook_key_v2',
         'claim_honeycomb_management_events',
@@ -747,6 +777,15 @@ BEGIN
     IF to_regprocedure('iam_private.current_testing_environment_id()') IS NOT NULL THEN
         non_api_definer_names := non_api_definer_names || ARRAY['stamp_testing_outbox_generation'];
         api_function_names := api_function_names || ARRAY[
+            'honeycomb_testing_app_readiness',
+            'honeycomb_testing_activate_apps',
+            'honeycomb_testing_store_snapshot',
+            'honeycomb_testing_source_snapshots',
+            'honeycomb_testing_import_records',
+            'honeycomb_test_app_receipt',
+            'honeycomb_test_app_complete',
+            'honeycomb_adoption_imports',
+            'erase_testing_applications',
             'register_test_application_selector', 'resolve_test_application_selector',
             'set_testing_runtime_state', 'lock_testing_runtime_state',
             'test_application_selector_backfill', 'resolve_testing_scoped_iam_application'
@@ -972,5 +1011,6 @@ GRANT USAGE ON SCHEMA iam_private TO silicon_iam_key_operator;
 GRANT EXECUTE ON FUNCTION iam_private.activate_runtime_key_version(
     text, smallint, smallint
 ) TO silicon_iam_key_operator;
+
 
 COMMIT;

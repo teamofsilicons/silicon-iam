@@ -229,16 +229,88 @@ async fn application(
     Path(app_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     validation::app_id(&app_id)?;
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| ApiError::internal("honeycomb_application_record"))?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal("honeycomb_application_record"))?;
     let value = sqlx::query_scalar::<_, Option<sqlx::types::Json<Value>>>(
         "SELECT iam_private.honeycomb_application_record($1,$2)",
     )
     .bind(service.application_id)
     .bind(&app_id)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|_| ApiError::internal("honeycomb_application_record"))?
     .ok_or_else(ApiError::not_found)?;
-    Ok(Json(value.0))
+    let mut record = value.0;
+    enrich_webhook_record(&mut tx, &state, &service, &app_id, &mut record).await?;
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("honeycomb_application_record"))?;
+    Ok(Json(record))
+}
+
+#[derive(sqlx::FromRow)]
+struct WebhookDestination {
+    id: Uuid,
+    application_id: Uuid,
+    status: String,
+    url_ciphertext: Vec<u8>,
+    url_nonce: Vec<u8>,
+    encryption_key_version: i16,
+}
+async fn enrich_webhook_record(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    state: &ApiState,
+    service: &Service,
+    app: &str,
+    record: &mut Value,
+) -> Result<(), ApiError> {
+    use crate::infrastructure::crypto::{EncryptedValue, EncryptionContext, ProtectedField};
+    let endpoints = sqlx::query_as::<_, WebhookDestination>(
+        "SELECT * FROM iam_private.honeycomb_webhook_destinations($1,$2)",
+    )
+    .bind(service.application_id)
+    .bind(app)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|_| ApiError::internal("honeycomb_webhook_record"))?;
+    record["webhook_url"] = Value::Null;
+    record["pending_webhook_url"] = Value::Null;
+    for endpoint in endpoints {
+        let value = EncryptedValue {
+            ciphertext: endpoint.url_ciphertext,
+            nonce: endpoint
+                .url_nonce
+                .try_into()
+                .map_err(|_| ApiError::internal("honeycomb_webhook_nonce"))?,
+            key_version: endpoint.encryption_key_version,
+        };
+        let plaintext = state
+            .crypto
+            .decrypt(
+                EncryptionContext::tenant(
+                    ProtectedField::ApplicationWebhookUrl,
+                    endpoint.application_id,
+                    endpoint.id,
+                ),
+                &value,
+            )
+            .map_err(|_| ApiError::internal("honeycomb_webhook_decrypt"))?;
+        let url = String::from_utf8(plaintext.to_vec())
+            .map_err(|_| ApiError::internal("honeycomb_webhook_encoding"))?;
+        record[if endpoint.status == "active" {
+            "webhook_url"
+        } else {
+            "pending_webhook_url"
+        }] = Value::String(url);
+    }
+    Ok(())
 }
 
 async fn operation(

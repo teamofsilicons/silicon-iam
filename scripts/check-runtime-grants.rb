@@ -11,6 +11,9 @@ WORKER_BINARY_PATH = "src/bin/iam_worker.rs"
 # These files contain database setup or live-database tests, not production API
 # queries. Inline `mod tests` modules are removed separately below.
 EXCLUDED_TEST_PATHS = %w[
+  src/features/applications/honeycomb/operations/publication_tests.rs
+  src/features/testing_environments/honeycomb/adoption_retention_tests.rs
+  src/features/testing_environments/honeycomb/testing_apps/tests.rs
   src/features/applications/honeycomb/tests.rs
   src/features/applications/bundle_availability_tests.rs
   src/features/applications/live_tests.rs
@@ -23,6 +26,7 @@ EXCLUDED_TEST_PATHS = %w[
   src/features/applications/scope_catalog_tests.rs
   src/features/applications/scoped_auth_tests.rs
   src/features/applications/testing_login_tests.rs
+  src/infrastructure/postgres/honeycomb_upgrade_tests.rs
   src/infrastructure/postgres/key_rotation_tests.rs
 ].freeze
 
@@ -56,6 +60,8 @@ EXPECTED_DELETE_TABLES = Set.new(%w[
 # These relations deliberately stay outside the API table capability manifest.
 # Access must remain mediated by narrow fixed-path functions or another process.
 CRITICAL_DENIED_TABLES = Set.new(%w[
+  honeycomb_publication_plans
+  honeycomb_publication_decisions
   application_scope_messages
   application_bundle_members
   application_testing_environments
@@ -79,13 +85,14 @@ DML_VERBS = %w[SELECT INSERT UPDATE DELETE].freeze
 def strip_test_modules(path)
   source = File.read(path)
   source = source.gsub(
-    /^[ \t]*#\[cfg\(test\)\][ \t]*\r?\n(?:[ \t]*#\[path[ \t]*=[ \t]*"[^"\r\n]+"\][ \t]*\r?\n)?[ \t]*(?:pub\(crate\)[ \t]+)?mod[ \t]+[a-zA-Z0-9_]+[ \t]*;[ \t]*$/,
+    /^[ \t]*#\[cfg\(test\)\][ \t]*\r?\n(?:[ \t]*#\[path[ \t]*=[ \t]*"[^"\r\n]+"\][ \t]*\r?\n)?[ \t]*(?:pub\((?:crate|super)\)[ \t]+)?mod[ \t]+[a-zA-Z0-9_]+[ \t]*;[ \t]*$/,
     ""
   )
   source = source.sub(
     /^[ \t]*#\[cfg\(test\)\][ \t]*\r?\n[ \t]*mod[ \t]+tests[ \t]*\{.*\z/m,
     ""
   )
+  source = source.gsub(/^[ \t]*#\[cfg\(test\)\][ \t]*\r?\n[ \t]*pub\(crate\) use [^;\n]+;[ \t]*$/, "")
   return source unless source.match?(/#\[cfg\(test\)\]/)
 
   raise "#{path}: unsupported cfg(test) shape; update the grant checker instead of scanning tests"

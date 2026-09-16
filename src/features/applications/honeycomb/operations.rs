@@ -3,6 +3,9 @@
 
 mod bundles;
 mod decisions;
+mod publication;
+#[cfg(test)]
+pub(super) mod publication_tests;
 mod webhook_secret;
 
 use axum::{
@@ -43,7 +46,7 @@ use crate::{
     },
 };
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct AcceptedConfiguration {
     operation_id: Uuid,
@@ -73,7 +76,7 @@ const fn default_idle_days() -> i32 {
     30
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct Webhook {
     url: String,
@@ -108,6 +111,7 @@ struct StoredOperation {
 pub(super) fn router() -> Router<ApiState> {
     Router::new()
         .merge(decisions::router())
+        .merge(publication::router())
         .merge(bundles::router())
         .merge(webhook_secret::router())
         .route(
@@ -430,7 +434,7 @@ async fn configure(
         } else {
             false
         };
-        if input.visibility == "public" && (!input.publication_approved || missing) {
+        if input.visibility == "public" {
             let snapshot: sqlx::types::Json<Value> =
                 sqlx::query_scalar("SELECT iam_private.honeycomb_application_record($1,$2)")
                     .bind(service.application_id)
@@ -441,7 +445,7 @@ async fn configure(
             let revision = snapshot.0["iam_revision"]
                 .as_i64()
                 .ok_or_else(|| ApiError::internal("honeycomb_pending_revision"))?;
-            let response = json!({"operation_id":input.operation_id,"state":"pending","configuration_revision":input.configuration_revision,"iam_revision":revision,"effective_configuration":snapshot.0,"required_approvals":{"publication":!input.publication_approved,"critical_scopes":missing}});
+            let response = json!({"operation_id":input.operation_id,"state":"pending","configuration_revision":input.configuration_revision,"iam_revision":revision,"effective_configuration":snapshot.0,"configuration_digest":hex::encode(publication::configuration_digest(&input)?),"required_approvals":{"publication":true,"critical_scopes":missing}});
             complete(
                 &mut tx,
                 &state,
@@ -458,6 +462,9 @@ async fn configure(
                 .map_err(|_| ApiError::internal("honeycomb_pending_commit"))?;
             return Ok(management_response(response, false));
         }
+    }
+    if input.visibility == "public" && existing.is_none() {
+        return Err(ApiError::conflict("create_private_before_publication"));
     }
     let (app_id, new_secret) =
         apply_configuration(&mut tx, &state, &actor, organization, &input, existing).await?;
@@ -747,4 +754,13 @@ async fn rotate(
         .await
         .map_err(|_| ApiError::internal("honeycomb_rotation_commit"))?;
     Ok(management_response(response, false))
+}
+
+/// Test-plane management validates the same accepted configuration shape.
+pub(crate) fn validate_test_configuration(value: &Value) -> Result<(), ApiError> {
+    let mut value = value.clone();
+    value["environment_id"] = Value::Null;
+    let input: AcceptedConfiguration = serde_json::from_value(value)
+        .map_err(|_| ApiError::validation("configuration", "invalid accepted configuration"))?;
+    validate_configuration(&input.app_id, &input)
 }

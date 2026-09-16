@@ -345,3 +345,6 @@ async fn register_keyring(
         .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod honeycomb_upgrade_tests;

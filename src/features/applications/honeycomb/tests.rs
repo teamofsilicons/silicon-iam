@@ -320,6 +320,15 @@ async fn management_is_authenticated_revision_bound_and_durably_replayable() -> 
     )
     .await?;
     bundles_and_reconciliation(&app, &admin, &service_secret, actor.expose_secret()).await?;
+    crate::features::testing_environments::honeycomb::testing_apps::tests::exercise(
+        &app,
+        &state,
+        &admin,
+        &test_admin,
+        &service_secret,
+        actor.expose_secret(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -334,16 +343,20 @@ async fn lifecycle(
     let environment = Uuid::now_v7();
     let mut revision = 0;
     let mut generation = 1;
+    let mut key_version = 1;
     let mut key = String::new();
     let mut prepare = Value::Null;
     let mut first_import = String::new();
+    let mut latest_import = String::new();
     let mut imported_id = None;
     let mut import_count = 0;
     for operation in [
         "prepare",
         "import",
-        "import",
         "activate",
+        "import",
+        "activate-apps",
+        "import",
         "rotate-key",
         "clean",
         "import",
@@ -356,15 +369,40 @@ async fn lifecycle(
     ] {
         let id = Uuid::now_v7();
         let mut input = json!({"operation_id":id,"environment_id":environment,"expected_iam_revision":revision,"generation":generation,"operation":operation,"org_id":"test_org","name":"Managed test","description":null});
+        if operation == "prepare" || operation == "rotate-key" {
+            input["testing_key"] = json!(if operation == "prepare" {
+                "H".repeat(32)
+            } else {
+                "R".repeat(32)
+            });
+            input["key_version"] = json!(if operation == "prepare" {
+                1
+            } else {
+                key_version + 1
+            });
+        }
+        if revision > 0 {
+            input["expected_key_version"] = json!(key_version);
+        }
+        if operation == "activate-apps" {
+            input["app_ids"] = json!(["test_org>managed-app"]);
+        }
         if operation == "import" {
             if import_count == 1 {
+                input["refresh_app_ids"] = json!(["test_org>managed-app"]);
                 sqlx::query("UPDATE iam.applications SET app_name='Refreshed source',version=version+1 WHERE app_id='test_org>managed-app'").execute(admin).await?;
             }
-            let source: i64 = sqlx::query_scalar(
+            if import_count == 2 {
+                sqlx::query("UPDATE iam.applications SET app_name='Unaccepted newer source',version=version+1 WHERE app_id='test_org>managed-app'").execute(admin).await?;
+            }
+            let mut source: i64 = sqlx::query_scalar(
                 "SELECT version FROM iam.applications WHERE app_id='test_org>managed-app'",
             )
             .fetch_one(admin)
             .await?;
+            if import_count == 2 {
+                source = sqlx::query_scalar("SELECT source_revision FROM iam.testing_application_imports WHERE application_id=$1").bind(imported_id).fetch_one(test_admin).await?;
+            }
             input["app_id"] = json!("test_org>managed-app");
             input["source_revisions"] = json!({"test_org>managed-app":source});
         }
@@ -389,13 +427,102 @@ async fn lifecycle(
         let replay: Value =
             serde_json::from_slice(&to_bytes(replay.into_body(), 1024 * 1024).await?)?;
         ensure!(result == replay, "{operation} replay changed result");
+        key_version = result["environment"]["key_version"]
+            .as_i64()
+            .unwrap_or_default();
+        if operation == "prepare" || operation == "rotate-key" {
+            ensure!(
+                result["key"] == input["testing_key"],
+                "coordinator key was replaced"
+            );
+        }
         revision = result["iam_revision"].as_i64().unwrap_or_default();
         generation = result["environment"]["generation"]
             .as_i64()
             .unwrap_or_default();
+        if operation == "rotate-key" {
+            for retired in ["H".repeat(32), "R".repeat(32)] {
+                let operation_id = Uuid::now_v7();
+                let invalid = json!({"operation_id":operation_id,"environment_id":environment,
+                    "expected_iam_revision":revision,"generation":generation,"operation":"rotate-key",
+                    "testing_key":retired,"key_version":key_version+1,"expected_key_version":key_version});
+                let denied = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(format!(
+                                "/api/v1/honeycomb/testing-environments/{environment}/operations"
+                            ))
+                            .header("authorization", format!("Bearer {credential}"))
+                            .header("x-honeycomb-actor-token", actor)
+                            .header("idempotency-key", operation_id.to_string())
+                            .header("content-type", "application/json")
+                            .body(Body::from(serde_json::to_vec(&invalid)?))?,
+                    )
+                    .await?;
+                ensure!(
+                    denied.status() == StatusCode::CONFLICT,
+                    "retired or current key was reusable: {}",
+                    denied.status()
+                );
+            }
+        }
+
+        if operation == "activate-apps" {
+            // Simulate a committed test phase with the production receipt lost:
+            // replaying that phase must accept already-active exact imports.
+            let mut transaction = test_admin.begin().await?;
+            sqlx::query("SELECT set_config('iam.testing_environment_id',$1,true)")
+                .bind(environment.to_string())
+                .execute(&mut *transaction)
+                .await?;
+            sqlx::query("SELECT iam_private.honeycomb_testing_activate_apps($1)")
+                .bind(vec!["test_org>managed-app"])
+                .execute(&mut *transaction)
+                .await?;
+            transaction.commit().await?;
+        }
         if operation == "import" {
             let current = result["app_secret"].as_str().unwrap_or_default();
             let row: (Uuid,String,i64) = sqlx::query_as("SELECT app.id,app.app_name,import.source_revision FROM iam.applications app JOIN iam.testing_application_imports import ON import.application_id=app.id WHERE app.app_id='test_org>managed-app' AND app.testing_environment_id=$1").bind(environment).fetch_one(test_admin).await?;
+            if import_count == 0 {
+                // A canonical handle is not an immutable source identity. Keep
+                // both source UUIDs valid so policy lookup alone cannot hide a
+                // credential-reuse bug, then exercise interrupted-phase retry.
+                let actual_source:Uuid=sqlx::query_scalar("SELECT source_application_id FROM iam.testing_application_imports WHERE application_id=$1").bind(row.0).fetch_one(test_admin).await?;
+                sqlx::query("UPDATE iam.testing_application_imports SET source_application_id=$2 WHERE application_id=$1").bind(row.0).bind(Uuid::from_u128(0x11)).execute(test_admin).await?;
+                let mismatch_id = Uuid::now_v7();
+                let mismatch = json!({"operation_id":mismatch_id,"environment_id":environment,"expected_iam_revision":revision,"generation":generation,"operation":"import","app_id":"test_org>managed-app","source_revisions":input["source_revisions"]});
+                let mismatch_request = || -> anyhow::Result<Request<Body>> {
+                    Ok(Request::builder()
+                        .method("POST")
+                        .uri(format!(
+                            "/api/v1/honeycomb/testing-environments/{environment}/operations"
+                        ))
+                        .header("authorization", format!("Bearer {credential}"))
+                        .header("x-honeycomb-actor-token", actor)
+                        .header("idempotency-key", mismatch_id.to_string())
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&mismatch)?))?)
+                };
+                let denied = app.clone().oneshot(mismatch_request()?).await?;
+                ensure!(
+                    denied.status() == StatusCode::CONFLICT,
+                    "another source identity reused pinned app credentials"
+                );
+                sqlx::query("UPDATE iam.testing_application_imports SET source_application_id=$2 WHERE application_id=$1").bind(row.0).bind(actual_source).execute(test_admin).await?;
+                let resumed = app.clone().oneshot(mismatch_request()?).await?;
+                let resumed_status = resumed.status();
+                let resumed: Value =
+                    serde_json::from_slice(&to_bytes(resumed.into_body(), 1024 * 1024).await?)?;
+                ensure!(
+                    resumed_status == StatusCode::OK
+                        && resumed["app_secret"] == result["app_secret"],
+                    "same-operation import recovery changed credential: {resumed}"
+                );
+                revision = resumed["iam_revision"].as_i64().unwrap_or_default();
+            }
             if import_count == 1 {
                 ensure!(
                     imported_id == Some(row.0),
@@ -410,12 +537,33 @@ async fn lifecycle(
                     "source revision not recorded"
                 );
             }
+            if import_count == 2 {
+                ensure!(
+                    row.1 == "Refreshed source",
+                    "additive import silently refreshed a pin"
+                );
+                ensure!(
+                    current == latest_import,
+                    "additive import changed existing credential"
+                );
+                ensure!(
+                    result["imports"][0]["ready"] == true,
+                    "additive import blocked ready app"
+                );
+            } else {
+                ensure!(
+                    result["imports"][0]["ready"] == false,
+                    "changed import was prematurely ready"
+                );
+            }
+            let retained = import_count == 2;
+            latest_import = current.to_owned();
             imported_id = Some(row.0);
             import_count += 1;
             ensure!(!current.is_empty(), "import omitted secret");
             if first_import.is_empty() {
                 first_import = current.into();
-            } else {
+            } else if !retained {
                 ensure!(
                     first_import != current,
                     "post-clean import reused credential"
@@ -423,6 +571,36 @@ async fn lifecycle(
             }
         }
         if operation == "prepare" {
+            let unavailable_id = Uuid::now_v7();
+            let unavailable = json!({"operation_id":unavailable_id,"environment_id":environment,"expected_iam_revision":revision,"generation":generation,"operation":"import","app_id":"test_org>missing-source","source_revisions":{"test_org>missing-source":1}});
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!(
+                            "/api/v1/honeycomb/testing-environments/{environment}/operations"
+                        ))
+                        .header("authorization", format!("Bearer {credential}"))
+                        .header("x-honeycomb-actor-token", actor)
+                        .header("idempotency-key", unavailable_id.to_string())
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&unavailable)?))?,
+                )
+                .await?;
+            ensure!(
+                response.status() == StatusCode::CONFLICT,
+                "missing source graph was accepted"
+            );
+            let after: i64 =
+                sqlx::query_scalar("SELECT version FROM iam.testing_environments WHERE id=$1")
+                    .bind(environment)
+                    .fetch_one(admin)
+                    .await?;
+            ensure!(
+                after == revision,
+                "unavailable source changed environment revision"
+            );
             prepare = result.clone();
             key = result["key"].as_str().unwrap_or_default().into();
         }
@@ -498,6 +676,35 @@ async fn lifecycle(
             );
         }
     }
+    let another = Uuid::now_v7();
+    let operation = Uuid::now_v7();
+    let reused = json!({"operation_id":operation,"environment_id":another,"expected_iam_revision":0,"generation":1,"operation":"prepare","org_id":"test_org","name":"Must not reuse retired root","testing_key":"H".repeat(32),"key_version":1});
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/honeycomb/testing-environments/{another}/operations"
+                ))
+                .header("authorization", format!("Bearer {credential}"))
+                .header("x-honeycomb-actor-token", actor)
+                .header("idempotency-key", operation.to_string())
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&reused)?))?,
+        )
+        .await?;
+    ensure!(
+        response.status() == StatusCode::CONFLICT,
+        "purged root was reusable by another environment"
+    );
+    let absent: bool =
+        sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM iam.testing_environments WHERE id=$1)")
+            .bind(another)
+            .fetch_one(admin)
+            .await?;
+    ensure!(absent, "failed key reuse left another environment behind");
+    legacy_key_transfer(app, state, admin, credential, actor).await?;
     let key_erased:bool=sqlx::query_scalar("SELECT key_ciphertext IS NULL AND key_digest IS NULL FROM iam.testing_environments WHERE id=$1").bind(environment).fetch_one(admin).await?;
     ensure!(key_erased, "purge retained the root key");
     ensure!(
@@ -514,88 +721,7 @@ async fn publication(
     actor: &str,
     private: &Value,
 ) -> anyhow::Result<()> {
-    let name = "test_org>managed-app";
-    let revision: i64 = sqlx::query_scalar("SELECT version FROM iam.applications WHERE app_id=$1")
-        .bind(name)
-        .fetch_one(admin)
-        .await?;
-    let mut proposal = private.clone();
-    proposal["configuration_revision"] = json!(2);
-    proposal["expected_iam_revision"] = json!(revision);
-    proposal["visibility"] = json!("public");
-    proposal["webhook"]["secret"] = json!("b".repeat(48));
-    proposal["publication_approved"] = json!(true);
-    proposal["operation_id"] = json!(Uuid::now_v7());
-    let send = |path: String, body: &Value, method: &str| -> anyhow::Result<Request<Body>> {
-        Ok(Request::builder()
-            .method(method)
-            .uri(path)
-            .header("authorization", format!("Bearer {credential}"))
-            .header("x-honeycomb-actor-token", actor)
-            .header("content-type", "application/json")
-            .header(
-                "idempotency-key",
-                body["operation_id"].as_str().unwrap_or_default(),
-            )
-            .body(Body::from(serde_json::to_vec(body)?))?)
-    };
-    let path = "/api/v1/honeycomb/applications/test_org%3Emanaged-app/configuration";
-    let pending = app
-        .clone()
-        .oneshot(send(path.into(), &proposal, "PUT")?)
-        .await?;
-    let status = pending.status();
-    let pending: Value =
-        serde_json::from_slice(&to_bytes(pending.into_body(), 1024 * 1024).await?)?;
-    ensure!(
-        status == StatusCode::OK
-            && pending["state"] == "pending"
-            && pending["effective_configuration"]["visibility"] == "private",
-        "public activation reused a private exemption: {pending}"
-    );
-    let current: i64 = sqlx::query_scalar("SELECT version FROM iam.applications WHERE app_id=$1")
-        .bind(name)
-        .fetch_one(admin)
-        .await?;
-    ensure!(
-        current == revision,
-        "pending public proposal changed the accepted record"
-    );
-    sqlx::query("INSERT INTO iam.platform_role_grants(id,carbon_id,role,grant_source) VALUES($1,$2,'application_reviewer','bootstrap')").bind(Uuid::now_v7()).bind(Uuid::from_u128(1)).execute(admin).await?;
-    let decision = json!({"operation_id":Uuid::now_v7(),"expected_iam_revision":revision,"environment_id":null,"scopes":["directory.carbons.read"],"decision":"approve"});
-    let accepted = app
-        .clone()
-        .oneshot(send(
-            "/api/v1/honeycomb/applications/test_org%3Emanaged-app/scope-decisions".into(),
-            &decision,
-            "POST",
-        )?)
-        .await?;
-    let status = accepted.status();
-    let accepted: Value =
-        serde_json::from_slice(&to_bytes(accepted.into_body(), 1024 * 1024).await?)?;
-    ensure!(
-        status == StatusCode::OK,
-        "scope approval failed: {accepted}"
-    );
-    proposal["operation_id"] = json!(Uuid::now_v7());
-    proposal["expected_iam_revision"] = accepted["iam_revision"].clone();
-    let public = app
-        .clone()
-        .oneshot(send(path.into(), &proposal, "PUT")?)
-        .await?;
-    let status = public.status();
-    let public: Value = serde_json::from_slice(&to_bytes(public.into_body(), 1024 * 1024).await?)?;
-    ensure!(
-        status == StatusCode::OK && public["effective_configuration"]["visibility"] == "public",
-        "approved activation failed: {public}"
-    );
-    let event_count:i64=sqlx::query_scalar("SELECT count(*) FROM iam.honeycomb_management_events WHERE event_type='application.scope.decided'").fetch_one(admin).await?;
-    ensure!(
-        event_count == 1,
-        "scope decision notification not committed atomically"
-    );
-    Ok(())
+    super::operations::publication_tests::exercise(app, admin, credential, actor, private).await
 }
 
 async fn sensitive_operations(
@@ -778,5 +904,109 @@ async fn bundles_and_reconciliation(
     .fetch_one(admin)
     .await?;
     ensure!(pending, "replay did not queue the same event");
+    Ok(())
+}
+
+async fn legacy_key_transfer(
+    app: &axum::Router,
+    state: &ApiState,
+    admin: &sqlx::PgPool,
+    credential: &str,
+    actor: &str,
+) -> anyhow::Result<()> {
+    use crate::infrastructure::crypto::{EncryptionContext, ProtectedField};
+    for export_first in [true, false] {
+        let environment = Uuid::now_v7();
+        let org = Uuid::from_u128(0x21);
+        let root = if export_first {
+            "L".repeat(32)
+        } else {
+            "P".repeat(32)
+        };
+        let secret = secrecy::SecretString::from(root.clone());
+        let digest = state
+            .crypto
+            .digest_secret(DigestPurpose::TestingEnvironmentKey, &secret)?;
+        let encrypted = state.crypto.encrypt(
+            EncryptionContext::tenant(ProtectedField::TestingEnvironmentKey, org, environment),
+            root.as_bytes(),
+        )?;
+        sqlx::query("INSERT INTO iam.testing_environments(id,organization_id,created_by_membership_id,name,key_digest,key_digest_key_version,key_ciphertext,key_nonce,key_encryption_key_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)")
+            .bind(environment).bind(org).bind(Uuid::from_u128(0x31)).bind(environment.to_string()).bind(digest.as_bytes().as_slice()).bind(digest.key_version())
+            .bind(encrypted.ciphertext).bind(encrypted.nonce.as_slice()).bind(encrypted.key_version).execute(admin).await?;
+        let mut revision: i64 =
+            sqlx::query_scalar("SELECT version FROM iam.testing_environments WHERE id=$1")
+                .bind(environment)
+                .fetch_one(admin)
+                .await?;
+        let send = |path: String, body: &Value, user: bool| -> anyhow::Result<Request<Body>> {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("authorization", format!("Bearer {credential}"))
+                .header(
+                    "idempotency-key",
+                    body["operation_id"].as_str().unwrap_or_default(),
+                )
+                .header("content-type", "application/json");
+            if user {
+                request = request.header("x-honeycomb-actor-token", actor);
+            }
+            Ok(request.body(Body::from(serde_json::to_vec(body)?))?)
+        };
+        if export_first {
+            let body = json!({"operation_id":Uuid::now_v7(),"expected_iam_revision":revision});
+            let exported = app
+                .clone()
+                .oneshot(send(
+                    format!("/api/v1/honeycomb/testing-environments/{environment}/adoption-export"),
+                    &body,
+                    false,
+                )?)
+                .await?;
+            let status = exported.status();
+            let exported: Value =
+                serde_json::from_slice(&to_bytes(exported.into_body(), 1024 * 1024).await?)?;
+            ensure!(
+                status == StatusCode::OK && exported["key"] == root,
+                "legacy export failed: {exported}"
+            );
+            let remembered:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM iam_private.honeycomb_testing_key_history WHERE environment_id=$1)").bind(environment).fetch_one(admin).await?;
+            ensure!(remembered, "legacy exported root not remembered");
+        }
+        for kind in ["prepare", "disable", "purge"] {
+            let body = json!({"operation_id":Uuid::now_v7(),"environment_id":environment,"expected_iam_revision":revision,"generation":1,"operation":kind});
+            let response = app
+                .clone()
+                .oneshot(send(
+                    format!("/api/v1/honeycomb/testing-environments/{environment}/operations"),
+                    &body,
+                    true,
+                )?)
+                .await?;
+            let status = response.status();
+            let value: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await?)?;
+            ensure!(status == StatusCode::OK, "legacy {kind} failed: {value}");
+            if kind == "prepare" {
+                ensure!(value["key"] == root, "legacy preparation replaced root");
+            }
+            revision = value["iam_revision"].as_i64().unwrap_or_default();
+        }
+        let replacement = Uuid::now_v7();
+        let body = json!({"operation_id":Uuid::now_v7(),"environment_id":replacement,"expected_iam_revision":0,"generation":1,"operation":"prepare","org_id":"test_org","name":"Legacy root reuse forbidden","testing_key":root,"key_version":1});
+        let response = app
+            .clone()
+            .oneshot(send(
+                format!("/api/v1/honeycomb/testing-environments/{replacement}/operations"),
+                &body,
+                true,
+            )?)
+            .await?;
+        ensure!(
+            response.status() == StatusCode::CONFLICT,
+            "purged legacy root could authorize a new environment"
+        );
+    }
     Ok(())
 }

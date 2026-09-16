@@ -1,7 +1,11 @@
 //! Durable, production-authorized instructions for IAM's test data only.
 #![allow(clippy::too_many_lines, clippy::type_complexity)]
 use super::support;
+mod adoption_retention;
+mod authority;
 mod imports;
+mod keys;
+pub(crate) mod testing_apps;
 use crate::{
     api::ApiState,
     domain::actor::{ActorRef, ActorType},
@@ -31,16 +35,26 @@ struct Instruction {
     environment_id: Uuid,
     generation: i64,
     operation: String,
+    #[serde(default, deserialize_with = "keys::deserialize")]
+    testing_key: Option<secrecy::SecretString>,
+    key_version: Option<i32>,
+    expected_key_version: Option<i32>,
     org_id: Option<String>,
     name: Option<String>,
     description: Option<String>,
     app_id: Option<String>,
     #[serde(default)]
     source_revisions: std::collections::BTreeMap<String, i64>,
+    #[serde(default)]
+    refresh_app_ids: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    app_ids: Vec<String>,
 }
 
 pub(crate) fn router() -> Router<ApiState> {
     Router::new()
+        .merge(testing_apps::router())
+        .merge(adoption_retention::router())
         .route(
             "/api/v1/honeycomb/testing-environments/{environment_id}",
             get(record),
@@ -106,11 +120,38 @@ async fn instruct(
                 | "purge"
                 | "activate"
                 | "import"
+                | "activate-apps"
         )
     {
         return Err(ApiError::validation(
             "instruction",
             "invalid identity, revision, generation or operation",
+        ));
+    }
+    if (!input.refresh_app_ids.is_empty() && input.operation != "import")
+        || (input.operation == "activate-apps" && input.app_ids.is_empty())
+        || (input.operation != "activate-apps" && !input.app_ids.is_empty())
+    {
+        return Err(ApiError::validation(
+            "app_ids",
+            "select exact app IDs for activation or refresh",
+        ));
+    }
+    let generates_key = (input.operation == "prepare" && input.expected_iam_revision == 0)
+        || input.operation == "rotate-key";
+    if input.testing_key.as_ref().is_some_and(|key| {
+        !generates_key
+            || input.key_version.is_none()
+            || super::validation::key_shape(key.expose_secret()).is_none()
+    }) || input.key_version.is_some_and(|version| version <= 0)
+        || input
+            .expected_key_version
+            .is_some_and(|version| version <= 0)
+        || (input.key_version.is_some() && !generates_key)
+    {
+        return Err(ApiError::validation(
+            "testing_key",
+            "supply a 32-character alphanumeric key and increasing key_version only for new prepare or rotate-key",
         ));
     }
     let plane = state.testing.as_ref().ok_or_else(|| {
@@ -124,8 +165,22 @@ async fn instruct(
     } else {
         None
     };
-    let actor = if let Some(access) = &access {
+    let application = authority::production_application(&state, &headers).await?;
+    let root_authority = application.is_none()
+        && access.is_none()
+        && headers.contains_key("x-honeycomb-testing-key");
+    let actor = if let Some(client) = &application {
+        ActorRef {
+            actor_type: ActorType::Application,
+            id: client.application_id,
+        }
+    } else if let Some(access) = &access {
         access.subject
+    } else if root_authority {
+        ActorRef {
+            actor_type: ActorType::Service,
+            id: service.application_id,
+        }
     } else {
         if !state
             .settings
@@ -134,7 +189,7 @@ async fn instruct(
             .is_some_and(|settings| settings.scheduled_testing)
             || !matches!(
                 input.operation.as_str(),
-                "clean" | "disable" | "restore" | "purge" | "activate"
+                "clean" | "disable" | "restore" | "purge" | "activate" | "activate-apps"
             )
         {
             return Err(ApiError::forbidden("scheduled_testing_authority_required"));
@@ -162,6 +217,12 @@ async fn instruct(
         if !allowed {
             return Err(ApiError::forbidden("testing_manager_required"));
         }
+    }
+    if let Some(client) = &application {
+        authority::authorize(&mut tx, &state, &service, client, &input, &headers).await?;
+    }
+    if root_authority {
+        authority::authorize_root(&mut tx, &state, &service, &input, &headers).await?;
     }
     let resource = id.to_string();
     if let Some(response) = operations::claim(
@@ -195,29 +256,15 @@ async fn instruct(
     } else {
         None
     };
-    // Keys are generated locally and never persisted in plaintext. Retrying an
-    // unfinished operation uses the key already installed in the environment.
-    let generate = (input.operation == "prepare" && input.expected_iam_revision == 0)
-        || input.operation == "rotate-key";
-    let keys = if generate {
-        let org: Uuid =
-            sqlx::query_scalar("SELECT iam_private.honeycomb_testing_organization($1,$2)")
-                .bind(id)
-                .bind(&input.org_id)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(database)?;
-        let secret = state
-            .crypto
-            .generate_testing_environment_key()
-            .map_err(|_| ApiError::internal("honeycomb_testing_key_generate"))?;
-        let stored = support::store_key(&state, org, id, &secret)
-            .map_err(|_| ApiError::internal("honeycomb_testing_key_encrypt"))?;
-        json!({"digest":hex::encode(stored.digest),"digest_version":stored.digest_key_version,"ciphertext":hex::encode(stored.ciphertext),"nonce":hex::encode(stored.nonce),"encryption_version":stored.encryption_key_version})
+    // The coordinator can supply the shared key. Plaintext never enters SQL,
+    // durable receipts, or notifications; exact retries retain installed material.
+    let keys = if generates_key {
+        keys::prepare(&mut tx, &state, &service, &input).await?
     } else {
         Value::Null
     };
-    let details = json!({"org_id":input.org_id,"name":input.name,"description":input.description});
+    let details = json!({"org_id":input.org_id,"name":input.name,"description":input.description,
+        "key_version":input.key_version,"expected_key_version":input.expected_key_version,"app_id":input.app_id});
     let snapshot: sqlx::types::Json<Value> = sqlx::query_scalar(
         "SELECT iam_private.honeycomb_testing_start($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
     )
@@ -247,6 +294,12 @@ async fn instruct(
     let mut tx = context::begin(&state.pool, DatabaseContext::principal(actor.id))
         .await
         .map_err(database)?;
+    if let Some(client) = &application {
+        authority::authorize(&mut tx, &state, &service, client, &input, &headers).await?;
+    }
+    if root_authority {
+        authority::authorize_root(&mut tx, &state, &service, &input, &headers).await?;
+    }
     // Same operation lock excludes simultaneous retries while finishing.
     if let Some(response) = operations::claim(
         &mut tx,
@@ -283,7 +336,7 @@ async fn instruct(
         .bind(id)
         .bind(generation)
         .bind(key_version)
-        .bind(snapshot.0["state"] == "active")
+        .bind(snapshot.0["state"] == "active" || snapshot.0["state"] == "importing-active")
         .execute(&mut *test_tx)
         .await
         .map_err(database)?;
@@ -313,6 +366,7 @@ async fn instruct(
                         &state,
                         graph,
                         input.app_id.as_deref().unwrap_or_default(),
+                        &input.refresh_app_ids,
                     )
                     .await
                 },
@@ -323,7 +377,48 @@ async fn instruct(
     } else {
         None
     };
+    if let Some(imported) = &imported {
+        let changed = imported
+            .values()
+            .filter(|app| app.created || app.refreshed)
+            .map(|app| app.application_id)
+            .collect::<Vec<_>>();
+        sqlx::query("SELECT iam_private.honeycomb_testing_app_readiness($1,false)")
+            .bind(changed)
+            .execute(&mut *test_tx)
+            .await
+            .map_err(database)?;
+    }
+    if matches!(input.operation.as_str(), "activate" | "activate-apps") {
+        sqlx::query("SELECT iam_private.honeycomb_testing_activate_apps($1)")
+            .bind(if input.operation == "activate" {
+                None
+            } else {
+                Some(&input.app_ids)
+            })
+            .execute(&mut *test_tx)
+            .await
+            .map_err(database)?;
+    }
+    let import_records: sqlx::types::Json<Value> =
+        sqlx::query_scalar("SELECT iam_private.honeycomb_testing_import_records()")
+            .fetch_one(&mut *test_tx)
+            .await
+            .map_err(database)?;
     test_tx.commit().await.map_err(database)?;
+    if let (Some(imported), Some(graph)) = (&imported, &import_graph) {
+        let links = imported.iter().map(|(id, app)| {
+            json!({"source_application_id":graph[id].source_application_id,"target_application_id":app.application_id})
+        }).collect::<Vec<_>>();
+        sqlx::query("SELECT iam_private.honeycomb_testing_link_imports($1,$2,$3,$4)")
+            .bind(service.application_id)
+            .bind(id)
+            .bind(input.operation_id)
+            .bind(json!(links))
+            .execute(&mut *tx)
+            .await
+            .map_err(database)?;
+    }
     if input.operation == "purge" {
         sqlx::query("SELECT iam_private.honeycomb_testing_purge_receipts($1,$2)")
             .bind(service.application_id)
@@ -343,7 +438,7 @@ async fn instruct(
     let revision = snapshot.0["iam_revision"]
         .as_i64()
         .ok_or_else(|| ApiError::internal("honeycomb_testing_revision"))?;
-    let mut response = json!({"operation_id":input.operation_id,"state":"accepted","environment_id":id,"iam_revision":revision,"iam_completion":true,"environment":snapshot.0});
+    let mut response = json!({"operation_id":input.operation_id,"state":"accepted","environment_id":id,"iam_revision":revision,"iam_completion":true,"environment":snapshot.0,"imports":import_records.0});
     if let Some(imported) = &imported {
         let root = imported
             .get(input.app_id.as_deref().unwrap_or_default())
@@ -374,10 +469,10 @@ async fn instruct(
             nonce,
             encryption_key_version: encryption_version,
         };
-        response["key"] = json!(
-            support::read_key(&state, org, id, &stored)
-                .map_err(|_| ApiError::internal("honeycomb_testing_key_decrypt"))?
-        );
+        let key = support::read_key(&state, org, id, &stored)
+            .map_err(|_| ApiError::internal("honeycomb_testing_key_decrypt"))?;
+        keys::remember(&mut tx, &service, id, input.operation_id, &key).await?;
+        response["key"] = json!(key);
     }
     operations::complete(
         &mut tx,

@@ -47,8 +47,11 @@ pub(super) struct TestingApplicationImported {
     secret_replay_expires_at: OffsetDateTime,
 }
 
-#[derive(sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
 pub(super) struct ProductionApplication {
+    #[serde(default)]
+    #[sqlx(default)]
+    pub(super) encryption_application_id: Option<Uuid>,
     pub(super) source_revision: i64,
     pub(super) visibility: String,
     pub(super) source_application_id: Uuid,
