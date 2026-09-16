@@ -1591,7 +1591,7 @@ pub(super) async fn load_webhook(
         retired.as_ref(),
         secret_version,
         application_version,
-    )?;
+    );
     webhook.application_id = Some(application_id);
     Ok(webhook)
 }
@@ -1599,14 +1599,13 @@ pub(super) async fn load_webhook(
 fn webhook_projection(
     active: Option<&WebhookEndpointView>,
     pending: Option<&WebhookEndpointView>,
-    disabled: Option<&WebhookEndpointView>,
-    retired: Option<&WebhookEndpointView>,
+    _disabled: Option<&WebhookEndpointView>,
+    _retired: Option<&WebhookEndpointView>,
     secret_version: i64,
     application_version: i64,
-) -> Result<WebhookView, ApiError> {
-    if active.is_none() && pending.is_none() && disabled.is_none() && retired.is_none() {
-        return Err(ApiError::internal("webhook_endpoint_missing"));
-    }
+) -> WebhookView {
+    // Honeycomb can register an app before configuring its first webhook.
+    // The ordinary app list must still render that valid, disabled state.
     let status = if active.is_none() && pending.is_none() {
         "disabled"
     } else if active.is_none() && pending.is_some() {
@@ -1616,7 +1615,7 @@ fn webhook_projection(
     } else {
         "active"
     };
-    Ok(WebhookView {
+    WebhookView {
         application_id: None,
         active_url: active.map(|endpoint| endpoint.url.clone()),
         pending_url: pending.map(|endpoint| endpoint.url.clone()),
@@ -1625,7 +1624,7 @@ fn webhook_projection(
         version: application_version,
         webhook_signing_secret: None,
         secret_replay_expires_at: None,
-    })
+    }
 }
 
 fn webhook_response(
@@ -1805,10 +1804,7 @@ mod tests {
     fn projection_uses_the_application_aggregate_version() {
         let active = endpoint("https://active.example.test/webhook", "active");
         let pending = endpoint("https://replacement.example.test/webhook", "pending_review");
-        let Ok(projection) = webhook_projection(Some(&active), Some(&pending), None, None, 4, 19)
-        else {
-            panic!("a valid active and pending webhook must project");
-        };
+        let projection = webhook_projection(Some(&active), Some(&pending), None, None, 4, 19);
 
         assert_eq!(projection.status, "replacement_under_review");
         assert_eq!(projection.secret_version, 4);
@@ -1824,14 +1820,8 @@ mod tests {
     fn projection_preserves_pending_and_disabled_statuses() {
         let pending = endpoint("https://pending.example.test/webhook", "pending_review");
         let disabled = endpoint("https://disabled.example.test/webhook", "disabled");
-        let Ok(pending_projection) = webhook_projection(None, Some(&pending), None, None, 2, 7)
-        else {
-            panic!("an initial pending webhook must project");
-        };
-        let Ok(disabled_projection) = webhook_projection(None, None, Some(&disabled), None, 2, 8)
-        else {
-            panic!("a disabled webhook must project");
-        };
+        let pending_projection = webhook_projection(None, Some(&pending), None, None, 2, 7);
+        let disabled_projection = webhook_projection(None, None, Some(&disabled), None, 2, 8);
 
         assert_eq!(pending_projection.status, "pending_review");
         assert_eq!(pending_projection.secret_version, 2);
@@ -1839,6 +1829,16 @@ mod tests {
         assert_eq!(disabled_projection.status, "disabled");
         assert_eq!(disabled_projection.secret_version, 2);
         assert_eq!(disabled_projection.version, 8);
+    }
+
+    #[test]
+    fn application_without_a_webhook_projects_as_disabled() {
+        let projection = webhook_projection(None, None, None, None, 0, 3);
+        assert_eq!(projection.status, "disabled");
+        assert!(projection.active_url.is_none());
+        assert!(projection.pending_url.is_none());
+        assert_eq!(projection.secret_version, 0);
+        assert_eq!(projection.version, 3);
     }
 
     #[test]
