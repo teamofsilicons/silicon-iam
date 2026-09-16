@@ -4666,7 +4666,7 @@ paths:
       - name: X-Honeycomb-Testing-Key
         in: header
         schema: { type: string }
-        description: Current key of this environment. Alone authorizes public imports and key rotation with expected_key_version; with application credentials proves attachment. Never a global testing enable key.
+        description: Current key of this environment. Alone authorizes public imports, key rotation and clean with expected_key_version; with application credentials proves attachment. Never a global testing enable key.
       - "$ref": "#/components/parameters/IdempotencyKey"
       responses:
         '200':

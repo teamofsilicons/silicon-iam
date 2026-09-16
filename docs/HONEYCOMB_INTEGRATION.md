@@ -206,11 +206,11 @@ These header credentials have different purposes:
 | `Authorization: Bearer hck_…` | Honeycomb service transport for all management routes |
 | `X-Honeycomb-Actor-Token: oat_…` | Live Carbon creator/owner/admin or reviewer authority |
 | `X-Honeycomb-Application-Authorization: Basic …` | Base64 of the production `app_id:app_secret`; IAM verifies it as an ordinary production app client |
-| `X-Honeycomb-Testing-Key: …` | A specific environment's current root key; alone authorizes public imports/key rotation, or with production app credentials proves attachment |
+| `X-Honeycomb-Testing-Key: …` | A specific environment's current root key; alone authorizes public imports/key rotation/clean, or with production app credentials proves attachment |
 | `X-Testing-Environment-Key: …` | Ordinary runtime test requests only; forbidden on Honeycomb management routes |
 
 Use either actor or production application authorization, never both. An
-environment root key alone can authorize `import` and `rotate-key`, always with
+environment root key alone can authorize `import`, `rotate-key` and `clean`, always with
 Honeycomb service authentication and exact `expected_key_version`, `generation`
 and `expected_iam_revision`. This grants no private production app visibility.
 No separate credential enables testing. The

@@ -577,13 +577,71 @@ async fn exercise_root(
         status == StatusCode::OK && reimported["app_secret"] == imported["app_secret"],
         "new root did not preserve linked app credential: {status} {reimported}"
     );
-    let mut clean = retry_import.clone();
-    clean["operation"] = json!("clean");
-    clean["operation_id"] = json!(Uuid::now_v7());
-    let (status, _) = root_send(app, credential, Some(&"K".repeat(32)), &endpoint, &clean).await?;
+    let clean = json!({"operation":"clean","operation_id":Uuid::now_v7(),
+        "environment_id":environment,"generation":1,"expected_key_version":2,
+        "expected_iam_revision":reimported["iam_revision"]});
+    for (field, value) in [
+        ("generation", json!(2)),
+        ("expected_key_version", json!(1)),
+        ("expected_iam_revision", json!(999)),
+    ] {
+        let mut stale = clean.clone();
+        stale[field] = value;
+        let (status, _) =
+            root_send(app, credential, Some(&"K".repeat(32)), &endpoint, &stale).await?;
+        ensure!(!status.is_success(), "root clean accepted stale {field}");
+    }
+    let (status, _) = root_send(app, credential, Some(&"J".repeat(32)), &endpoint, &clean).await?;
     ensure!(
         status == StatusCode::FORBIDDEN,
-        "root-only authority expanded into unrelated lifecycle control"
+        "retired key authorized clean"
+    );
+    let sibling_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM iam.applications WHERE testing_environment_id<>$1",
+    )
+    .bind(environment)
+    .fetch_one(test_admin)
+    .await?;
+    let (status, cleaned) =
+        root_send(app, credential, Some(&"K".repeat(32)), &endpoint, &clean).await?;
+    ensure!(
+        status == StatusCode::OK
+            && cleaned["environment"]["state"] == "cleaned"
+            && cleaned["environment"]["generation"] == 2
+            && cleaned["environment"]["key_version"] == 2,
+        "root clean failed: {status} {cleaned}"
+    );
+    let (_, replay) = root_send(app, credential, Some(&"K".repeat(32)), &endpoint, &clean).await?;
+    ensure!(
+        replay == cleaned,
+        "root clean replay changed result or generation"
+    );
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM iam.applications WHERE testing_environment_id=$1")
+            .bind(environment)
+            .fetch_one(test_admin)
+            .await?;
+    ensure!(rows == 0, "clean retained isolated test app data");
+    let siblings: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM iam.applications WHERE testing_environment_id<>$1",
+    )
+    .bind(environment)
+    .fetch_one(test_admin)
+    .await?;
+    ensure!(
+        siblings == sibling_count,
+        "root clean erased sibling environment data"
+    );
+    let mut activate = clean.clone();
+    activate["operation"] = json!("activate");
+    activate["operation_id"] = json!(Uuid::now_v7());
+    activate["generation"] = json!(2);
+    activate["expected_iam_revision"] = cleaned["iam_revision"].clone();
+    let (status, _) =
+        root_send(app, credential, Some(&"K".repeat(32)), &endpoint, &activate).await?;
+    ensure!(
+        status == StatusCode::FORBIDDEN,
+        "root bypassed coordinated participant activation"
     );
     sqlx::query(
         "UPDATE iam.applications SET visibility='private' WHERE app_id='test_org>testing-driver'",

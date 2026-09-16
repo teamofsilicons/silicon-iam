@@ -24,7 +24,7 @@ AWS or change the production host. Only `execute` performs the rollout.
 
    This uses committed Git objects, including SQLx SHA-384 checksums. It never
    captures uncommitted SQL. For this contract release, verify that production
-   ends at 0105 and testing ends at 9013 (105 and 118 entries respectively).
+   ends at 0106 and testing ends at 9013 (106 and 119 entries respectively).
 4. Transfer the script and manifest to a private directory on the existing IAM
    host. Keep database credentials in Secrets Manager. Supply only secret ARNs
    and RDS endpoints as arguments; the script obtains credentials in memory.

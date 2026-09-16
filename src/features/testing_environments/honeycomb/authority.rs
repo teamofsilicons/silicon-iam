@@ -121,7 +121,7 @@ fn key_digests(state: &ApiState, headers: &HeaderMap) -> Result<Vec<Vec<u8>>, Ap
 }
 
 /// The service records the operation, while a verified per-environment root key
-/// grants only the two explicit root-holder actions. It does not identify a user
+/// grants only the explicit root-holder actions. It does not identify a user
 /// or grant a production application identity.
 pub(super) async fn authorize_root(
     tx: &mut Transaction<'_, Postgres>,
@@ -130,7 +130,7 @@ pub(super) async fn authorize_root(
     input: &Instruction,
     headers: &HeaderMap,
 ) -> Result<(), ApiError> {
-    if !matches!(input.operation.as_str(), "import" | "rotate-key") {
+    if !matches!(input.operation.as_str(), "import" | "rotate-key" | "clean") {
         return Err(ApiError::forbidden("testing_root_operation_forbidden"));
     }
     let version = input.expected_key_version.ok_or_else(|| {
