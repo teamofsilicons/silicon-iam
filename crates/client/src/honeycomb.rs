@@ -1,6 +1,9 @@
 //! Dedicated Honeycomb service integration. Keep this client on the trusted
 //! backend: it cannot be constructed from an ordinary IAM application secret.
 //! Requests are stateless; retain operation IDs, bodies and mutation keys for retries.
+mod contracts;
+pub use contracts::ManagementAuthority;
+
 use crate::{Client, Credential, Error, Mutation, Result, models};
 use reqwest::Method;
 use secrecy::{ExposeSecret as _, SecretString};

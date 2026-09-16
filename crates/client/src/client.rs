@@ -245,11 +245,12 @@ impl Client {
         self.send_json(self.route(Method::GET, segments)?).await
     }
 
-    pub(crate) async fn get_with<R: DeserializeOwned>(
+    pub(crate) fn route_with(
         &self,
+        method: Method,
         segments: &[&str],
         query: &[(&str, String)],
-    ) -> Result<R> {
+    ) -> Result<reqwest::RequestBuilder> {
         let mut url = self.versioned_url(segments)?;
         if !query.is_empty() {
             let mut pairs = url.query_pairs_mut();
@@ -257,7 +258,15 @@ impl Client {
                 pairs.append_pair(name, value);
             }
         }
-        self.send_json(self.prepare(Method::GET, url)).await
+        Ok(self.prepare(method, url))
+    }
+    pub(crate) async fn get_with<R: DeserializeOwned>(
+        &self,
+        segments: &[&str],
+        query: &[(&str, String)],
+    ) -> Result<R> {
+        self.send_json(self.route_with(Method::GET, segments, query)?)
+            .await
     }
 
     pub(crate) async fn post<B: Serialize, R: DeserializeOwned>(

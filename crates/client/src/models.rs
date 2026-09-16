@@ -382,6 +382,58 @@ pub enum HoneycombConfigurationVisibility {
 /// Closed vocabulary from the contract.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum HoneycombPublicationActivationVisibility {
+    /// `public`
+    Public,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoneycombPublicationDecisionDecision {
+    /// `approve`
+    Approve,
+    /// `deny`
+    Deny,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoneycombPublicationDecisionRecordDecision {
+    /// `approve`
+    Approve,
+    /// `deny`
+    Deny,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoneycombPublicationPlanVisibility {
+    /// `public`
+    Public,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum HoneycombReceiptState {
     /// `pending`
     Pending,
@@ -430,6 +482,9 @@ pub enum HoneycombTestingInstructionOperation {
     Purge,
     /// `activate`
     Activate,
+    /// `activate-apps`
+    #[serde(rename = "activate-apps")]
+    ActivateApps,
     /// A value this crate predates. Held verbatim rather than
     /// failing the response it arrived in.
     #[serde(untagged)]
@@ -2221,6 +2276,39 @@ pub struct EmailInput {
     pub email: String,
 }
 
+/// Contract type `HoneycombAdoptionExport`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombAdoptionExport {
+    /// The contract's `operation_id`.
+    pub operation_id: Uuid,
+    /// The contract's `expected_iam_revision`.
+    pub expected_iam_revision: i64,
+}
+
+/// Contract type `HoneycombApplicationIdentity`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombApplicationIdentity {
+    /// The contract's `application_id`.
+    pub application_id: Uuid,
+    /// The contract's `app_id`.
+    pub app_id: String,
+    /// The contract's `organization_id`.
+    pub organization_id: Uuid,
+    /// The contract's `org_id`.
+    pub org_id: String,
+    /// The contract's `iam_revision`.
+    pub iam_revision: i64,
+}
+
+/// Contract type `HoneycombApplicationTestingEnvironments`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombApplicationTestingEnvironments {
+    /// The contract's `items`.
+    pub items: Vec<serde_json::Value>,
+    /// The contract's `page`.
+    pub page: PageInfo,
+}
+
 /// Contract type `HoneycombBundleConfiguration`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HoneycombBundleConfiguration {
@@ -2298,6 +2386,175 @@ impl std::fmt::Debug for HoneycombConfiguration {
     }
 }
 
+/// Contract type `HoneycombNotificationRecipient`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombNotificationRecipient {
+    /// The contract's `principal_id`.
+    pub principal_id: Uuid,
+    /// The contract's `email`.
+    pub email: String,
+}
+
+/// Contract type `HoneycombNotificationRecipients`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombNotificationRecipients {
+    /// The contract's `plan_id`.
+    pub plan_id: Uuid,
+    /// The contract's `provider`.
+    pub provider: String,
+    /// The contract's `recipients`.
+    pub recipients: Vec<HoneycombNotificationRecipient>,
+    /// The contract's `next_cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Uuid>,
+}
+
+/// Contract type `HoneycombOrganizationRecipients`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombOrganizationRecipients {
+    /// The contract's `org_id`.
+    pub org_id: String,
+    /// The contract's `recipients`.
+    pub recipients: Vec<HoneycombNotificationRecipient>,
+    /// The contract's `next_cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Uuid>,
+}
+
+/// Contract type `HoneycombPublicationActivation`.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct HoneycombPublicationActivation {
+    /// The contract's `request_id`.
+    pub request_id: Uuid,
+    /// The contract's `app_id`.
+    pub app_id: String,
+    /// The contract's `configuration_revision`.
+    pub configuration_revision: i64,
+    /// The contract's `configuration`.
+    pub configuration: HoneycombConfiguration,
+    /// The contract's `visibility`.
+    pub visibility: HoneycombPublicationActivationVisibility,
+    /// The contract's `operation_id`.
+    pub operation_id: Uuid,
+    /// The contract's `plan_id`.
+    pub plan_id: Uuid,
+    /// The contract's `expected_iam_revision`.
+    pub expected_iam_revision: i64,
+    /// The contract's `decision_ids`.
+    pub decision_ids: Vec<Uuid>,
+    /// The contract's `configuration_operations`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration_operations: Option<Vec<Uuid>>,
+}
+impl std::fmt::Debug for HoneycombPublicationActivation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("HoneycombPublicationActivation(<redacted>)")
+    }
+}
+
+/// Contract type `HoneycombPublicationDecision`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombPublicationDecision {
+    /// The contract's `operation_id`.
+    pub operation_id: Uuid,
+    /// The contract's `request_id`.
+    pub request_id: Uuid,
+    /// The contract's `plan_id`.
+    pub plan_id: Uuid,
+    /// The contract's `app_id`.
+    pub app_id: String,
+    /// The contract's `configuration_revision`.
+    pub configuration_revision: i64,
+    /// The contract's `provider`.
+    pub provider: String,
+    /// The contract's `scopes`.
+    pub scopes: Vec<String>,
+    /// The contract's `decision`.
+    pub decision: HoneycombPublicationDecisionDecision,
+    /// The contract's `reason`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Contract type `HoneycombPublicationDecisionRecord`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombPublicationDecisionRecord {
+    /// The contract's `operation_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<Uuid>,
+    /// The contract's `request_id`.
+    pub request_id: Uuid,
+    /// The contract's `plan_id`.
+    pub plan_id: Uuid,
+    /// The contract's `app_id`.
+    pub app_id: String,
+    /// The contract's `configuration_revision`.
+    pub configuration_revision: i64,
+    /// The contract's `provider`.
+    pub provider: String,
+    /// The contract's `scopes`.
+    pub scopes: Vec<String>,
+    /// The contract's `decision`.
+    pub decision: HoneycombPublicationDecisionRecordDecision,
+    /// The contract's `reason`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The contract's `decision_id`.
+    pub decision_id: Uuid,
+    /// The contract's `state`.
+    pub state: String,
+}
+
+/// Contract type `HoneycombPublicationGate`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombPublicationGate {
+    /// The contract's `provider`.
+    pub provider: String,
+    /// The contract's `scopes`.
+    pub scopes: Vec<String>,
+}
+
+/// Contract type `HoneycombPublicationPlan`.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct HoneycombPublicationPlan {
+    /// The contract's `request_id`.
+    pub request_id: Uuid,
+    /// The contract's `app_id`.
+    pub app_id: String,
+    /// The contract's `configuration_revision`.
+    pub configuration_revision: i64,
+    /// The contract's `configuration`.
+    pub configuration: HoneycombConfiguration,
+    /// The contract's `visibility`.
+    pub visibility: HoneycombPublicationPlanVisibility,
+}
+impl std::fmt::Debug for HoneycombPublicationPlan {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("HoneycombPublicationPlan(<redacted>)")
+    }
+}
+
+/// Contract type `HoneycombPublicationPlanRecord`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombPublicationPlanRecord {
+    /// The contract's `state`.
+    pub state: String,
+    /// The contract's `request_id`.
+    pub request_id: Uuid,
+    /// The contract's `plan_id`.
+    pub plan_id: Uuid,
+    /// The contract's `app_id`.
+    pub app_id: String,
+    /// The contract's `configuration_revision`.
+    pub configuration_revision: i64,
+    /// The contract's `visibility`.
+    pub visibility: String,
+    /// The contract's `gates`.
+    pub gates: Vec<HoneycombPublicationGate>,
+    /// The contract's `reused_approvals`.
+    pub reused_approvals: Vec<serde_json::Value>,
+}
+
 /// Contract type `HoneycombReceipt`.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct HoneycombReceipt {
@@ -2353,11 +2610,61 @@ pub struct HoneycombReceipt {
     /// The contract's `required_approvals`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required_approvals: Option<serde_json::Value>,
+    /// The contract's `request_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<Uuid>,
+    /// The contract's `publication_request_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_request_id: Option<Uuid>,
+    /// The contract's `plan_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<Uuid>,
+    /// The contract's `imports`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imports: Option<Vec<serde_json::Value>>,
+    /// The contract's `retired_apps`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired_apps: Option<Vec<String>>,
+    /// The contract's `environment_revision`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_revision: Option<i64>,
 }
 impl std::fmt::Debug for HoneycombReceipt {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("HoneycombReceipt(<redacted>)")
     }
+}
+
+/// Contract type `HoneycombRetention`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombRetention {
+    /// The contract's `operation_id`.
+    pub operation_id: Uuid,
+    /// The contract's `environment_id`.
+    pub environment_id: Uuid,
+    /// The contract's `environment_revision`.
+    pub environment_revision: i64,
+    /// The contract's `expected_iam_revision`.
+    pub expected_iam_revision: i64,
+    /// The contract's `generation`.
+    pub generation: i64,
+    /// The contract's `key_version`.
+    pub key_version: i64,
+    /// The contract's `retired_apps`.
+    pub retired_apps: Vec<String>,
+}
+
+/// Contract type `HoneycombReviewerEligibility`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombReviewerEligibility {
+    /// The contract's `plan_id`.
+    pub plan_id: Uuid,
+    /// The contract's `provider`.
+    pub provider: String,
+    /// The contract's `actor_id`.
+    pub actor_id: Uuid,
+    /// The contract's `eligible`.
+    pub eligible: bool,
 }
 
 /// Contract type `HoneycombScopeDecision`.
@@ -2391,8 +2698,61 @@ pub struct HoneycombSecretRotation {
     pub environment_id: Option<Uuid>,
 }
 
-/// Contract type `HoneycombTestingInstruction`.
+/// Contract type `HoneycombTestingAppMutation`.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct HoneycombTestingAppMutation {
+    /// The contract's `operation_id`.
+    pub operation_id: Uuid,
+    /// The contract's `environment_id`.
+    pub environment_id: Uuid,
+    /// The contract's `generation`.
+    pub generation: i64,
+    /// The contract's `key_version`.
+    pub key_version: i64,
+    /// The contract's `expected_environment_revision`.
+    pub expected_environment_revision: i64,
+    /// The contract's `expected_iam_revision`.
+    pub expected_iam_revision: i64,
+    /// The contract's `configuration_revision`.
+    pub configuration_revision: i64,
+    /// The contract's `configuration`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<HoneycombConfiguration>,
+}
+impl std::fmt::Debug for HoneycombTestingAppMutation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("HoneycombTestingAppMutation(<redacted>)")
+    }
+}
+
+/// Contract type `HoneycombTestingAppVersion`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombTestingAppVersion {
+    /// The contract's `generation`.
+    pub generation: i64,
+    /// The contract's `key_version`.
+    pub key_version: i64,
+    /// The contract's `expected_environment_revision`.
+    pub expected_environment_revision: i64,
+}
+
+/// Contract type `HoneycombTestingCredentialRecovery`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HoneycombTestingCredentialRecovery {
+    /// The contract's `operation_id`.
+    pub operation_id: Uuid,
+    /// The contract's `environment_id`.
+    pub environment_id: Uuid,
+    /// The contract's `generation`.
+    pub generation: i64,
+    /// The contract's `key_version`.
+    pub key_version: i64,
+    /// The contract's `expected_environment_revision`.
+    pub expected_environment_revision: i64,
+}
+
+/// Contract type `HoneycombTestingInstruction`.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct HoneycombTestingInstruction {
     /// The contract's `operation_id`.
     pub operation_id: Uuid,
@@ -2402,6 +2762,18 @@ pub struct HoneycombTestingInstruction {
     pub environment_id: Uuid,
     /// The contract's `generation`.
     pub generation: i64,
+    /// Shared root key supplied by Honeycomb for new prepare or rotate-key;
+    /// requires key_version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub testing_key: Option<String>,
+    /// Desired key version; 1 at creation and exactly previous plus 1 on
+    /// rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_version: Option<i64>,
+    /// Current key version guard; mandatory when authorizing with an
+    /// environment root key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_key_version: Option<i64>,
     /// The contract's `operation`.
     pub operation: HoneycombTestingInstructionOperation,
     /// The contract's `org_id`.
@@ -2416,9 +2788,21 @@ pub struct HoneycombTestingInstruction {
     /// The contract's `app_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
+    /// Exact pending apps to activate in an already active environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_ids: Option<Vec<String>>,
+    /// Explicit dependency pins to refresh; all other accepted pins remain
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_app_ids: Option<Vec<String>>,
     /// The contract's `source_revisions`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_revisions: Option<serde_json::Value>,
+}
+impl std::fmt::Debug for HoneycombTestingInstruction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("HoneycombTestingInstruction(<redacted>)")
+    }
 }
 
 /// Contract type `HoneycombWebhook`.

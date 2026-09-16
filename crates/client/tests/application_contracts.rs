@@ -539,3 +539,113 @@ async fn honeycomb_service_keeps_actor_and_step_up_separate_on_the_wire() {
     assert_eq!(body["operation_id"], id.to_string());
     server.join().expect("mock server");
 }
+
+#[tokio::test]
+async fn honeycomb_application_authority_and_environment_key_are_separate() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use silicon_iam_client::{
+        EnvironmentKey,
+        honeycomb::{ManagementAuthority, ManagementClient},
+    };
+    let id = Uuid::now_v7();
+    let environment = Uuid::now_v7();
+    let (base, capture, server) = service(
+        json!({"operation_id":id,"state":"accepted","iam_revision":8,"environment_id":environment}),
+    );
+    let service_credential = format!("hck_{}", "a".repeat(43));
+    let client = ManagementClient::new(base.base_url().as_str(), service_credential.clone().into())
+        .expect("client");
+    let app_secret = secrecy::SecretString::from("ask_production_secret");
+    let key = EnvironmentKey::new("X".repeat(32)).expect("key");
+    let authority = ManagementAuthority::Application {
+        app_id: "vendor>app",
+        app_secret: &app_secret,
+        environment_key: Some(&key),
+    };
+    let input:models::HoneycombTestingInstruction=serde_json::from_value(json!({"operation_id":id,"environment_id":environment,"generation":3,"expected_iam_revision":7,"expected_key_version":2,"operation":"import","app_id":"vendor>app","source_revisions":{"vendor>app":5}})).expect("input");
+    client
+        .testing_instruction_as(&authority, &input, &Mutation::new())
+        .await
+        .expect("receipt");
+    let (headers, body) = capture
+        .recv_timeout(Duration::from_secs(5))
+        .expect("request");
+    assert!(headers.contains(&format!("authorization: Bearer {service_credential}")));
+    assert!(headers.contains(&format!(
+        "x-honeycomb-application-authorization: Basic {}",
+        STANDARD.encode("vendor>app:ask_production_secret")
+    )));
+    assert!(headers.contains(&format!("x-honeycomb-testing-key: {}", "X".repeat(32))));
+    assert!(!headers.contains("x-honeycomb-actor-token"));
+    assert!(!headers.contains("x-testing-environment-key"));
+    assert_eq!(body["environment_id"], environment.to_string());
+    assert_eq!(body["expected_key_version"], 2);
+    assert!(!format!("{authority:?}").contains("ask_production_secret"));
+    server.join().expect("server");
+}
+
+#[tokio::test]
+async fn honeycomb_environment_authority_needs_no_testing_enable_key() {
+    use silicon_iam_client::{
+        EnvironmentKey,
+        honeycomb::{ManagementAuthority, ManagementClient},
+    };
+    let id = Uuid::now_v7();
+    let environment = Uuid::now_v7();
+    let (base, capture, server) = service(
+        json!({"operation_id":id,"state":"accepted","iam_revision":8,"environment_id":environment}),
+    );
+    let credential = format!("hck_{}", "a".repeat(43));
+    let client =
+        ManagementClient::new(base.base_url().as_str(), credential.clone().into()).expect("client");
+    let key = EnvironmentKey::new("X".repeat(32)).expect("key");
+    let authority = ManagementAuthority::Environment(&key);
+    let input: models::HoneycombTestingInstruction = serde_json::from_value(json!({"operation_id":id,"environment_id":environment,"generation":3,"expected_iam_revision":7,"expected_key_version":2,"operation":"import","app_id":"vendor>app","source_revisions":{"vendor>app":5}})).expect("input");
+    client
+        .testing_instruction_as(&authority, &input, &Mutation::new())
+        .await
+        .expect("receipt");
+    let (headers, body) = capture
+        .recv_timeout(Duration::from_secs(5))
+        .expect("request");
+    assert!(headers.contains(&format!("authorization: Bearer {credential}")));
+    assert!(headers.contains(&format!("x-honeycomb-testing-key: {}", "X".repeat(32))));
+    assert!(!headers.contains("x-honeycomb-actor-token"));
+    assert!(!headers.contains("x-honeycomb-application-authorization"));
+    assert!(!headers.contains("x-testing-environment-key"));
+    assert_eq!(body["expected_key_version"], 2);
+    assert!(!format!("{authority:?}").contains(&"X".repeat(32)));
+    server.join().expect("server");
+}
+
+#[tokio::test]
+async fn honeycomb_publication_decision_has_a_typed_exact_plan_receipt() {
+    use silicon_iam_client::honeycomb::ManagementClient;
+    let id = Uuid::now_v7();
+    let plan = Uuid::now_v7();
+    let request = Uuid::now_v7();
+    let response = json!({"operation_id":id,"decision_id":id,"state":"accepted","request_id":request,"plan_id":plan,"app_id":"vendor>app","configuration_revision":4,"provider":"honeycomb","scopes":[],"decision":"approve","reason":null});
+    let (base, capture, server) = service(response.clone());
+    let client = ManagementClient::new(
+        base.base_url().as_str(),
+        format!("hck_{}", "a".repeat(43)).into(),
+    )
+    .expect("client");
+    let input:models::HoneycombPublicationDecision=serde_json::from_value(json!({"operation_id":id,"request_id":request,"plan_id":plan,"app_id":"vendor>app","configuration_revision":4,"provider":"honeycomb","scopes":[],"decision":"approve"})).expect("input");
+    let actor = format!("oat_{}", "b".repeat(43)).into();
+    let receipt = client
+        .publication_decision(&actor, &input, &Mutation::new())
+        .await
+        .expect("decision");
+    assert_eq!(receipt.decision_id, id);
+    assert_eq!(receipt.plan_id, plan);
+    let (headers, body) = capture
+        .recv_timeout(Duration::from_secs(5))
+        .expect("request");
+    assert!(
+        headers
+            .starts_with("POST /api/v1/honeycomb/applications/vendor%3Eapp/publication-decisions ")
+    );
+    assert_eq!(body["request_id"], request.to_string());
+    server.join().expect("server");
+}

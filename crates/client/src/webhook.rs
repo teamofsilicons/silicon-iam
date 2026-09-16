@@ -417,6 +417,10 @@ struct TestingEvent {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TestingMetadata {
+    #[serde(default)]
+    environment_id: Option<Uuid>,
+    #[serde(default)]
+    generation: Option<i64>,
     spec_version: serde_json::Value,
     event_id: Uuid,
     event_type: String,
@@ -516,7 +520,29 @@ fn parse_authenticated_event(
         if !valid_environment_key(&envelope.test.testing_key) {
             return Err(WebhookError::InvalidPayload);
         }
-        let metadata = envelope.test.metadata;
+        let mut metadata = envelope.test.metadata;
+        match (metadata.environment_id, metadata.generation) {
+            (None, None) => {}
+            (Some(id), Some(generation)) if generation > 0 => {
+                let aggregate = metadata
+                    .aggregate
+                    .as_object_mut()
+                    .ok_or(WebhookError::InvalidPayload)?;
+                for (key, value) in [
+                    ("environment_id", serde_json::json!(id)),
+                    ("generation", serde_json::json!(generation)),
+                ] {
+                    if aggregate
+                        .get(key)
+                        .is_some_and(|existing| existing != &value)
+                    {
+                        return Err(WebhookError::InvalidPayload);
+                    }
+                    aggregate.insert(key.to_owned(), value);
+                }
+            }
+            _ => return Err(WebhookError::InvalidPayload),
+        }
         let event = models::WebhookEvent {
             spec_version: metadata.spec_version,
             event_id: metadata.event_id,
@@ -752,6 +778,66 @@ mod tests {
             Err(WebhookError::TestingEnvironmentMismatch)
         );
         assert!(!format!("{verified:?}").contains(testing_key));
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "fixed signed fixtures must decode in regression tests"
+    )]
+    fn testing_metadata_accepts_direct_fences_and_rejects_ambiguous_fences() {
+        let event_id = Uuid::from_u128(1);
+        let environment = Uuid::from_u128(7);
+        let now = OffsetDateTime::now_utc();
+        let fixture: serde_json::Value =
+            serde_json::from_slice(&testing_body(event_id, "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"))
+                .expect("fixture");
+        for (direct, aggregate, accepted) in [
+            (
+                serde_json::json!({"environment_id": environment, "generation": 2}),
+                None,
+                true,
+            ),
+            (
+                serde_json::json!({"environment_id": environment}),
+                None,
+                false,
+            ),
+            (serde_json::json!({"generation": 2}), None, false),
+            (
+                serde_json::json!({"environment_id": environment, "generation": 0}),
+                None,
+                false,
+            ),
+            (
+                serde_json::json!({"environment_id": environment, "generation": 2}),
+                Some(1),
+                false,
+            ),
+            (
+                serde_json::json!({"environment_id": environment, "generation": 2}),
+                Some(2),
+                true,
+            ),
+        ] {
+            let mut body = fixture.clone();
+            let metadata = body["test"]["metadata"].as_object_mut().expect("metadata");
+            metadata.extend(direct.as_object().expect("direct").clone());
+            if let Some(generation) = aggregate {
+                metadata["aggregate"]["generation"] = serde_json::json!(generation);
+            }
+            let body = serde_json::to_vec(&body).expect("body");
+            let headers = signed_headers(event_id, now.unix_timestamp(), 7, &body);
+            let result = verifier().verify_at(&headers, &body, now);
+            assert_eq!(result.is_ok(), accepted);
+            if let Ok(verified) = result {
+                assert_eq!(
+                    verified.event().aggregate["environment_id"],
+                    serde_json::json!(environment)
+                );
+                assert_eq!(verified.event().aggregate["generation"], 2);
+            }
+        }
     }
 
     #[test]
