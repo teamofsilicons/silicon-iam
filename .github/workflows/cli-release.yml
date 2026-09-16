@@ -1,0 +1,193 @@
+name: CLI release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Full lowercase commit SHA to build (must contain this workflow)
+        required: true
+        type: string
+      app_id:
+        description: Existing Honeycomb application ID (org>app)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-release-${{ inputs.source_revision }}-${{ inputs.app_id }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "2"
+
+jobs:
+  source:
+    name: Validate pinned release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      revision: ${{ steps.metadata.outputs.revision }}
+      version: ${{ steps.metadata.outputs.version }}
+      toolchain: ${{ steps.metadata.outputs.toolchain }}
+    steps:
+      - name: Validate dispatch inputs
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          APP_ID: ${{ inputs.app_id }}
+          WORKFLOW_REVISION: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          assert re.fullmatch(r"[0-9a-f]{40}", os.environ["SOURCE_REVISION"]), "Use a full commit SHA"
+          assert os.environ["SOURCE_REVISION"] == os.environ["WORKFLOW_REVISION"], "Dispatch the workflow at the source commit"
+          assert re.fullmatch(r"[a-z0-9_-]+>[a-z0-9_-]+", os.environ["APP_ID"]), "Use a qualified org>app ID"
+          PY
+      - name: Check out pinned source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.source_revision }}
+          persist-credentials: false
+      - name: Read release metadata
+        id: metadata
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, subprocess, tomllib
+          revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          assert revision == os.environ["SOURCE_REVISION"]
+          version = tomllib.loads(pathlib.Path("crates/cli/Cargo.toml").read_text())["package"]["version"]
+          toolchain = tomllib.loads(pathlib.Path("rust-toolchain.toml").read_text())["toolchain"]["channel"]
+          assert re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version)
+          assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", toolchain), "Pin a stable Rust toolchain"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"revision={revision}\nversion={version}\ntoolchain={toolchain}\n")
+          PY
+      - name: Verify release validation and packaging
+        run: |
+          python3 scripts/test-cli-artifact.py
+          python3 scripts/test-honeycomb-package.py
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: source
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            executable: iam
+          - platform: linux-aarch64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            executable: iam
+          - platform: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            executable: iam.exe
+          - platform: windows-aarch64
+            target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            executable: iam.exe
+          - platform: macos-x86_64
+            target: x86_64-apple-darwin
+            runner: macos-15-intel
+            executable: iam
+          - platform: macos-aarch64
+            target: aarch64-apple-darwin
+            runner: macos-15
+            executable: iam
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_REVISION: ${{ needs.source.outputs.revision }}
+      CLI_VERSION: ${{ needs.source.outputs.version }}
+      RUSTUP_TOOLCHAIN: ${{ needs.source.outputs.toolchain }}
+      RELEASE_TARGET: ${{ matrix.target }}
+      RELEASE_PLATFORM: ${{ matrix.platform }}
+      RELEASE_EXECUTABLE: ${{ matrix.executable }}
+    steps:
+      - name: Check out pinned source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.source.outputs.revision }}
+          persist-credentials: false
+      - name: Install Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target "$RELEASE_TARGET"
+      - name: Build CLI with locked dependencies
+        run: cargo build --locked --release -p silicon-iam-cli --bin iam --target "$RELEASE_TARGET"
+      - name: Stage and verify native executable
+        run: |
+          mkdir -p "dist/$RELEASE_PLATFORM"
+          cp "target/$RELEASE_TARGET/release/$RELEASE_EXECUTABLE" "dist/$RELEASE_PLATFORM/$RELEASE_EXECUTABLE"
+          python scripts/verify-cli-artifact.py \
+            --binary "dist/$RELEASE_PLATFORM/$RELEASE_EXECUTABLE" \
+            --target "$RELEASE_PLATFORM" --revision "$SOURCE_REVISION" --version "$CLI_VERSION" --native
+      - name: Upload verified platform asset
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: iam-cli-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  package:
+    name: Assemble Honeycomb archive and checksums
+    needs: [source, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SOURCE_REVISION: ${{ needs.source.outputs.revision }}
+      CLI_VERSION: ${{ needs.source.outputs.version }}
+      APP_ID: ${{ inputs.app_id }}
+    steps:
+      - name: Check out pinned source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.source.outputs.revision }}
+          persist-credentials: false
+      - name: Download six verified platform assets
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: iam-cli-*
+          path: staging/
+          merge-multiple: true
+      - name: Recheck receipts and package
+        run: |
+          python3 - <<'PY'
+          import hashlib, importlib.util, json, os, pathlib
+          spec = importlib.util.spec_from_file_location("verify", "scripts/verify-cli-artifact.py")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          receipts = []
+          for target in module.TARGETS:
+              executable = "iam.exe" if target.startswith("windows-") else "iam"
+              receipts.append(module.verify(pathlib.Path("staging") / target / executable, target,
+                  os.environ["SOURCE_REVISION"], os.environ["CLI_VERSION"], False))
+          pathlib.Path("release").mkdir()
+          pathlib.Path("release/provenance.json").write_text(json.dumps(receipts, indent=2) + "\n")
+          pathlib.Path("release/BINARY_SHA256SUMS").write_text("".join(
+              f"{r['sha256']}  {r['target']}/{r['file']}\n" for r in receipts))
+          PY
+          python3 scripts/package-honeycomb.py --staging staging \
+            --output "release/iam-$CLI_VERSION-honeycomb.tar.gz" --app-id "$APP_ID" --version "$CLI_VERSION"
+          (cd release && sha256sum *.tar.gz provenance.json BINARY_SHA256SUMS > SHA256SUMS)
+      - name: Upload publication-ready package
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: iam-cli-${{ needs.source.outputs.version }}-honeycomb
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
