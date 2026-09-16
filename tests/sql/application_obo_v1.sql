@@ -187,7 +187,26 @@ IF (SELECT count(*) FROM iam_private.lock_current_application_obo_exchange_autho
 END $$;
 SELECT set_config('iam.principal_id','00000000-0000-0000-0000-000000000001',true);
 INSERT INTO iam.obo_proofs(id,proof_digest,digest_key_version,proof_prefix,issuer_application_id,audience_application_id,subject_principal_id,subject_kind,organization_id,membership_id,parent_access_token_id,endpoint_id,request_metadata,endpoint_version,request_method,request_path,request_body_sha256,request_signed_at,subject_auth_epoch,membership_authz_epoch,issuer_auth_epoch,audience_auth_epoch,expires_at)
-VALUES('00000000-0000-0000-0000-000000000123',decode(repeat('39',32),'hex'),1,'obo_abcdefgh','00000000-0000-0000-0000-000000000011','00000000-0000-0000-0000-000000000013','00000000-0000-0000-0000-000000000001','carbon','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000031','00000000-0000-0000-0000-000000000101','files.read','{}',1,'POST','/files',decode(repeat('00',32),'hex'),now(),1,1,1,1,now()+interval '60 seconds');
+VALUES('00000000-0000-0000-0000-000000000123',decode(repeat('39',32),'hex'),1,'obo_abcdefgh','00000000-0000-0000-0000-000000000011','00000000-0000-0000-0000-000000000013','00000000-0000-0000-0000-000000000001','carbon','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000031','00000000-0000-0000-0000-000000000101','files.read','{}',1,'POST','/files',decode(repeat('00',32),'hex'),now(),1,1,1,1,now()+interval '300 seconds');
+-- Exercise the configured default, a storage endpoint lifetime and i32 bounds.
+RESET ROLE;
+DO $$ DECLARE lifetime bigint; BEGIN
+ FOREACH lifetime IN ARRAY ARRAY[1::bigint,300,3600,2147483647] LOOP
+  UPDATE iam.obo_proofs SET expires_at=created_at+make_interval(secs=>lifetime::double precision)
+   WHERE id='00000000-0000-0000-0000-000000000123';
+ END LOOP;
+ FOREACH lifetime IN ARRAY ARRAY[-1::bigint,0,2147483648] LOOP
+  BEGIN
+   UPDATE iam.obo_proofs SET expires_at=created_at+make_interval(secs=>lifetime::double precision)
+    WHERE id='00000000-0000-0000-0000-000000000123';
+   RAISE EXCEPTION 'invalid proof lifetime accepted: %',lifetime;
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+ END LOOP;
+ UPDATE iam.obo_proofs SET expires_at=created_at+interval '300 seconds'
+  WHERE id='00000000-0000-0000-0000-000000000123';
+END $$;
+SET LOCAL ROLE silicon_iam_api;
 DO $$ BEGIN
 IF NOT iam_private.application_obo_exchange_replay_is_live('00000000-0000-0000-0000-000000000123','00000000-0000-0000-0000-000000000011','00000000-0000-0000-0000-000000000021') THEN RAISE EXCEPTION 'live replay failed'; END IF;
 END $$;
