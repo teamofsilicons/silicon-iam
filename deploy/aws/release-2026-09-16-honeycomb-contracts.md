@@ -2,9 +2,9 @@
 
 ## Prepared release
 
-Backend source: `44019d162cf9504164bf1b2e50362fb00389fa4c`.
+Backend source: `11e49a079c6bd2ae2cddb43d8d479af2c599db83`.
 The clean ARM64 image built and was pushed to ECR:
-`234951665042.dkr.ecr.us-east-1.amazonaws.com/silicon-iam-production@sha256:7e8898abfe3024285de9f9ad430e6942faf24dc54a90aa25c28c73fa76a5f0ac`.
+`234951665042.dkr.ecr.us-east-1.amazonaws.com/silicon-iam-production@sha256:7d2de04e5701f2a007ec8b2d3fbce276ce39ad0fe7f9d4c3cdb3614b121a9b8c`.
 Its revision label matches the backend source above.
 
 This includes publication and shared testing contracts plus migration0105,
@@ -12,10 +12,18 @@ which removes the obsolete60-second OBO proof ceiling in favor of the existing
 positive i32 endpoint-lifetime bound. Parent token, consent and revocation
 checks remain enforced.
 
-Production rollout is pending renewed AWS SSO authentication. The previously
-deployed missing-webhook hotfix remains `72767708d9ac2e7bf11873aee9bc8800da3c4835`.
-No new migration, environment-key change, validator grant or cutover has been
-performed by this release preparation.
+Production rollout succeeded. SSM command
+`cac0c19c-f423-4426-9837-63d26acda45e` backed up both databases, applied all107base
+migrations plus13testing overlays, reapplied runtime grants and restarted the
+main API, scoped API and worker. Public readiness and exact commit checks passed.
+Honeycomb and Briefcase retained their UUIDs and Honeycomb's four self scopes.
+The organization-recipient route passed a service-authenticated live read.
+
+CloudFormation change set `honeycomb-contracts-11e49a0` reached UPDATE_COMPLETE,
+persisting only the backend image and launch-template version reference.
+Private rollback artifacts are at
+`/etc/silicon-iam/releases/contracts-11e49a079c6bd2ae2cddb43d8d479af2c599db83-1789544756578418577`.
+The previous image alone is incompatible with the migrated database ledgers.
 
 SDK and CLI1.11.0 are published to crates.io. Native artifacts were built from
 `da0b59527f6d7d74d6c5d9dc1d2561057283e39d`; all six operating-system/architecture
@@ -46,10 +54,8 @@ and publication. IAM does not duplicate its app registration.
 
 ## Deployment fence
 
-Apply105base migrations and13testing overlays using the reviewed dual-database
-release script, with both databases backed up while writers are stopped.
-Require exact ledger checksums and matching main/scoped/worker image revisions.
-Persist the accepted image in CloudFormation afterward. An old-image-only
+The deployed ledgers contain107production and120testing entries with exact
+source checksums. Both backups were verified before migration. An old-image-only
 rollback after migration is unsafe.
 
 Keep scheduled-testing and legacy-writer-cutover flags false until Honeycomb's
