@@ -184,7 +184,11 @@ async fn bootstrap(input: Arguments, settings: Settings) -> anyhow::Result<()> {
         sqlx::query("SELECT iam_private.configure_application_scopes($1,$2,$3)")
             .bind(id_uuid)
             .bind(sqlx::types::Json(
-                serde_json::json!({"iam":["self.identity.read","self.profile.read"],"external":[]}),
+                serde_json::json!({"iam": if id == &input.honeycomb_app_id {
+                    vec!["self.identity.read", "self.profile.read", "self.membership.read"]
+                } else {
+                    vec!["self.identity.read", "self.profile.read"]
+                }, "external":[]}),
             ))
             .bind(actor)
             .execute(&mut *tx)
@@ -264,6 +268,18 @@ mod tests {
         anyhow::ensure!(
             counts == (2, 2),
             "bootstrap duplicated credentials or audit records"
+        );
+        let honeycomb_scopes: Vec<String> = sqlx::query_scalar(
+            "SELECT scope FROM iam.application_approved_scopes WHERE application_id=(SELECT id FROM iam.applications WHERE app_id='bootstrap_org>honeycomb') AND revoked_at IS NULL ORDER BY scope",
+        ).fetch_all(&pool).await?;
+        anyhow::ensure!(
+            honeycomb_scopes
+                == [
+                    "self.identity.read",
+                    "self.membership.read",
+                    "self.profile.read"
+                ],
+            "Honeycomb bootstrap omitted its membership disclosure permission"
         );
         std::fs::remove_file(output)?;
         std::fs::remove_dir(directory)?;

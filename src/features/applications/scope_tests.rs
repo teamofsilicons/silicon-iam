@@ -47,6 +47,12 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
     .execute(&pool)
     .await
     .context("zero-organization Carbon onboarding and membership isolation")?;
+    sqlx::raw_sql(include_str!(
+        "../../../tests/sql/unscoped_membership_disclosure.sql"
+    ))
+    .execute(&pool)
+    .await
+    .context("unscoped membership disclosure and renewed consent")?;
     let app = Uuid::from_u128(0x11);
     let target = Uuid::from_u128(0x12);
     let actor = Uuid::from_u128(1);

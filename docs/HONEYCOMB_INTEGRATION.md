@@ -29,6 +29,15 @@ contains a separate random `hck_` service credential and an independent manageme
 notification signing key. Deliver them through deployment secret storage. Do not
 put this file in a release archive or repository.
 
+Honeycomb's authentication app declares `self.identity.read`, `self.profile.read`
+and `self.membership.read`. Membership access requires renewed user consent;
+adding an app permission never expands previously issued tokens. Unscoped token
+introspection discloses organization roles through `self.membership.read`,
+intersected with current application approval and that session's live consent.
+The historical `roles.read` scope does not grant this disclosure. Bootstrap adds
+these defaults only for a new Honeycomb identity; update existing app records
+through the authorized configuration flow.
+
 Configure the IAM API:
 
 - `IAM_HONEYCOMB_APP_ID`: the Honeycomb authentication app ID.
