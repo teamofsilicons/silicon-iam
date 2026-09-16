@@ -30,13 +30,16 @@ notification signing key. Deliver them through deployment secret storage. Do not
 put this file in a release archive or repository.
 
 Honeycomb's authentication app declares `self.identity.read`, `self.profile.read`
-and `self.membership.read`. Membership access requires renewed user consent;
-adding an app permission never expands previously issued tokens. Unscoped token
+and `self.membership.read`. Enable `self.tags.read` when tag disclosure is needed.
+New scopes require renewed user consent; adding an app permission never expands
+previously issued tokens. Unscoped token
 introspection discloses organization roles through `self.membership.read`,
 intersected with current application approval and that session's live consent.
-The historical `roles.read` scope does not grant this disclosure. Bootstrap adds
-these defaults only for a new Honeycomb identity; update existing app records
-through the authorized configuration flow.
+The historical `roles.read` scope does not grant role disclosure, and
+`memberships.read` does not grant tag disclosure. Tags require `self.tags.read`
+in the token, current app approval and live consent. Bootstrap seeds identity,
+profile and membership access only for a new Honeycomb identity; update existing
+app records and optional tag access through the authorized configuration flow.
 
 Configure the IAM API:
 
@@ -66,7 +69,7 @@ All `/api/v1/honeycomb/*` requests use `Authorization: Bearer hck_…`. Ordinary
 `ask_`, user tokens and test root keys never grant this authority. Do not send
 `X-Testing-Environment-Key`; test instructions name their environment explicitly.
 
-User-triggered writes additionally use `X-Honeycomb-Actor-Token: oat_…`, a live
+Human-authored writes use `X-Honeycomb-Actor-Token: oat_…`, a live
 Carbon token whose client and audience are the provisioned Honeycomb identity.
 IAM checks the current session, selected organization grant, live membership
 and required manager/reviewer authority. A supplied identity or role is not proof.
@@ -78,7 +81,10 @@ operation ID and key for retries. Keys are bound to service, actor, operation,
 resource and body. Changed content conflicts. IAM revisions are read from IAM;
 `configuration_revision` is Honeycomb's increasing configuration number.
 Neither is a release version, and revisions need not increase by exactly one.
-Production configuration uses absent/null `environment_id`.
+Production configuration uses absent/null `environment_id`. Publication planning
+uses `request_id` as its durable operation identity; subsequent decisions and
+activation have distinct `operation_id` values. Some service-only control reads
+and exports have no user actor, as specified below.
 
 Sensitive mutations require `X-Step-Up-Token`, obtained through the existing IAM
 verified-channel flow for the same actor session, action and application UUID:
@@ -91,8 +97,8 @@ verified-channel flow for the same actor session, action and application UUID:
 
 An authorized retry of a completed operation does not consume a second proof.
 The mutation response has `Idempotency-Replayed`. Secrets are encrypted for a
-10-minute replay window; afterward the original durable receipt remains and
-returns `secret_replay_expired: true` without generating new credentials.
+10-minute replay window; afterward the original durable receipt remains. Retrying the mutation returns
+`secret_replay_expired: true` without generating new credentials.
 Reconciliation and notifications never contain secrets. Recover a lost expired
 secret with a new explicitly authorized rotation.
 
@@ -121,59 +127,227 @@ new proofs use the newly accepted duration, and verification remains one-use.
 Private apps require live owning-organization membership and the selected grant
 through login, exchange, refresh, introspection, API access and OBO. Their
 critical-scope exemption is recorded separately from provider approval. Private
-apps are excluded from anonymous discovery. Public activation requires both
-Honeycomb publication approval and actual critical provider/IAM approval.
-A pending public proposal does not overwrite the current accepted private
-configuration. Submit a new operation and fresh IAM revision after approval.
-`state: pending` can therefore describe a completed proposal awaiting a separate
-decision: inspect the operation's `completed` field.
+apps are excluded from anonymous discovery. Public publication uses the immutable review flow below. A public proposal sent
+to `/configuration` remains pending without overwriting accepted configuration;
+`publication_approved: true` cannot authorize publication. New app identities
+must first be registered privately. A completed proposal can still have
+`state: pending`; the separate activation accepts its reviewed configuration.
 
-A changed webhook URL stays pending until its stepped-up approval. The previous
+`GET /applications/{app_id}` includes authoritative `webhook_url` and
+`pending_webhook_url`; absent destinations are null. It never returns the signing
+key. An app without any webhook remains listable with a disabled webhook and
+secret version zero. A changed webhook URL stays pending until its stepped-up approval. The previous
 active receiver remains active. An unchanged URL can omit its secret; changing
 that secret uses the dedicated rotation operation. Bundle acceptance remains
 subject to IAM's current eligibility checks; catalog publication cannot override
 them. Bundle membership creates no new credential or principal.
+
+## Immutable publication and notification recipients
+
+All paths below are relative to `/api/v1/honeycomb`. Review plans contain exact
+provider/scopes gates derived from IAM's current catalog. Resolve provider app
+IDs and origins from accepted configuration and catalog records; do not embed
+particular organization/app handles in business logic.
+
+| Method and path | Request and authority |
+| --- | --- |
+| `POST /applications/{app_id}/publication-plans` | Owner/admin actor; `request_id`, `app_id`, `configuration_revision`, `configuration`, `visibility: public` |
+| `GET /publication-plans/{plan_id}` | Service read of the immutable plan |
+| `GET /publication-plans/{plan_id}/reviewer-eligibility?provider=…` | Service plus proposed reviewer actor; returns current `eligible` |
+| `POST /applications/{app_id}/publication-decisions` | Live reviewer; `operation_id`, `request_id`, `plan_id`, `app_id`, `configuration_revision`, exact `provider`/`scopes`, `decision: approve\|deny`, optional `reason` |
+| `POST /applications/{app_id}/publication-activations` | Owner/admin actor; exact request/plan/app/configuration revision and configuration, `visibility: public`, current `expected_iam_revision`, `decision_ids`, optional `configuration_operations` |
+| `GET /publication-plans/{plan_id}/notification-recipients?provider=…` | Service-only recipients for a plan gate, or `provider=owners` for the applicant organization's owners/admins |
+| `GET /organizations/{org_id}/notification-recipients` | Service-only current owners/admins for that organization's operational notices |
+
+The configuration uses the accepted configuration shape, with `availability:
+active`. Envelope app ID, visibility and configuration revision may be repeated
+inside it but must agree. Plans bind the complete normalized configuration,
+including supplied webhook signing material. Changing it requires a new plan.
+Retain the returned `plan_id`, `gates` and `reused_approvals`. Existing live
+provider approvals can satisfy matching critical scopes without a duplicate
+review, but IAM records the exact evidence and rechecks it later.
+
+Review authority is distinct from applicant administration:
+
+- `provider: iam` requires the current `applications.review` platform capability.
+- `provider: honeycomb` requires `honeycomb.applications.review`, assigned through
+  the separate `honeycomb_validator` role. Organization ownership does not grant it.
+- A qualified provider app such as `org>provider` requires current management
+  authority in the provider's organization and the actor's selected grant.
+
+Copy each gate's exact scope list. Activation requires the latest approving
+decision for every outstanding gate, rejects duplicate or mismatched decision
+IDs, and rechecks reviewer membership/capabilities, catalog requirements and scope
+revocation. `configuration_operations` names only pending `/configuration`
+operations for this same app, revision and configuration digest; their durable
+receipts become accepted in the activation transaction. The result includes a
+strictly newer `iam_revision`, `effective_configuration`, `request_id`, `plan_id`
+and `publication_request_id`. Reconcile against the current app record: its
+`publication_request_id` becomes null when its review evidence is no longer current.
+
+Recipient responses contain only eligible principal IDs and verified primary
+emails, scoped to the requested organization or plan gate. Use `after` with the
+returned `next_cursor`; `limit` defaults to 100 and is bounded to 1–1000. Recipient
+discovery does not grant approval authority. Honeycomb owns sending its notices.
+
+## Shared testing keys and authority
+
+Testing always has an explicit environment identity. There is no global testing
+key or deployment-wide switch that grants test access. Honeycomb supplies a
+random 32-character ASCII alphanumeric root key for each new environment and
+shares that exact key/version only with the participating services. IAM encrypts
+its copy and binds runtime requests to the selected environment, generation and
+key version. Invalid test context never falls back to production.
+
+These header credentials have different purposes:
+
+| Header | Authority |
+| --- | --- |
+| `Authorization: Bearer hck_…` | Honeycomb service transport for all management routes |
+| `X-Honeycomb-Actor-Token: oat_…` | Live Carbon creator/owner/admin or reviewer authority |
+| `X-Honeycomb-Application-Authorization: Basic …` | Base64 of the production `app_id:app_secret`; IAM verifies it as an ordinary production app client |
+| `X-Honeycomb-Testing-Key: …` | A specific environment's current root key; alone authorizes public imports/key rotation, or with production app credentials proves attachment |
+| `X-Testing-Environment-Key: …` | Ordinary runtime test requests only; forbidden on Honeycomb management routes |
+
+Use either actor or production application authorization, never both. An
+environment root key alone can authorize `import` and `rotate-key`, always with
+Honeycomb service authentication and exact `expected_key_version`, `generation`
+and `expected_iam_revision`. This grants no private production app visibility.
+No separate credential enables testing. The
+service-only `GET /application-identity` with production application authorization
+returns the verified app/organization IDs and current IAM revision without a
+secret. It does not accept a supplied identity as proof.
+
+A production app may create an environment in its own organization and becomes
+its application owner. It may manage that environment even after its test key
+is disabled. A different app may attach/import only itself by presenting that
+environment's root key and its own valid production credentials, including
+across organizations. Attachment grants neither lifecycle ownership nor another
+app's test credential. Its private dependencies still require the appropriate
+source-organization authority. `GET /testing-environments` with production app
+authorization lists owned and attached environments, with `can_manage` reflecting
+actual ownership; it supports `status`, `cursor` and `limit` pagination.
 
 ## IAM-local testing lifecycle
 
 Send `POST /testing-environments/{environment_id}/operations` with explicit
 `environment_id`, current `generation`, `expected_iam_revision`, `operation_id`
 and `operation`. Reconcile with `GET /testing-environments/{environment_id}`.
-The user must have a live selected grant in the owning organization; an existing
-environment additionally requires its creator or an owner/admin.
+An actor needs a live selected grant in the owning organization and, for an
+existing environment, creator or owner/admin authority. Application authority
+follows the ownership/attachment rules above.
 
 | Operation | IAM behavior |
 | --- | --- |
-| `prepare` | New UUID, revision 0, generation 1 and `org_id`/`name`; returns a protected root key while access stays disabled |
-| `import` | Prepared/cleaned environment only; accepts `app_id` and exact `source_revisions` for the complete dependency graph |
-| `activate` | Enables prepared/cleaned IAM state after Honeycomb decides all participants are ready |
-| `rotate-key` | Changes root key/version; old key stops authenticating |
+| `prepare` | New UUID, IAM revision 0, generation 1, `org_id`/`name`, supplied `testing_key` and `key_version: 1`; returns that key while runtime remains disabled |
+| `import` | Accepts `app_id` and exact `source_revisions` for its dependency graph; works in prepared, cleaned or active environments |
+| `activate` | Enables prepared/cleaned IAM state after Honeycomb confirms every participant is ready |
+| `activate-apps` | In an active environment, enables only the exact pending `app_ids` after shared readiness |
+| `rotate-key` | Supplies fresh `testing_key`, next `key_version` and current `expected_key_version`; leaves prepared state until shared activation; old or retired key material cannot be reused |
 | `disable` | Blocks runtime access and retains recoverable IAM data |
-| `restore` | Changes disabled state to prepared; explicit activation still required |
-| `clean` | Blocks access, advances cleaning generation once and erases IAM's isolated data; leaves cleaned state |
-| `purge` | Requires disabled access; erases IAM data/keys and leaves a minimal completion tombstone |
+| `restore` | Changes disabled state to prepared; activation is still explicit |
+| `clean` | Blocks access, advances generation once, erases IAM's isolated data and leaves cleaned state |
+| `purge` | Requires disabled access; erases IAM data/keys and leaves a completion tombstone |
 
-To refresh an active environment: disable, restore, import the accepted graph,
-then activate. Source snapshots are encrypted and retained across interrupted
-imports. Refresh preserves imported app identities and rotates test credentials;
-replaying the same import never regenerates them. Cleaned imports get fresh
-credentials. Imported webhook signing material is marked inherited, never exposed
-in notifications. Test webhook metadata identifies environment and generation.
+For Honeycomb-coordinated creation/rotation, always supply the shared key and
+version. Omitting key material remains compatible with old IAM-generated-key
+clients; independent participant-generated keys cannot form a shared environment.
+`testing_key`/new `key_version` are accepted only for fresh prepare or rotation.
+Existing legacy prepare preserves its original key. `expected_key_version` can
+also guard other existing-environment lifecycle instructions.
 
-Lifecycle progress is committed before test-data work. Retry the exact pending
+`source_revisions` are IAM production application versions, distinct from
+Honeycomb configuration revisions. Supply the complete dependency graph, including
+the requested root. Imports retain each source's accepted public/private visibility;
+read the returned IAM configuration instead of assuming every imported app is private.
+
+Imports preserve existing pinned source revisions and credentials. Adding an app
+to an active environment leaves already-ready apps working; new imports remain
+pending until `activate-apps`. To refresh particular imports, include only their
+IDs in `refresh_app_ids` and supply the exact resulting graph `source_revisions`.
+The refresh changes those selected pins, preserves their application IDs and
+rotates their test credentials. Unselected existing imports keep their pins and
+credentials. Refresh targets must belong to the requested dependency graph.
+
+Source snapshots are encrypted and retained across interrupted imports. The
+receipt returns `imports` with accepted revisions/configuration and readiness,
+plus only the requested root app's `app_secret`; dependency credentials are not
+returned. Same-operation retries reuse committed target identities and secrets.
+Cleaned imports receive fresh credentials. Imported production webhook signing
+material remains marked inherited and is never disclosed as a test-owned key.
+
+Lifecycle reservations commit before target-plane work. Retry the exact pending
 operation after transport/process failure; a different operation conflicts until
-it completes. Renewed actor credentials may be used for the same actor, with
-current authority rechecked. Service-only status reads remain available even
-when test sessions/root keys are invalid. User-authored operations still require
-that user's current authority to resume. With scheduled testing explicitly
-enabled, Honeycomb can author clean/disable/restore/purge/activate operations
-without an actor for its managed environments; prepare/import/rotation always
-require a user.
+it completes. User/app authority is checked again before replay. Renewed user
+tokens may resume the same actor's operation. Service-only reconciliation remains
+available when test sessions/root keys are invalid.
 
-`iam_completion: true` acknowledges only IAM's work. Honeycomb must collect
-completion from every participant before shared activation or reporting a shared
-clean/purge complete. IAM has no independent idle-retirement or purge worker.
-Generation/key-version fences reject requests admitted under stale runtime state.
+With `IAM_HONEYCOMB_SCHEDULED_TESTING` explicitly enabled, the service may author
+clean/disable/restore/purge/activate/activate-apps for its managed environments
+without inventing a user actor. The flag does not grant runtime testing access,
+app ownership or permission to prepare/import/rotate arbitrary environments.
+
+`iam_completion: true` acknowledges only IAM's work. Honeycomb must collect all
+participant receipts before shared activation or reporting a shared clean/purge
+complete. IAM has no independent idle-retirement or purge worker. Generation and
+key-version fences reject stale requests. Signed test webhook metadata supports
+direct `environment_id` and positive `generation`; the SDK also accepts legacy
+aggregate placement and rejects conflicting direct/aggregate values.
+
+## Test application administration
+
+These routes address only the named isolated environment:
+
+| Method and path under `/testing-environments/{environment_id}` | Purpose |
+| --- | --- |
+| `GET /applications/{app_id}` | Accepted test configuration and active destination; no signing/app secret |
+| `PUT /applications/{app_id}/configuration` | Configure an existing test app or register a new test-only private app |
+| `POST /applications/{app_id}/secret-rotations` | Explicit test credential rotation |
+| `POST /applications/{app_id}/credential-recovery` | Production app retrieves only its own current test credential without rotating it |
+
+Reads require query fields `generation`, `key_version` and
+`expected_environment_revision`. Writes carry those same fields, `environment_id`,
+`operation_id`, the target app's `expected_iam_revision`, and
+`configuration_revision`. Configuration writes additionally carry `configuration`;
+rotation omits it and names the current configuration revision. Environment and
+application revisions are separate preconditions.
+
+Service-only reads are secret-free. Writes require the live human environment
+manager or a production app acting on only its own immutable source identity;
+an attached app additionally presents the matching root key. Environment ownership
+does not let a production app read or change another app's credential. A human
+environment manager registers new test-only apps. Registration uses revision zero, requires
+private visibility and an app ID in the environment's owning organization.
+The configuration accepts the ordinary IAM authentication fields; a new webhook
+destination needs its signing secret. Existing app configuration preserves its
+app credential; a new registration or explicit rotation returns one protected
+`app_secret`. Configuration changes leave that app pending coordinated activation.
+Target-plane receipts prevent a lost production commit from rotating twice.
+
+Credential recovery requires service plus production app authorization, and the
+root key for an attached app. Its body carries `operation_id`, `environment_id`,
+`generation`, `key_version` and `expected_environment_revision`. It validates the
+current production source UUID and returns only that app's existing credential.
+A fresh recovery operation can recover a lost credential after an earlier replay
+window expired; it never rotates the secret.
+
+## Exact application retention
+
+`POST /testing-environments/{environment_id}/retention` is a service-only,
+scheduled-testing-gated instruction with `operation_id`, `environment_id`,
+Honeycomb's `environment_revision`, IAM's `expected_iam_revision`, current
+`generation`/`key_version`, and 1–100 unique `retired_apps` IDs. IAM verifies exact
+production links or actual applications in the named testing plane; it does not
+accept a caller-asserted app identity as environment authority.
+
+IAM erases only those apps and their dependent IAM rows, including credentials,
+and marks matching production links retired. Sibling apps, shared identities and
+other environments remain intact. Test-only apps are supported. A target-plane
+receipt commits with erasure so a retry after a lost control-plane commit cannot
+erase a subsequently imported app again. The response echoes the requested IDs,
+Honeycomb revision, generation and key version, returns current `iam_revision`
+and `iam_completion: true`, and remains an IAM-local `state: accepted` receipt.
+Honeycomb separately coordinates each participating service's owned data.
 
 ## Notifications, reconciliation and adoption
 
@@ -199,10 +373,32 @@ app/bundle/review/test lifecycle writers with
 available. The new console directs users to Honeycomb for the moved management surfaces;
 retain the existing frontend until those replacement flows are ready.
 
-Enumerate existing records, preserve IDs and read current revisions. Existing
-apps retain visibility `public`, IDs, credentials and accepted scopes. Existing
-environments begin as `legacy`; submit `prepare` with their current IAM revision
+Enumerate existing records, preserve IDs and read current revisions. For each
+retained environment, call service-authorized
+`POST /testing-environments/{environment_id}/adoption-export` with `operation_id`,
+`expected_iam_revision` and an idempotency key. The protected response contains the
+unchanged root `key`, owner IDs, source/target app links, retention metadata,
+accepted import/configuration revisions and credential versions. The export does
+not rotate credentials or change ownership. Its key is excluded from durable
+public receipts and notifications; secret response replay lasts ten minutes.
+Store the transferred root key in Honeycomb's encrypted per-environment storage.
+
+Existing apps retain their current visibility, IDs, credentials and accepted
+scopes. Unadopted environments have state `legacy`; submit `prepare` with their
+current IAM revision
 and generation to adopt them while preserving their root key and active/disabled
 state. Test database upgrades include isolation for the new management tables.
 Stage the writer switch with Honeycomb; do not create duplicate identities to
 work around an unconfigured adapter.
+
+## Cutover acceptance
+
+Deploying IAM contracts does not establish cross-service readiness. Keep legacy
+writer retirement and automatic scheduled testing disabled until Honeycomb's
+replacement flows pass authenticated end-to-end checks: owner/app authority,
+reviewer decisions and revocation, exact publication activation, webhook
+approval, lost-response reconciliation, additive import and key/generation
+fencing, adoption preserving credentials, and coordinated retention/recovery.
+These checks must exercise actual configured participant apps and services.
+Missing participant transport stays unavailable; it must not trigger a global
+test unlock, production fallback or recreated legacy identity.

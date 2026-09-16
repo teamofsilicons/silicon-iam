@@ -56,3 +56,12 @@ payloads and one license copy inside each platform root. Missing targets, links,
 an existing archive are rejected. The script never includes local credentials,
 environment files or backend configuration. Validate the archive with Honeycomb
 before submitting the release; publication requires Honeycomb integration.
+
+## Native CI build
+
+The `CLI release assets` workflow builds and verifies each target on its
+native operating system and architecture. Dispatch it from a pushed source revision
+with `source_revision` set to that exact full commit SHA and `app_id` set to the
+registered IAM application ID. The workflow checks the executable header and native
+`iam --version`, then uploads six artifacts and a combined archive with checksums
+and source provenance. It does not publish the application or approve a release.
