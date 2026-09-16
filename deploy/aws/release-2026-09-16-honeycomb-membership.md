@@ -93,3 +93,22 @@ This confirms durable webhook receipt, not downstream Honeycomb UI behavior.
 
 Recovery remains forward-only unless databases and a compatible runtime are
 restored together. Do not start an older image against migration 0099.
+
+## Follow-up: self.tags.read
+
+At the user's request, `tos>honeycomb` revision 4 adds effective
+`self.tags.read` while retaining identity, profile and membership scopes.
+The operator transaction was rehearsed and rolled back before commit, then
+retired one prior consent grant and three Honeycomb application tokens to
+require renewed consent. Parent IAM sessions and app credentials were preserved.
+SSM operation: `8ca58e15-dc75-4ad4-b4c0-2e75fc048bcb`.
+
+Authenticated management reads verified all four declared/effective scopes.
+Notification `3a0b4c5b-cec6-453d-b655-16cc029f2cbf` delivered on attempt 1 at
+`2026-09-16T01:08:28.180641Z`. This was a configuration update; the runtime image
+and migration ledger remain unchanged.
+
+Known separate issue: the unscoped authorization-list function's tag projection
+still checks historical `memberships.read`; it needs a code/migration fix before
+`self.tags.read` alone discloses tags in that particular introspection projection.
+The selected-organization projection already uses `self.tags.read`.
