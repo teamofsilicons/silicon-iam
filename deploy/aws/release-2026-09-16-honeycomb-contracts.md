@@ -3,6 +3,10 @@
 ## Prepared release
 
 Backend source: `44019d162cf9504164bf1b2e50362fb00389fa4c`.
+The clean ARM64 image built and was pushed to ECR:
+`234951665042.dkr.ecr.us-east-1.amazonaws.com/silicon-iam-production@sha256:7e8898abfe3024285de9f9ad430e6942faf24dc54a90aa25c28c73fa76a5f0ac`.
+Its revision label matches the backend source above.
+
 This includes publication and shared testing contracts plus migration0105,
 which removes the obsolete60-second OBO proof ceiling in favor of the existing
 positive i32 endpoint-lifetime bound. Parent token, consent and revocation
