@@ -672,7 +672,7 @@ pub(super) async fn issue_for_selection(
     .bind(app.id)
     .fetch_one(&mut **transaction)
     .await
-    .map_err(|_| ApiError::internal("login_selection"))?;
+    .map_err(|error| login_selection_error(&error))?;
     if selected_membership_ids.len() != requested.len() {
         return Err(ApiError::forbidden("organization_context_forbidden"));
     }
@@ -712,6 +712,25 @@ pub(super) async fn issue_for_selection(
     )
     .await?;
     Ok(response)
+}
+
+// Only named authorization failures from this function are public errors.
+// Unexpected SQL/permission failures remain internal and never expose SQL text.
+pub(super) fn login_selection_error(error: &sqlx::Error) -> ApiError {
+    if let Some(database) = error.as_database_error()
+        && database.code().as_deref() == Some("42501")
+    {
+        match database.message() {
+            "private_application_organization_required" => {
+                return ApiError::private_application_organization_required();
+            }
+            "login_selection_forbidden" => {
+                return ApiError::forbidden("organization_context_forbidden");
+            }
+            _ => {}
+        }
+    }
+    ApiError::internal("login_selection")
 }
 
 /// Where to send somebody who has to sign in first.

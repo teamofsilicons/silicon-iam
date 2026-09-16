@@ -95,6 +95,14 @@ impl ApiError {
         )
     }
 
+    pub(crate) fn private_application_organization_required() -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            "private_application_organization_required",
+            "This application is private. Select only its owning organization, or have its owner complete public publication in Honeycomb before granting another organization.",
+        )
+    }
+
     pub(crate) fn not_found() -> Self {
         Self::new(
             StatusCode::NOT_FOUND,

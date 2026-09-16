@@ -58,6 +58,7 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     crate::infrastructure::postgres::migrate(&pool).await?;
     seed_protocol_rows(&pool).await?;
     private_application_authority_and_endpoint_lifetime(&pool).await?;
+    cross_organization_login_selection_reports_private_restriction(&pool).await?;
 
     unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(&pool).await?;
     selected_login_additions_preserve_existing_organizations(&pool).await?;
@@ -2530,5 +2531,70 @@ pub(crate) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
     .execute(pool)
     .await
     .context("seed application protocol invariant test")?;
+    Ok(())
+}
+
+/// Real PostgreSQL exceptions must be authorization errors, never a 500 or a grant.
+async fn cross_organization_login_selection_reports_private_restriction(
+    pool: &PgPool,
+) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::raw_sql("INSERT INTO iam.organizations(id,org_id,name,created_by_carbon_id) VALUES ('00000000-0000-0000-0000-000000000621','second_org','Second','00000000-0000-0000-0000-000000000001'); INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES ('00000000-0000-0000-0000-000000000631','00000000-0000-0000-0000-000000000621','00000000-0000-0000-0000-000000000001','carbon','owner');").execute(&mut *tx).await?;
+    sqlx::query(
+        "SELECT set_config('iam.principal_id',$1,true),set_config('iam.application_id','',true)",
+    )
+    .bind(CARBON_ID.to_string())
+    .execute(&mut *tx)
+    .await?;
+    let query = "SELECT iam_private.lock_account_login_organization_selection($1,$2,$3,$4)";
+    // Public apps allow an explicitly selected second organization.
+    let selected: Vec<Uuid> = sqlx::query_scalar(query)
+        .bind(CARBON_ID)
+        .bind(Uuid::from_u128(0x41))
+        .bind(vec!["second_org"])
+        .bind(APP_A_ID)
+        .fetch_one(&mut *tx)
+        .await?;
+    ensure!(selected == vec![Uuid::from_u128(0x631)]);
+    sqlx::query("UPDATE iam.applications SET visibility='private' WHERE id=$1")
+        .bind(APP_A_ID)
+        .execute(&mut *tx)
+        .await?;
+    let same: Vec<Uuid> = sqlx::query_scalar(query)
+        .bind(CARBON_ID)
+        .bind(Uuid::from_u128(0x41))
+        .bind(vec!["test_org"])
+        .bind(APP_A_ID)
+        .fetch_one(&mut *tx)
+        .await?;
+    ensure!(same == vec![OWNER_MEMBERSHIP_ID]);
+    let mut attempt = tx.begin().await?;
+    let error = sqlx::query_scalar::<_, Vec<Uuid>>(query)
+        .bind(CARBON_ID)
+        .bind(Uuid::from_u128(0x41))
+        .bind(vec!["second_org"])
+        .bind(APP_A_ID)
+        .fetch_one(&mut *attempt)
+        .await
+        .err()
+        .context("private cross-organization grants must be refused")?;
+    let response = super::oauth::login_selection_error(&error).into_response();
+    ensure!(response.status() == StatusCode::FORBIDDEN);
+    let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 4096).await?)?;
+    ensure!(body["error"]["code"] == "private_application_organization_required");
+    ensure!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("owning organization"))
+    );
+    attempt.rollback().await?;
+    tx.rollback().await?;
+    // Unexpected database failures must stay internal.
+    ensure!(
+        super::oauth::login_selection_error(&sqlx::Error::RowNotFound)
+            .into_response()
+            .status()
+            == StatusCode::INTERNAL_SERVER_ERROR
+    );
     Ok(())
 }
