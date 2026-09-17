@@ -41,7 +41,7 @@ pub async fn run(context: &Context, command: SiliconCommand) -> Result<()> {
                         table.row([
                             silicon.silicon_id.clone(),
                             silicon.display_name.clone(),
-                            silicon.membership_id.to_string(),
+                            silicon.membership_id.clone(),
                             label(&silicon.status),
                         ]);
                     }
@@ -137,7 +137,7 @@ pub async fn run(context: &Context, command: SiliconCommand) -> Result<()> {
                     &org,
                     &silicon_id,
                     current.version,
-                    reassign_reports_to,
+                    reassign_reports_to.as_deref(),
                     &context.mutation(),
                 )
                 .await?;
@@ -383,7 +383,7 @@ fn report(context: &Context, silicon: &models::Silicon) -> Result<()> {
             table.row(["silicon", &silicon.silicon_id]);
             table.row(["principal_id", &silicon.principal_id.to_string()]);
             table.row(["display_name", &silicon.display_name]);
-            table.row(["membership_id", &silicon.membership_id.to_string()]);
+            table.row(["membership_id", &silicon.membership_id]);
             table.row(["job_role", &silicon.job_role]);
             table.row(["timezone", &silicon.timezone]);
             table.row(["description", &or_dash(silicon.description.as_deref())]);
@@ -392,7 +392,8 @@ fn report(context: &Context, silicon: &models::Silicon) -> Result<()> {
                 "reports_to",
                 &silicon
                     .reports_to_membership_id
-                    .map_or_else(|| "-".to_owned(), |id| id.to_string()),
+                    .as_ref()
+                    .map_or_else(|| "-".to_owned(), Clone::clone),
             ]);
             table.row([
                 "tags",

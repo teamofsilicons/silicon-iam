@@ -18,7 +18,7 @@ A Silicon has no organization-local form. The handle you submit at creation is i
 
 Persistent records use UUIDv7 primary keys. Public handles are immutable normalised labels — they are never foreign keys, and they are never reused after deletion.
 
-Organization-scoped resources are addressed by `membership_id` rather than by a public handle. This is deliberate: it keeps tenant-internal references out of URLs that a member of another organization might see, and cross-tenant reads answer `404 not_found` rather than disclosing that a resource exists.
+A public `membership_id` is `carbon_id[org_id]` or `silicon_id[org_id]`, using the full Silicon ID: for example `saket[tos]` and `helper:tos[tos]`. URL-encode the brackets in path segments. These stable identifiers also appear in relationship fields, trust selectors and webhook membership references. UUID membership keys remain private to storage. Identifier resolution never grants access; tenant, consent and resource authorization still apply.
 
 A typed `principal_id` prevents collisions between a Carbon and a Silicon whose public labels happen to look alike. Never key your own storage on the public handle alone.
 

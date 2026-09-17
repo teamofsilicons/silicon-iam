@@ -4,7 +4,7 @@ The first official v1 frontend provides application permission consent, organiza
 
 The SolidJS frontend has two entry points in one codebase:
 
-- **Main IAM console:** `/` for applications, organizations, directory, governance, testing-environment administration, profile and sessions.
+- **Main IAM console:** `/` for organizations, directory, governance, profile and sessions. Applications, bundles, scope-review workflows and testing-environment management live in the Honeycomb console.
 - **IAM authentication:** `/login` and `/signup`, with `/login?app_id=org%3Eapp&redirect_uri=…` for application login. Apps must not supply organization scope; users choose it in IAM. Configure a separate auth origin when hosting.
 
 The app talks only to its same-origin session gateway. This is **not a static-only website**: deploy the gateway with the assets. Source lives in `frontend/` in the IAM repository; run the commands below there. Run the v1 backend with its complete production migrations, testing overlay, and runtime grants. See [organization consent](../ORGANIZATION_CONSENT.md).
@@ -88,9 +88,9 @@ Successful browser login never returns bearer/refresh tokens to browser JavaScri
 
 Application login navigates through `/auth/continue` to IAM's `/login` surface. GET never grants consent or mints a token. After application confirmation, IAM displays every requested IAM and external application permission, explicitly marks critical permissions, and asks the user to continue before choosing at least one organization. The backend supplies the current scope version and determines whether that permission step is required; existing grants stay selected and additions preserve them. The trusted IAM frontend submits `org_ids`, the exact displayed `approved_scopes`, and `scope_version` to the direct-IAM SLT endpoint, shows loading and a success checkmark, then displays the SLT or redirects with `slt`. “Select all” includes current organizations only. Applications must protect their own callback flow/state and immediately exchange the SLT **on their server**, using application Basic credentials or the Rust client. The frontend never performs that exchange with app secrets.
 
-The console supports app creation, detail/profile editing, webhook destinations/approval, client and webhook secret rotation, login history, failed-delivery replay, and OBO endpoint registration. App IDs are displayed canonically as `org>app`; creation asks for organization and local handle separately. Local app handles accept 1–80 lowercase ASCII letters, digits, underscores or hyphens, starting with a letter; the organization prefix is not counted. Webhook secrets are user supplied. Base URLs reject any path or trailing slash; webhook URLs may contain them.
+Application registration, configuration, webhook management, secret rotation and OBO endpoint definitions are managed through [Honeycomb](https://console.honeycomb.teamofsilicons.com/). IAM retains the accepted authentication records and enforces login, consent, scopes and delegated access. Old `/applications`, `/bundles`, `/scope-reviews` and `/testing` links display a handoff page with a working Honeycomb link; they do not open management forms.
 
-OBO proof exchange and verification remain signed **server-to-server** operations. The console manages exposed endpoints and explains the integration. It is not an OBO request simulator, and does not trust a cached role as delegated authority. Follow the [API/client integration docs](https://docs.iam.teamofsilicons.com/) for signed requests, snapshots, epochs, and current authorization.
+OBO proof exchange and verification remain signed **server-to-server** operations. Follow the [API/client integration docs](https://docs.iam.teamofsilicons.com/) for signed requests, snapshots, epochs, and current authorization.
 
 ## Organization and account coverage
 
@@ -99,7 +99,7 @@ OBO proof exchange and verification remain signed **server-to-server** operation
 - Invitations and tags: list/create/view and revoke or edit/delete where supported.
 - Trust: organization default, rule creation/edit/deletion and effective-trust evaluation. Trust is advisory.
 - Approvals: pending/actionable lists, detail, approve/reject with the appropriate step-up.
-- Testing: control-plane create/list/edit, key reveal/rotation, clean, recoverable deletion/restoration. **Browser identity does not switch into a test environment**. Use the CLI/client with its key for test-plane login/import/OBO.
+- Testing: Honeycomb manages environment lifecycle and credentials. IAM provides isolated authentication inside those environments. **Browser identity does not switch into a test environment**.
 - Account: profile edit, session list, current-session logout, other-session revocation and logout-all. Backend age/step-up policies remain authoritative.
 
 The UI intentionally does not expose platform-admin review, Silicon-only governance request creation, application Basic-auth token endpoints, or provider webhooks as human browser operations. Some advanced collections use a schema-driven form with JSON inputs for object arrays; field constraints and help come from the checked-in OpenAPI schema snapshot. UUID fields are explicit, not guessed from public IDs.
@@ -113,7 +113,7 @@ The UI intentionally does not expose platform-admin review, Silicon-only governa
 - CSRF defense requires exact same-origin requests and a custom frontend header for JSON API access. Only narrowly defined navigation/callback GETs are exempt. Browser-supplied bearer headers and app credentials are not forwarded.
 - Fixed upstream, allowlisted frontend hosts, blocked server-to-server routes, bounded request bodies, no-store responses, safe redirect handling, and a production CSP.
 - No analytics, external fonts, credential logging, browser localStorage or sessionStorage.
-- A feature-detected WebMCP surface reads the current section, navigates, or stages (never submits) app creation. It exposes no credentials.
+- A feature-detected WebMCP surface reads the current section, navigates IAM sections, or opens the Honeycomb console. It exposes no credentials.
 
 ## Keeping contracts current
 
@@ -134,40 +134,9 @@ Built with [SolidJS](https://docs.solidjs.com/), TypeScript and Vite. The mark a
 
 ## Application permissions, reviews, and bundles
 
-Creation distinguishes `app_scope` (data and delegated access) from
-`webhook_scope` (event subscriptions). Identity and profile permissions start
-selected. The permission catalog includes published endpoints from other
-applications, including applications in other organizations. All IAM permissions
-are listed as checkboxes. To select external permissions, enter the provider's
-full `app_id` (`org>app`) and load its published scopes, then check the endpoints
-your application needs. An invalid or unavailable ID displays `app_id invalid`;
-an available application with no published endpoints shows an empty-state
-message. Critical permissions say “This would require approval from IAM” or
-name the receiving application's ID. Webhook subscriptions also use checkboxes.
+Honeycomb owns application permission requests, scope-review workflows and bundle definitions. IAM validates accepted decisions, enforces effective scopes and user consent, and retains organization bundle eligibility settings.
 
-The Permissions tab shows the currently usable scope set alongside the requested
-set. Save non-critical additions or removals directly. For critical additions,
-write a review message explaining the application and every requested permission,
-then submit the review. An initial app remains unusable until approval; an
-upgrade continues using its previously approved permissions during review.
-
-Scope reviews provides one inbox for requests your applications submit and
-requests your applications can decide. Every thread preserves the reviewer’s
-initial instructions, replies, timestamps, and final decision. A denial requires
-a reason. Messages render as plain text. Replies and decisions notify the other
-participants by email through IAM.
-
-App bundles groups same-organization applications behind one login identity.
-Its navigation and creation controls appear only when available to your current
-membership in the selected organization. Direct page links use the same check,
-and switching organizations clears the previous organization's form and list.
-Create or manage a bundle in the console and use
-`/login?bundle_id=org%3Ebundle`. The backend determines whether a bundle can be
-created. An optional **Bundle logo URL** accepts an HTTPS image link for the
-bundle card and login identity; editing can replace or clear it. Users see the
-bundle’s identity and choose organizations once; the
-callback receives individual application SLTs in the same `#slts=` encoding as
-batch login. Every member must exchange its own token using its own secret.
+Bundle login remains in IAM at `/login?bundle_id=org%3Ebundle`. Users see the bundle identity and choose organizations once; the callback receives individual application SLTs in the same `#slts=` encoding as batch login. Every member exchanges its own token using its own secret.
 
 The frontend links to the standalone documentation site at
 https://docs.iam.teamofsilicons.com. Its static build and hosting configuration

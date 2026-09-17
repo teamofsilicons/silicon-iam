@@ -148,7 +148,7 @@ impl Governance<'_> {
     pub async fn request_tag_change(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         request: &models::TagChangeRequestCreate,
         mutation: &Mutation,
     ) -> Result<models::ApprovalRequest> {
@@ -158,7 +158,7 @@ impl Governance<'_> {
                     "organizations",
                     org_id,
                     "members",
-                    &membership_id.to_string(),
+                    membership_id,
                     "tag-change-requests",
                 ],
                 request,
@@ -176,7 +176,7 @@ impl Governance<'_> {
     pub async fn replace_job_role(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         version: i64,
         job_role: &models::DirectJobRoleReplace,
         mutation: &Mutation,
@@ -187,7 +187,7 @@ impl Governance<'_> {
                     "organizations",
                     org_id,
                     "members",
-                    &membership_id.to_string(),
+                    membership_id,
                     "job-role",
                 ],
                 version,
@@ -209,20 +209,14 @@ impl Governance<'_> {
     pub async fn replace_tags(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         version: i64,
         tags: &models::DirectTagSetReplace,
         mutation: &Mutation,
     ) -> Result<models::Membership> {
         self.0
             .put(
-                &[
-                    "organizations",
-                    org_id,
-                    "members",
-                    &membership_id.to_string(),
-                    "tags",
-                ],
+                &["organizations", org_id, "members", membership_id, "tags"],
                 version,
                 tags,
                 mutation,
@@ -238,7 +232,7 @@ impl Governance<'_> {
     pub async fn job_role_history(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         paging: &Paging,
     ) -> Result<models::RoleHistoryPage> {
         self.0
@@ -247,7 +241,7 @@ impl Governance<'_> {
                     "organizations",
                     org_id,
                     "members",
-                    &membership_id.to_string(),
+                    membership_id,
                     "job-role-history",
                 ],
                 &paging.query(),
@@ -263,7 +257,7 @@ impl Governance<'_> {
     pub async fn tag_history(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         paging: &Paging,
     ) -> Result<models::TagHistoryPage> {
         self.0
@@ -272,7 +266,7 @@ impl Governance<'_> {
                     "organizations",
                     org_id,
                     "members",
-                    &membership_id.to_string(),
+                    membership_id,
                     "tag-history",
                 ],
                 &paging.query(),

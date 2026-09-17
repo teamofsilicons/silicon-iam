@@ -157,7 +157,7 @@ fn report(context: &Context, organization: &models::Organization) -> Result<()> 
             table.row(["name", &organization.name]);
             table.row(["id", &organization.id.to_string()]);
             table.row(["description", &or_dash(organization.description.as_deref())]);
-            table.row(["owner", &organization.owner_membership_id.to_string()]);
+            table.row(["owner", &organization.owner_membership_id]);
             table.row(["join_method", &label(&organization.join_method)]);
             table.row(["version", &organization.version.to_string()]);
             table.row(["created", &timestamp(organization.created_at)]);

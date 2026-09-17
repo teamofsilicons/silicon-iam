@@ -77,7 +77,10 @@ pub async fn run(context: &Context, command: CarbonCommand) -> Result<()> {
                 Format::Text => {
                     let mut table = Table::new(["carbon"]);
                     for suggestion in &suggestions.items {
-                        table.row([suggestion.carbon_id.clone()]);
+                        table.row([
+                            suggestion.carbon_id.clone(),
+                            suggestion.display_name.clone(),
+                        ]);
                     }
                     table.print();
                     Ok(())
@@ -131,7 +134,7 @@ fn report_resolution(context: &Context, resolution: &models::CarbonResolution) -
     match context.format {
         Format::Json => json(resolution),
         Format::Text => {
-            println!("{}", resolution.carbon_id);
+            println!("{} ({})", resolution.carbon_id, resolution.display_name);
             Ok(())
         }
     }

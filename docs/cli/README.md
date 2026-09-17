@@ -279,7 +279,7 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | `iam org show` | `[handle]` | Defaults to the selected `--org`. |
 | `iam org update` | `[handle]` plus at least one update or `--clear-*` flag | Defaults to the selected `--org`; requires organization update authority. |
 | `iam org available` | `<handle>` | Checks availability only. |
-| `iam org transfer` | `<new-owner-membership-uuid>` | Selected organization plus step-up action `organization.transfer_ownership` on the organization UUID. |
+| `iam org transfer` | `<new-owner-membership-id>` | Selected organization plus step-up action `organization.transfer_ownership` on the organization UUID. |
 | `iam sso` | `<subcommand>` | Selected-organization SSO namespace. |
 | `iam sso show` | None | Requires `sso.manage`. |
 | `iam sso setup-link` | None | Requires an SSO entitlement and `sso.manage`; the returned WorkOS setup link lasts five minutes. |
@@ -292,16 +292,17 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | --- | --- | --- |
 | `iam member` | `<subcommand>` | Selected-organization member namespace. |
 | `iam member list` | None | Optional principal type, tag UUID from `iam tag list`, status, and paging filters. |
-| `iam member show` | `<membership-uuid>` | Reads the full member record allowed to the caller. |
-| `iam member authorization` | `<membership-uuid>` | Reads organization role and capabilities. |
-| `iam member update` | `<membership-uuid>` plus at least one update or `--clear-*` flag | `--first-silicon` is Carbon-only; reporting-line and profile-photo fields are Silicon-only. |
-| `iam member remove` | `<membership-uuid>` | Step-up action `organization.authorization_change` on that membership UUID; use `--reassign-reports-to` when required by the hierarchy. |
-| `iam member promote` | `<membership-uuid>` | Step-up action `organization.authorization_change` on that membership UUID. |
-| `iam member demote` | `<membership-uuid>` | Step-up action `organization.authorization_change` on that membership UUID. |
-| `iam member capabilities` | `<membership-uuid>` | Step-up action `organization.authorization_change` on that membership UUID. Repeat `--capability`; omitting every capability intentionally clears the complete set. |
+| `iam member show` | `<membership-id>` | Reads the full member record allowed to the caller. |
+| `iam member authorization` | `<membership-id>` | Reads organization role and capabilities. |
+| `iam member update` | `<membership-id>` plus at least one update or `--clear-*` flag | `--first-silicon` is Carbon-only; reporting-line and profile-photo fields are Silicon-only. |
+| `iam member remove` | `<membership-id>` | Step-up action `organization.authorization_change` on that membership ID; use `--reassign-reports-to` when required by the hierarchy. |
+| `iam member promote` | `<membership-id>` | Step-up action `organization.authorization_change` on that membership ID. |
+| `iam member demote` | `<membership-id>` | Step-up action `organization.authorization_change` on that membership ID. |
+| `iam member capabilities` | `<membership-id>` | Step-up action `organization.authorization_change` on that membership ID. Repeat `--capability`; omitting every capability intentionally clears the complete set. |
+| `iam member details` | No arguments | Complete JSON dictionary keyed by Carbon/Silicon ID, including all permitted details and trust from your perspective. |
 | `iam member directory` | None | Sparse directory; `--fields` accepts `name,id,role,org,tags,trust`. |
 | `iam member self` | None | The caller's own sparse directory entry; accepts the same field selector. |
-| `iam member directory-member` | `<membership-uuid>` | One sparse entry; accepts the same field selector. |
+| `iam member directory-member` | `<membership-id>` | One sparse entry; accepts the same field selector. |
 | `iam invite` | `<subcommand>` | Selected-organization invitation namespace. |
 | `iam invite list` | None | Issued invitations; optional status and paging filters. |
 | `iam invite create` | `--job-role <role>` and exactly one of `--carbon-id` or `--email` | Requires invitation authority; optional starting trust boundary and level default to `internal/not_trusted`. |
@@ -329,7 +330,7 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | `iam trust show` | `<rule-uuid>` | Reads one rule. |
 | `iam trust update` | `<rule-uuid> --boundary <value> --level <value>` | Replaces the rule's trust value; requires `trust.manage`. |
 | `iam trust delete` | `<rule-uuid>` | Archives the rule; requires `trust.manage`. |
-| `iam trust evaluate` | `--subject <membership-uuid> --target <silicon-membership-uuid>` | Subject may be any visible membership; target must be an active Silicon membership. Explains the winning default/rules and returns advisory trust. |
+| `iam trust evaluate` | `--subject <membership-id> --target <silicon-membership-uuid>` | Subject may be any visible membership; target must be an active Silicon membership. Explains the winning default/rules and returns advisory trust. |
 
 ### Governance approvals
 
@@ -339,12 +340,12 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | `iam approval list` | None | Optional status/kind filters; `--mine` limits to requests the caller can decide now. |
 | `iam approval show` | `<request-uuid>` | Reads one request and its decision state. |
 | `iam approval decide` | `<request-uuid> --decision <decision>` | Decision is `approve` or `reject`. Requires applicable approval authority. A Silicon-token rotation additionally needs step-up action `silicon.rotate_token` on the Silicon principal UUID. |
-| `iam approval request-role` | `--membership-id <uuid> --job-role <role>` | Silicon-only; Carbon callers are forbidden. |
-| `iam approval request-tags` | `--membership-id <uuid>` and at least one `--add` or `--remove` tag UUID | Silicon-only; Carbon callers are forbidden. |
-| `iam approval set-role` | `<membership-uuid> <job-role>` | Direct Carbon owner/admin operation requiring `roles.approve`. |
-| `iam approval set-tags` | `<membership-uuid>` | Direct Carbon owner/admin operation requiring `tags.manage`. Repeat `--tag`; no tags means clear the complete set. |
-| `iam approval role-history` | `<membership-uuid>` | Paginated immutable role-change history. |
-| `iam approval tag-history` | `<membership-uuid>` | Paginated immutable tag-change history. |
+| `iam approval request-role` | `--membership-id <membership-id> --job-role <role>` | Silicon-only; Carbon callers are forbidden. |
+| `iam approval request-tags` | `--membership-id <membership-id>` and at least one `--add` or `--remove` tag UUID | Silicon-only; Carbon callers are forbidden. |
+| `iam approval set-role` | `<membership-id> <job-role>` | Direct Carbon owner/admin operation requiring `roles.approve`. |
+| `iam approval set-tags` | `<membership-id>` | Direct Carbon owner/admin operation requiring `tags.manage`. Repeat `--tag`; no tags means clear the complete set. |
+| `iam approval role-history` | `<membership-id>` | Paginated immutable role-change history. |
+| `iam approval tag-history` | `<membership-id>` | Paginated immutable tag-change history. |
 
 ### Silicons
 
@@ -355,11 +356,11 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | `iam silicon create` | `<handle> --job-role <role>` | Requires `silicons.create`; returns the STK exactly once. A canonical ID supplies its org when none is selected and must match a selected org. |
 | `iam silicon show` | `<silicon-id>` | Accepts a local or canonical ID. |
 | `iam silicon update` | `<silicon-id>` plus at least one update or `--clear-*` flag | Requires the corresponding directory/hierarchy authority. |
-| `iam silicon remove` | `<silicon-id>` | Step-up action `organization.authorization_change` on its membership UUID; hierarchy reassignment may be required. |
+| `iam silicon remove` | `<silicon-id>` | Step-up action `organization.authorization_change` on its membership ID; hierarchy reassignment may be required. |
 | `iam silicon rotate-request` | `<silicon-id>` | Step-up action `silicon.rotate_token` on its principal UUID; creates an approval request and invalidates the old credential only after approval. |
 | `iam silicon rotate-complete` | `<silicon-id> <approved-request-uuid>` | Same step-up action/resource; returns the replacement STK exactly once. |
 | `iam silicon webhook` | `<silicon-id>` | Reads the current endpoint. |
-| `iam silicon set-webhook` | `<silicon-id> --webhook-url <https-url>` | Step-up action `organization.silicon_webhook.redirect` on its membership UUID; returns the generated signing secret once. |
+| `iam silicon set-webhook` | `<silicon-id> --webhook-url <https-url>` | Step-up action `organization.silicon_webhook.redirect` on its membership ID; returns the generated signing secret once. |
 | `iam silicon delete-webhook` | `<silicon-id>` | Same step-up action/resource. |
 | `iam silicon subscription` | `<silicon-id>` | Reads the current webhook subscription. |
 | `iam silicon set-subscription` | `<silicon-id>` | Same redirect step-up. Mode defaults to `all`; `selected` requires one or more repeated `--topic`. `--own-tags-only` conflicts with additional `--tag` filters. |
@@ -928,7 +929,7 @@ base. See [credential storage](storage.md) for the complete precedence rules.
 ## Step-up
 
 Privileged commands need a short-lived assertion bound to one exact action and
-one internal resource UUID. Every affected command names both values in its
+one resource identifier (a canonical membership ID for a membership, otherwise the resource UUID). Every affected command names both values in its
 `--help`. The complete CLI mapping is:
 
 | Command | Step-up action | Resource UUID |
@@ -1117,10 +1118,10 @@ prompted when `--token` is omitted; they are not stored as your IAM login sessio
 ```sh
 iam app read me --token "$APP_ACCESS_TOKEN"
 iam app read organizations --token "$APP_ACCESS_TOKEN"
-iam --org customer app read member <membership-uuid> --token "$APP_ACCESS_TOKEN"
+iam --org customer app read member <membership-id> --token "$APP_ACCESS_TOKEN"
 iam --org customer app read self-directory --token "$APP_ACCESS_TOKEN"
 iam --org customer app read directory --limit 25 --token "$APP_ACCESS_TOKEN"
-iam --org customer app read authorization <membership-uuid> --token "$APP_ACCESS_TOKEN"
+iam --org customer app read authorization <membership-id> --token "$APP_ACCESS_TOKEN"
 iam --org customer app read silicons --token "$APP_ACCESS_TOKEN"
 iam --org customer app read tags --token "$APP_ACCESS_TOKEN"
 ```
@@ -1177,3 +1178,18 @@ testing lifecycles. Legacy IAM management commands remain for migration-era
 servers; after `IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS=true` is enabled they receive
 `410 management_moved_to_honeycomb`. IAM continues to provide identity, login,
 consent and test-plane authentication. See [the service contract](../HONEYCOMB_INTEGRATION.md).
+
+### Membership identifiers
+
+Membership IDs are `carbon_id[org_id]` or the full `silicon_id[org_id]`, for example
+`saket[tos]` and `helper:tos[tos]`. Quote IDs in shell commands:
+
+```sh
+iam --org tos --json member show 'saket[tos]'
+iam --org tos --json member details
+```
+
+The details command returns every visible active member in one dictionary. Each
+entry includes `display_name`, profile, roles, tags, hierarchy, capabilities and
+Silicon access where permitted. Trust is evaluated for the requesting user;
+Carbon-to-Carbon trust is null. Unapproved fields and credentials are omitted.

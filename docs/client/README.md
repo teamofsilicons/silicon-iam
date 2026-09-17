@@ -14,13 +14,22 @@ provider callbacks, and browser navigations remain outside this crate.
 
 ```toml
 [dependencies]
-silicon-iam-client = "1.8.0"
+silicon-iam-client = "2.0.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
+Version 2 uses public membership IDs such as `saket[tos]` and
+`helper:tos[tos]` in place of UUID membership references. Upgrade membership
+arguments and stored public references to strings. Existing official 1.x clients
+retain their UUID wire representation during rollout, including introspection;
+all current clients and ordinary API requests use the canonical IDs. Existing
+signed v1 webhook envelopes retain their UUID contract for consumer compatibility.
+The database mapping covers every existing membership without replacing private
+foreign keys or invalidating sessions.
+
 The client speaks HTTP API major `v1` and requires Rust 1.98 or newer.
 The crate SemVer and HTTP API major are separate: upgrading the crate within
-the 1.x line does not select a different wire major. `Client::new` and
+the 2.x line does not select a different wire major. `Client::new` and
 `ClientBuilder::build` perform no network handshake; call
 `client.system().negotiate().await?` during startup when you want an upfront
 compatibility check. It validates the service identity, ordered version

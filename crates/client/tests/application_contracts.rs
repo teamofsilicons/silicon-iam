@@ -417,7 +417,7 @@ async fn scoped_organization_creation_accepts_a_write_only_receipt() {
 
 #[tokio::test]
 async fn scoped_member_patch_preserves_receipts_and_mutation_preconditions() {
-    let membership_id = Uuid::from_u128(42);
+    let membership_id = "member[customer]";
     let receipt = json!({"id":membership_id,"version":9,"status":"active"});
     let (client, capture, server) = service(receipt.clone());
     let patch: models::MembershipDirectoryPatch =
@@ -443,9 +443,9 @@ async fn scoped_member_patch_preserves_receipts_and_mutation_preconditions() {
         assert!(updated.get(field).is_none(), "invented {field}");
     }
     let (headers, body) = capture.recv().expect("captured patch");
-    assert!(headers.starts_with(&format!(
-        "PATCH /api/v1/organizations/customer/members/{membership_id} "
-    )));
+    assert!(
+        headers.starts_with("PATCH /api/v1/organizations/customer/members/member%5Bcustomer%5D ")
+    );
     let headers = headers.to_ascii_lowercase();
     assert!(headers.contains("if-match: \"8\"\r\n"));
     assert!(headers.contains("idempotency-key: scoped-member-update-0001\r\n"));
@@ -484,7 +484,7 @@ async fn scoped_trust_write_accepts_an_empty_receipt() {
 #[tokio::test]
 async fn scoped_silicon_creation_keeps_the_one_time_credential_and_sparse_identity() {
     let receipt = json!({
-        "silicon": {"principal_id":Uuid::from_u128(43), "membership_id":Uuid::from_u128(44), "silicon_id":"customer>helper", "org_id":"customer", "version":1},
+        "silicon": {"principal_id":Uuid::from_u128(43), "membership_id":"helper:customer[customer]", "silicon_id":"helper:customer", "org_id":"customer", "version":1},
         "silicon_token":"sit_generated_one_time", "secret_replay_expires_at":"2026-09-13T02:00:00Z"
     });
     let (client, capture, server) = service(receipt.clone());

@@ -96,7 +96,7 @@ impl Silicons<'_> {
         org_id: &str,
         silicon_id: &str,
         version: i64,
-        reassign_reports_to: Option<Uuid>,
+        reassign_reports_to: Option<&str>,
         mutation: &Mutation,
     ) -> Result<()> {
         let query = reassign_reports_to

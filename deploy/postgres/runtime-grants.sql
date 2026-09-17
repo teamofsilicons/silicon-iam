@@ -513,6 +513,7 @@ DECLARE
     matched_function_count integer;
     function_record record;
     api_function_names text[] := ARRAY[
+        'resolve_membership_identifiers',
         'authorize_scoped_testing_environment_creation',
         'create_testing_actor_login',
         'discover_application_obo_endpoints',
@@ -703,6 +704,7 @@ DECLARE
         'application_webhook_has_event_scope'
     ];
     non_api_definer_names text[] := ARRAY[
+        'register_membership_identifier',
         'honeycomb_publication_gates',
         'honeycomb_publication_is_current',
         'honeycomb_publication_reused_current',
@@ -889,6 +891,7 @@ DECLARE
     matched_function_count integer;
     function_record record;
     worker_function_names text[] := ARRAY[
+        'resolve_membership_identifiers',
         'get_worker_testing_environment_webhook_key_v2',
         'claim_honeycomb_management_events',
         'finish_honeycomb_management_event',

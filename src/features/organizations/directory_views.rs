@@ -1,4 +1,5 @@
 use super::application_reads::{self, ReadScopes};
+use crate::api::membership_ids::MembershipPath;
 use std::collections::BTreeMap;
 
 use axum::{
@@ -189,6 +190,8 @@ struct DirectoryMember {
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<DirectoryRole>,
@@ -225,7 +228,8 @@ impl DirectoryMember {
         });
 
         Self {
-            name: fields.contains(FIELD_NAME).then_some(name),
+            name: fields.contains(FIELD_NAME).then(|| name.clone()),
+            display_name: fields.contains(FIELD_NAME).then_some(name),
             id: fields.contains(FIELD_ID).then_some(public_id),
             role: fields
                 .contains(FIELD_ROLE)
@@ -295,7 +299,7 @@ pub(super) async fn get_self(
 pub(super) async fn get_member(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    MembershipPath((org_id, membership_id)): MembershipPath,
     Query(query): Query<DirectoryQuery>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
@@ -382,6 +386,101 @@ pub(super) async fn list_members(
     application_reads::page_json(&DirectoryPage { items, page }, |item| {
         scopes.directory(item, false)
     })
+}
+
+/// Complete authorized directory, keyed by immutable Carbon or Silicon ID.
+/// Reads bounded batches internally but never truncates the returned dictionary.
+pub(super) async fn details(
+    State(state): State<ApiState>,
+    authenticated: Authenticated,
+    Path(org_id): Path<String>,
+) -> Result<Response, AppError> {
+    let org_id = validation::organization_id(&org_id)?.to_string();
+    let scopes = ReadScopes::for_actor(&authenticated);
+    let actor_filter = scopes.actor_filter(None)?;
+    let fields = DirectoryFields::ALL.restricted(scopes, false);
+    let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
+    let mut cursor = None;
+    let mut result = serde_json::Map::new();
+    loop {
+        let rows = list_directory_members(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            cursor,
+            100,
+            fields,
+            actor_filter,
+        )
+        .await?;
+        if rows.is_empty() {
+            break;
+        }
+        cursor = rows.last().map(|row| row.membership_id);
+        let mut trust = evaluate_directory_trust(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            scope.access.membership_id,
+            authenticated.0.subject.actor_type,
+            fields,
+            &rows,
+        )
+        .await?;
+        let ids: Vec<_> = rows.iter().map(|row| row.membership_id).collect();
+        let members = super::directory::fetch_members(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            &ids,
+        )
+        .await?;
+        let mut enriched = application_reads::enrich_members(
+            &mut scope.transaction,
+            &authenticated,
+            scope.access.organization_id,
+            &members,
+            false,
+        )
+        .await?
+        .into_iter()
+        .zip(&members)
+        .map(|(value, member)| (member.id, value))
+        .collect::<BTreeMap<_, _>>();
+        for row in rows {
+            let key = row.public_id.clone();
+            let kind = row.principal_kind.clone();
+            let membership_id = row.membership_id;
+            let mut detail = enriched.remove(&membership_id).ok_or(AppError::Internal {
+                category: "directory_detail_missing",
+            })?;
+            detail["membership_id"] = serde_json::json!(membership_id);
+            detail[if kind == "carbon" {
+                "carbon_id"
+            } else {
+                "silicon_id"
+            }] = serde_json::json!(key);
+            detail["type"] = serde_json::json!(kind);
+            if let Some(name) = detail
+                .get("profile")
+                .and_then(|profile| profile.get("display_name"))
+                .cloned()
+            {
+                detail["display_name"] = name;
+            }
+            let projected = DirectoryMember::project(row, fields, trust.remove(&membership_id));
+            let directory = scopes.directory(application_reads::value(&projected)?, false);
+            for key in ["role", "org", "trust"] {
+                if let Some(value) = directory.get(key) {
+                    detail[key] = value.clone();
+                }
+            }
+            result.insert(key, detail);
+        }
+    }
+    scope
+        .transaction
+        .commit()
+        .await
+        .map_err(support::database)?;
+    support::json(StatusCode::OK, &result, None)
 }
 
 async fn fetch_directory_member(
@@ -833,6 +932,7 @@ mod tests {
             serde_json::to_value(member),
             Ok(value) if value == json!({
                 "name": "Directory member",
+                "display_name": "Directory member",
                 "role": { "org_role": "member", "job_role": "Engineer" }
             })
         ));
@@ -846,6 +946,7 @@ mod tests {
             serde_json::to_value(member),
             Ok(value) if value == json!({
                 "name": "Directory member",
+                "display_name": "Directory member",
                 "id": "directory-member",
                 "role": { "org_role": "member", "job_role": "Engineer" },
                 "org": { "id": "example-org", "name": "Example Org" },

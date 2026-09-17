@@ -23,7 +23,7 @@ pub enum TrustSelector {
     /// One specific membership.
     Membership {
         /// The membership.
-        membership_id: Uuid,
+        membership_id: String,
     },
 }
 
@@ -36,7 +36,7 @@ impl TrustSelector {
 
     /// Selects one membership.
     #[must_use]
-    pub const fn membership(membership_id: Uuid) -> Self {
+    pub fn membership(membership_id: String) -> Self {
         Self::Membership { membership_id }
     }
 }
@@ -64,7 +64,8 @@ mod tests {
 
     #[test]
     fn a_membership_selector_names_only_its_membership() {
-        let Ok(encoded) = serde_json::to_value(TrustSelector::membership(Uuid::from_u128(9)))
+        let Ok(encoded) =
+            serde_json::to_value(TrustSelector::membership("helper:tos[tos]".to_owned()))
         else {
             panic!("a selector must serialize");
         };

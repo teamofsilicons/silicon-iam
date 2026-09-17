@@ -227,7 +227,7 @@ impl Plan {
                     self.organization = Some(handle.clone());
                 }
                 self.add(
-                    "Inspect members and their membership UUIDs",
+                    "Inspect members and their membership IDs",
                     &["member", "list"],
                 );
                 self.add(
@@ -425,7 +425,7 @@ impl Plan {
             | MemberCommand::Update { membership_id, .. }
             | MemberCommand::Promote { membership_id }
             | MemberCommand::Demote { membership_id }
-            | MemberCommand::Capabilities { membership_id, .. } => Some(membership_id.to_string()),
+            | MemberCommand::Capabilities { membership_id, .. } => Some(membership_id.clone()),
             _ => None,
         };
         if let Some(membership_id) = membership {
@@ -434,14 +434,14 @@ impl Plan {
                 &["member", "authorization", &membership_id],
             );
         } else if matches!(command, MemberCommand::List { .. }) {
-            self.note("Member commands take the membership UUID in the membership column, not Carbon IDs, Silicon IDs or principal UUIDs.");
+            self.note("Member commands take carbon_id[org_id] or full silicon_id[org_id], for example saket[tos] or helper:tos[tos]. Quote these IDs in your shell.");
             self.add(
                 "Inspect member lookup options",
                 &["member", "show", "--help"],
             );
         } else if matches!(command, MemberCommand::Directory { .. }) {
-            self.note("The sparse directory's id is a public Carbon or Silicon identifier, not a membership UUID. Mutation and authorization commands need the membership UUID from member list.");
-            self.add("Find membership UUIDs", &["member", "list"]);
+            self.note("The sparse directory's id is the public Carbon or Silicon ID. Add [org_id] to form its membership ID, or use member details to retrieve every visible member and all permitted details.");
+            self.add("Find membership IDs", &["member", "list"]);
         } else if matches!(command, MemberCommand::Remove { .. }) {
             self.add(
                 "Review the remaining active members",
@@ -574,7 +574,7 @@ impl Plan {
                 self.note("Authorization changes can invalidate previously issued application tokens and proofs. Obtain a fresh SLT when IAM reports an old token inactive.");
                 self.add(
                     "Review the updated member",
-                    &["member", "show", &membership_id.to_string()],
+                    &["member", "show", membership_id],
                 );
                 self.docs(
                     "Refresh application authorization after directory changes",

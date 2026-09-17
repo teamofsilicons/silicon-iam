@@ -91,6 +91,7 @@
   "/api/v1/organizations/{org_id}/approval-requests/{request_id}/decisions",
   "/api/v1/organizations/{org_id}/carbon-invites",
   "/api/v1/organizations/{org_id}/carbon-invites/{invite_id}",
+  "/api/v1/organizations/{org_id}/directory/details",
   "/api/v1/organizations/{org_id}/directory/members",
   "/api/v1/organizations/{org_id}/directory/members/{membership_id}",
   "/api/v1/organizations/{org_id}/directory/self",

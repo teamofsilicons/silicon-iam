@@ -156,7 +156,7 @@ impl<'a> ReadScopes<'a> {
             "org_id" => self.has("self.organizations.read"),
             "org_role" | "status" | "removed_at" | "authorization_epoch" => membership,
             "job_role" => job,
-            "profile" => self.has(if is_self {
+            "profile" | "display_name" => self.has(if is_self {
                 "self.profile.read"
             } else {
                 "directory.profiles.read"
@@ -220,7 +220,7 @@ impl<'a> ReadScopes<'a> {
         });
         retain(&mut value, |key| match key {
             "id" => !is_self || self.has("self.identity.read"),
-            "name" => profile,
+            "name" | "display_name" => profile,
             "role" => membership || job,
             "org" => self.has("self.organizations.read"),
             "tags" => tags,
@@ -231,7 +231,7 @@ impl<'a> ReadScopes<'a> {
             retain(role, |key| match key {
                 "org_role" => membership,
                 "job_role" => job,
-                "profile" => self.has(if is_self {
+                "profile" | "display_name" => self.has(if is_self {
                     "self.profile.read"
                 } else {
                     "directory.profiles.read"
@@ -296,9 +296,6 @@ pub(super) async fn enrich_members(
 ) -> Result<Vec<Value>, AppError> {
     let scopes = ReadScopes::for_actor(actor);
     let mut projected = members.iter().map(value).collect::<Result<Vec<_>, _>>()?;
-    if !scopes.is_application() {
-        return Ok(projected);
-    }
     let profiles = scopes.has(if is_self {
         "self.profile.read"
     } else {
@@ -338,6 +335,15 @@ pub(super) async fn enrich_members(
             }
         }
     }
+    for item in &mut projected {
+        if let Some(name) = item
+            .get("profile")
+            .and_then(|profile| profile.get("display_name"))
+            .cloned()
+        {
+            item["display_name"] = name;
+        }
+    }
     Ok(projected
         .into_iter()
         .map(|item| scopes.member(item, is_self))
@@ -367,7 +373,7 @@ const MEMBER_EXTRAS_SQL: &str = r"
         FROM iam.organization_capability_grants grant_record WHERE grant_record.organization_id = $1
         AND grant_record.grantee_membership_id = membership.id AND grant_record.revoked_at IS NULL) END,
       'accessible_silicons', CASE WHEN $5 AND membership.principal_kind = 'carbon' THEN (
-        SELECT COALESCE(jsonb_agg(jsonb_build_object('membership_id', target.membership_id, 'silicon_id', target.global_silicon_id) ORDER BY target.membership_id), '[]'::jsonb)
+        SELECT COALESCE(jsonb_agg(jsonb_build_object('membership_id', target.membership_id, 'silicon_id', target.global_silicon_id, 'display_name', CASE WHEN $3 THEN target.display_name END) ORDER BY target.membership_id), '[]'::jsonb)
         FROM iam.silicons target JOIN iam.organization_memberships active_target ON active_target.id = target.membership_id AND active_target.organization_id = $1 AND active_target.status = 'active'
         WHERE target.organization_id = $1 AND target.provisioning_status = 'active' AND (
           target.membership_id = settings.first_silicon_membership_id

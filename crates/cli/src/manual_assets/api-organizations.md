@@ -59,6 +59,12 @@ All three accept `fields` to narrow the projection. On a large directory this is
 
 The directory deliberately exposes public handles rather than `membership_id`. To act on somebody you need the membership endpoints, which are authority-checked.
 
+## Complete directory details
+
+`GET /api/v1/organizations/{org_id}/directory/details` returns a complete JSON dictionary keyed by Carbon ID or full Silicon ID. Use `iam --org tos --json member details` from the CLI. The server reads all visible active members in batches and returns one dictionary without client pagination.
+
+Each entry includes the canonical `membership_id`, `display_name`, profile, organization role, job role, tags, reporting hierarchy, capabilities and Silicon access permitted by the caller's scopes. `trust` is evaluated from the requesting user's perspective; Carbon-to-Carbon trust is `null`. Private contacts, credentials and fields without read permission are omitted. The compact directory also returns `display_name` alongside its existing `name`.
+
 ## Invitations
 
 `POST /api/v1/organizations/{org_id}/carbon-invites` identifies the invitee by **either** `carbon_id` **or** `email`, never both, and carries the job role, tags, default trust and any trust overrides they should start with.

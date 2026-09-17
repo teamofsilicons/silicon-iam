@@ -178,7 +178,7 @@ pub async fn run(context: &Context, command: TrustCommand) -> Result<()> {
 
 fn build_selector(
     tag: Option<uuid::Uuid>,
-    membership: Option<uuid::Uuid>,
+    membership: Option<String>,
     side: &str,
 ) -> Result<models::TrustSelector> {
     match (tag, membership) {

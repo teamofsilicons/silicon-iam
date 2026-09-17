@@ -65,19 +65,14 @@ impl ApplicationMutations<'_> {
     pub async fn update_member(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         version: i64,
         patch: &models::MembershipDirectoryPatch,
         mutation: &Mutation,
     ) -> Result<models::ApplicationMutationObject> {
         self.0
             .patch(
-                &[
-                    "organizations",
-                    org_id,
-                    "members",
-                    &membership_id.to_string(),
-                ],
+                &["organizations", org_id, "members", membership_id],
                 version,
                 patch,
                 mutation,
@@ -95,7 +90,7 @@ impl ApplicationMutations<'_> {
     pub async fn promote_admin(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         version: i64,
         mutation: &Mutation,
     ) -> Result<models::ApplicationMutationObject> {
@@ -105,7 +100,7 @@ impl ApplicationMutations<'_> {
                     "organizations",
                     org_id,
                     "members",
-                    &membership_id.to_string(),
+                    membership_id,
                     "admin-promotions",
                 ],
                 version,
@@ -125,7 +120,7 @@ impl ApplicationMutations<'_> {
     pub async fn demote_admin(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         version: i64,
         mutation: &Mutation,
     ) -> Result<models::ApplicationMutationObject> {
@@ -135,7 +130,7 @@ impl ApplicationMutations<'_> {
                     "organizations",
                     org_id,
                     "members",
-                    &membership_id.to_string(),
+                    membership_id,
                     "admin-demotions",
                 ],
                 version,
@@ -155,7 +150,7 @@ impl ApplicationMutations<'_> {
     pub async fn replace_capabilities(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         version: i64,
         capabilities: &models::OrganizationCapabilitiesReplace,
         mutation: &Mutation,
@@ -166,7 +161,7 @@ impl ApplicationMutations<'_> {
                     "organizations",
                     org_id,
                     "members",
-                    &membership_id.to_string(),
+                    membership_id,
                     "capabilities",
                 ],
                 version,
@@ -470,7 +465,7 @@ impl ApplicationMutations<'_> {
     pub async fn request_tag_change(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         request: &models::TagChangeRequestCreate,
         mutation: &Mutation,
     ) -> Result<models::ApplicationMutationObject> {
@@ -480,7 +475,7 @@ impl ApplicationMutations<'_> {
                     "organizations",
                     org_id,
                     "members",
-                    &membership_id.to_string(),
+                    membership_id,
                     "tag-change-requests",
                 ],
                 request,
@@ -499,7 +494,7 @@ impl ApplicationMutations<'_> {
     pub async fn replace_job_role(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         version: i64,
         job_role: &models::DirectJobRoleReplace,
         mutation: &Mutation,
@@ -510,7 +505,7 @@ impl ApplicationMutations<'_> {
                     "organizations",
                     org_id,
                     "members",
-                    &membership_id.to_string(),
+                    membership_id,
                     "job-role",
                 ],
                 version,
@@ -530,20 +525,14 @@ impl ApplicationMutations<'_> {
     pub async fn replace_tags(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         version: i64,
         tags: &models::DirectTagSetReplace,
         mutation: &Mutation,
     ) -> Result<models::ApplicationMutationObject> {
         self.0
             .put(
-                &[
-                    "organizations",
-                    org_id,
-                    "members",
-                    &membership_id.to_string(),
-                    "tags",
-                ],
+                &["organizations", org_id, "members", membership_id, "tags"],
                 version,
                 tags,
                 mutation,

@@ -38,6 +38,8 @@ import {
 } from "./ui";
 import { OrganizationArea, JoinOrganization } from "./Organizations";
 
+const honeycombConsole = "https://console.honeycomb.teamofsilicons.com/";
+
 export default function Console(props: {
   config: Configuration;
   session: SessionState;
@@ -59,12 +61,6 @@ export default function Console(props: {
   const navigation = [
     { href: "/", id: "overview", title: "Overview", icon: "◫" },
     {
-      href: "/applications",
-      id: "applications",
-      title: "Applications",
-      icon: "▦",
-    },
-    {
       href: "/organizations",
       id: "organizations",
       title: "Organizations",
@@ -81,22 +77,7 @@ export default function Console(props: {
     { href: "/tags", id: "tags", title: "Tags", icon: "⌗" },
     { href: "/trust", id: "trust", title: "Trust", icon: "⇄" },
     { href: "/approvals", id: "approvals", title: "Approvals", icon: "✓" },
-    {
-      href: "/scope-reviews",
-      id: "scope-reviews",
-      title: "Scope reviews",
-      icon: "☷",
-    },
-    { href: "/bundles", id: "bundles", title: "App bundles", icon: "▤" },
-    {
-      href: "/testing",
-      id: "testing",
-      title: "Testing environments",
-      icon: "⎔",
-    },
   ];
-  const visibleNavigation = () =>
-    navigation;
   const send = mutation();
   async function logout() {
     setBusy(true);
@@ -125,7 +106,7 @@ export default function Console(props: {
     const names = [
       "iam_current_view",
       "iam_open_section",
-      "iam_stage_application",
+      "iam_open_honeycomb",
     ];
     context.registerTool({
       name: names[0],
@@ -165,9 +146,7 @@ export default function Console(props: {
         additionalProperties: false,
       },
       execute: async (input: { section: string }) => {
-        const item = visibleNavigation().find(
-          (item) => item.id === input.section,
-        );
+        const item = navigation.find((item) => item.id === input.section);
         if (!item && input.section !== "account")
           throw new Error("Unknown section");
         location.assign(href(item?.href || "/account"));
@@ -177,21 +156,19 @@ export default function Console(props: {
     context.registerTool({
       name: names[2],
       description:
-        "Show where application management is available in Honeycomb.",
+        "Open Honeycomb to manage applications, bundles, scope reviews and testing environments. Does not create or change any record.",
       inputSchema: {
         type: "object",
         properties: {},
         additionalProperties: false,
       },
       execute: async () => {
-        location.assign(
-          `/applications?create=1${selectedOrg() ? `&org=${segment(selectedOrg())}` : ""}`,
-        );
+        location.assign(honeycombConsole);
         return {
           content: [
             {
               type: "text",
-              text: "Opening the Honeycomb management information.",
+              text: "Opening Honeycomb.",
             },
           ],
         };
@@ -246,7 +223,7 @@ export default function Console(props: {
           </Show>
         </div>
         <nav aria-label="Main navigation">
-          <For each={visibleNavigation()}>
+          <For each={navigation}>
             {(item) => (
               <a
                 class={page === item.id ? "active" : ""}
@@ -260,6 +237,7 @@ export default function Console(props: {
           </For>
         </nav>
         <div class="sidebar-bottom">
+          <a href={honeycombConsole}>Honeycomb console ↗</a>
           <a
             href="https://docs.iam.teamofsilicons.com/"
             target="_blank"
@@ -307,11 +285,30 @@ export default function Console(props: {
             retry={organizations.refresh}
           />
           <Switch>
-            <Match when={["applications", "scope-reviews", "bundles", "testing"].includes(page)}>
-              <PageTitle title="Manage in Honeycomb" subtitle="Applications, app bundles, scope reviews and testing environments are managed in Honeycomb." />
+            <Match
+              when={[
+                "applications",
+                "scope-reviews",
+                "bundles",
+                "testing",
+              ].includes(page)}
+            >
+              <PageTitle
+                title="Manage in Honeycomb"
+                subtitle="Applications, app bundles, scope reviews and testing environments are managed in Honeycomb."
+              />
               <Empty title="Continue in Honeycomb">
-                IAM provides login, consent, credentials and identity inside your testing environments. Open Honeycomb to manage their configuration.
+                IAM continues to handle identity, login, consent and access
+                permissions.
               </Empty>
+              <div class="actions">
+                <a class="button primary" href={honeycombConsole}>
+                  Open Honeycomb →
+                </a>
+                <a class="button" href={href("/")}>
+                  Return to IAM overview
+                </a>
+              </div>
             </Match>
             <Match when={page === "account"}>
               <Account {...props} />
@@ -325,7 +322,6 @@ export default function Console(props: {
                 "tags",
                 "trust",
                 "approvals",
-                "testing",
               ].includes(page)}
             >
               <OrganizationArea
@@ -340,23 +336,23 @@ export default function Console(props: {
             <Match when={page === "overview" || page === "join"}>
               <PageTitle
                 title={`Welcome, ${(props.session.user?.display_name || "there").split(" ")[0]}`}
-                subtitle="Your identities, organizations, and applications — in one place."
+                subtitle="Manage your identity, organizations and access."
               />
               <div class="overview-hero">
                 <div>
-                  <p class="eyebrow">YOUR CONTROL PLANE</p>
+                  <p class="eyebrow">IDENTITY & ACCESS</p>
                   <h2>
                     A home for every
                     <br />
-                    identity and application.
+                    identity and organization.
                   </h2>
                   <p>
-                    Start with an organization, connect an app, and give your
-                    team the right access.
+                    Manage your organizations, invite your team and give each
+                    member the right access.
                   </p>
                   <div class="actions">
-                    <a class="button primary" href={href("/applications")}>
-                      Manage applications →
+                    <a class="button primary" href={href("/organizations")}>
+                      Manage organizations →
                     </a>
                     <button
                       class="button"
@@ -422,13 +418,16 @@ export default function Console(props: {
                   <h3>Account & sessions ↗</h3>
                   <p>Update your profile and review account activity.</p>
                 </a>
-                <a href={href("/applications")}>
-                  <h3>Connect your apps ↗</h3>
-                  <p>Manage app authentication configuration in Honeycomb.</p>
+                <a href={href("/members")}>
+                  <h3>Members & access ↗</h3>
+                  <p>Manage your organization's members and permissions.</p>
                 </a>
-                <a href={href("/testing")}>
-                  <h3>Test in isolation ↗</h3>
-                  <p>Manage testing environments in Honeycomb.</p>
+                <a href={honeycombConsole}>
+                  <h3>Honeycomb console ↗</h3>
+                  <p>
+                    Manage applications, bundles, scope reviews and testing
+                    environments.
+                  </p>
                 </a>
               </section>
             </Match>

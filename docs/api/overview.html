@@ -49,10 +49,13 @@
 </p>
 
 <p>
-  Organization-scoped resources are addressed by <code>membership_id</code> rather than by a
-  public handle. This is deliberate: it keeps tenant-internal references out of URLs that a
-  member of another organization might see, and cross-tenant reads answer
-  <code>404 not_found</code> rather than disclosing that a resource exists.
+  A public <code>membership_id</code> is <code>carbon_id[org_id]</code> or
+  <code>silicon_id[org_id]</code>, using the full Silicon ID: for example
+  <code>saket[tos]</code> and <code>helper:tos[tos]</code>. URL-encode the brackets
+  in path segments. These stable identifiers also appear in relationship fields,
+  trust selectors and webhook membership references. UUID membership keys remain
+  private to storage. Identifier resolution never grants access; tenant, consent
+  and resource authorization still apply.
 </p>
 
 <blockquote>

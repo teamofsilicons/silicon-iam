@@ -186,6 +186,10 @@ impl Client {
                 .extend(["api", API_VERSION])
                 .extend(segments);
         }
+        // Brackets delimit the organization in public membership identifiers.
+        // Encode them explicitly for HTTP proxies as Url preserves them in paths.
+        let path = url.path().replace('[', "%5B").replace(']', "%5D");
+        url.set_path(&path);
         Ok(url)
     }
 

@@ -119,7 +119,7 @@ pub async fn run(context: &Context, command: ApprovalCommand) -> Result<()> {
                 .governance()
                 .request_tag_change(
                     org,
-                    membership_id,
+                    &membership_id,
                     &models::TagChangeRequestCreate {
                         add_tag_ids: (!add.is_empty()).then_some(add),
                         remove_tag_ids: (!remove.is_empty()).then_some(remove),
@@ -134,12 +134,12 @@ pub async fn run(context: &Context, command: ApprovalCommand) -> Result<()> {
             membership_id,
             job_role,
         } => {
-            let current = client.members().get(org, membership_id).await?;
+            let current = client.members().get(org, &membership_id).await?;
             let updated = client
                 .governance()
                 .replace_job_role(
                     org,
-                    membership_id,
+                    &membership_id,
                     current.version,
                     &models::DirectJobRoleReplace { job_role },
                     &context.mutation(),
@@ -157,12 +157,12 @@ pub async fn run(context: &Context, command: ApprovalCommand) -> Result<()> {
             membership_id,
             tags,
         } => {
-            let current = client.members().get(org, membership_id).await?;
+            let current = client.members().get(org, &membership_id).await?;
             let updated = client
                 .governance()
                 .replace_tags(
                     org,
-                    membership_id,
+                    &membership_id,
                     current.version,
                     &models::DirectTagSetReplace { tag_ids: tags },
                     &context.mutation(),
@@ -194,7 +194,7 @@ pub async fn run(context: &Context, command: ApprovalCommand) -> Result<()> {
         } => {
             let listed = client
                 .governance()
-                .job_role_history(org, membership_id, &page.paging())
+                .job_role_history(org, &membership_id, &page.paging())
                 .await?;
             match context.format {
                 Format::Json => json(&listed),
@@ -219,7 +219,7 @@ pub async fn run(context: &Context, command: ApprovalCommand) -> Result<()> {
         } => {
             let listed = client
                 .governance()
-                .tag_history(org, membership_id, &page.paging())
+                .tag_history(org, &membership_id, &page.paging())
                 .await?;
             match context.format {
                 Format::Json => json(&listed),
@@ -263,10 +263,7 @@ fn report(context: &Context, request: &models::ApprovalRequest) -> Result<()> {
                     request.requested_by.principal_id
                 ),
             ]);
-            table.row([
-                "target_membership",
-                &request.target_membership_id.to_string(),
-            ]);
+            table.row(["target_membership", &request.target_membership_id]);
             table.row(["immutable_payload", &request.immutable_payload.to_string()]);
             table.row([
                 "required_approvals",

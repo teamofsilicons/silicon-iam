@@ -493,14 +493,14 @@ async fn the_client_speaks_the_contract_end_to_end() {
     let membership_id = organization.owner_membership_id;
     let member = client
         .members()
-        .get(&org_id, membership_id)
+        .get(&org_id, &membership_id)
         .await
         .expect("the owner membership");
     client
         .governance()
         .replace_tags(
             &org_id,
-            membership_id,
+            &membership_id,
             member.version,
             &models::DirectTagSetReplace {
                 tag_ids: vec![tag.id],
@@ -544,7 +544,7 @@ async fn the_client_speaks_the_contract_end_to_end() {
     // The cascade: the member no longer carries it.
     let after = client
         .members()
-        .get(&org_id, membership_id)
+        .get(&org_id, &membership_id)
         .await
         .expect("the owner membership");
     assert!(after.tags.is_empty());
@@ -1450,7 +1450,7 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
             &models::StepUpChallengeCreate {
                 channel: models::StepUpChallengeCreateChannel::Email,
                 action: models::StepUpAction::ApplicationClientSecretRotate,
-                resource_id: imported.application.id,
+                resource_id: imported.application.id.to_string(),
             },
             &Mutation::new(),
         )

@@ -130,6 +130,18 @@
   on somebody you need the membership endpoints, which are authority-checked.
 </p>
 
+<h2>Complete directory details</h2>
+<p><code>GET /api/v1/organizations/{org_id}/directory/details</code> returns a complete
+JSON dictionary keyed by Carbon ID or full Silicon ID. Use
+<code>iam --org tos --json member details</code> from the CLI. The server reads all
+visible active members in batches and returns one dictionary without client pagination.</p>
+<p>Each entry includes the canonical <code>membership_id</code>, <code>display_name</code>,
+profile, organization role, job role, tags, reporting hierarchy, capabilities and Silicon
+access permitted by the caller's scopes. <code>trust</code> is evaluated from the
+requesting user's perspective; Carbon-to-Carbon trust is <code>null</code>. Private
+contacts, credentials and fields without read permission are omitted. The compact
+directory also returns <code>display_name</code> alongside its existing <code>name</code>.</p>
+
 <h2>Invitations</h2>
 
 <p>

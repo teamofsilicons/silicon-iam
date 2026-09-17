@@ -62,6 +62,7 @@ pub fn router() -> Router<ApiState> {
 #[allow(clippy::too_many_lines)]
 pub(crate) fn scoped_router() -> Router<ApiState> {
     Router::new()
+        .route("/api/v1/organizations/{org_id}/directory/details", get(directory_views::details))
         .route(
             "/api/v1/organization-ids/{org_id}/availability",
             get(handlers::organization_id_availability),

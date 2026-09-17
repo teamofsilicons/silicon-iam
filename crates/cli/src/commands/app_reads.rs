@@ -29,11 +29,13 @@ pub async fn run(context: &Context, args: AppReadArgs) -> Result<()> {
                 .await?
         }
         AppReadCommand::Member { membership_id } => {
-            reads.member(context.organization()?, membership_id).await?
+            reads
+                .member(context.organization()?, &membership_id)
+                .await?
         }
         AppReadCommand::Authorization { membership_id } => {
             reads
-                .member_authorization(context.organization()?, membership_id)
+                .member_authorization(context.organization()?, &membership_id)
                 .await?
         }
         AppReadCommand::SelfDirectory => reads.directory_self(context.organization()?).await?,

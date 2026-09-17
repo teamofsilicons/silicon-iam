@@ -86,7 +86,6 @@ export function OrganizationArea(props: AreaProps) {
     tags: "Tags",
     trust: "Trust",
     approvals: "Approvals",
-    testing: "Testing environments",
   };
   return (
     <>
@@ -163,7 +162,6 @@ export function OrganizationArea(props: AreaProps) {
                 "invitations",
                 "tags",
                 "approvals",
-                "testing",
               ].includes(props.page)}
             >
               <ResourceList
@@ -389,7 +387,7 @@ function OrganizationSettings(props: {
                   version: props.organization.version,
                   danger: true,
                   description:
-                    "This changes who owns and controls this organization. Use the target member’s membership UUID, not their Carbon ID.",
+                    "This changes who owns and controls this organization. Use the target member’s membership ID, such as saket[tos].",
                   stepUp: {
                     action: "organization.transfer_ownership",
                     resource: props.organization.id,
@@ -552,7 +550,7 @@ function ResourceList(props: {
                       : undefined,
                   description:
                     props.kind === "invitations"
-                      ? "Invite anyone by email, including people who have not signed up yet, or use an existing Carbon ID. The invitee creates an account if needed and joins by verifying the invited email. Supply organization membership UUIDs for Silicon assignments."
+                      ? "Invite anyone by email, including people who have not signed up yet, or use an existing Carbon ID. The invitee creates an account if needed and joins by verifying the invited email. Use Silicon membership IDs such as helper:tos[tos] for assignments."
                       : props.kind === "testing"
                         ? "This creates a separate empty testing environment. Save its key securely; it grants broad control over that environment."
                         : undefined,

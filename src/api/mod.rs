@@ -3,6 +3,7 @@
 pub(crate) mod authentication;
 mod contracts;
 pub(crate) mod me;
+pub(crate) mod membership_ids;
 pub(crate) mod scoped;
 mod scoped_webhook;
 
@@ -338,6 +339,10 @@ fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
     }
     .layer(middleware::from_fn_with_state(
         state.clone(),
+        membership_ids::transport,
+    ))
+    .layer(middleware::from_fn_with_state(
+        state.clone(),
         crate::features::applications::honeycomb::legacy_writer_guard,
     ))
     .layer(middleware::from_fn_with_state(
@@ -358,6 +363,10 @@ fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
             scoped_webhook::router()?.merge(scoped::control_plane_router(state.clone()))
         }
     };
+    let control_plane = control_plane.layer(middleware::from_fn_with_state(
+        state.clone(),
+        membership_ids::transport,
+    ));
     let web = match surface {
         Surface::Full => crate::web::router(),
         Surface::Scoped => Router::new(),

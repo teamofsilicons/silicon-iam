@@ -296,10 +296,16 @@
   "CarbonSuggestion": {
     "type": "object",
     "required": [
-      "carbon_id"
+      "carbon_id",
+      "display_name"
     ],
     "additionalProperties": false,
     "properties": {
+      "display_name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
       "carbon_id": {
         "$ref": "#/components/schemas/ExistingCarbonId"
       }
@@ -308,10 +314,16 @@
   "CarbonResolution": {
     "type": "object",
     "required": [
-      "carbon_id"
+      "carbon_id",
+      "display_name"
     ],
     "additionalProperties": false,
     "properties": {
+      "display_name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
       "carbon_id": {
         "$ref": "#/components/schemas/ExistingCarbonId"
       }
@@ -508,8 +520,7 @@
         "$ref": "#/components/schemas/StepUpAction"
       },
       "resource_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       }
     }
   },
@@ -646,8 +657,7 @@
         "$ref": "#/components/schemas/OrgId"
       },
       "membership_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "session_id": {
         "type": "string",
@@ -735,8 +745,7 @@
         "$ref": "#/components/schemas/OrgId"
       },
       "membership_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "membership_version": {
         "type": "integer",
@@ -1472,8 +1481,7 @@
         ]
       },
       "owner_membership_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "join_method": {
         "type": "string",
@@ -1538,8 +1546,7 @@
     "additionalProperties": false,
     "properties": {
       "new_owner_membership_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       }
     }
   },
@@ -1565,6 +1572,7 @@
     ]
   },
   "Membership": {
+    "description": "Membership IDs use carbon_id[org_id] or the full silicon_id[org_id], for example saket[tos] or helper:tos[tos].",
     "type": "object",
     "required": [
       "id",
@@ -1581,9 +1589,57 @@
       "updated_at"
     ],
     "properties": {
-      "id": {
+      "display_name": {
         "type": "string",
-        "format": "uuid"
+        "description": "Present when profile reads are authorized."
+      },
+      "profile": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "profile_photo": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      },
+      "capabilities": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "accessible_silicons": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "membership_id": {
+              "type": "string"
+            },
+            "silicon_id": {
+              "type": "string"
+            },
+            "display_name": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "id": {
+        "type": "string"
       },
       "org_id": {
         "$ref": "#/components/schemas/OrgId"
@@ -1621,15 +1677,13 @@
         "type": [
           "string",
           "null"
-        ],
-        "format": "uuid"
+        ]
       },
       "extra_silicons": {
         "type": "array",
         "uniqueItems": true,
         "items": {
-          "type": "string",
-          "format": "uuid"
+          "type": "string"
         }
       },
       "default_trust": {
@@ -1647,8 +1701,7 @@
         "type": [
           "string",
           "null"
-        ],
-        "format": "uuid"
+        ]
       },
       "hierarchy_level": {
         "type": [
@@ -1709,16 +1762,14 @@
         "type": [
           "string",
           "null"
-        ],
-        "format": "uuid"
+        ]
       },
       "extra_silicon_membership_ids": {
         "type": "array",
         "uniqueItems": true,
         "maxItems": 500,
         "items": {
-          "type": "string",
-          "format": "uuid"
+          "type": "string"
         }
       },
       "default_trust": {
@@ -1733,8 +1784,7 @@
         "type": [
           "string",
           "null"
-        ],
-        "format": "uuid"
+        ]
       },
       "profile_photo": {
         "type": [
@@ -1757,8 +1807,7 @@
     ],
     "properties": {
       "membership_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "org_role": {
         "type": "string",
@@ -1847,6 +1896,11 @@
     "description": "Sparse organization-directory projection. Omitted fields were not requested. trust is null when no Carbon-to-Silicon or Silicon-to-Carbon/Silicon orientation exists, including Carbon-to-Carbon.",
     "properties": {
       "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "display_name": {
         "type": "string",
         "minLength": 1,
         "maxLength": 200
@@ -1950,8 +2004,7 @@
     "additionalProperties": false,
     "properties": {
       "silicon_membership_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "trust": {
         "$ref": "#/components/schemas/TrustValue"
@@ -2004,16 +2057,14 @@
         "type": [
           "string",
           "null"
-        ],
-        "format": "uuid"
+        ]
       },
       "extra_silicon_membership_ids": {
         "type": "array",
         "uniqueItems": true,
         "maxItems": 500,
         "items": {
-          "type": "string",
-          "format": "uuid"
+          "type": "string"
         }
       },
       "default_trust": {
@@ -2112,15 +2163,13 @@
         "type": [
           "string",
           "null"
-        ],
-        "format": "uuid"
+        ]
       },
       "extra_silicon_membership_ids": {
         "type": "array",
         "uniqueItems": true,
         "items": {
-          "type": "string",
-          "format": "uuid"
+          "type": "string"
         }
       },
       "default_trust": {
@@ -2271,8 +2320,7 @@
         "type": [
           "string",
           "null"
-        ],
-        "format": "uuid"
+        ]
       },
       "tag_ids": {
         "type": "array",
@@ -2317,8 +2365,7 @@
         "type": [
           "string",
           "null"
-        ],
-        "format": "uuid"
+        ]
       }
     }
   },
@@ -2347,8 +2394,7 @@
         "format": "uuid"
       },
       "membership_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "silicon_id": {
         "$ref": "#/components/schemas/SiliconGlobalId"
@@ -2383,8 +2429,7 @@
         "type": [
           "string",
           "null"
-        ],
-        "format": "uuid"
+        ]
       },
       "tags": {
         "type": "array",
@@ -2826,7 +2871,6 @@
       },
       "created_by_membership_id": {
         "type": "string",
-        "format": "uuid",
         "description": "Membership that created the environment; it keeps administrative authority while active."
       },
       "key_generation": {
@@ -3162,8 +3206,7 @@
         "format": "uuid"
       },
       "membership_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       }
     }
   },
@@ -3274,12 +3317,10 @@
     "additionalProperties": false,
     "properties": {
       "subject_membership_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "target_silicon_membership_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       }
     }
   },
@@ -3343,8 +3384,7 @@
     "additionalProperties": false,
     "properties": {
       "target_membership_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "proposed_job_role": {
         "type": "string",
@@ -3541,8 +3581,7 @@
         "$ref": "#/components/schemas/ActorRef"
       },
       "target_membership_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "immutable_payload": {
         "type": "object",
@@ -3626,8 +3665,7 @@
         "format": "uuid"
       },
       "membership_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "old_job_role": {
         "type": "string"
@@ -3695,8 +3733,7 @@
         "format": "uuid"
       },
       "membership_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "previous_tag_ids": {
         "type": "array",
@@ -4055,6 +4092,14 @@
     ],
     "description": "Organization-owned Application. created_by is immutable provenance and does not confer management authority.",
     "properties": {
+      "visibility": {
+        "type": "string",
+        "enum": [
+          "private",
+          "public"
+        ],
+        "description": "Accepted application visibility."
+      },
       "app_scope": {
         "$ref": "#/components/schemas/ApplicationScope"
       },
@@ -4361,7 +4406,7 @@
       },
       "secret_version": {
         "type": "integer",
-        "minimum": 1
+        "minimum": 0
       },
       "webhook_signing_secret": {
         "$ref": "#/components/schemas/ApplicationWebhookSecret",
@@ -4660,10 +4705,21 @@
               "event_type",
               "occurred_at",
               "organization_id",
-              "aggregate"
+              "aggregate",
+              "environment_id",
+              "generation"
             ],
             "additionalProperties": false,
             "properties": {
+              "environment_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "generation": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 1
+              },
               "spec_version": {
                 "const": "1.0"
               },
@@ -4827,6 +4883,14 @@
     "additionalProperties": false,
     "description": "Callable endpoint definition configurable only by a current owner/admin of the Application's organization.",
     "properties": {
+      "ttl_seconds": {
+        "type": "integer",
+        "format": "int32",
+        "minimum": 1,
+        "maximum": 2147483647,
+        "default": 300,
+        "description": "Provider-configured proof lifetime in seconds; fixed at issuance."
+      },
       "critical": {
         "type": "boolean",
         "description": "Whether calling this endpoint requires approval from the audience application."
@@ -5024,8 +5088,8 @@
       "expires_in": {
         "type": "integer",
         "minimum": 1,
-        "maximum": 60,
-        "default": 60
+        "maximum": 2147483647,
+        "default": 300
       },
       "expires_at": {
         "type": "string",
@@ -5901,7 +5965,7 @@
         "status": "active"
       },
       {
-        "membership_id": "00000000-0000-0000-0000-000000000002",
+        "membership_id": "saket[tos]",
         "version": 2
       },
       {
@@ -5912,5 +5976,1155 @@
     "type": "object",
     "additionalProperties": true,
     "description": "Scope-filtered application bearer response. Fields absent from approved user scopes are omitted. An omitted field is undisclosed and grants no authority."
+  },
+  "HoneycombWebhook": {
+    "x-redact-debug": true,
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "url",
+      "scope"
+    ],
+    "properties": {
+      "url": {
+        "type": "string"
+      },
+      "secret": {
+        "type": "string",
+        "nullable": true,
+        "writeOnly": true
+      },
+      "scope": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "HoneycombConfiguration": {
+    "x-redact-debug": true,
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operation_id",
+      "expected_iam_revision",
+      "configuration_revision",
+      "app_id",
+      "org_id",
+      "visibility",
+      "availability",
+      "webhook",
+      "app_scope"
+    ],
+    "properties": {
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "expected_iam_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0
+      },
+      "environment_id": {
+        "type": "string",
+        "format": "uuid",
+        "nullable": true
+      },
+      "configuration_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "app_id": {
+        "type": "string"
+      },
+      "org_id": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string",
+        "nullable": true
+      },
+      "logo_url": {
+        "type": "string",
+        "nullable": true
+      },
+      "base_url": {
+        "type": "string",
+        "nullable": true
+      },
+      "visibility": {
+        "type": "string",
+        "enum": [
+          "private",
+          "public"
+        ]
+      },
+      "availability": {
+        "type": "string",
+        "enum": [
+          "active",
+          "disabled"
+        ]
+      },
+      "publication_approved": {
+        "type": "boolean",
+        "default": false
+      },
+      "webhook": {
+        "$ref": "#/components/schemas/HoneycombWebhook"
+      },
+      "app_scope": {
+        "$ref": "#/components/schemas/ApplicationScope"
+      },
+      "obo_endpoints": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ApplicationOboEndpoint"
+        }
+      },
+      "obo_review_message": {
+        "type": "string",
+        "nullable": true
+      },
+      "testing_idle_days": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1,
+        "maximum": 36500,
+        "default": 30
+      }
+    }
+  },
+  "HoneycombSecretRotation": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operation_id",
+      "expected_iam_revision"
+    ],
+    "properties": {
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "expected_iam_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0
+      },
+      "environment_id": {
+        "type": "string",
+        "format": "uuid",
+        "nullable": true
+      }
+    }
+  },
+  "HoneycombScopeDecision": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operation_id",
+      "expected_iam_revision",
+      "scopes",
+      "decision"
+    ],
+    "properties": {
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "expected_iam_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0
+      },
+      "environment_id": {
+        "type": "string",
+        "format": "uuid",
+        "nullable": true
+      },
+      "target_app_id": {
+        "type": "string",
+        "nullable": true
+      },
+      "scopes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "decision": {
+        "type": "string",
+        "enum": [
+          "approve",
+          "revoke"
+        ]
+      }
+    }
+  },
+  "HoneycombWebhookApproval": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operation_id",
+      "expected_iam_revision",
+      "pending_endpoint_id"
+    ],
+    "properties": {
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "expected_iam_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0
+      },
+      "environment_id": {
+        "type": "string",
+        "format": "uuid",
+        "nullable": true
+      },
+      "pending_endpoint_id": {
+        "type": "string",
+        "format": "uuid"
+      }
+    }
+  },
+  "HoneycombBundleConfiguration": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operation_id",
+      "expected_iam_revision",
+      "configuration_revision",
+      "app_ids"
+    ],
+    "properties": {
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "expected_iam_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0
+      },
+      "environment_id": {
+        "type": "string",
+        "format": "uuid",
+        "nullable": true
+      },
+      "configuration_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "app_name": {
+        "type": "string",
+        "nullable": true
+      },
+      "app_logo": {
+        "type": "string",
+        "nullable": true
+      },
+      "app_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "deleted": {
+        "type": "boolean",
+        "default": false
+      }
+    }
+  },
+  "HoneycombTestingInstruction": {
+    "x-redact-debug": true,
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operation_id",
+      "expected_iam_revision",
+      "environment_id",
+      "generation",
+      "operation"
+    ],
+    "properties": {
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "expected_iam_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0
+      },
+      "environment_id": {
+        "type": "string",
+        "format": "uuid",
+        "nullable": true
+      },
+      "generation": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "testing_key": {
+        "type": "string",
+        "nullable": true,
+        "minLength": 32,
+        "maxLength": 32,
+        "pattern": "^[A-Za-z0-9]{32}$",
+        "description": "Shared root key supplied by Honeycomb for new prepare or rotate-key; requires key_version."
+      },
+      "key_version": {
+        "type": "integer",
+        "format": "int32",
+        "minimum": 1,
+        "nullable": true,
+        "description": "Desired key version; 1 at creation and exactly previous plus 1 on rotation."
+      },
+      "expected_key_version": {
+        "type": "integer",
+        "format": "int32",
+        "minimum": 1,
+        "nullable": true,
+        "description": "Current key version guard; mandatory when authorizing with an environment root key."
+      },
+      "operation": {
+        "type": "string",
+        "enum": [
+          "prepare",
+          "import",
+          "rotate-key",
+          "clean",
+          "disable",
+          "restore",
+          "purge",
+          "activate",
+          "activate-apps"
+        ]
+      },
+      "org_id": {
+        "type": "string",
+        "nullable": true
+      },
+      "name": {
+        "type": "string",
+        "nullable": true
+      },
+      "description": {
+        "type": "string",
+        "nullable": true
+      },
+      "app_id": {
+        "type": "string",
+        "nullable": true
+      },
+      "app_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Exact pending apps to activate in an already active environment."
+      },
+      "refresh_app_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Explicit dependency pins to refresh; all other accepted pins remain unchanged."
+      },
+      "source_revisions": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "integer",
+          "format": "int64",
+          "minimum": 1
+        }
+      }
+    }
+  },
+  "HoneycombReceipt": {
+    "x-redact-debug": true,
+    "type": "object",
+    "additionalProperties": true,
+    "required": [
+      "operation_id",
+      "state",
+      "iam_revision"
+    ],
+    "properties": {
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "state": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "accepted",
+          "rejected"
+        ]
+      },
+      "iam_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0
+      },
+      "effective_configuration": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "environment": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "app_secret": {
+        "type": "string",
+        "description": "One-time secret. Replayable for ten minutes; absent from reconciliation."
+      },
+      "key": {
+        "type": "string",
+        "description": "Protected test root key, returned only by preparation and rotation."
+      },
+      "secret_replay_expired": {
+        "type": "boolean"
+      },
+      "app_id": {
+        "type": "string"
+      },
+      "application_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "configuration_revision": {
+        "type": "integer",
+        "format": "int64"
+      },
+      "credential_version": {
+        "type": "integer",
+        "format": "int64"
+      },
+      "webhook_secret_version": {
+        "type": "integer",
+        "format": "int64"
+      },
+      "webhook_endpoint_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "environment_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "iam_completion": {
+        "type": "boolean"
+      },
+      "source_revisions": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required_approvals": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "request_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "publication_request_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "plan_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "imports": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "retired_apps": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "environment_revision": {
+        "type": "integer",
+        "format": "int64"
+      }
+    }
+  },
+  "HoneycombPublicationPlan": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "request_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "app_id": {
+        "type": "string"
+      },
+      "configuration_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "configuration": {
+        "$ref": "#/components/schemas/HoneycombConfiguration"
+      },
+      "visibility": {
+        "type": "string",
+        "enum": [
+          "public"
+        ]
+      }
+    },
+    "required": [
+      "request_id",
+      "app_id",
+      "configuration_revision",
+      "configuration",
+      "visibility"
+    ],
+    "x-redact-debug": true
+  },
+  "HoneycombPublicationDecision": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "request_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "plan_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "app_id": {
+        "type": "string"
+      },
+      "configuration_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "provider": {
+        "type": "string"
+      },
+      "scopes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "decision": {
+        "type": "string",
+        "enum": [
+          "approve",
+          "deny"
+        ]
+      },
+      "reason": {
+        "type": "string",
+        "nullable": true
+      }
+    },
+    "required": [
+      "operation_id",
+      "request_id",
+      "plan_id",
+      "app_id",
+      "configuration_revision",
+      "provider",
+      "scopes",
+      "decision"
+    ]
+  },
+  "HoneycombPublicationActivation": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "request_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "app_id": {
+        "type": "string"
+      },
+      "configuration_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "configuration": {
+        "$ref": "#/components/schemas/HoneycombConfiguration"
+      },
+      "visibility": {
+        "type": "string",
+        "enum": [
+          "public"
+        ]
+      },
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "plan_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "expected_iam_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "decision_ids": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "configuration_operations": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "required": [
+      "request_id",
+      "app_id",
+      "configuration_revision",
+      "configuration",
+      "visibility",
+      "operation_id",
+      "plan_id",
+      "expected_iam_revision",
+      "decision_ids"
+    ],
+    "x-redact-debug": true
+  },
+  "HoneycombPublicationGate": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "provider": {
+        "type": "string"
+      },
+      "scopes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "provider",
+      "scopes"
+    ]
+  },
+  "HoneycombPublicationPlanRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "state": {
+        "type": "string"
+      },
+      "request_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "plan_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "app_id": {
+        "type": "string"
+      },
+      "configuration_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "visibility": {
+        "type": "string"
+      },
+      "gates": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/HoneycombPublicationGate"
+        }
+      },
+      "reused_approvals": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "required": [
+      "state",
+      "request_id",
+      "plan_id",
+      "app_id",
+      "configuration_revision",
+      "visibility",
+      "gates",
+      "reused_approvals"
+    ]
+  },
+  "HoneycombPublicationDecisionRecord": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "request_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "plan_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "app_id": {
+        "type": "string"
+      },
+      "configuration_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "provider": {
+        "type": "string"
+      },
+      "scopes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "decision": {
+        "type": "string",
+        "enum": [
+          "approve",
+          "deny"
+        ]
+      },
+      "reason": {
+        "type": "string",
+        "nullable": true
+      },
+      "decision_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "state": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "decision_id",
+      "state",
+      "request_id",
+      "plan_id",
+      "app_id",
+      "configuration_revision",
+      "provider",
+      "scopes",
+      "decision"
+    ]
+  },
+  "HoneycombReviewerEligibility": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "plan_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "provider": {
+        "type": "string"
+      },
+      "actor_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "eligible": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "plan_id",
+      "provider",
+      "actor_id",
+      "eligible"
+    ]
+  },
+  "HoneycombNotificationRecipient": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "principal_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "email": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "principal_id",
+      "email"
+    ]
+  },
+  "HoneycombNotificationRecipients": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "plan_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "provider": {
+        "type": "string"
+      },
+      "recipients": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/HoneycombNotificationRecipient"
+        }
+      },
+      "next_cursor": {
+        "type": "string",
+        "format": "uuid",
+        "nullable": true
+      }
+    },
+    "required": [
+      "plan_id",
+      "provider",
+      "recipients"
+    ]
+  },
+  "HoneycombAdoptionExport": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "expected_iam_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      }
+    },
+    "required": [
+      "operation_id",
+      "expected_iam_revision"
+    ]
+  },
+  "HoneycombRetention": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "environment_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "environment_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "expected_iam_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "generation": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "key_version": {
+        "type": "integer",
+        "format": "int32",
+        "minimum": 1
+      },
+      "retired_apps": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "operation_id",
+      "environment_id",
+      "environment_revision",
+      "expected_iam_revision",
+      "generation",
+      "key_version",
+      "retired_apps"
+    ]
+  },
+  "HoneycombTestingAppVersion": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "generation": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "key_version": {
+        "type": "integer",
+        "format": "int32",
+        "minimum": 1
+      },
+      "expected_environment_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      }
+    },
+    "required": [
+      "generation",
+      "key_version",
+      "expected_environment_revision"
+    ]
+  },
+  "HoneycombTestingAppMutation": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "environment_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "generation": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "key_version": {
+        "type": "integer",
+        "format": "int32",
+        "minimum": 1
+      },
+      "expected_environment_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "expected_iam_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0
+      },
+      "configuration_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "configuration": {
+        "$ref": "#/components/schemas/HoneycombConfiguration"
+      }
+    },
+    "required": [
+      "operation_id",
+      "environment_id",
+      "generation",
+      "key_version",
+      "expected_environment_revision",
+      "expected_iam_revision",
+      "configuration_revision"
+    ],
+    "x-redact-debug": true
+  },
+  "HoneycombApplicationIdentity": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "application_id",
+      "app_id",
+      "organization_id",
+      "org_id",
+      "iam_revision"
+    ],
+    "properties": {
+      "application_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "app_id": {
+        "type": "string"
+      },
+      "organization_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "org_id": {
+        "type": "string"
+      },
+      "iam_revision": {
+        "type": "integer",
+        "format": "int64"
+      }
+    }
+  },
+  "HoneycombApplicationTestingEnvironments": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "items",
+      "page"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "page": {
+        "$ref": "#/components/schemas/PageInfo"
+      }
+    }
+  },
+  "HoneycombOrganizationRecipients": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "org_id",
+      "recipients"
+    ],
+    "properties": {
+      "org_id": {
+        "type": "string"
+      },
+      "recipients": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/HoneycombNotificationRecipient"
+        }
+      },
+      "next_cursor": {
+        "type": "string",
+        "format": "uuid",
+        "nullable": true
+      }
+    }
+  },
+  "HoneycombTestingCredentialRecovery": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operation_id",
+      "environment_id",
+      "generation",
+      "key_version",
+      "expected_environment_revision"
+    ],
+    "properties": {
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "environment_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "generation": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "key_version": {
+        "type": "integer",
+        "format": "int32",
+        "minimum": 1
+      },
+      "expected_environment_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      }
+    }
+  },
+  "HoneycombRecord": {
+    "type": "object",
+    "additionalProperties": true,
+    "description": "Accepted IAM state or durable operation status. Never contains credentials or actor tokens."
+  },
+  "HoneycombWebhookSecretRotation": {
+    "type": "object",
+    "x-redact-debug": true,
+    "additionalProperties": false,
+    "required": [
+      "operation_id",
+      "expected_iam_revision",
+      "webhook_secret"
+    ],
+    "properties": {
+      "operation_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "expected_iam_revision": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0
+      },
+      "environment_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid"
+      },
+      "webhook_secret": {
+        "type": "string",
+        "minLength": 32,
+        "maxLength": 512,
+        "writeOnly": true
+      }
+    }
   }
 }

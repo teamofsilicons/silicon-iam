@@ -35,6 +35,7 @@ pub(super) struct SearchQuery {
 #[derive(Clone, Debug, Serialize)]
 struct CarbonSuggestion {
     carbon_id: String,
+    display_name: String,
 }
 
 #[derive(Serialize)]
@@ -45,6 +46,7 @@ pub(super) struct CarbonSearchResponse {
 #[derive(Serialize)]
 pub(super) struct CarbonResolutionResponse {
     carbon_id: String,
+    display_name: String,
 }
 
 pub(super) async fn search(
@@ -93,10 +95,10 @@ pub(super) async fn search(
     let escaped = escape_like(&term);
     let pattern = format!("%{escaped}%");
     let prefix = format!("{escaped}%");
-    let carbon_ids = sqlx::query_scalar::<_, String>(
+    let carbon_ids = sqlx::query_as::<_, (String, String)>(
         r"
         SELECT
-            carbon.carbon_id
+            carbon.carbon_id, carbon.display_name
         FROM iam.carbons AS carbon
         JOIN iam.principals AS principal
           ON principal.id = carbon.id
@@ -131,7 +133,10 @@ pub(super) async fn search(
 
     let items = carbon_ids
         .into_iter()
-        .map(|carbon_id| CarbonSuggestion { carbon_id })
+        .map(|(carbon_id, display_name)| CarbonSuggestion {
+            carbon_id,
+            display_name,
+        })
         .collect();
     Ok(Json(CarbonSearchResponse { items }))
 }
@@ -172,10 +177,20 @@ async fn resolve_contact(
         contacts::resolve_carbon_id_by_contact(&mut transaction, &state.crypto, &contact)
             .await?
             .ok_or(AppError::NotFound)?;
+    let display_name = sqlx::query_scalar::<_, String>(
+        "SELECT display_name FROM iam.carbons WHERE carbon_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(&carbon_id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or(AppError::NotFound)?;
     transaction.commit().await.map_err(|_| AppError::Internal {
         category: "carbon_resolution_commit",
     })?;
-    Ok(Json(CarbonResolutionResponse { carbon_id }))
+    Ok(Json(CarbonResolutionResponse {
+        carbon_id,
+        display_name,
+    }))
 }
 
 async fn enforce_resolution_rate_limits(
@@ -250,23 +265,25 @@ mod tests {
     }
 
     #[test]
-    fn public_search_and_resolution_expose_only_carbon_ids() {
+    fn public_search_and_resolution_include_display_names_without_contacts() {
         let search = CarbonSearchResponse {
             items: vec![CarbonSuggestion {
                 carbon_id: "saket".to_owned(),
+                display_name: "Saket".to_owned(),
             }],
         };
         assert_eq!(
             serde_json::to_value(search).ok(),
-            Some(json!({ "items": [{ "carbon_id": "saket" }] }))
+            Some(json!({ "items": [{ "carbon_id": "saket", "display_name": "Saket" }] }))
         );
 
         let resolution = CarbonResolutionResponse {
             carbon_id: "saket".to_owned(),
+            display_name: "Saket".to_owned(),
         };
         assert_eq!(
             serde_json::to_value(resolution).ok(),
-            Some(json!({ "carbon_id": "saket" }))
+            Some(json!({ "carbon_id": "saket", "display_name": "Saket" }))
         );
     }
 }

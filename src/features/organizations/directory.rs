@@ -1,4 +1,5 @@
 #![allow(clippy::too_many_lines)]
+use crate::api::membership_ids::MembershipPath;
 
 use super::application_reads::{self, ReadScopes};
 
@@ -96,7 +97,7 @@ pub(super) async fn list_members(
 pub(super) async fn get_member(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    MembershipPath((org_id, membership_id)): MembershipPath,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
@@ -133,7 +134,7 @@ pub(super) async fn get_member(
 pub(super) async fn update_member_directory(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    MembershipPath((org_id, membership_id)): MembershipPath,
     headers: HeaderMap,
     Json(mut input): Json<MembershipDirectoryPatch>,
 ) -> Result<Response, AppError> {
@@ -425,7 +426,7 @@ fn carbon_directory_patch_changes(
 pub(super) async fn remove_member(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    MembershipPath((org_id, membership_id)): MembershipPath,
     Query(query): Query<RemovalQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
@@ -593,7 +594,7 @@ fn require_carbon_removal(identity: &MembershipIdentity) -> Result<(), AppError>
 pub(super) async fn get_member_authorization(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    MembershipPath((org_id, membership_id)): MembershipPath,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let mut scope = support::begin_directory_organization(&state, &authenticated, &org_id).await?;
@@ -627,7 +628,7 @@ pub(super) async fn get_member_authorization(
 pub(super) async fn promote_admin(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    MembershipPath((org_id, membership_id)): MembershipPath,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     change_admin_role(state, authenticated, org_id, membership_id, headers, true).await
@@ -636,7 +637,7 @@ pub(super) async fn promote_admin(
 pub(super) async fn demote_admin(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    MembershipPath((org_id, membership_id)): MembershipPath,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     change_admin_role(state, authenticated, org_id, membership_id, headers, false).await
@@ -645,7 +646,7 @@ pub(super) async fn demote_admin(
 pub(super) async fn replace_member_capabilities(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    MembershipPath((org_id, membership_id)): MembershipPath,
     headers: HeaderMap,
     Json(input): Json<CapabilitiesReplace>,
 ) -> Result<Response, AppError> {

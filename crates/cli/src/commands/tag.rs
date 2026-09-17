@@ -88,7 +88,7 @@ pub async fn run(context: &Context, command: TagCommand) -> Result<()> {
                     let mut table = Table::new(["membership", "principal", "role", "status"]);
                     for member in &listed.items {
                         table.row([
-                            member.id.to_string(),
+                            member.id.clone(),
                             member.principal.public_id.clone(),
                             label(&member.org_role),
                             label(&member.status),

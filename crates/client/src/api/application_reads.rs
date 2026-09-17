@@ -4,7 +4,6 @@
 //! preserves omission instead of inventing roles, tags, contact details, or defaults.
 
 use serde_json::Value;
-use uuid::Uuid;
 
 use crate::{Client, Paging, Result, models};
 
@@ -50,14 +49,9 @@ impl ApplicationReads<'_> {
     ///
     /// # Errors
     /// Fails for unselected organizations or missing directory permissions for another actor.
-    pub async fn member(&self, org_id: &str, membership_id: Uuid) -> Result<Value> {
+    pub async fn member(&self, org_id: &str, membership_id: &str) -> Result<Value> {
         self.0
-            .get(&[
-                "organizations",
-                org_id,
-                "members",
-                &membership_id.to_string(),
-            ])
+            .get(&["organizations", org_id, "members", membership_id])
             .await
     }
 
@@ -65,13 +59,13 @@ impl ApplicationReads<'_> {
     ///
     /// # Errors
     /// Requires the applicable self or directory membership/capability scope.
-    pub async fn member_authorization(&self, org_id: &str, membership_id: Uuid) -> Result<Value> {
+    pub async fn member_authorization(&self, org_id: &str, membership_id: &str) -> Result<Value> {
         self.0
             .get(&[
                 "organizations",
                 org_id,
                 "members",
-                &membership_id.to_string(),
+                membership_id,
                 "authorization",
             ])
             .await

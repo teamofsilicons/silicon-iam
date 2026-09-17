@@ -1147,7 +1147,7 @@ paths:
         - name: reassign_reports_to
           in: query
           description: Required replacement Silicon membership when removing a Silicon with direct reports.
-          schema: { type: string, format: uuid }
+          schema: { type: string }
       responses:
         '204':
           description: Authority revoked immediately; membership identity and history are retained.
@@ -1319,6 +1319,31 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
+  /api/v1/organizations/{org_id}/directory/details:
+    get:
+      operationId: getDirectoryDetails
+      tags: [Directory]
+      summary: Get every visible active member with all permitted details
+      description: >-
+        Returns a complete dictionary keyed by Carbon ID or full Silicon ID.
+        Each value includes permitted profile (including display_name), membership,
+        role, tags, hierarchy, capabilities and Silicon access fields. Trust is
+        evaluated from the authenticated user's perspective. Carbon-to-Carbon
+        trust is null. Existing directory scopes and organization visibility apply;
+        credentials, private contacts and ungranted fields are never included.
+        Internal batching does not truncate the result or require client pagination.
+      parameters:
+        - $ref: '#/components/parameters/OrgIdPath'
+      responses:
+        '200':
+          description: Complete authorized dictionary
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: { type: object, additionalProperties: true }
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/organizations/{org_id}/directory/members/{membership_id}:
     parameters:
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
@@ -1616,7 +1641,7 @@ paths:
         - name: reassign_reports_to
           in: query
           description: Required replacement Silicon when direct reports exist.
-          schema: { type: string, format: uuid }
+          schema: { type: string }
       responses:
         '204':
           description: 'Silicon disabled, credentials revoked, reports reassigned, and events queued.'
@@ -4880,7 +4905,7 @@ components:
       name: membership_id
       in: path
       required: true
-      schema: { type: string, format: uuid }
+      schema: { type: string }
     InviteIdPath:
       name: invite_id
       in: path
@@ -5191,15 +5216,17 @@ components:
         created_at: { type: string, format: date-time }
     CarbonSuggestion:
       type: object
-      required: [carbon_id]
+      required: [carbon_id, display_name]
       additionalProperties: false
       properties:
+        display_name: { type: string, minLength: 1, maxLength: 200 }
         carbon_id: { $ref: '#/components/schemas/ExistingCarbonId' }
     CarbonResolution:
       type: object
-      required: [carbon_id]
+      required: [carbon_id, display_name]
       additionalProperties: false
       properties:
+        display_name: { type: string, minLength: 1, maxLength: 200 }
         carbon_id: { $ref: '#/components/schemas/ExistingCarbonId' }
     CarbonSelf:
       allOf:
@@ -5277,7 +5304,7 @@ components:
       properties:
         channel: { type: string, enum: [email, phone_number] }
         action: { $ref: '#/components/schemas/StepUpAction' }
-        resource_id: { type: string, format: uuid }
+        resource_id: { type: string }
     StepUpTokenResponse:
       type: object
       required: [step_up_token, action, assurance, expires_in]
@@ -5332,7 +5359,7 @@ components:
         actor_type: { type: string, enum: [carbon, silicon, application] }
         client_id: { $ref: '#/components/schemas/AppId' }
         org_id: { $ref: '#/components/schemas/OrgId' }
-        membership_id: { type: string, format: uuid }
+        membership_id: { type: string }
         session_id: { type: string, format: uuid }
         scope: { type: string }
         audience: { type: string }
@@ -5371,7 +5398,7 @@ components:
         public_id: { type: string }
         organization_id: { type: string, format: uuid }
         org_id: { $ref: '#/components/schemas/OrgId' }
-        membership_id: { type: string, format: uuid }
+        membership_id: { type: string }
         membership_version: { type: integer, minimum: 1 }
         authorization_epoch: { type: integer, minimum: 0 }
         audience: { $ref: '#/components/schemas/AppId' }
@@ -5598,7 +5625,7 @@ components:
         name: { type: string }
         logo: { type: [string, 'null'], format: uri }
         description: { type: [string, 'null'] }
-        owner_membership_id: { type: string, format: uuid }
+        owner_membership_id: { type: string }
         join_method: { type: string, enum: [email, sso] }
         sso_status: { type: string, enum: [disabled, pending, active, error] }
         status: { type: string, enum: [active, disabled] }
@@ -5616,7 +5643,7 @@ components:
       required: [new_owner_membership_id]
       additionalProperties: false
       properties:
-        new_owner_membership_id: { type: string, format: uuid }
+        new_owner_membership_id: { type: string }
     OrganizationCapability:
       type: string
       enum:
@@ -5637,24 +5664,43 @@ components:
         - admins.manage
         - sso.manage
     Membership:
+      description: Membership IDs use carbon_id[org_id] or the full silicon_id[org_id], for example saket[tos] or helper:tos[tos].
       type: object
       required: [id, org_id, principal, status, org_role, job_role, tags, extra_silicons, authorization_epoch, version, created_at, updated_at]
       properties:
-        id: { type: string, format: uuid }
+        display_name: { type: string, description: Present when profile reads are authorized. }
+        profile:
+          type: object
+          additionalProperties: false
+          properties:
+            display_name: { type: string }
+            description: { type: [string, 'null'] }
+            timezone: { type: string }
+            profile_photo: { type: string, format: uri }
+        capabilities: { type: array, items: { type: string } }
+        accessible_silicons:
+          type: array
+          items:
+            type: object
+            properties:
+              membership_id: { type: string }
+              silicon_id: { type: string }
+              display_name: { type: string }
+        id: { type: string }
         org_id: { $ref: '#/components/schemas/OrgId' }
         principal: { $ref: '#/components/schemas/ActorRef' }
         status: { type: string, enum: [active, removed] }
         org_role: { type: string, enum: [owner, admin, member] }
         job_role: { type: string, maxLength: 5000 }
         tags: { type: array, uniqueItems: true, items: { $ref: '#/components/schemas/TagSummary' } }
-        first_silicon_membership_id: { type: [string, 'null'], format: uuid }
-        extra_silicons: { type: array, uniqueItems: true, items: { type: string, format: uuid } }
+        first_silicon_membership_id: { type: [string, 'null'] }
+        extra_silicons: { type: array, uniqueItems: true, items: { type: string } }
         default_trust:
           description: Carbon-wide advisory trust baseline; null for Silicon memberships.
           oneOf:
             - { $ref: '#/components/schemas/TrustValue' }
             - { type: 'null' }
-        reports_to_membership_id: { type: [string, 'null'], format: uuid }
+        reports_to_membership_id: { type: [string, 'null'] }
         hierarchy_level: { type: [integer, 'null'], minimum: 1 }
         authorization_epoch: { type: integer, minimum: 0 }
         removed_at: { type: [string, 'null'], format: date-time }
@@ -5672,18 +5718,18 @@ components:
       minProperties: 1
       additionalProperties: false
       properties:
-        first_silicon_membership_id: { type: [string, 'null'], format: uuid }
-        extra_silicon_membership_ids: { type: array, uniqueItems: true, maxItems: 500, items: { type: string, format: uuid } }
+        first_silicon_membership_id: { type: [string, 'null'] }
+        extra_silicon_membership_ids: { type: array, uniqueItems: true, maxItems: 500, items: { type: string } }
         default_trust:
           allOf: [{ $ref: '#/components/schemas/TrustValue' }]
           description: Carbon-only advisory trust baseline; requires trust.manage.
-        reports_to_membership_id: { type: [string, 'null'], format: uuid }
+        reports_to_membership_id: { type: [string, 'null'] }
         profile_photo: { type: [string, 'null'], format: uri, maxLength: 2048 }
     MembershipAuthorization:
       type: object
       required: [membership_id, org_role, capabilities, authorization_epoch, version]
       properties:
-        membership_id: { type: string, format: uuid }
+        membership_id: { type: string }
         org_role: { type: string, enum: [owner, admin, member] }
         capabilities: { type: array, uniqueItems: true, items: { $ref: '#/components/schemas/OrganizationCapability' } }
         authorization_epoch: { type: integer, minimum: 0 }
@@ -5717,6 +5763,7 @@ components:
         Silicon-to-Carbon/Silicon orientation exists, including Carbon-to-Carbon.
       properties:
         name: { type: string, minLength: 1, maxLength: 200 }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
         id:
           type: string
           description: Public Carbon ID or global Silicon ID.
@@ -5753,7 +5800,7 @@ components:
       required: [silicon_membership_id, trust]
       additionalProperties: false
       properties:
-        silicon_membership_id: { type: string, format: uuid }
+        silicon_membership_id: { type: string }
         trust: { $ref: '#/components/schemas/TrustValue' }
     CarbonInviteCreate:
       type: object
@@ -5768,8 +5815,8 @@ components:
         email: { type: string, format: email, maxLength: 320 }
         job_role: { type: string, maxLength: 5000 }
         tag_ids: { type: array, uniqueItems: true, maxItems: 100, items: { type: string, format: uuid } }
-        first_silicon_membership_id: { type: [string, 'null'], format: uuid }
-        extra_silicon_membership_ids: { type: array, uniqueItems: true, maxItems: 500, items: { type: string, format: uuid } }
+        first_silicon_membership_id: { type: [string, 'null'] }
+        extra_silicon_membership_ids: { type: array, uniqueItems: true, maxItems: 500, items: { type: string } }
         default_trust: { $ref: '#/components/schemas/TrustValue' }
         tag_trust_overrides:
           type: array
@@ -5801,8 +5848,8 @@ components:
         org_role: { const: member }
         job_role: { type: string, maxLength: 5000 }
         tag_ids: { type: array, uniqueItems: true, items: { type: string, format: uuid } }
-        first_silicon_membership_id: { type: [string, 'null'], format: uuid }
-        extra_silicon_membership_ids: { type: array, uniqueItems: true, items: { type: string, format: uuid } }
+        first_silicon_membership_id: { type: [string, 'null'] }
+        extra_silicon_membership_ids: { type: array, uniqueItems: true, items: { type: string } }
         default_trust: { $ref: '#/components/schemas/TrustValue' }
         tag_trust_overrides:
           type: array
@@ -5854,7 +5901,7 @@ components:
         description: { type: [string, 'null'], maxLength: 5000 }
         profile_photo: { type: [string, 'null'], format: uri, maxLength: 2048 }
         job_role: { type: string, maxLength: 5000 }
-        reports_to_membership_id: { type: [string, 'null'], format: uuid }
+        reports_to_membership_id: { type: [string, 'null'] }
         tag_ids: { type: array, uniqueItems: true, maxItems: 100, items: { type: string, format: uuid } }
     SiliconPatch:
       type: object
@@ -5865,13 +5912,13 @@ components:
         timezone: { $ref: '#/components/schemas/TimeZoneId' }
         description: { type: [string, 'null'], maxLength: 5000 }
         profile_photo: { type: [string, 'null'], format: uri, maxLength: 2048 }
-        reports_to_membership_id: { type: [string, 'null'], format: uuid }
+        reports_to_membership_id: { type: [string, 'null'] }
     Silicon:
       type: object
       required: [principal_id, membership_id, silicon_id, org_id, display_name, timezone, profile_photo, job_role, tags, hierarchy_level, webhook_configured, status, version, created_at, updated_at]
       properties:
         principal_id: { type: string, format: uuid }
-        membership_id: { type: string, format: uuid }
+        membership_id: { type: string }
         silicon_id: { $ref: '#/components/schemas/SiliconGlobalId' }
         org_id: { $ref: '#/components/schemas/OrgId' }
         display_name: { type: string, minLength: 1, maxLength: 200 }
@@ -5879,7 +5926,7 @@ components:
         description: { type: [string, 'null'], maxLength: 5000 }
         profile_photo: { type: string, format: uri }
         job_role: { type: string, maxLength: 5000 }
-        reports_to_membership_id: { type: [string, 'null'], format: uuid }
+        reports_to_membership_id: { type: [string, 'null'] }
         tags: { type: array, items: { $ref: '#/components/schemas/TagSummary' } }
         hierarchy_level: { type: integer, minimum: 1 }
         webhook_configured: { type: boolean }
@@ -6041,7 +6088,6 @@ components:
         status: { type: string, enum: [active, deleted] }
         created_by_membership_id:
           type: string
-          format: uuid
           description: Membership that created the environment; it keeps administrative authority while active.
         key_generation:
           type: integer
@@ -6157,7 +6203,7 @@ components:
       properties:
         kind: { type: string, enum: [tag, membership] }
         tag_id: { type: string, format: uuid }
-        membership_id: { type: string, format: uuid }
+        membership_id: { type: string }
     TrustRuleCreate:
       type: object
       required: [subject, target, trust]
@@ -6197,8 +6243,8 @@ components:
       required: [subject_membership_id, target_silicon_membership_id]
       additionalProperties: false
       properties:
-        subject_membership_id: { type: string, format: uuid }
-        target_silicon_membership_id: { type: string, format: uuid }
+        subject_membership_id: { type: string }
+        target_silicon_membership_id: { type: string }
     TrustEvaluation:
       type: object
       required: [trust, source, matching_rule_ids, advisory]
@@ -6214,7 +6260,7 @@ components:
       required: [target_membership_id, proposed_job_role]
       additionalProperties: false
       properties:
-        target_membership_id: { type: string, format: uuid }
+        target_membership_id: { type: string }
         proposed_job_role: { type: string, maxLength: 5000 }
         reason: { type: [string, 'null'], maxLength: 2000 }
     TagChangeRequestCreate:
@@ -6282,7 +6328,7 @@ components:
         kind: { $ref: '#/components/schemas/ApprovalKind' }
         status: { $ref: '#/components/schemas/ApprovalStatus' }
         requested_by: { $ref: '#/components/schemas/ActorRef' }
-        target_membership_id: { type: string, format: uuid }
+        target_membership_id: { type: string }
         immutable_payload: { type: object, additionalProperties: true }
         required_approvals:
           type: object
@@ -6305,7 +6351,7 @@ components:
       required: [id, membership_id, old_job_role, new_job_role, requested_by, approvers, approval_request_id, applied_at]
       properties:
         id: { type: string, format: uuid }
-        membership_id: { type: string, format: uuid }
+        membership_id: { type: string }
         old_job_role: { type: string }
         new_job_role: { type: string }
         requested_by: { $ref: '#/components/schemas/ActorRef' }
@@ -6326,7 +6372,7 @@ components:
       required: [id, membership_id, previous_tag_ids, applied_tag_ids, requested_by, approvers, approval_request_id, membership_version, applied_at]
       properties:
         id: { type: string, format: uuid }
-        membership_id: { type: string, format: uuid }
+        membership_id: { type: string }
         previous_tag_ids:
           type: array
           uniqueItems: true
@@ -7163,7 +7209,7 @@ components:
         not null/default values. Direct IAM callers receive the full resource schema.
       examples:
         - { id: '00000000-0000-0000-0000-000000000001', org_id: acme, version: 1, status: active }
-        - { membership_id: '00000000-0000-0000-0000-000000000002', version: 2 }
+        - { membership_id: 'saket[tos]', version: 2 }
         - {}
     ApplicationReadObject:
       type: object

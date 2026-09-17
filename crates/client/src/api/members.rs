@@ -40,6 +40,21 @@ impl MemberFilter {
 }
 
 impl Members<'_> {
+    /// Every visible active member with all permitted details and caller-relative trust.
+    ///
+    /// The dictionary is keyed by Carbon ID or full Silicon ID, without pagination.
+    ///
+    /// # Errors
+    /// Returns an error if directory access or organization selection is missing.
+    pub async fn details(
+        &self,
+        org_id: &str,
+    ) -> Result<std::collections::BTreeMap<String, serde_json::Value>> {
+        self.0
+            .get(&["organizations", org_id, "directory", "details"])
+            .await
+    }
+
     /// The organization's members.
     ///
     /// # Errors
@@ -63,14 +78,9 @@ impl Members<'_> {
     /// # Errors
     ///
     /// Returns an error when the membership does not exist here.
-    pub async fn get(&self, org_id: &str, membership_id: Uuid) -> Result<models::Membership> {
+    pub async fn get(&self, org_id: &str, membership_id: &str) -> Result<models::Membership> {
         self.0
-            .get(&[
-                "organizations",
-                org_id,
-                "members",
-                &membership_id.to_string(),
-            ])
+            .get(&["organizations", org_id, "members", membership_id])
             .await
     }
 
@@ -83,19 +93,14 @@ impl Members<'_> {
     pub async fn update(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         version: i64,
         patch: &models::MembershipDirectoryPatch,
         mutation: &Mutation,
     ) -> Result<models::Membership> {
         self.0
             .patch(
-                &[
-                    "organizations",
-                    org_id,
-                    "members",
-                    &membership_id.to_string(),
-                ],
+                &["organizations", org_id, "members", membership_id],
                 version,
                 patch,
                 mutation,
@@ -116,17 +121,12 @@ impl Members<'_> {
     pub async fn remove(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         version: i64,
-        reassign_reports_to: Option<Uuid>,
+        reassign_reports_to: Option<&str>,
         mutation: &Mutation,
     ) -> Result<()> {
-        let segments = [
-            "organizations",
-            org_id,
-            "members",
-            &membership_id.to_string(),
-        ];
+        let segments = ["organizations", org_id, "members", membership_id];
         let query = reassign_reports_to
             .map(|target| vec![("reassign_reports_to", target.to_string())])
             .unwrap_or_default();
@@ -143,14 +143,14 @@ impl Members<'_> {
     pub async fn authorization(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
     ) -> Result<models::MembershipAuthorization> {
         self.0
             .get(&[
                 "organizations",
                 org_id,
                 "members",
-                &membership_id.to_string(),
+                membership_id,
                 "authorization",
             ])
             .await
@@ -165,7 +165,7 @@ impl Members<'_> {
     pub async fn promote_admin(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         version: i64,
         mutation: &Mutation,
     ) -> Result<models::MembershipAuthorization> {
@@ -175,7 +175,7 @@ impl Members<'_> {
                     "organizations",
                     org_id,
                     "members",
-                    &membership_id.to_string(),
+                    membership_id,
                     "admin-promotions",
                 ],
                 version,
@@ -194,7 +194,7 @@ impl Members<'_> {
     pub async fn demote_admin(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         version: i64,
         mutation: &Mutation,
     ) -> Result<models::MembershipAuthorization> {
@@ -204,7 +204,7 @@ impl Members<'_> {
                     "organizations",
                     org_id,
                     "members",
-                    &membership_id.to_string(),
+                    membership_id,
                     "admin-demotions",
                 ],
                 version,
@@ -226,7 +226,7 @@ impl Members<'_> {
     pub async fn replace_capabilities(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         version: i64,
         capabilities: &models::OrganizationCapabilitiesReplace,
         mutation: &Mutation,
@@ -237,7 +237,7 @@ impl Members<'_> {
                     "organizations",
                     org_id,
                     "members",
-                    &membership_id.to_string(),
+                    membership_id,
                     "capabilities",
                 ],
                 version,
@@ -291,7 +291,7 @@ impl Members<'_> {
     pub async fn directory_member(
         &self,
         org_id: &str,
-        membership_id: Uuid,
+        membership_id: &str,
         fields: Option<&str>,
     ) -> Result<models::DirectoryMember> {
         self.0
@@ -301,7 +301,7 @@ impl Members<'_> {
                     org_id,
                     "directory",
                     "members",
-                    &membership_id.to_string(),
+                    membership_id,
                 ],
                 &directory_query(fields),
             )

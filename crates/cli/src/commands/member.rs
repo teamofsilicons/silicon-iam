@@ -22,6 +22,7 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
     let client = context.authenticated().await?;
     let org = context.organization()?;
     match command {
+        MemberCommand::Details => json(&client.members().details(org).await?),
         MemberCommand::List {
             principal_type,
             tag,
@@ -43,12 +44,20 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
             match context.format {
                 Format::Json => json(&listed),
                 Format::Text => {
-                    let mut table =
-                        Table::new(["membership", "principal", "type", "role", "status", "tags"]);
+                    let mut table = Table::new([
+                        "membership",
+                        "principal",
+                        "display_name",
+                        "type",
+                        "role",
+                        "status",
+                        "tags",
+                    ]);
                     for member in &listed.items {
                         table.row([
-                            member.id.to_string(),
+                            member.id.clone(),
                             member.principal.public_id.clone(),
+                            member.display_name.clone().unwrap_or_default(),
                             label(&member.principal.type_field),
                             label(&member.org_role),
                             label(&member.status),
@@ -67,16 +76,16 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
             }
         }
         MemberCommand::Show { membership_id } => {
-            let member = client.members().get(org, membership_id).await?;
+            let member = client.members().get(org, &membership_id).await?;
             report(context, &member)
         }
         MemberCommand::Authorization { membership_id } => {
-            let authorization = client.members().authorization(org, membership_id).await?;
+            let authorization = client.members().authorization(org, &membership_id).await?;
             match context.format {
                 Format::Json => json(&authorization),
                 Format::Text => {
                     let mut table = Table::new(["field", "value"]);
-                    table.row(["membership", &authorization.membership_id.to_string()]);
+                    table.row(["membership", &authorization.membership_id]);
                     table.row(["role", &label(&authorization.org_role)]);
                     table.row([
                         "capabilities",
@@ -102,12 +111,12 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
             profile_photo,
             clear_profile_photo,
         } => {
-            let current = client.members().get(org, membership_id).await?;
+            let current = client.members().get(org, &membership_id).await?;
             let updated = client
                 .members()
                 .update(
                     org,
-                    membership_id,
+                    &membership_id,
                     current.version,
                     &models::MembershipDirectoryPatch {
                         first_silicon_membership_id: nullable_patch(
@@ -128,14 +137,14 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
             membership_id,
             reassign_reports_to,
         } => {
-            let current = client.members().get(org, membership_id).await?;
+            let current = client.members().get(org, &membership_id).await?;
             client
                 .members()
                 .remove(
                     org,
-                    membership_id,
+                    &membership_id,
                     current.version,
-                    reassign_reports_to,
+                    reassign_reports_to.as_deref(),
                     &context.mutation(),
                 )
                 .await?;
@@ -143,18 +152,18 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
             Ok(())
         }
         MemberCommand::Promote { membership_id } => {
-            let current = client.members().get(org, membership_id).await?;
+            let current = client.members().get(org, &membership_id).await?;
             let authorization = client
                 .members()
-                .promote_admin(org, membership_id, current.version, &context.mutation())
+                .promote_admin(org, &membership_id, current.version, &context.mutation())
                 .await?;
             json_or_line(context, &authorization, "Promoted to administrator.")
         }
         MemberCommand::Demote { membership_id } => {
-            let current = client.members().get(org, membership_id).await?;
+            let current = client.members().get(org, &membership_id).await?;
             let authorization = client
                 .members()
-                .demote_admin(org, membership_id, current.version, &context.mutation())
+                .demote_admin(org, &membership_id, current.version, &context.mutation())
                 .await?;
             json_or_line(context, &authorization, "Demoted to member.")
         }
@@ -162,12 +171,12 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
             membership_id,
             capabilities,
         } => {
-            let current = client.members().get(org, membership_id).await?;
+            let current = client.members().get(org, &membership_id).await?;
             let updated = client
                 .members()
                 .replace_capabilities(
                     org,
-                    membership_id,
+                    &membership_id,
                     current.version,
                     &models::OrganizationCapabilitiesReplace {
                         capabilities: capabilities.into_iter().map(capability).collect(),
@@ -209,7 +218,7 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
         } => {
             let entry = client
                 .members()
-                .directory_member(org, membership_id, fields.as_deref())
+                .directory_member(org, &membership_id, fields.as_deref())
                 .await?;
             report_directory_member(context, &entry, fields.as_deref())
         }
@@ -301,8 +310,12 @@ fn report(context: &Context, member: &models::Membership) -> Result<()> {
         Format::Json => json(member),
         Format::Text => {
             let mut table = Table::new(["field", "value"]);
-            table.row(["membership", &member.id.to_string()]);
+            table.row(["membership", &member.id]);
             table.row(["principal", &member.principal.public_id]);
+            table.row([
+                "display_name",
+                member.display_name.as_deref().unwrap_or("-"),
+            ]);
             table.row(["role", &label(&member.org_role)]);
             table.row(["job_role", &member.job_role]);
             table.row(["status", &label(&member.status)]);

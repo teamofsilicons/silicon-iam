@@ -371,8 +371,8 @@ pub struct StepUpArgs {
     /// Sensitive action the token will authorize.
     #[arg(value_enum)]
     pub action: StepUpActionArg,
-    /// Internal UUID of the exact resource being changed.
-    pub resource_id: Uuid,
+    /// Exact resource ID: canonical membership ID for a member, UUID for other resources.
+    pub resource_id: String,
     /// Verified channel that receives the code.
     #[arg(long, value_enum, default_value_t = StepUpChannel::Email)]
     pub channel: StepUpChannel,
@@ -505,7 +505,7 @@ pub enum OrgCommand {
     /// `organization.transfer_ownership`, resource = the organization UUID.
     Transfer {
         /// Membership that becomes the owner.
-        membership_id: Uuid,
+        membership_id: String,
         /// Reserved for handler compatibility; use the global --org option.
         #[arg(skip)]
         org: Option<String>,
@@ -547,12 +547,12 @@ pub enum MemberCommand {
     /// Show one member.
     Show {
         /// Membership identifier.
-        membership_id: Uuid,
+        membership_id: String,
     },
     /// Show a member's role and capabilities.
     Authorization {
         /// Membership identifier.
-        membership_id: Uuid,
+        membership_id: String,
     },
     /// Update a member's directory metadata.
     ///
@@ -573,16 +573,16 @@ pub enum MemberCommand {
     ))]
     Update {
         /// Membership identifier.
-        membership_id: Uuid,
+        membership_id: String,
         /// Carbon only: assign the Carbon's first Silicon membership.
         #[arg(long)]
-        first_silicon: Option<Uuid>,
+        first_silicon: Option<String>,
         /// Carbon only: unassign the Carbon's first Silicon.
         #[arg(long, conflicts_with = "first_silicon")]
         clear_first_silicon: bool,
         /// Silicon only: assign a new reporting line.
         #[arg(long)]
-        reports_to: Option<Uuid>,
+        reports_to: Option<String>,
         /// Silicon only: remove the current reporting line.
         #[arg(long, conflicts_with = "reports_to")]
         clear_reports_to: bool,
@@ -594,31 +594,31 @@ pub enum MemberCommand {
         clear_profile_photo: bool,
     },
     /// Remove a member. Needs --step-up: action
-    /// `organization.authorization_change`, resource = this membership UUID.
+    /// `organization.authorization_change`, resource = this membership ID.
     Remove {
         /// Membership identifier.
-        membership_id: Uuid,
+        membership_id: String,
         /// Membership to inherit anyone reporting to them.
         #[arg(long)]
-        reassign_reports_to: Option<Uuid>,
+        reassign_reports_to: Option<String>,
     },
     /// Promote a member to administrator. Needs --step-up: action
-    /// `organization.authorization_change`, resource = this membership UUID.
+    /// `organization.authorization_change`, resource = this membership ID.
     Promote {
         /// Membership identifier.
-        membership_id: Uuid,
+        membership_id: String,
     },
     /// Demote an administrator. Needs --step-up: action
-    /// `organization.authorization_change`, resource = this membership UUID.
+    /// `organization.authorization_change`, resource = this membership ID.
     Demote {
         /// Membership identifier.
-        membership_id: Uuid,
+        membership_id: String,
     },
     /// Replace an administrator's capabilities. Needs --step-up: action
-    /// `organization.authorization_change`, resource = this membership UUID.
+    /// `organization.authorization_change`, resource = this membership ID.
     Capabilities {
         /// Membership identifier.
-        membership_id: Uuid,
+        membership_id: String,
         /// The complete set to grant; anything omitted is revoked.
         #[arg(
             long = "capability",
@@ -644,6 +644,9 @@ pub enum MemberCommand {
         )]
         capabilities: Vec<String>,
     },
+    /// Get every visible member and all permitted details, keyed by Carbon/Silicon ID.
+    /// Trust is evaluated from your perspective; output is a complete JSON dictionary.
+    Details,
     /// Show the organization directory.
     Directory {
         /// Comma-separated fields: name,id,role,org,tags,trust.
@@ -662,7 +665,7 @@ pub enum MemberCommand {
     /// Show one member through the sparse organization directory.
     DirectoryMember {
         /// Membership identifier.
-        membership_id: Uuid,
+        membership_id: String,
         /// Comma-separated fields: name,id,role,org,tags,trust.
         #[arg(long, value_parser = parse_directory_fields)]
         fields: Option<String>,
@@ -816,15 +819,15 @@ pub enum TrustCommand {
         /// Subject tag UUID from `iam tag list`.
         #[arg(long, value_name = "TAG_ID")]
         subject_tag: Option<Uuid>,
-        /// Subject membership UUID from `iam member list`.
+        /// Subject membership ID from `iam member list`.
         #[arg(long, value_name = "MEMBERSHIP_ID")]
-        subject_membership: Option<Uuid>,
+        subject_membership: Option<String>,
         /// Target tag UUID from `iam tag list`.
         #[arg(long, value_name = "TAG_ID")]
         target_tag: Option<Uuid>,
-        /// Target active Silicon membership UUID from `iam silicon show`.
+        /// Target active Silicon membership ID from `iam silicon show`.
         #[arg(long, value_name = "SILICON_MEMBERSHIP_ID")]
-        target_membership: Option<Uuid>,
+        target_membership: Option<String>,
         /// `internal` or `external`.
         #[arg(long, value_parser = ["internal", "external"])]
         boundary: String,
@@ -861,12 +864,12 @@ pub enum TrustCommand {
     },
     /// Explain the trust between a subject and a target Silicon.
     Evaluate {
-        /// Subject membership UUID from `iam member list`.
+        /// Subject membership ID from `iam member list`.
         #[arg(long, value_name = "MEMBERSHIP_ID")]
-        subject: Uuid,
-        /// Target active Silicon membership UUID from `iam silicon show`.
+        subject: String,
+        /// Target active Silicon membership ID from `iam silicon show`.
         #[arg(long, value_name = "SILICON_MEMBERSHIP_ID")]
-        target: Uuid,
+        target: String,
     },
 }
 
@@ -921,7 +924,7 @@ pub enum ApprovalCommand {
     RequestRole {
         /// Membership whose role should change.
         #[arg(long)]
-        membership_id: Uuid,
+        membership_id: String,
         /// The role being asked for.
         #[arg(long)]
         job_role: String,
@@ -936,7 +939,7 @@ pub enum ApprovalCommand {
     RequestTags {
         /// Membership whose tags should change.
         #[arg(long)]
-        membership_id: Uuid,
+        membership_id: String,
         /// Tags to add.
         #[arg(long = "add", value_name = "TAG_ID")]
         add: Vec<Uuid>,
@@ -947,14 +950,14 @@ pub enum ApprovalCommand {
     /// Set a member's job role directly.
     SetRole {
         /// Membership identifier.
-        membership_id: Uuid,
+        membership_id: String,
         /// The role to set.
         job_role: String,
     },
     /// Replace a member's tags directly.
     SetTags {
         /// Membership identifier.
-        membership_id: Uuid,
+        membership_id: String,
         /// The complete tag set; anything omitted is removed.
         #[arg(long = "tag", value_name = "TAG_ID")]
         tags: Vec<Uuid>,
@@ -962,7 +965,7 @@ pub enum ApprovalCommand {
     /// Show a member's job-role history.
     RoleHistory {
         /// Membership identifier.
-        membership_id: Uuid,
+        membership_id: String,
         /// Paging.
         #[command(flatten)]
         page: PageArgs,
@@ -970,7 +973,7 @@ pub enum ApprovalCommand {
     /// Show a member's tag history.
     TagHistory {
         /// Membership identifier.
-        membership_id: Uuid,
+        membership_id: String,
         /// Paging.
         #[command(flatten)]
         page: PageArgs,
@@ -1003,7 +1006,7 @@ pub enum SiliconCommand {
         display_name: Option<String>,
         /// Active Silicon membership this Silicon reports to.
         #[arg(long)]
-        reports_to: Option<Uuid>,
+        reports_to: Option<String>,
         /// Tags to assign at creation.
         #[arg(long = "tag", value_name = "TAG_ID")]
         tags: Vec<Uuid>,
@@ -1052,19 +1055,19 @@ pub enum SiliconCommand {
         clear_profile_photo: bool,
         /// New active Silicon membership to report to.
         #[arg(long)]
-        reports_to: Option<Uuid>,
+        reports_to: Option<String>,
         /// Remove the current reporting line.
         #[arg(long, conflicts_with = "reports_to")]
         clear_reports_to: bool,
     },
     /// Remove a Silicon. Needs --step-up: action
-    /// `organization.authorization_change`, resource = its membership UUID.
+    /// `organization.authorization_change`, resource = its membership ID.
     Remove {
         /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
         /// Active Silicon membership to inherit anyone reporting to it.
         #[arg(long)]
-        reassign_reports_to: Option<Uuid>,
+        reassign_reports_to: Option<String>,
     },
     /// Request credential rotation. Needs --step-up: action
     /// `silicon.rotate_token`, resource = the Silicon principal UUID.
@@ -1086,7 +1089,7 @@ pub enum SiliconCommand {
         silicon_id: String,
     },
     /// Configure or replace the webhook endpoint. Needs --step-up: action
-    /// `organization.silicon_webhook.redirect`, resource = its membership UUID.
+    /// `organization.silicon_webhook.redirect`, resource = its membership ID.
     SetWebhook {
         /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
@@ -1095,7 +1098,7 @@ pub enum SiliconCommand {
         webhook_url: String,
     },
     /// Remove the webhook endpoint. Needs --step-up: action
-    /// `organization.silicon_webhook.redirect`, resource = its membership UUID.
+    /// `organization.silicon_webhook.redirect`, resource = its membership ID.
     DeleteWebhook {
         /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
@@ -1106,7 +1109,7 @@ pub enum SiliconCommand {
         silicon_id: String,
     },
     /// Replace the webhook subscription. Needs --step-up: action
-    /// `organization.silicon_webhook.redirect`, resource = its membership UUID.
+    /// `organization.silicon_webhook.redirect`, resource = its membership ID.
     SetSubscription {
         /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
@@ -1133,7 +1136,7 @@ pub enum SiliconCommand {
         own_tags_only: bool,
     },
     /// Remove the webhook subscription. Needs --step-up: action
-    /// `organization.silicon_webhook.redirect`, resource = its membership UUID.
+    /// `organization.silicon_webhook.redirect`, resource = its membership ID.
     DeleteSubscription {
         /// Local handle, or global `handle:org`; local uses --org.
         silicon_id: String,
@@ -1435,13 +1438,13 @@ pub enum AppReadCommand {
     },
     /// Read one membership's disclosed fields.
     Member {
-        /// Membership UUID in the selected organization.
-        membership_id: Uuid,
+        /// Membership ID in the selected organization.
+        membership_id: String,
     },
     /// Read one membership's disclosed role and explicit capabilities.
     Authorization {
-        /// Membership UUID in the selected organization.
-        membership_id: Uuid,
+        /// Membership ID in the selected organization.
+        membership_id: String,
     },
     /// Read the represented actor's directory view.
     SelfDirectory,
@@ -1471,9 +1474,9 @@ pub enum AppReadCommand {
     /// Evaluate effective trust involving the represented actor.
     Trust {
         /// Membership whose trust is evaluated.
-        subject_membership_id: Uuid,
+        subject_membership_id: String,
         /// Target Silicon membership.
-        target_silicon_membership_id: Uuid,
+        target_silicon_membership_id: String,
     },
 }
 

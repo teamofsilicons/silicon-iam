@@ -1,4 +1,5 @@
 #![allow(clippy::too_many_lines)]
+use crate::api::membership_ids::MembershipPath;
 
 use super::application_reads::ReadScopes;
 
@@ -369,7 +370,7 @@ fn require_silicon_governance_request(actor_type: ActorType) -> Result<(), AppEr
 pub(super) async fn replace_member_job_role(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    MembershipPath((org_id, membership_id)): MembershipPath,
     headers: HeaderMap,
     Json(mut input): Json<DirectJobRoleReplace>,
 ) -> Result<Response, AppError> {
@@ -504,7 +505,7 @@ pub(super) async fn replace_member_job_role(
 pub(super) async fn replace_member_tags(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    MembershipPath((org_id, membership_id)): MembershipPath,
     headers: HeaderMap,
     Json(mut input): Json<DirectTagSetReplace>,
 ) -> Result<Response, AppError> {
@@ -666,7 +667,7 @@ fn require_direct_governance_control(
 pub(super) async fn create_tag_change_request(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    MembershipPath((org_id, membership_id)): MembershipPath,
     headers: HeaderMap,
     Json(mut input): Json<TagChangeRequestCreate>,
 ) -> Result<Response, AppError> {
@@ -1405,7 +1406,7 @@ pub(super) async fn decide_approval_request(
 pub(super) async fn list_job_role_history(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    MembershipPath((org_id, membership_id)): MembershipPath,
     Query(query): Query<PageQuery>,
 ) -> Result<Response, AppError> {
     ReadScopes::for_actor(&authenticated).require_any(&[
@@ -1462,7 +1463,7 @@ pub(super) async fn list_job_role_history(
 pub(super) async fn list_tag_history(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, membership_id)): Path<(String, Uuid)>,
+    MembershipPath((org_id, membership_id)): MembershipPath,
     Query(query): Query<PageQuery>,
 ) -> Result<Response, AppError> {
     ReadScopes::for_actor(&authenticated).require_any(&[
