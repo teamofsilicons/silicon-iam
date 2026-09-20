@@ -190,6 +190,10 @@ pub(super) async fn select(
                 // Reuse the application's existing scope-governed router. Anonymous OTP,
                 // account creation, direct IAM consent and administrative routes do not exist here.
                 return match crate::api::scoped::router(state.clone())
+                    .layer(axum::middleware::from_fn_with_state(
+                        state.clone(),
+                        crate::api::membership_ids::transport,
+                    ))
                     .with_state(state.clone())
                     .oneshot(Request::from_parts(parts, body))
                     .await

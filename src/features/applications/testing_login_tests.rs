@@ -118,6 +118,7 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
         workos: None,
         settings: Arc::new(settings),
     };
+    assert_selector_membership_transport(&state, &production, &testing).await?;
     ensure!(
         exchange(&state, "test_carbon", "production-actor-login")
             .await?
@@ -262,6 +263,10 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
 fn api_error(error: ApiError) -> anyhow::Error {
     anyhow::anyhow!("IAM refused test setup: {}", error.into_response().status())
 }
+
+#[path = "testing_selector_tests.rs"]
+mod testing_selector_tests;
+use testing_selector_tests::assert_selector_membership_transport;
 
 async fn exchange(state: &ApiState, slt: &str, key: &str) -> anyhow::Result<(StatusCode, Value)> {
     request_tokens(
