@@ -212,3 +212,19 @@ read-only interface preflight, and authorized attach and retention dry runs.
 The serving attachment was unchanged. The temporary `ReplaceUnhealthy`,
 `InstanceRefresh`, and `AZRebalance` holds were removed; no suspended processes
 remain. Public main and scoped readiness were both 200 before resumption.
+
+## Completed validation
+
+[Full IAM CI run 35590482847](https://github.com/teamofsilicons/silicon-iam/actions/runs/35590482847)
+passed on `d9c8558bcf56fd1865bb0127907c87986181aed5`: format, strict Clippy,
+unit and live PostgreSQL protocol tests, generated contracts/docs, migration
+privilege boundaries, restricted runtime grants, packaging, fresh dual-database
+migration, administrator bootstrap, worker smoke, live SDK contracts, and key
+activation. Subsequent changes are the separately tested recovery permission
+conditions and these release records; no backend runtime or deployed migration
+was changed. Nine provisioning regressions, AWS template validation, and the
+actual instance-role dry runs cover the final infrastructure policy.
+
+A final check after removing the holds confirmed the same healthy InService
+instance, no suspended Auto Scaling processes, main/scoped IAM readiness 200,
+and DM readiness 204.
