@@ -47,6 +47,16 @@ impl TestDatabase {
             .max_connections(4)
             .connect(&url)
             .await?;
+        // Docker gives each plane its own cluster. Native fixtures may share
+        // cluster roles, so initialize every plane explicitly and idempotently.
+        sqlx::raw_sql(
+            "DO $$ DECLARE role_name text; BEGIN \
+             FOREACH role_name IN ARRAY ARRAY['silicon_iam_api','silicon_iam_worker','silicon_iam_key_operator'] LOOP \
+             BEGIN EXECUTE format('CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS', role_name); \
+             EXCEPTION WHEN duplicate_object THEN NULL; END; END LOOP; END $$;",
+        )
+        .execute(&pool)
+        .await?;
         Ok(Self {
             pool,
             url,

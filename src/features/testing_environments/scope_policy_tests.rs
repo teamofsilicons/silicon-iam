@@ -42,6 +42,8 @@ async fn imported_iam_scope_policy_tracks_source_without_restoring_revoked_grant
         .collect::<Vec<_>>()
         .join("\n");
     for pool in [&production, &testing] {
+        sqlx::raw_sql("DO $$ BEGIN IF to_regrole('policy_runtime') IS NULL THEN CREATE ROLE policy_runtime LOGIN PASSWORD 'policy-test' IN ROLE silicon_iam_api; END IF; END $$;")
+            .execute(pool).await?;
         sqlx::raw_sql(sqlx::AssertSqlSafe(grants.clone()))
             .execute(pool)
             .await?;

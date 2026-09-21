@@ -317,9 +317,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires an isolated PostgreSQL URL in IAM_ID_TEST_DATABASE_URL"]
+    #[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL"]
     async fn postgres_keeps_identity_text_distinct_from_resource_uuid() -> anyhow::Result<()> {
-        let pool = sqlx::PgPool::connect(&std::env::var("IAM_ID_TEST_DATABASE_URL")?).await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         let identity = Id::identity("chef:bricks")?;
         let resource = Id::now_v7();
         let decoded_identity: Id = sqlx::query_scalar("SELECT $1::text")
