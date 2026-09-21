@@ -42,31 +42,41 @@ resource row, or testing environment does not share that fallback.
 1. Build and test the server, worker, CLI, client, frontend, and affected consumer
    adapters together. Consumers must accept canonical account/application strings
    and omit dependencies on `principal_id` before traffic returns.
-2. Back up both production and testing databases and verify a restore in an
-   isolated database. This migration changes column and stored-function types;
-   rolling back only the server binary is insufficient.
-3. Drain pending deliveries, then stop writes and delivery workers while applying
-   the forward migration to both planes. Verify subtype/key equality, session and authorization relationships,
-   same-handle testing-environment isolation, existing ciphertext decryption, and
-   runtime function grants before starting the new API and workers.
-4. Confirm existing access/refresh credentials still resolve their migrated
-   records, then exercise Carbon/Silicon login, refresh, timezone self-edit,
-   application introspection, webhook delivery, and testing imports end to end.
+2. Stop all API writers (including scoped API) and workers. Back up both production
+   and testing databases and verify actual restores in isolation. Retain the
+   unchanged configuration and encryption keys with the private backup. An old
+   server binary cannot safely run against the converted schema.
+3. Using the new image, the unchanged full API environment and an operator
+   `IAM_DATABASE_URL`, run `iam-canonical-cutover prepare` separately on production
+   and testing **before migration 0111**. Refresh the private identity export used
+   for downstream data binding while all writers are stopped.
+4. Run the normal `iam-migrate` for both planes, apply the exact image's runtime
+   grants and initialize the scoped authentication helper. Then run
+   `iam-canonical-cutover convert` separately for each plane with the same keys and
+   operator authority. Both commands are retryable. Conversion is atomic; APIs
+   and workers refuse to start while a prepared cutover remains unconverted.
+5. Verify subtype/key equality, existing session relationships, environment
+   isolation, ciphertext decryption and runtime grants. Start the compatible
+   consumers, IAM APIs and workers, and verify existing access/refresh credentials,
+   both account login paths, timezone self-edit, authorization, approval policies,
+   webhook delivery and testing imports end to end.
 
 Opaque access and refresh credentials keep their existing digests and resource
 records. Identity replacement does not itself require reissuing those credentials.
 
-Cross-deployment idempotency replay is a separate compatibility boundary. Some
-caller/request digests include the old identity UUID bytes or text, and encrypted
-cached responses and captured webhook projections can contain historical identity
-values. SQL cannot recompute keyed digests or rewrite encrypted responses without the runtime keys. Do not
-assume a mutation retried across this cutover will find its old replay record.
-Before deployment, either implement and validate a runtime rekey/re-encryption
-step for outstanding replay records and replayable webhook projections, or drain
-pending operations and maintain a write-free cutover covering the configured idempotency retention period. Retrying
-a sensitive pre-cutover mutation with a fresh key is not an equivalent replay.
+The operator tool preserves pending replay records and converts encrypted cached
+responses, Honeycomb snapshots and captured webhook projections. It adds canonical
+membership handles to retained membership-removal projections while preserving
+resource UUIDs. A bounded private replay map lets a currently authenticated
+canonical actor find the old keyed request digest. It cannot authenticate a UUID
+or resolve an alternative account identity. Its deadline is the latest existing
+idempotency expiry; it never extends that deadline, and the worker removes the
+map afterward. New reservations use canonical identities only.
 
-No deployment or production migration is performed by this code change.
+A retry whose historical removed Description text cannot be reconstructed is an
+idempotency conflict. It cannot silently execute a second mutation. Operators must
+retain unresolved request outcomes and must not retry them with a fresh key as a
+substitute for resolving the original result.
 
 ## Local regression checks
 
