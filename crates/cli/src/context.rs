@@ -417,33 +417,37 @@ impl Context {
     async fn renew_locked(&self, stored: &store::LockedSession) -> Result<Session> {
         // Another process may have refreshed, logged in, or logged out while
         // this invocation waited. Never rotate an earlier snapshot's token.
-        let session = stored.session()?;
-        if !session.needs_refresh() {
-            return Ok(session);
+        let mut session = stored.session()?;
+        // A replay can contain an already expired access token. Commit the rotated
+        // refresh token first, then recover once using that new generation.
+        for _ in 0..2 {
+            if !session.needs_refresh() {
+                return Ok(session);
+            }
+            if session.pending_logout.is_some() {
+                return Err(CliError::Usage(
+                    "a remote logout is pending; retry that logout before using this session"
+                        .to_owned(),
+                ));
+            }
+            let key = if let Some(key) = session.pending_refresh_key.as_deref() {
+                IdempotencyKey::parse(key.to_owned())?
+            } else {
+                let key = IdempotencyKey::generate();
+                session.pending_refresh_key = Some(key.as_str().to_owned());
+                session.pending_refresh_started_at = Some(time::OffsetDateTime::now_utc());
+                stored.remember(session.clone())?;
+                key
+            };
+            let tokens = self
+                .client
+                .auth()
+                .refresh(&session.refresh_token, &Mutation::with_key(key))
+                .await?;
+            session = renewed_session(&tokens, &session);
+            stored.remember(session.clone())?;
         }
-        if session.pending_logout.is_some() {
-            return Err(CliError::Usage(
-                "a remote logout is pending; retry that logout before using this session"
-                    .to_owned(),
-            ));
-        }
-        let key = if let Some(key) = session.pending_refresh_key.as_deref() {
-            IdempotencyKey::parse(key.to_owned())?
-        } else {
-            let key = IdempotencyKey::generate();
-            let mut pending = session.clone();
-            pending.pending_refresh_key = Some(key.as_str().to_owned());
-            stored.remember(pending)?;
-            key
-        };
-        let tokens = self
-            .client
-            .auth()
-            .refresh(&session.refresh_token, &Mutation::with_key(key))
-            .await?;
-        let renewed = renewed_session(&tokens, &session);
-        stored.remember(renewed.clone())?;
-        Ok(renewed)
+        Ok(session)
     }
 }
 
@@ -451,7 +455,16 @@ fn renewed_session(
     tokens: &silicon_iam_client::models::IamTokenResponse,
     previous: &Session,
 ) -> Session {
-    crate::commands::auth::session_from_actor(tokens, &previous.actor_id, previous.actor_type)
+    let mut renewed =
+        crate::commands::auth::session_from_actor(tokens, &previous.actor_id, previous.actor_type);
+    // Old pending records have no trusted start time. Preserve the rotated
+    // credential but renew it immediately instead of extending an old reply.
+    renewed.expires_at = previous
+        .pending_refresh_started_at
+        .map_or_else(time::OffsetDateTime::now_utc, |started| {
+            started + time::Duration::seconds(tokens.expires_in)
+        });
+    renewed
 }
 
 #[cfg(test)]
@@ -561,13 +574,14 @@ mod tests {
 
     #[test]
     fn refresh_replacement_preserves_a_silicon_session_actor() {
-        let previous = Session {
+        let mut previous = Session {
             access_token: "sat_old".to_owned(),
             refresh_token: "rft_old".to_owned(),
             expires_at: OffsetDateTime::now_utc(),
             actor_type: SessionActor::Silicon,
             actor_id: "builder:tos".to_owned(),
             pending_refresh_key: None,
+            pending_refresh_started_at: None,
             pending_logout: None,
         };
         let tokens = models::IamTokenResponse {
@@ -588,5 +602,16 @@ mod tests {
         assert_eq!(renewed.actor_id, "builder:tos");
         assert_eq!(renewed.access_token, "sat_new");
         assert_eq!(renewed.refresh_token, "rft_new");
+        assert!(renewed.needs_refresh());
+        let started = OffsetDateTime::now_utc() - time::Duration::hours(1);
+        previous.pending_refresh_started_at = Some(started);
+        let replayed = renewed_session(&tokens, &previous);
+        assert_eq!(
+            replayed.expires_at,
+            started + time::Duration::seconds(1_800)
+        );
+        assert!(replayed.needs_refresh());
+        assert!(replayed.pending_refresh_key.is_none());
+        assert!(replayed.pending_refresh_started_at.is_none());
     }
 }

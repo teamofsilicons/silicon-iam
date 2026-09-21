@@ -34,6 +34,7 @@ pub fn session_from_actor(
         actor_type,
         actor_id: actor_id.to_owned(),
         pending_refresh_key: None,
+        pending_refresh_started_at: None,
         pending_logout: None,
     }
 }

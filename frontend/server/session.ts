@@ -169,6 +169,7 @@ export function fromTokens(
   value: Record<string, unknown>,
   upstream: Response,
   previous?: Session,
+  issuedNoLaterThan = Date.now(),
 ): Session {
   const actor = value.actor as { type?: string },
     browserCookie =
@@ -177,13 +178,21 @@ export function fromTokens(
   if (
     actor?.type !== "carbon" ||
     typeof value.access_token !== "string" ||
+    !/^cat_[A-Za-z0-9_-]+$/.test(value.access_token) ||
     typeof value.refresh_token !== "string" ||
+    !/^rft_[A-Za-z0-9_-]+$/.test(value.refresh_token) ||
+    !Number.isSafeInteger(value.expires_in) ||
+    Number(value.expires_in) <= 0 ||
     !browserCookie?.startsWith("iam_session=")
   )
     throw new Error("Unexpected IAM session response");
   const deadline = Date.parse(String(value.refresh_expires_at)),
-    expires = Date.now() + Number(value.expires_in) * 1000;
-  if (!Number.isFinite(deadline) || !Number.isFinite(expires))
+    expires = issuedNoLaterThan + Number(value.expires_in) * 1000;
+  if (
+    !Number.isSafeInteger(deadline) ||
+    deadline <= Date.now() ||
+    !Number.isSafeInteger(expires)
+  )
     throw new Error("Unexpected IAM token lifetime");
   return {
     access: value.access_token,
@@ -197,8 +206,9 @@ export function fromTokens(
 export async function refreshed(
   session: Session,
   config: Settings,
+  force = false,
 ): Promise<Session> {
-  if (session.expires > Date.now() + 30000) return session;
+  if (!force && session.expires > Date.now() + 30000) return session;
   // Deterministic idempotency across replicas prevents rotating-refresh reuse.
   const key = await crypto.subtle.importKey(
     "raw",
@@ -241,6 +251,10 @@ export async function refreshed(
       (await response.json()) as Record<string, unknown>,
       response,
       session,
+      // Stateless cookies cannot persist the first attempt before its reply.
+      // IAM may replay that reply for at most 600 seconds. Renew early by
+      // this bound so retries on another replica cannot extend token lifetime.
+      now - 600000,
     );
   })();
   flights.set(digest, { expires: now + 60000, promise });

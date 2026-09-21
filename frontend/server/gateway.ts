@@ -190,6 +190,36 @@ export async function gateway(
       );
     }
   }
+  const refreshFailure = (error: unknown) => {
+    if (!(error instanceof RefreshRejected)) return undefined;
+    const expired = error.status === 401;
+    return finish(
+      fail(
+        expired ? "session_expired" : "refresh_unavailable",
+        expired
+          ? "Your session has expired. Sign in again."
+          : "IAM could not renew your session right now. Please retry; your session has been preserved.",
+        expired ? 401 : 503,
+      ),
+      config,
+      expired ? null : changed,
+    );
+  };
+  async function authenticatedFetch(target: URL, init: RequestInit) {
+    let response = await fetch(target, init);
+    if (response.status === 401 && session && !publicRequest) {
+      // The saved expiry can be stale (replayed credentials or clock drift).
+      // Retry once with the same request body and mutation key after renewal.
+      await response.body?.cancel();
+      session = await refreshed(session, config, true);
+      changed = session;
+      const headers = new Headers(init.headers);
+      headers.set("Authorization", `Bearer ${session.access}`);
+      headers.set("Cookie", session.browserCookie);
+      response = await fetch(target, { ...init, headers });
+    }
+    return response;
+  }
   if (path === "/auth/continue") {
     const target = new URL("/login", config.auth);
     for (const key of [
@@ -241,13 +271,24 @@ export async function gateway(
     if (!session)
       return finish(Response.json({ authenticated: false }), config);
     try {
-      const response = await fetch(new URL("/api/v1/me", config.upstream), {
-        headers: apiHeaders(request, session),
-        redirect: "manual",
-        signal: AbortSignal.timeout(15000),
-      });
+      const response = await authenticatedFetch(
+        new URL("/api/v1/me", config.upstream),
+        {
+          headers: apiHeaders(request, session),
+          redirect: "manual",
+          signal: AbortSignal.timeout(15000),
+        },
+      );
       if (response.status === 401)
-        return finish(Response.json({ authenticated: false }), config, null);
+        return finish(
+          fail(
+            "session_unconfirmed",
+            "IAM could not confirm your session. Please retry.",
+            503,
+          ),
+          config,
+          changed,
+        );
       if (!response.ok) return finish(response, config, changed);
       return finish(
         Response.json({
@@ -259,7 +300,9 @@ export async function gateway(
         config,
         changed,
       );
-    } catch {
+    } catch (error) {
+      const rejection = refreshFailure(error);
+      if (rejection) return rejection;
       return finish(
         fail(
           "upstream_unavailable",
@@ -352,13 +395,16 @@ export async function gateway(
       );
   }
   try {
-    const response = await fetch(new URL(path + url.search, config.upstream), {
-      method: request.method,
-      headers,
-      body,
-      redirect: "manual",
-      signal: AbortSignal.timeout(20000),
-    });
+    const response = await authenticatedFetch(
+      new URL(path + url.search, config.upstream),
+      {
+        method: request.method,
+        headers,
+        body,
+        redirect: "manual",
+        signal: AbortSignal.timeout(20000),
+      },
+    );
     if (response.status >= 300 && response.status < 400) {
       if (!navigation)
         return finish(
@@ -438,19 +484,13 @@ export async function gateway(
           target.searchParams.append(key, value);
       }
       target.searchParams.set("auth_error", code);
-      return finish(
-        Response.redirect(target, 303),
-        config,
-        response.status === 401 ? null : changed,
-      );
+      return finish(Response.redirect(target, 303), config, changed);
     }
-    if (
-      (path === "/api/v1/logout" && response.ok) ||
-      (response.status === 401 && !!session && !publicRequest)
-    )
-      changed = null;
+    if (path === "/api/v1/logout" && response.ok) changed = null;
     return finish(response, config, changed);
-  } catch {
+  } catch (error) {
+    const rejection = refreshFailure(error);
+    if (rejection) return rejection;
     return finish(
       fail(
         "upstream_unavailable",

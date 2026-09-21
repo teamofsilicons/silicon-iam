@@ -212,6 +212,13 @@ pub struct Session {
     /// Key reserved before a rotating refresh request is sent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_refresh_key: Option<String>,
+    /// Original request time, retained across retries of the same rotation.
+    #[serde(
+        default,
+        with = "time::serde::rfc3339::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pending_refresh_started_at: Option<OffsetDateTime>,
     /// Request identity retained until remote logout is confirmed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_logout: Option<PendingLogout>,
@@ -224,7 +231,8 @@ impl Session {
     /// flight fails the request, and the margin costs nothing.
     #[must_use]
     pub fn needs_refresh(&self) -> bool {
-        self.expires_at <= OffsetDateTime::now_utc() + time::Duration::minutes(1)
+        self.pending_refresh_key.is_some()
+            || self.expires_at <= OffsetDateTime::now_utc() + time::Duration::minutes(1)
     }
 }
 
@@ -808,6 +816,7 @@ mod tests {
             actor_type: SessionActor::Carbon,
             actor_id: "founder".to_owned(),
             pending_refresh_key: None,
+            pending_refresh_started_at: None,
             pending_logout: None,
         }
     }

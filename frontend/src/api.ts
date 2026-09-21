@@ -91,8 +91,7 @@ export async function request<T = RecordValue>(
     duration_ms: performance.now() - started,
     request_id: response.headers.get("x-request-id"),
   });
-  if ((path === "/api/v1/logout" && response.ok) || response.status === 401)
-    clearApprovalRetries();
+  if (path === "/api/v1/logout" && response.ok) clearApprovalRetries();
   if (response.status === 204) return undefined as T;
   let value: RecordValue;
   try {
@@ -108,10 +107,11 @@ export async function request<T = RecordValue>(
     const error = value.error || {};
     if (
       response.status === 401 &&
-      !path.includes("/login/challenges") &&
-      !path.includes("/signup/")
-    )
+      ["session_expired", "sign_in_required"].includes(error.code)
+    ) {
+      clearApprovalRetries();
       window.dispatchEvent(new Event("iam:session-expired"));
+    }
     throw new ApiError(
       response.status,
       error.code || "request_failed",
