@@ -195,3 +195,20 @@ replay first returned the identical environment and operation, while changed
 input returned 409. Deletion operation `ac0ea930-ba96-4bdb-b315-3c84893eda7c`
 completed with matching Commit, IAM, and Honeycomb participant receipts. Seven
 old test-credential probes returned 401, verifying revocation.
+
+## Final recovery permission verification
+
+The instance-role dry run exposed EC2's separate attached-instance authorization
+and case-sensitive `Attachment` attribute condition. The final policy keeps both
+checks narrow: the exact retained interface and attachment attribute, plus an IAM
+service instance in the expected Auto Scaling group. It adds no detach permission.
+The final policy-only change set `canonical-retention-attribute-case-20260921`
+completed without replacing any resource or changing launch template 47.
+
+SSM `2801915f-367b-4b3f-b76b-6cd7084eed0d` then passed using the actual
+instance role: pinned TLS object version/SHA, 48 safe archive members, 24 regular
+files and eight symlinks equal to runtime, identical scoped webhook keyring,
+read-only interface preflight, and authorized attach and retention dry runs.
+The serving attachment was unchanged. The temporary `ReplaceUnhealthy`,
+`InstanceRefresh`, and `AZRebalance` holds were removed; no suspended processes
+remain. Public main and scoped readiness were both 200 before resumption.
