@@ -49,7 +49,8 @@ class ArtifactTests(unittest.TestCase):
         import hashlib
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "iam"
-            data = fixture("linux-x86_64")
+            from test_linux_abi import elf_requirements
+            data = elf_requirements(["GLIBC_2.28"], machine=62)
             binary.write_bytes(data)
             receipt = {"target": "linux-x86_64", "source_revision": "a" * 40,
                        "version": "1.11.0", "file": "iam", "size": len(data),

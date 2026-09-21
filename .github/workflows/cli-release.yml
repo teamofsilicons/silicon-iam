@@ -126,8 +126,30 @@ jobs:
           python-version: "3.13"
       - name: Install pinned Rust toolchain
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target "$RELEASE_TARGET"
-      - name: Build CLI with locked dependencies
+      - name: Install pinned Linux baseline toolchain
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m pip install 'cargo-zigbuild==0.23.4' 'ziglang==0.15.2'
+          python3 -c 'from pathlib import Path; import ziglang; print("CARGO_ZIGBUILD_ZIG_PATH=" + str(Path(ziglang.__file__).with_name("zig")))' >> "$GITHUB_ENV"
+      - name: Build Linux CLI for glibc 2.28
+        if: runner.os == 'Linux'
+        run: cargo zigbuild --locked --release -p silicon-iam-cli --bin iam --target "$RELEASE_TARGET.2.28"
+      - name: Build native CLI
+        if: runner.os != 'Linux'
         run: cargo build --locked --release -p silicon-iam-cli --bin iam --target "$RELEASE_TARGET"
+      - name: Verify Linux ABI and oldest supported runtime
+        if: runner.os == 'Linux'
+        run: |
+          python3 scripts/test_linux_abi.py
+          python3 scripts/check_linux_abi.py "target/$RELEASE_TARGET/release/iam"
+          docker run --rm --network none \
+            --volume "$PWD/target/$RELEASE_TARGET/release/iam:/usr/local/bin/iam:ro" \
+            --env SILICON_HOME=/tmp/iam-smoke \
+            debian:buster-slim@sha256:bb3dc79fddbca7e8903248ab916bb775c96ec61014b3d02b4f06043b604726dc sh -eu -c '
+              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
+              iam --version
+              iam --help
+            '
       - name: Stage and verify native executable
         run: |
           mkdir -p "dist/$RELEASE_PLATFORM"

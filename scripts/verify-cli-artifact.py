@@ -45,6 +45,12 @@ def verify(binary: Path, target: str, revision: str, version: str, native: bool)
         raise ValueError("executable must be a regular file")
     data = binary.read_bytes()
     verify_header(data, target)
+    if target.startswith("linux-"):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("linux_abi", Path(__file__).with_name("check_linux_abi.py"))
+        abi = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(abi)
+        abi.verify_glibc_requirements(data)
     receipt = {
         "target": target, "source_revision": revision, "version": version,
         "file": binary.name, "size": len(data),
