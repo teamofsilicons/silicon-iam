@@ -2,6 +2,21 @@
 -- the database identity keys. Organization, membership and resource UUIDs stay.
 -- This migration is transactional: no old-to-new identity lookup survives it.
 SET LOCAL check_function_bodies = false;
+-- A production migrator is a table owner, not a superuser or BYPASSRLS role.
+-- Testing tables also FORCE RLS. Read every source row before removing any
+-- policy, retaining the original flags for restoration in this transaction.
+-- ALTER TABLE holds its exclusive lock until commit, so no other transaction
+-- can observe the temporary suspension of row security.
+CREATE TEMP TABLE identity_row_security ON COMMIT DROP AS
+SELECT oid AS relation_id,relrowsecurity,relforcerowsecurity
+FROM pg_class
+WHERE relnamespace IN ('iam'::regnamespace,'iam_private'::regnamespace)
+ AND relkind IN ('r','p');
+DO $$ DECLARE item record; BEGIN
+ FOR item IN SELECT * FROM identity_row_security WHERE relrowsecurity ORDER BY relation_id LOOP
+  EXECUTE format('ALTER TABLE ONLY %s DISABLE ROW LEVEL SECURITY',item.relation_id::regclass);
+ END LOOP;
+END $$;
 CREATE TEMP TABLE identity_key_map(old_id uuid PRIMARY KEY,new_id text NOT NULL) ON COMMIT DROP;
 INSERT INTO identity_key_map
 SELECT principal.id, CASE principal.kind
@@ -50,6 +65,23 @@ FROM pg_policies WHERE schemaname IN ('iam','iam_private');
 CREATE TEMP TABLE identity_views ON COMMIT DROP AS
 SELECT c.oid::regclass::text AS relation,pg_get_viewdef(c.oid) AS definition,c.reloptions,c.relacl,pg_get_userbyid(c.relowner) AS owner
 FROM pg_class c WHERE c.relnamespace IN ('iam'::regnamespace,'iam_private'::regnamespace) AND c.relkind='v';
+-- PostgreSQL requires the destination owner to have schema CREATE during an
+-- ownership transfer. Restricted testing definers intentionally lack it.
+-- Record only missing privileges, grant them for reconstruction, then revoke
+-- precisely those grants after all original owners have been restored.
+CREATE TEMP TABLE identity_owner_schema_grants ON COMMIT DROP AS
+SELECT DISTINCT namespace,owner FROM (
+ SELECT 'iam_private'::text AS namespace,owner FROM identity_functions
+ UNION
+ SELECT n.nspname,pg_get_userbyid(c.relowner)
+ FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE c.relnamespace IN ('iam'::regnamespace,'iam_private'::regnamespace) AND c.relkind='v'
+) owners WHERE NOT has_schema_privilege(owner,namespace,'CREATE');
+DO $$ DECLARE item record; BEGIN
+ FOR item IN SELECT * FROM identity_owner_schema_grants LOOP
+  EXECUTE format('GRANT CREATE ON SCHEMA %I TO %I',item.namespace,item.owner);
+ END LOOP;
+END $$;
 CREATE TEMP TABLE identity_indexes ON COMMIT DROP AS
 SELECT schemaname,indexname,indexdef,index_entry.indrelid,index_entry.indkey FROM pg_indexes JOIN pg_index index_entry ON index_entry.indexrelid=(quote_ident(schemaname)||'.'||quote_ident(indexname))::regclass
 WHERE schemaname IN ('iam','iam_private') AND NOT (SELECT relispartition FROM pg_class WHERE oid=index_entry.indexrelid) AND NOT EXISTS
@@ -403,5 +435,18 @@ DO $$ BEGIN
  IF to_regrole('silicon_iam_api') IS NOT NULL THEN GRANT EXECUTE ON FUNCTION iam_private.application_encryption_contexts() TO silicon_iam_api; END IF;
  IF to_regrole('silicon_iam_worker') IS NOT NULL THEN GRANT EXECUTE ON FUNCTION iam_private.application_encryption_contexts() TO silicon_iam_worker; END IF;
  IF to_regrole('silicon_iam_testing_definer') IS NOT NULL THEN GRANT SELECT ON iam_private.legacy_application_encryption_contexts TO silicon_iam_testing_definer; END IF;
+END $$;
+-- Restore the exact pre-migration security boundary only after all data,
+-- policies and encryption metadata have been reconstructed successfully.
+DO $$ DECLARE item record; BEGIN
+ FOR item IN SELECT * FROM identity_owner_schema_grants LOOP
+  EXECUTE format('REVOKE CREATE ON SCHEMA %I FROM %I',item.namespace,item.owner);
+ END LOOP;
+ FOR item IN SELECT * FROM identity_row_security ORDER BY relation_id LOOP
+  EXECUTE format('ALTER TABLE ONLY %s %s ROW LEVEL SECURITY',item.relation_id::regclass,
+   CASE WHEN item.relrowsecurity THEN 'ENABLE' ELSE 'DISABLE' END);
+  EXECUTE format('ALTER TABLE ONLY %s %s FORCE ROW LEVEL SECURITY',item.relation_id::regclass,
+   CASE WHEN item.relforcerowsecurity THEN '' ELSE 'NO' END);
+ END LOOP;
 END $$;
 SET LOCAL check_function_bodies = true;
