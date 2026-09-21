@@ -1,8 +1,7 @@
 # Canonical identity release verification — 21 September 2026
 
-This records post-deployment acceptance of the canonical identity and sensitive-action
-release. Infrastructure, database backup, and final release completion evidence can
-be appended separately. No production profile, organization policy, message, or paid
+This records the canonical identity and sensitive-action release, its database
+restore rehearsal, production deployment, and post-deployment acceptance. No production profile, organization policy, message, or paid
 browser session was changed by these acceptance checks.
 
 ## Released surfaces
@@ -94,3 +93,105 @@ The test scripts and redacted deployment/UI proof are retained privately for the
 release operator. This document records observed live acceptance; it does not
 substitute for the CI result, database restore proof, or final infrastructure
 rollout record.
+
+
+## Database backup, rehearsal, and cutover
+
+Both encrypted native RDS snapshots became available before the cutover:
+`silicon-iam-before-canonical-20260921` and
+`silicon-iam-testing-before-canonical-20260921`.
+
+The operator restored both databases with their real owners, ACLs, role
+memberships, and restrictive RLS settings. The exact final image passed this
+rehearsal before all three IAM writers were stopped. Final quiesced dumps,
+runtime configuration, migration ledgers, private identity mappings, and
+credential fingerprints were archived off host before migration. The private,
+versioned, encrypted recovery object is:
+
+- Bucket: `silicon-iam-recovery-234951665042-us-east-1`
+- Key: `canonical-20260921/quiesced-databases-and-config.tar.gz`
+- Version: `mZnw6DHSwP4sRlZXj3V53Xi5Sj.yWL.S`
+- SHA-256: `4441dcc42b5b809ea843f96b3029b13619772fa5aae94d6b6fb16230350a4e91`
+
+SSM command `d3aee19c-578d-4382-9372-3c0223c7cb17` completed successfully.
+Both migration ledgers reached 0114, canonical identity relationships passed,
+and six credential-table fingerprints remained unchanged except for the intended
+identity reference representation. Runtime environment hashes were unchanged.
+The main API, scoped API, and worker run the same immutable final image; both
+public readiness endpoints returned 200.
+
+The migration changes IAM identity keys and their references, while preserving
+independent organization, membership, session, and application resource UUIDs.
+Existing encrypted data retains its original private cryptographic context.
+Private bounded replay metadata allows existing identical retries without
+reintroducing legacy UUID authentication. A rollback requires both database and
+configuration restoration; an image-only rollback is incompatible with the new
+schema.
+
+## Durable replacement configuration
+
+CloudFormation `silicon-iam-production` reached `UPDATE_COMPLETE` with launch
+template version 47, pinned to the deployed image and verified TLS archive.
+The update preserved the current instance and capacity. Replacement bootstrap
+now provisions the main API, scoped API, worker, and direct Nginx ingress in the
+retained network interface's availability zone. It preserves secret values and
+refuses to take an interface attached to another instance. No reboot or instance
+refresh was used as a production test.
+
+## Retained consumer data and sessions
+
+DM's installed Maharaj CLI returned the same three conversations, and Interface
+loaded the complete existing history. Hook's existing `chef:bricks` registration
+remained online. Browser's retained access token and refresh family passed the
+checks above. Briefcase retained file ownership and entries, including exact
+refresh replay. Remind preserved all 14 retained reminders; Waveform preserved
+its two jobs, preferences, and provider-key list through normal same-family
+refresh.
+
+Commit preserved its retained projects, todos, notes, diary, history, ownership,
+and three existing idempotent replays. Its installed CLI renewed an intentionally
+expired access token through the existing refresh family. Its separate browser
+cookie had expired, so browser acceptance used normal same-Carbon reauthentication
+and verified the retained data plus an isolated create/edit/delete flow.
+
+IAM access tokens still last 30 minutes. The session fixes add automatic renewal
+to Commit and Waveform resource requests, with locking, atomic persistence, and
+safe refresh retries; they do not lengthen access-token lifetimes. Authorization
+changes such as tag assignment still invalidate older access tokens intentionally.
+
+
+## Honeycomb application management follow-up
+
+The final retained-environment check found an outer Honeycomb verifier still
+requiring an application UUID. It now requires the canonical application ID,
+while preserving organization UUID and organization-handle checks. A verified
+private pre-cutover map migrated only the matching historical owner and link
+bindings. Exact original create retries retain their resource and operation IDs;
+unreconstructable historical hashes have an operation-bound private context,
+which is never accepted as an authentication identity.
+
+Honeycomb source `3a6351dad128366491854df73e90f4b28d29111b` and migration 23
+were deployed successfully by SSM `2397ab21-beb5-4985-a56b-3324330f667f`.
+A quiesced, encrypted, versioned off-host backup preceded all 16 reference/digest
+conversions. Business fingerprints, encrypted data, resources, and runtime
+configuration were preserved. Normal saved-session application reads succeeded.
+The consumer repository records the image, backup checksum, and detailed proof.
+
+One agent-created partial Browser testing world,
+`2639e06a-bd6a-4656-8709-26e38c9ebec7`, remains tracked separately. Its original
+pending import requires Browser's unsupported protected lifecycle integration,
+and the normal API rejects deletion while an import is pending. One retry
+confirmed the limitation; no manual database deletion was used. This does not
+affect the verified production Browser authentication or UI. All feature accounts
+and organizations belonged to the successfully deleted acceptance world.
+
+Browser navigation to both IAM frontend domains returned 200 with the normal
+`Accept: text/html` header. Requests accepting only generic content return the
+existing 404 behavior because the gateway's SPA fallback is HTML-specific.
+
+The separate Commit acceptance world was subsequently deleted through its
+retained production application's normal owner credentials. The original create
+replay first returned the identical environment and operation, while changed
+input returned 409. Deletion operation `ac0ea930-ba96-4bdb-b315-3c84893eda7c`
+completed with matching Commit, IAM, and Honeycomb participant receipts. Seven
+old test-credential probes returned 401, verifying revocation.
