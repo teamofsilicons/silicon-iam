@@ -6,6 +6,7 @@ live writers. --rehearse-only stops before the live cutover. Runtime environment
 files, credentials and application registrations are preserved.
 """
 import argparse
+import base64
 import fcntl
 import hashlib
 import json
@@ -15,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.parse
 import urllib.request
@@ -213,6 +215,34 @@ class Release:
     def credential_fingerprints(self, label):
         return {table: self.sql(label, self.credential_fingerprint_query(table)) for table in CREDENTIAL_TABLES}
 
+    def upload_quiesced_backup(self):
+        bucket = getattr(self.args, "backup_bucket", None)
+        key = getattr(self.args, "backup_key", None)
+        if bucket is None and key is None:
+            return
+        require(bucket and key and re.fullmatch(r"[a-z0-9.-]+", bucket)
+                and re.fullmatch(r"[A-Za-z0-9._/-]+", key), "Invalid private backup destination")
+        archive = self.root / "quiesced-backup.tar.gz"
+        paths = list(self.root.glob("*.env")) + list(self.root.glob("*.service"))
+        paths += [self.root / name for name in (
+            "production-before.dump", "testing-before.dump", "backups.json", "identity-mapping-before.json",
+            "credential-fingerprints-before.json", "migration-manifest.json", "state.json",
+            "production-ledger-before.json", "testing-ledger-before.json", "runtime-grants.sql")]
+        with tarfile.open(archive, "x:gz") as output:
+            for path in paths:
+                require(path.is_file(), "Missing quiesced backup component")
+                output.add(path, arcname=path.name, recursive=False)
+        checksum = digest(archive)
+        encoded = base64.b64encode(bytes.fromhex(checksum)).decode()
+        response = json.loads(self.run(["aws", "s3api", "put-object", "--region", self.args.region,
+            "--bucket", bucket, "--key", key, "--body", str(archive), "--server-side-encryption", "AES256",
+            "--checksum-algorithm", "SHA256", "--checksum-sha256", encoded,
+            "--metadata", "stage=quiesced,sha256=" + checksum]))
+        require(response.get("VersionId") and response.get("ChecksumSHA256") == encoded
+                and response.get("ServerSideEncryption") == "AES256", "Private backup receipt mismatch")
+        atomic_json(self.root / "offhost-backup.json", {"bucket": bucket, "key": key,
+            "version_id": response["VersionId"], "sha256": checksum, "bytes": archive.stat().st_size})
+
     def rehearse(self):
         """Restore online backups and run the exact cutover in an isolated network."""
         self.checkpoint("isolated-restore-rehearsal-started")
@@ -409,6 +439,7 @@ class Release:
             backups[label] = {"path": str(dump), "size": dump.stat().st_size, "sha256": digest(dump)}
         atomic_json(self.root / "backups.json", backups)
         self.export_identities()
+        self.upload_quiesced_backup()
         self.checkpoint("both-backups-verified")
         for label in self.databases:
             self.cutover_operator(self.databases[label][1], "prepare")

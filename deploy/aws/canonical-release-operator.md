@@ -65,3 +65,9 @@ migration starts, an image-only rollback is unsafe. Keep writers stopped and
 repair forward, or restore both databases and the saved configuration together
 before starting the previous image. Backups, private logs, and identity exports
 contain sensitive account material and must not be published.
+
+Set `backup_bucket` and `backup_key` together to upload the final quiesced database
+and configuration archive before migration starts. Use a private, versioned
+bucket and a temporary exact-object upload permission. The operator requires an
+AES256 encryption receipt, matching SHA256 checksum and object version; it records
+the receipt privately. Remove the temporary upload grant after verification.
