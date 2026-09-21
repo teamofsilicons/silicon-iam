@@ -263,6 +263,27 @@ class Release:
                 grant = (f"GRANT {quote(role)} TO {quote(member)} WITH ADMIN {str(admin).upper()}, "
                          f"INHERIT {str(inherit).upper()}, SET {str(can_set).upper()}")
                 self.run(["docker", "exec", name, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-c", grant])
+            if getattr(self.args, "rehearsal_rds_role_admin", False):
+                # RDS permits its rds_superuser members to administer this role
+                # even without pg_auth_members.admin_option. Vanilla PostgreSQL
+                # lacks that managed-service behavior. Model only the confirmed
+                # membership operation; do not grant superuser or BYPASSRLS.
+                owner = self.databases["testing"][0]["PGUSER"]
+                require(roles[owner]["createrole"] and not roles[owner]["super"]
+                        and not roles[owner]["bypassrls"], "Unexpected RDS migrator attributes")
+                require(any(role == "rds_superuser" and member == owner and can_set
+                            for role, member, admin, inherit, can_set in memberships),
+                        "RDS role administration model requires actual rds_superuser membership")
+                entry = next((row for row in memberships
+                              if row[0] == "silicon_iam_testing_definer" and row[1] == owner), None)
+                require(entry is not None, "Expected existing restricted testing-definer membership")
+                quoted_owner = '"' + owner.replace('"', '""') + '"'
+                grant = (f"GRANT silicon_iam_testing_definer TO {quoted_owner} WITH ADMIN TRUE, "
+                         f"INHERIT {str(entry[3]).upper()}, SET {str(entry[4]).upper()}")
+                self.run(["docker", "exec", name, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-c", grant])
+                atomic_json(self.root / "rehearsal-rds-role-model.json",
+                            {"member": owner, "role": "silicon_iam_testing_definer",
+                             "capability": "managed RDS role administration", "isolated_only": True})
             urls = {}
             fingerprints = {}
             for label in self.databases:

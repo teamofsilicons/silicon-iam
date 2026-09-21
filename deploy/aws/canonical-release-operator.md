@@ -36,6 +36,12 @@ The restore preserves ownership, privileges and role memberships. Migration
 commands use the live migrator role attributes rather than PostgreSQL superuser
 authority. Credential fingerprints verify unchanged token digests, expiry state,
 session resource identifiers and other fields apart from canonical identity links.
+For RDS, `rehearsal_rds_role_admin: true` can model the managed service's existing
+ability to re-grant the testing-definer role. Enable it only after verifying that
+exact operation with the real migrator inside a rolled-back transaction. The
+isolated model adds that role's ADMIN capability only; it preserves the migrator's
+NOSUPERUSER/NOBYPASSRLS restrictions and records the exception in the private
+rehearsal evidence. It changes no production role or schema privilege.
 The successful rehearsal removes its container. Failed rehearsals preserve a
 private diagnostic container and leave the live services unchanged.
 
