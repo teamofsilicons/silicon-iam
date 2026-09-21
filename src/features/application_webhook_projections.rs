@@ -501,8 +501,7 @@ fn project_member(
         .and_then(|organization| organization.get("org_id"))
         .and_then(Value::as_str)
     {
-        resource["membership_id"] =
-            Value::String(format!("{}[{org_id}]", source.principal_id));
+        resource["membership_id"] = Value::String(format!("{}[{org_id}]", source.principal_id));
     }
     let mut projected = Map::from_iter([("resource".to_owned(), resource)]);
     if !authorization.authorized_after {
