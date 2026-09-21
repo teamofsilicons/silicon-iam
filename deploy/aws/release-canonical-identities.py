@@ -23,6 +23,8 @@ SERVICES = ("api", "scoped-api", "worker")
 FLAGS = ()
 CERT = "/opt/silicon-iam/aws-rds-global-bundle.pem"
 IMAGE_RE = r"[a-zA-Z0-9._:/-]+@sha256:[a-f0-9]{64}"
+CREDENTIAL_TABLES = ("authentication_sessions", "refresh_token_families", "refresh_tokens",
+                     "access_tokens", "application_secrets", "silicon_credentials")
 CHECKPOINTS = (
     "Validate immutable images, current health, configuration and both existing ledgers",
     "Stop API, scoped API and worker; save private units/environment and both database dumps",
@@ -198,6 +200,19 @@ class Release:
         require(all(row["public_id"] for rows in result.values() for row in rows), "Unmapped identity in final export")
         atomic_json(self.root / "identity-mapping-before.json", result)
 
+    @staticmethod
+    def credential_fingerprint_query(table):
+        require(table in CREDENTIAL_TABLES, "Unexpected credential table")
+        # Only identity references change representation. Token digests, resource
+        # IDs, expiry/revocation state, epochs, ciphertext and all other fields stay.
+        excluded = ("'subject_principal_id','client_application_id','audience_application_id',"
+                    "'application_id','created_by_carbon_id','silicon_id'")
+        return (f"SELECT count(*)::text||':'||COALESCE(md5(string_agg("
+                f"(to_jsonb(t)-ARRAY[{excluded}])::text,'' ORDER BY id)),md5('')) FROM iam.{table} t")
+
+    def credential_fingerprints(self, label):
+        return {table: self.sql(label, self.credential_fingerprint_query(table)) for table in CREDENTIAL_TABLES}
+
     def rehearse(self):
         """Restore online backups and run the exact cutover in an isolated network."""
         self.checkpoint("isolated-restore-rehearsal-started")
@@ -238,13 +253,30 @@ class Release:
                                        ("createdb","CREATEDB"),("createrole","CREATEROLE"),
                                        ("replication","REPLICATION"),("bypassrls","BYPASSRLS")])
                 self.run(["docker", "exec", name, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-c", "CREATE ROLE " + quoted + " " + attributes])
+            memberships = set()
+            for label in self.databases:
+                rows = json.loads(self.sql(label, "SELECT COALESCE(json_agg(json_build_object('role',r.rolname,'member',m.rolname,'admin',a.admin_option,'inherit',a.inherit_option,'set',a.set_option)), '[]'::json) FROM pg_auth_members a JOIN pg_roles r ON r.oid=a.roleid JOIN pg_roles m ON m.oid=a.member"))
+                for row in rows:
+                    memberships.add((row['role'], row['member'], row['admin'], row['inherit'], row['set']))
+            for role, member, admin, inherit, can_set in sorted(memberships):
+                quote = lambda value: '"' + value.replace('"', '""') + '"'
+                grant = (f"GRANT {quote(role)} TO {quote(member)} WITH ADMIN {str(admin).upper()}, "
+                         f"INHERIT {str(inherit).upper()}, SET {str(can_set).upper()}")
+                self.run(["docker", "exec", name, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-c", grant])
             urls = {}
+            fingerprints = {}
             for label in self.databases:
                 database = "rehearsal_" + label
-                self.run(["docker", "exec", name, "createdb", "-U", "postgres", database])
+                owner = self.databases[label][0]["PGUSER"]
+                self.run(["docker", "exec", name, "createdb", "-U", "postgres", "--owner", owner, database])
                 with Path(backups[label]["path"]).open("rb") as source:
-                    self.run(["docker", "exec", "-i", name, "pg_restore", "-U", "postgres", "--exit-on-error", "--no-owner", "--no-acl", "-d", database], stdin=source)
-                urls[label] = f"postgresql://postgres@127.0.0.1:5432/{database}?sslmode=disable"
+                    self.run(["docker", "exec", "-i", name, "pg_restore", "-U", "postgres", "--exit-on-error", "-d", database], stdin=source)
+                urls[label] = f"postgresql://{urllib.parse.quote(owner, safe='')}@127.0.0.1:5432/{database}?sslmode=disable"
+                fingerprints[label] = {
+                    table: self.run(["docker", "exec", name, "psql", "-U", owner, "-d", database,
+                                     "-At", "-v", "ON_ERROR_STOP=1", "-c", self.credential_fingerprint_query(table)])
+                    for table in CREDENTIAL_TABLES
+                }
                 self.cutover_operator(urls[label], "prepare", "container:" + name, True)
             environment = dict(os.environ, IAM_MIGRATOR_DATABASE_URL=urls["production"],
                                IAM_TESTING_MIGRATOR_DATABASE_URL=urls["testing"])
@@ -256,9 +288,14 @@ class Release:
             self.run([*command, "iam-migrate"], environment)
             for label, url in urls.items():
                 database = "rehearsal_" + label
+                owner = self.databases[label][0]["PGUSER"]
                 with (self.root / "runtime-grants.sql").open("rb") as source:
-                    self.run(["docker", "exec", "-i", name, "psql", "-U", "postgres", "-d", database, "-v", "ON_ERROR_STOP=1"], stdin=source)
+                    self.run(["docker", "exec", "-i", name, "psql", "-U", owner, "-d", database, "-v", "ON_ERROR_STOP=1"], stdin=source)
                 self.cutover_operator(url, "convert", "container:" + name, True)
+                for table in CREDENTIAL_TABLES:
+                    after = self.run(["docker", "exec", name, "psql", "-U", owner, "-d", database,
+                                      "-At", "-v", "ON_ERROR_STOP=1", "-c", self.credential_fingerprint_query(table)])
+                    require(after == fingerprints[label][table], f"Rehearsal altered retained {label} {table} credentials")
                 result = self.run(["docker", "exec", name, "psql", "-U", "postgres", "-d", database, "-Atc",
                                    "SELECT count(*) FROM iam_private.canonical_replay_cutover WHERE converted_at IS NOT NULL"]).decode().strip()
                 require(result == "1", "Isolated conversion did not finish")
@@ -336,6 +373,8 @@ class Release:
         self.state["services_stopped"] = True
         self.checkpoint("stopping-writers")
         self.run(["systemctl", "stop", *(f"silicon-iam-{service}" for service in SERVICES)])
+        credential_fingerprints = {label: self.credential_fingerprints(label) for label in self.databases}
+        atomic_json(self.root / "credential-fingerprints-before.json", credential_fingerprints)
         backups = {}
         for label in self.databases:
             dump = self.root / f"{label}-before.dump"
@@ -374,6 +413,8 @@ class Release:
         for label in self.databases:
             self.cutover_operator(self.databases[label][1], "convert")
             self.verify_canonical(label)
+            require(self.credential_fingerprints(label) == credential_fingerprints[label],
+                    f"Retained {label} credentials changed during identity conversion")
         self.checkpoint("schema-grants-ciphertext-and-scoped-helper-complete")
         for path, text in replacements:
             temporary = path.with_suffix(path.suffix + ".contracts-release")

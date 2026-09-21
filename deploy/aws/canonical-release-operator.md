@@ -32,6 +32,10 @@ It verifies current service revisions and historical migration checksums, takes
 online backups of both databases, restores both into an isolated PostgreSQL
 container with no network or published ports, and runs the exact preparation,
 migrations, runtime grants, encrypted-data conversion, and scoped helper setup.
+The restore preserves ownership, privileges and role memberships. Migration
+commands use the live migrator role attributes rather than PostgreSQL superuser
+authority. Credential fingerprints verify unchanged token digests, expiry state,
+session resource identifiers and other fields apart from canonical identity links.
 The successful rehearsal removes its container. Failed rehearsals preserve a
 private diagnostic container and leave the live services unchanged.
 
