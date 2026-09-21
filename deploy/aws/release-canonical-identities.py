@@ -503,8 +503,9 @@ def main():
             require(all(digest(Path(path)) == value for path, value in hashes.items()), "Runtime configuration changed")
             print(json.dumps({"revision": args.revision, "image": args.image, "rehearsal_only": args.rehearse_only,
                               "runtime_environment_unchanged": True, "release_directory": str(release.root)}))
-        except Exception:
+        except Exception as error:
             if release.root.exists():
+                release.state["failure_reason"] = str(error)
                 release.failure()
             raise RuntimeError("Release failed; inspect protected release log: " + str(release.root)) from None
 
