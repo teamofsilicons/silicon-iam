@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "sql_comments"
+
 # The testing overlay is a second, separate migration set: it is applied only
 # to a testing database, on top of the same production schema. It defines
 # iam_private functions like any other migration, so it is held to the same
@@ -47,10 +49,11 @@ function_starts.each_with_index do |(name, start_at), index|
   end
 end
 
-if source.match?(/\bGRANT\s+EXECUTE\b[^;]*\bTO\s+PUBLIC\b/im)
+privilege_source = SqlComments.remove(source)
+if privilege_source.match?(/\bGRANT\s+EXECUTE\b[^;]*\bTO\s+PUBLIC\b/im)
   issues << "migration grants function execution to PUBLIC"
 end
-if source.match?(/\bBYPASSRLS\b/i)
+if privilege_source.match?(/\bBYPASSRLS\b/i)
   issues << "migration grants or references BYPASSRLS"
 end
 

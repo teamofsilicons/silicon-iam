@@ -91,7 +91,9 @@ jobs:
         run: ruby scripts/generate-cli-docs.rb --check
 
       - name: Validate migration privilege boundaries
-        run: ruby scripts/check-migration-security.rb
+        run: |
+          ruby scripts/test-migration-security.rb
+          ruby scripts/check-migration-security.rb
 
       - name: Validate runtime database grants
         run: ruby scripts/check-runtime-grants.rb
