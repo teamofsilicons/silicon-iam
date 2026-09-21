@@ -1,7 +1,41 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Silicon IAM backend with staged dedicated load balancer migration; see deploy/aws/EDGE.md.
+Description: Silicon IAM with explicit retained direct-nginx or legacy load-balancer ingress.
 
 Parameters:
+  DirectNginx:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Reuse the singleton public ENI and secured TLS state; do not create an edge stack.
+  PublicNetworkInterfaceId:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|^eni-[a-f0-9]+$'
+    Description: Existing retained public ENI in PrivateSubnetA's Availability Zone.
+  ScopedWebhookSecretArn:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|^arn:[a-z0-9-]+:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$'
+    Description: Existing dedicated scoped webhook keyring; never generate a replacement.
+  TlsArchiveBucket:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+    Description: Existing private bucket holding the AES256-encrypted ingress recovery archive.
+  TlsArchiveKey:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|^[A-Za-z0-9][A-Za-z0-9._/-]{0,499}$'
+  TlsArchiveSha256:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|^[a-f0-9]{64}$'
+  TlsArchiveVersionId:
+    Type: String
+    Default: ""
+    MaxLength: 1024
+    AllowedPattern: '^$|^[A-Za-z0-9._~+/=-]+$'
+    Description: Pinned version of the existing private ingress archive object.
   DedicatedTargetGroupArn:
     Type: String
     Default: ""
@@ -27,6 +61,8 @@ Parameters:
     Type: String
   BackendImageUri:
     Type: String
+    AllowedPattern: '^[A-Za-z0-9._:/-]+@sha256:[a-f0-9]{64}$'
+    Description: Exact verified release image shared by API, scoped API, worker and migrator.
   AmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
@@ -44,16 +80,32 @@ Parameters:
     AllowedValues: [db.t4g.micro, db.t4g.small]
 
 Rules:
+  DirectIngressInputs:
+    RuleCondition: !Equals [!Ref DirectNginx, "true"]
+    Assertions:
+      - Assert: !And
+          - !Equals [!Ref UseSharedLoadBalancer, "false"]
+          - !Equals [!Ref DedicatedTargetGroupArn, ""]
+          - !Not [!Equals [!Ref PublicNetworkInterfaceId, ""]]
+          - !Not [!Equals [!Ref ScopedWebhookSecretArn, ""]]
+          - !Not [!Equals [!Ref TlsArchiveBucket, ""]]
+          - !Not [!Equals [!Ref TlsArchiveKey, ""]]
+          - !Not [!Equals [!Ref TlsArchiveSha256, ""]]
+          - !Not [!Equals [!Ref TlsArchiveVersionId, ""]]
+        AssertDescription: Direct ingress requires the existing ENI, scoped secret and pinned TLS archive, with both load-balancer modes disabled.
   RequireTrafficDestination:
     Assertions:
       - Assert: !Or
+          - !Equals [!Ref DirectNginx, "true"]
           - !Equals [!Ref UseSharedLoadBalancer, "true"]
           - !Not [!Equals [!Ref DedicatedTargetGroupArn, ""]]
-        AssertDescription: A dedicated target group is required before disabling shared routing.
+        AssertDescription: Select direct nginx or an existing load-balancer destination.
 
 Conditions:
+  DirectIngress: !Equals [!Ref DirectNginx, "true"]
   SharedLoadBalancer: !Equals [!Ref UseSharedLoadBalancer, "true"]
   DedicatedLoadBalancer: !Not [!Equals [!Ref DedicatedTargetGroupArn, ""]]
+  LoadBalancedIngress: !Or [!Condition SharedLoadBalancer, !Condition DedicatedLoadBalancer]
 
 Resources:
   InstanceSecurityGroup:
@@ -260,6 +312,40 @@ Resources:
                   - !Sub ${ApiLogGroup.Arn}:*
                   - !GetAtt WorkerLogGroup.Arn
                   - !Sub ${WorkerLogGroup.Arn}:*
+        - !If
+          - DirectIngress
+          - PolicyName: silicon-iam-direct-ingress
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource: !Ref ScopedWebhookSecretArn
+                - Effect: Allow
+                  Action: s3:GetObjectVersion
+                  Resource: !Sub arn:${AWS::Partition}:s3:::${TlsArchiveBucket}/${TlsArchiveKey}
+                  Condition:
+                    StringEquals:
+                      s3:VersionId: !Ref TlsArchiveVersionId
+                - Effect: Allow
+                  Action: ec2:DescribeNetworkInterfaces
+                  Resource: "*"
+                - Effect: Allow
+                  Action: ec2:AttachNetworkInterface
+                  Resource:
+                    - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/${PublicNetworkInterfaceId}
+                    - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                  Condition:
+                    StringEquals:
+                      ec2:ResourceTag/Service: silicon-iam
+                - Effect: Allow
+                  Action: ec2:ModifyNetworkInterfaceAttribute
+                  Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/${PublicNetworkInterfaceId}
+                  Condition:
+                    StringEquals:
+                      ec2:Attribute: attachment
+                      ec2:ResourceTag/Service: silicon-iam
+          - !Ref AWS::NoValue
       Tags:
         - Key: Service
           Value: silicon-iam
@@ -363,268 +449,126 @@ Resources:
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
+            # Generated by scripts/render-production-userdata.py; edit the readable sources.
             set -euo pipefail
             umask 077
-
-            REGION='${AWS::Region}'
-            ACCOUNT_ID='${AWS::AccountId}'
-            APP_SECRET_ARN='${AppSecretArn}'
-            DB_SECRET_ARN='${Database.MasterUserSecret.SecretArn}'
-            DB_HOST='${Database.Endpoint.Address}'
-            TEST_DB_SECRET_ARN='${TestingDatabase.MasterUserSecret.SecretArn}'
-            TEST_DB_HOST='${TestingDatabase.Endpoint.Address}'
-            BACKEND_IMAGE='${BackendImageUri}'
-
-            dnf install --assumeyes docker jq postgresql15
-            systemctl enable --now docker
-            systemctl enable --now amazon-ssm-agent
-
-            install -d -m 0700 /etc/silicon-iam /opt/silicon-iam
-            curl --fail --silent --show-error --location \
-              https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
-              --output /opt/silicon-iam/aws-rds-global-bundle.pem
-            chmod 0644 /opt/silicon-iam/aws-rds-global-bundle.pem
-
-            aws ecr get-login-password --region "$REGION" \
-              | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
-            docker pull "$BACKEND_IMAGE"
-
-            APP_SECRET_JSON=$(aws secretsmanager get-secret-value --region "$REGION" \
-              --secret-id "$APP_SECRET_ARN" --query SecretString --output text)
-            DB_SECRET_JSON=$(aws secretsmanager get-secret-value --region "$REGION" \
-              --secret-id "$DB_SECRET_ARN" --query SecretString --output text)
-            TEST_DB_SECRET_JSON=$(aws secretsmanager get-secret-value --region "$REGION" \
-              --secret-id "$TEST_DB_SECRET_ARN" --query SecretString --output text)
-
-            if ! printf '%s' "$APP_SECRET_JSON" | jq -e '
-              [ .IAM_POSTMARK_SERVER_TOKEN, .IAM_TWILIO_ACCOUNT_SID,
-                .IAM_TWILIO_AUTH_TOKEN, .IAM_TWILIO_MESSAGING_SERVICE_SID,
-                .IAM_TWILIO_VERIFY_SERVICE_SID,
-                .IAM_WORKOS_API_KEY, .IAM_WORKOS_CLIENT_ID,
-                .IAM_WORKOS_WEBHOOK_SECRET ]
-              | all(type == "string" and length > 0 and . != "REPLACE_IN_AWS_CONSOLE")
-            ' >/dev/null; then
-              echo 'Provider credentials have not been completed in Secrets Manager.' >&2
-              exit 1
-            fi
-
-            DB_MASTER_USER=$(printf '%s' "$DB_SECRET_JSON" | jq -r .username)
-            DB_MASTER_PASSWORD=$(printf '%s' "$DB_SECRET_JSON" | jq -r .password)
-            TEST_DB_MASTER_USER=$(printf '%s' "$TEST_DB_SECRET_JSON" | jq -r .username)
-            TEST_DB_MASTER_PASSWORD=$(printf '%s' "$TEST_DB_SECRET_JSON" | jq -r .password)
-            API_DB_PASSWORD=$(printf '%s' "$APP_SECRET_JSON" | jq -r .IAM_LOCAL_API_DATABASE_PASSWORD)
-            WORKER_DB_PASSWORD=$(printf '%s' "$APP_SECRET_JSON" | jq -r .IAM_LOCAL_WORKER_DATABASE_PASSWORD)
-            KEY_OPERATOR_DB_PASSWORD=$(printf '%s' "$APP_SECRET_JSON" | jq -r .IAM_LOCAL_KEY_OPERATOR_DATABASE_PASSWORD)
-
-            export PGSSLMODE=verify-full PGSSLROOTCERT=/opt/silicon-iam/aws-rds-global-bundle.pem
-
-            configure_database() {
-              local database_host="$1"
-              local database_name="$2"
-              local database_user="$3"
-              local database_password="$4"
-              local database_label="$5"
-
-              export PGHOST="$database_host" PGPORT=5432 PGDATABASE="$database_name"
-              export PGUSER="$database_user" PGPASSWORD="$database_password"
-              for attempt in $(seq 1 90); do
-                if pg_isready --timeout=5 >/dev/null 2>&1; then
-                  break
-                fi
-                if [ "$attempt" -eq 90 ]; then
-                  echo "$database_label RDS did not become ready in time." >&2
-                  exit 1
-                fi
-                sleep 5
-              done
-
-              psql --set=ON_ERROR_STOP=1 \
-                --set=api_password="$API_DB_PASSWORD" \
-                --set=worker_password="$WORKER_DB_PASSWORD" \
-                --set=key_operator_password="$KEY_OPERATOR_DB_PASSWORD" <<'SQL'
-            DO $roles$
-            BEGIN
-              IF pg_catalog.to_regrole('silicon_iam_api') IS NULL THEN
-                CREATE ROLE silicon_iam_api NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-              END IF;
-              IF pg_catalog.to_regrole('silicon_iam_worker') IS NULL THEN
-                CREATE ROLE silicon_iam_worker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-              END IF;
-              IF pg_catalog.to_regrole('silicon_iam_key_operator') IS NULL THEN
-                CREATE ROLE silicon_iam_key_operator NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-              END IF;
-              IF pg_catalog.to_regrole('silicon_iam_api_runtime') IS NULL THEN
-                CREATE ROLE silicon_iam_api_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-              END IF;
-              IF pg_catalog.to_regrole('silicon_iam_worker_runtime') IS NULL THEN
-                CREATE ROLE silicon_iam_worker_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-              END IF;
-              IF pg_catalog.to_regrole('silicon_iam_key_operator_runtime') IS NULL THEN
-                CREATE ROLE silicon_iam_key_operator_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-              END IF;
-            END;
-            $roles$;
-            ALTER ROLE silicon_iam_api_runtime PASSWORD :'api_password';
-            ALTER ROLE silicon_iam_worker_runtime PASSWORD :'worker_password';
-            ALTER ROLE silicon_iam_key_operator_runtime PASSWORD :'key_operator_password';
-            GRANT silicon_iam_api TO silicon_iam_api_runtime;
-            GRANT silicon_iam_worker TO silicon_iam_worker_runtime;
-            GRANT silicon_iam_key_operator TO silicon_iam_key_operator_runtime;
-            SQL
-            }
-
-            configure_database "$DB_HOST" silicon_iam "$DB_MASTER_USER" "$DB_MASTER_PASSWORD" Production
-            configure_database "$TEST_DB_HOST" silicon_iam_testing "$TEST_DB_MASTER_USER" "$TEST_DB_MASTER_PASSWORD" Testing
-
-            DB_MASTER_PASSWORD_URI=$(printf '%s' "$DB_MASTER_PASSWORD" | jq -sRr @uri)
-            TEST_DB_MASTER_PASSWORD_URI=$(printf '%s' "$TEST_DB_MASTER_PASSWORD" | jq -sRr @uri)
-            MIGRATOR_DATABASE_URL="postgresql://$DB_MASTER_USER:$DB_MASTER_PASSWORD_URI@$DB_HOST:5432/silicon_iam?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
-            TESTING_MIGRATOR_DATABASE_URL="postgresql://$TEST_DB_MASTER_USER:$TEST_DB_MASTER_PASSWORD_URI@$TEST_DB_HOST:5432/silicon_iam_testing?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
-            docker run --rm --network host --read-only --cap-drop ALL \
-              --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 \
-              --volume /opt/silicon-iam/aws-rds-global-bundle.pem:/opt/silicon-iam/aws-rds-global-bundle.pem:ro \
-              --env IAM_ENVIRONMENT=production \
-              --env IAM_LOG_FILTER=silicon_iam=info \
-              --env IAM_MIGRATOR_DATABASE_URL="$MIGRATOR_DATABASE_URL" \
-              --env IAM_TESTING_MIGRATOR_DATABASE_URL="$TESTING_MIGRATOR_DATABASE_URL" \
-              --env IAM_MIGRATOR_DATABASE_MAX_CONNECTIONS=2 \
-              --env IAM_MIGRATOR_DATABASE_ACQUIRE_TIMEOUT_SECONDS=10 \
-              --env IAM_MIGRATOR_DATABASE_STATEMENT_TIMEOUT_SECONDS=120 \
-              "$BACKEND_IMAGE" iam-migrate
-
-            GRANT_CONTAINER=$(docker create "$BACKEND_IMAGE")
-            docker cp "$GRANT_CONTAINER:/opt/silicon-iam/postgres/runtime-grants.sql" /opt/silicon-iam/runtime-grants.sql
-            docker rm "$GRANT_CONTAINER" >/dev/null
-            chmod 0400 /opt/silicon-iam/runtime-grants.sql
-            PGHOST="$DB_HOST" PGDATABASE=silicon_iam PGUSER="$DB_MASTER_USER" PGPASSWORD="$DB_MASTER_PASSWORD" \
-              psql --set=ON_ERROR_STOP=1 --file=/opt/silicon-iam/runtime-grants.sql
-            PGHOST="$TEST_DB_HOST" PGDATABASE=silicon_iam_testing PGUSER="$TEST_DB_MASTER_USER" PGPASSWORD="$TEST_DB_MASTER_PASSWORD" \
-              psql --set=ON_ERROR_STOP=1 --file=/opt/silicon-iam/runtime-grants.sql
-
-            API_DB_URL="postgresql://silicon_iam_api_runtime:$API_DB_PASSWORD@$DB_HOST:5432/silicon_iam?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
-            WORKER_DB_URL="postgresql://silicon_iam_worker_runtime:$WORKER_DB_PASSWORD@$DB_HOST:5432/silicon_iam?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
-            TESTING_API_DB_URL="postgresql://silicon_iam_api_runtime:$API_DB_PASSWORD@$TEST_DB_HOST:5432/silicon_iam_testing?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
-            TESTING_WORKER_DB_URL="postgresql://silicon_iam_worker_runtime:$WORKER_DB_PASSWORD@$TEST_DB_HOST:5432/silicon_iam_testing?sslmode=verify-full&sslrootcert=/opt/silicon-iam/aws-rds-global-bundle.pem"
-
-            cat > /etc/silicon-iam/api.env <<EOF
-            IAM_ENVIRONMENT=production
-            IAM_TELEMETRY=on
-            IAM_TELEMETRY_HOME=/var/lib/silicon-iam/telemetry
-            IAM_BIND_ADDR=0.0.0.0:8080
-            IAM_PUBLIC_BASE_URL=https://backend.iam.teamofsilicons.com
-            IAM_AUTH_BASE_URL=https://auth.iam.teamofsilicons.com
-            IAM_CORS_ALLOWED_ORIGINS=https://auth.iam.teamofsilicons.com,https://iam.teamofsilicons.com
-            IAM_DATABASE_URL=$API_DB_URL
-            IAM_TESTING_DATABASE_URL=$TESTING_API_DB_URL
-            IAM_TESTING_DATABASE_MAX_CONNECTIONS=4
-            IAM_TESTING_DATABASE_MIN_CONNECTIONS=0
-            IAM_DATABASE_MAX_CONNECTIONS=12
-            IAM_DATABASE_MIN_CONNECTIONS=1
-            IAM_DATABASE_ACQUIRE_TIMEOUT_SECONDS=3
-            IAM_DATABASE_STATEMENT_TIMEOUT_SECONDS=10
-            IAM_LOG_FILTER=silicon_iam=info,tower_http=info
-            IAM_ALLOW_LOCAL_PROVIDERS=false
-            IAM_EXPOSE_LOCAL_OTPS=false
-            EOF
-            printf '%s' "$APP_SECRET_JSON" | jq -r '
-              [ "IAM_TOKEN_PEPPER_CURRENT_VERSION=" + .IAM_TOKEN_PEPPER_CURRENT_VERSION,
-                "IAM_TOKEN_PEPPER_KEYRING=" + .IAM_TOKEN_PEPPER_KEYRING,
-                "IAM_BLIND_INDEX_CURRENT_VERSION=" + .IAM_BLIND_INDEX_CURRENT_VERSION,
-                "IAM_BLIND_INDEX_KEYRING=" + .IAM_BLIND_INDEX_KEYRING,
-                "IAM_ENCRYPTION_CURRENT_VERSION=" + .IAM_ENCRYPTION_CURRENT_VERSION,
-                "IAM_ENCRYPTION_KEYRING=" + .IAM_ENCRYPTION_KEYRING,
-                "IAM_COOKIE_KEY=" + .IAM_COOKIE_KEY,
-                "IAM_POSTMARK_SERVER_TOKEN=" + .IAM_POSTMARK_SERVER_TOKEN,
-                "IAM_POSTMARK_FROM_EMAIL=" + .IAM_POSTMARK_FROM_EMAIL,
-                "IAM_TWILIO_ACCOUNT_SID=" + .IAM_TWILIO_ACCOUNT_SID,
-                "IAM_TWILIO_AUTH_TOKEN=" + .IAM_TWILIO_AUTH_TOKEN,
-                "IAM_TWILIO_MESSAGING_SERVICE_SID=" + .IAM_TWILIO_MESSAGING_SERVICE_SID,
-                "IAM_TWILIO_VERIFY_SERVICE_SID=" + .IAM_TWILIO_VERIFY_SERVICE_SID,
-                "IAM_WORKOS_API_KEY=" + .IAM_WORKOS_API_KEY,
-                "IAM_WORKOS_CLIENT_ID=" + .IAM_WORKOS_CLIENT_ID,
-                "IAM_WORKOS_WEBHOOK_SECRET=" + .IAM_WORKOS_WEBHOOK_SECRET,
-                "IAM_IRIS_BASE_URL=" + .IAM_IRIS_BASE_URL,
-                "IAM_TELEMETRY_KEY=" + (.IAM_TELEMETRY_KEY // "") ] | .[]
-            ' >> /etc/silicon-iam/api.env
-            printf '%s' "$APP_SECRET_JSON" | jq -r '
-              to_entries[] | select(.key == "IAM_HONEYCOMB_APP_ID" or .key == "IAM_HONEYCOMB_CREDENTIAL_SHA256" or
-                .key == "IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS" or .key == "IAM_HONEYCOMB_SCHEDULED_TESTING") |
-              .key + "=" + (.value | tostring)
-            ' >> /etc/silicon-iam/api.env
-
-            cat > /etc/silicon-iam/worker.env <<EOF
-            IAM_ENVIRONMENT=production
-            IAM_TELEMETRY=on
-            IAM_TELEMETRY_HOME=/var/lib/silicon-iam/telemetry
-            IAM_AUTH_BASE_URL=https://auth.iam.teamofsilicons.com
-            IAM_DATABASE_URL=$WORKER_DB_URL
-            IAM_TESTING_DATABASE_URL=$TESTING_WORKER_DB_URL
-            IAM_TESTING_DATABASE_MAX_CONNECTIONS=2
-            IAM_TESTING_DATABASE_MIN_CONNECTIONS=0
-            IAM_DATABASE_MAX_CONNECTIONS=8
-            IAM_DATABASE_MIN_CONNECTIONS=1
-            IAM_DATABASE_ACQUIRE_TIMEOUT_SECONDS=3
-            IAM_DATABASE_STATEMENT_TIMEOUT_SECONDS=10
-            IAM_LOG_FILTER=silicon_iam=info
-            IAM_ALLOW_LOCAL_PROVIDERS=false
-            EOF
-            printf '%s' "$APP_SECRET_JSON" | jq -r '
-              [ "IAM_ENCRYPTION_CURRENT_VERSION=" + .IAM_ENCRYPTION_CURRENT_VERSION,
-                "IAM_ENCRYPTION_KEYRING=" + .IAM_ENCRYPTION_KEYRING,
-                "IAM_POSTMARK_SERVER_TOKEN=" + .IAM_POSTMARK_SERVER_TOKEN,
-                "IAM_POSTMARK_FROM_EMAIL=" + .IAM_POSTMARK_FROM_EMAIL,
-                "IAM_TWILIO_ACCOUNT_SID=" + .IAM_TWILIO_ACCOUNT_SID,
-                "IAM_TWILIO_AUTH_TOKEN=" + .IAM_TWILIO_AUTH_TOKEN,
-                "IAM_TWILIO_MESSAGING_SERVICE_SID=" + .IAM_TWILIO_MESSAGING_SERVICE_SID,
-                "IAM_IRIS_BASE_URL=" + .IAM_IRIS_BASE_URL,
-                "IAM_TELEMETRY_KEY=" + (.IAM_TELEMETRY_KEY // "") ] | .[]
-            ' >> /etc/silicon-iam/worker.env
-            printf '%s' "$APP_SECRET_JSON" | jq -r '
-              to_entries[] | select(.key == "IAM_HONEYCOMB_APP_ID" or .key == "IAM_HONEYCOMB_NOTIFICATION_URL" or
-                .key == "IAM_HONEYCOMB_NOTIFICATION_SIGNING_KEY") | .key + "=" + (.value | tostring)
-            ' >> /etc/silicon-iam/worker.env
-            chmod 0600 /etc/silicon-iam/api.env /etc/silicon-iam/worker.env
-
-            install -d -m 0700 -o 10001 -g 10001 /var/lib/silicon-iam/telemetry/api /var/lib/silicon-iam/telemetry/worker
-
-            cat > /etc/systemd/system/silicon-iam-api.service <<EOF
-            [Unit]
-            Description=Silicon IAM production API
-            Requires=docker.service
-            After=docker.service network-online.target
-
-            [Service]
-            Restart=always
-            RestartSec=5
-            TimeoutStopSec=45
-            ExecStartPre=-/usr/bin/docker rm -f silicon-iam-api
-            ExecStart=/usr/bin/docker run --name silicon-iam-api --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 --volume /opt/silicon-iam/aws-rds-global-bundle.pem:/opt/silicon-iam/aws-rds-global-bundle.pem:ro --volume /var/lib/silicon-iam/telemetry/api:/var/lib/silicon-iam/telemetry --env-file /etc/silicon-iam/api.env --publish 8080:8080 --log-driver awslogs --log-opt awslogs-region=$REGION --log-opt awslogs-group=/silicon-iam/production/api --log-opt tag=api "$BACKEND_IMAGE" iam-api
-            ExecStop=/usr/bin/docker stop --time 35 silicon-iam-api
-
-            [Install]
-            WantedBy=multi-user.target
-            EOF
-
-            cat > /etc/systemd/system/silicon-iam-worker.service <<EOF
-            [Unit]
-            Description=Silicon IAM production worker
-            Requires=docker.service
-            After=docker.service network-online.target silicon-iam-api.service
-
-            [Service]
-            Restart=always
-            RestartSec=5
-            TimeoutStopSec=315
-            ExecStartPre=-/usr/bin/docker rm -f silicon-iam-worker
-            ExecStart=/usr/bin/docker run --name silicon-iam-worker --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:size=16m,mode=1777 --volume /opt/silicon-iam/aws-rds-global-bundle.pem:/opt/silicon-iam/aws-rds-global-bundle.pem:ro --volume /var/lib/silicon-iam/telemetry/worker:/var/lib/silicon-iam/telemetry --env-file /etc/silicon-iam/worker.env --log-driver awslogs --log-opt awslogs-region=$REGION --log-opt awslogs-group=/silicon-iam/production/worker --log-opt tag=worker "$BACKEND_IMAGE" iam-worker
-            ExecStop=/usr/bin/docker stop --time 310 silicon-iam-worker
-
-            [Install]
-            WantedBy=multi-user.target
-            EOF
-
-            systemctl daemon-reload
-            systemctl enable --now silicon-iam-api silicon-iam-worker
+            export REGION='${AWS::Region}'
+            export ACCOUNT_ID='${AWS::AccountId}'
+            export APP_SECRET_ARN='${AppSecretArn}'
+            export DB_SECRET_ARN='${Database.MasterUserSecret.SecretArn}'
+            export DB_HOST='${Database.Endpoint.Address}'
+            export TEST_DB_SECRET_ARN='${TestingDatabase.MasterUserSecret.SecretArn}'
+            export TEST_DB_HOST='${TestingDatabase.Endpoint.Address}'
+            export BACKEND_IMAGE='${BackendImageUri}'
+            export DIRECT_NGINX='${DirectNginx}'
+            export PUBLIC_ENI='${PublicNetworkInterfaceId}'
+            export SCOPED_WEBHOOK_SECRET_ARN='${ScopedWebhookSecretArn}'
+            export TLS_ARCHIVE_BUCKET='${TlsArchiveBucket}'
+            export TLS_ARCHIVE_KEY='${TlsArchiveKey}'
+            export TLS_ARCHIVE_SHA256='${TlsArchiveSha256}'
+            export TLS_ARCHIVE_VERSION_ID='${TlsArchiveVersionId}'
+            install -d -m 0700 /opt/silicon-iam/provisioning
+            base64 --decode <<'BOOTSTRAP_ARCHIVE' | tar --extract --gzip --file=- --directory=/opt/silicon-iam/provisioning
+            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
+            BOOTSTRAP_ARCHIVE
+            exec /bin/bash /opt/silicon-iam/provisioning/bootstrap-production.sh
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
@@ -633,16 +577,21 @@ Resources:
       MinSize: "1"
       MaxSize: "1"
       DesiredCapacity: "1"
-      VPCZoneIdentifier:
-        - !Ref PrivateSubnetA
-        - !Ref PrivateSubnetB
+      # The retained public ENI is AZ-bound. Direct mode must stay in its AZ;
+      # bootstrap checks the actual ENI/instance AZ before any shared DB writes.
+      VPCZoneIdentifier: !If
+        - DirectIngress
+        - [!Ref PrivateSubnetA]
+        - [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
       LaunchTemplate:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
-      TargetGroupARNs:
-        - !If [SharedLoadBalancer, !Ref ApiTargetGroup, !Ref "AWS::NoValue"]
-        - !If [DedicatedLoadBalancer, !Ref DedicatedTargetGroupArn, !Ref "AWS::NoValue"]
-      HealthCheckType: ELB
+      TargetGroupARNs: !If
+        - DirectIngress
+        - !Ref AWS::NoValue
+        - - !If [SharedLoadBalancer, !Ref ApiTargetGroup, !Ref "AWS::NoValue"]
+          - !If [DedicatedLoadBalancer, !Ref DedicatedTargetGroupArn, !Ref "AWS::NoValue"]
+      HealthCheckType: !If [DirectIngress, EC2, ELB]
       HealthCheckGracePeriod: 1200
       NewInstancesProtectedFromScaleIn: false
       Tags:
@@ -665,4 +614,5 @@ Outputs:
   AutoScalingGroupName:
     Value: !Ref AutoScalingGroup
   ApiTargetGroupArn:
+    Condition: LoadBalancedIngress
     Value: !If [DedicatedLoadBalancer, !Ref DedicatedTargetGroupArn, !Ref ApiTargetGroup]
