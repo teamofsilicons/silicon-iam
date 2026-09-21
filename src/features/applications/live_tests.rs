@@ -1894,39 +1894,18 @@ async fn refresh_reuse_compromises_the_complete_family(pool: &PgPool) -> anyhow:
     .await?;
     ensure!(consumed, "refresh replay was not detectable");
     let mut transaction = pool.begin().await?;
-    sqlx::query(
-        r"
-        UPDATE iam.refresh_token_families
-        SET status = 'compromised', compromised_at = transaction_timestamp(),
-            revocation_reason = 'refresh_token_reuse'
-        WHERE id = $1 AND status = 'active'
-        ",
-    )
-    .bind(FAMILY_ID)
-    .execute(&mut *transaction)
-    .await?;
-    sqlx::query(
-        r"
-        UPDATE iam.refresh_tokens
-        SET revoked_at = COALESCE(revoked_at, transaction_timestamp())
-        WHERE family_id = $1
-        ",
-    )
-    .bind(FAMILY_ID)
-    .execute(&mut *transaction)
-    .await?;
-    sqlx::query(
-        r"
-        UPDATE iam.access_tokens
-        SET revoked_at = COALESCE(revoked_at, transaction_timestamp()),
-            revocation_reason = COALESCE(revocation_reason, 'refresh_token_reuse')
-        WHERE authentication_session_id = '00000000-0000-0000-0000-000000000041'
-          AND client_application_id = $1
-        ",
-    )
-    .bind(APP_A_ID)
-    .execute(&mut *transaction)
-    .await?;
+    sqlx::query("UPDATE iam.access_tokens SET oauth_refresh_family_id=$1 WHERE id IN ('00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000102')")
+        .bind(FAMILY_ID).execute(&mut *transaction).await?;
+    ensure!(
+        super::oauth::compromise_refresh_family(
+            &mut transaction,
+            FAMILY_ID,
+            Id::from_u128(0x41),
+            APP_A_ID,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?
+    );
     transaction.commit().await?;
 
     let status = sqlx::query_scalar::<_, String>(
@@ -2423,6 +2402,35 @@ pub(crate) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
           ('00000000-0000-0000-0000-000000000095',
            '00000000-0000-0000-0000-000000000093', decode(repeat('95', 32), 'hex'), 1,
            'ort_qrstuvwx', transaction_timestamp() + interval '1 day');
+        -- Historical token pairs carry one issuance timestamp per family.
+        UPDATE iam.refresh_tokens SET created_at=created_at-interval '1 microsecond'
+        WHERE id='00000000-0000-0000-0000-000000000095';
+        INSERT INTO iam.oauth_consent_grants (
+            id, application_id, subject_principal_id, subject_kind,
+            parent_authentication_session_id, selected_membership_ids
+        ) VALUES (
+            '00000000-0000-0000-0000-000000000073',
+            '00000000-0000-0000-0000-000000000012',
+            '00000000-0000-0000-0000-000000000001', 'carbon',
+            '00000000-0000-0000-0000-000000000041', ARRAY[]::uuid[]
+        );
+        INSERT INTO iam.refresh_token_families (
+            id, authentication_session_id, subject_principal_id,
+            client_application_id, oauth_consent_grant_id, absolute_expires_at
+        ) VALUES (
+            '00000000-0000-0000-0000-000000000096',
+            '00000000-0000-0000-0000-000000000041',
+            '00000000-0000-0000-0000-000000000001',
+            '00000000-0000-0000-0000-000000000012',
+            '00000000-0000-0000-0000-000000000073', transaction_timestamp()+interval '30 days'
+        );
+        INSERT INTO iam.refresh_tokens (
+            id, family_id, token_digest, digest_key_version, token_prefix, expires_at
+        ) VALUES (
+            '00000000-0000-0000-0000-000000000097',
+            '00000000-0000-0000-0000-000000000096', decode(repeat('97',32),'hex'), 1,
+            'ort_otherapp', transaction_timestamp()+interval '1 day'
+        );
         INSERT INTO iam.access_tokens (
             id, token_class, token_digest, digest_key_version, token_prefix,
             authentication_session_id, subject_principal_id, subject_kind,

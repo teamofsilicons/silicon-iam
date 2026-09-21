@@ -44,7 +44,7 @@ RUN --mount=type=cache,id=silicon-iam-cargo-registry,target=/usr/local/cargo/reg
 FROM debian:bookworm-slim AS runtime
 
 ARG BUILD_REVISION=unknown
-ARG BUILD_VERSION=3.0.0
+ARG BUILD_VERSION=3.0.1
 
 LABEL org.opencontainers.image.title="Silicon IAM" \
       org.opencontainers.image.description="Security-first Silicon IAM API, worker, and migrator" \

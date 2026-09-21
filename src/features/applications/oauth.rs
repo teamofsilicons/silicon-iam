@@ -146,12 +146,13 @@ const CODE_EXCHANGE_ACTIVE_SCOPES_QUERY: &str = r"
     ORDER BY request_scope.scope
 ";
 
-const OAUTH_SESSION_CLIENT_ACCESS_REVOCATION_QUERY: &str = r"
+const OAUTH_REFRESH_FAMILY_ACCESS_REVOCATION_QUERY: &str = r"
     UPDATE iam.access_tokens
     SET revoked_at = COALESCE(revoked_at, transaction_timestamp()),
-        revocation_reason = COALESCE(revocation_reason, $3)
-    WHERE authentication_session_id = $1
-      AND client_application_id = $2
+        revocation_reason = COALESCE(revocation_reason, $4)
+    WHERE oauth_refresh_family_id = $1
+      AND authentication_session_id = $2
+      AND client_application_id = $3
 ";
 
 const REFRESH_TOKEN_CANDIDATE_QUERY: &str = r"
@@ -2005,64 +2006,6 @@ async fn issue_tokens(
         "silicon" => ActorType::Silicon,
         _ => return Err(ApiError::internal("oauth_subject_kind")),
     };
-    let access_id = Id::now_v7();
-    let raw_access = state
-        .crypto
-        .generate_secret(SecretKind::ApplicationAccessToken)
-        .map_err(|_| ApiError::internal("oauth_access_generate"))?;
-    let access_digest = state
-        .crypto
-        .digest_secret(DigestPurpose::ApplicationAccessToken, &raw_access)
-        .map_err(|_| ApiError::internal("oauth_access_digest"))?;
-    let access_seconds = i64::try_from(state.settings.security.access_token_ttl.as_secs())
-        .map_err(|_| ApiError::internal("oauth_access_ttl"))?;
-    sqlx::query(
-        r"
-        INSERT INTO iam.access_tokens (
-            id, token_class, token_digest, digest_key_version, token_prefix,
-            authentication_session_id, subject_principal_id, subject_kind,
-            client_application_id, audience, audience_application_id,
-            organization_id, membership_id, subject_auth_epoch,
-            membership_authz_epoch, client_auth_epoch, expires_at
-        ) VALUES (
-            $1, 'application_access', $2, $3, $4, $5, $6,
-            $7::iam.principal_kind, $8, $9, $8, $10, $11, $12, $13, $14,
-            transaction_timestamp() + ($15::bigint * interval '1 second')
-        )
-        ",
-    )
-    .bind(access_id)
-    .bind(access_digest.as_bytes().as_slice())
-    .bind(access_digest.key_version())
-    .bind(
-        raw_access
-            .expose_secret()
-            .chars()
-            .take(12)
-            .collect::<String>(),
-    )
-    .bind(subject.session_id)
-    .bind(subject.principal_id)
-    .bind(&subject.subject_kind)
-    .bind(client.application_id)
-    .bind(&client.app_id)
-    .bind(subject.organization_id)
-    .bind(subject.membership_id)
-    .bind(subject.subject_auth_epoch)
-    .bind(subject.membership_authz_epoch)
-    .bind(client.auth_epoch)
-    .bind(access_seconds)
-    .execute(&mut **transaction)
-    .await
-    .map_err(|_| ApiError::internal("oauth_access_insert"))?;
-    for scope in scopes {
-        sqlx::query("INSERT INTO iam.access_token_scopes (access_token_id, scope) VALUES ($1, $2)")
-            .bind(access_id)
-            .bind(scope)
-            .execute(&mut **transaction)
-            .await
-            .map_err(|_| ApiError::internal("oauth_access_scope_insert"))?;
-    }
     let family_id = existing_family_id.unwrap_or_else(Id::now_v7);
     if existing_family_id.is_none() {
         let family_seconds = i64::try_from(state.settings.security.refresh_family_ttl.as_secs())
@@ -2103,6 +2046,65 @@ async fn issue_tokens(
             .await
             .map_err(|_| ApiError::internal("oauth_refresh_scope_snapshot"))?;
         }
+    }
+    let access_id = Id::now_v7();
+    let raw_access = state
+        .crypto
+        .generate_secret(SecretKind::ApplicationAccessToken)
+        .map_err(|_| ApiError::internal("oauth_access_generate"))?;
+    let access_digest = state
+        .crypto
+        .digest_secret(DigestPurpose::ApplicationAccessToken, &raw_access)
+        .map_err(|_| ApiError::internal("oauth_access_digest"))?;
+    let access_seconds = i64::try_from(state.settings.security.access_token_ttl.as_secs())
+        .map_err(|_| ApiError::internal("oauth_access_ttl"))?;
+    sqlx::query(
+        r"
+        INSERT INTO iam.access_tokens (
+            id, token_class, token_digest, digest_key_version, token_prefix,
+            authentication_session_id, subject_principal_id, subject_kind,
+            client_application_id, audience, audience_application_id,
+            organization_id, membership_id, subject_auth_epoch,
+            membership_authz_epoch, client_auth_epoch, expires_at, oauth_refresh_family_id
+        ) VALUES (
+            $1, 'application_access', $2, $3, $4, $5, $6,
+            $7::iam.principal_kind, $8, $9, $8, $10, $11, $12, $13, $14,
+            transaction_timestamp() + ($15::bigint * interval '1 second'), $16
+        )
+        ",
+    )
+    .bind(access_id)
+    .bind(access_digest.as_bytes().as_slice())
+    .bind(access_digest.key_version())
+    .bind(
+        raw_access
+            .expose_secret()
+            .chars()
+            .take(12)
+            .collect::<String>(),
+    )
+    .bind(subject.session_id)
+    .bind(subject.principal_id)
+    .bind(&subject.subject_kind)
+    .bind(client.application_id)
+    .bind(&client.app_id)
+    .bind(subject.organization_id)
+    .bind(subject.membership_id)
+    .bind(subject.subject_auth_epoch)
+    .bind(subject.membership_authz_epoch)
+    .bind(client.auth_epoch)
+    .bind(access_seconds)
+    .bind(family_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("oauth_access_insert"))?;
+    for scope in scopes {
+        sqlx::query("INSERT INTO iam.access_token_scopes (access_token_id, scope) VALUES ($1, $2)")
+            .bind(access_id)
+            .bind(scope)
+            .execute(&mut **transaction)
+            .await
+            .map_err(|_| ApiError::internal("oauth_access_scope_insert"))?;
     }
     let refresh_id = Id::now_v7();
     let raw_refresh = state
@@ -2522,7 +2524,8 @@ async fn revoke_refresh_family(
         .execute(&mut **transaction)
         .await
         .map_err(|_| ApiError::internal("revoke_refresh_tokens"))?;
-        sqlx::query(OAUTH_SESSION_CLIENT_ACCESS_REVOCATION_QUERY)
+        sqlx::query(OAUTH_REFRESH_FAMILY_ACCESS_REVOCATION_QUERY)
+            .bind(family_id)
             .bind(authentication_session_id)
             .bind(client.application_id)
             .bind("client_revoked")
@@ -2534,7 +2537,7 @@ async fn revoke_refresh_family(
     Ok(None)
 }
 
-async fn compromise_refresh_family(
+pub(super) async fn compromise_refresh_family(
     transaction: &mut Transaction<'_, Postgres>,
     family_id: Id,
     authentication_session_id: Id,
@@ -2566,7 +2569,8 @@ async fn compromise_refresh_family(
     .execute(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("refresh_family_tokens_revoke"))?;
-    sqlx::query(OAUTH_SESSION_CLIENT_ACCESS_REVOCATION_QUERY)
+    sqlx::query(OAUTH_REFRESH_FAMILY_ACCESS_REVOCATION_QUERY)
+        .bind(family_id)
         .bind(authentication_session_id)
         .bind(client_application_id)
         .bind("refresh_token_reuse")
@@ -2809,7 +2813,7 @@ mod tests {
     use super::{
         AUTHORIZATION_CODE_LOOKUP_QUERY, CODE_EXCHANGE_ACTIVE_SCOPES_QUERY,
         CURRENT_APPLICATION_CLIENT_LOCK_QUERY, CURRENT_APPLICATION_OAUTH_SUBJECT_AUTHORITY_QUERY,
-        OAUTH_REFRESH_INSERT_QUERY, OAUTH_SESSION_CLIENT_ACCESS_REVOCATION_QUERY,
+        OAUTH_REFRESH_FAMILY_ACCESS_REVOCATION_QUERY, OAUTH_REFRESH_INSERT_QUERY,
         REFRESH_CREDENTIAL_LOCK_QUERY, REFRESH_ISSUANCE_SCOPES_QUERY,
         REFRESH_TOKEN_CANDIDATE_QUERY, append_redirect_parameters, empty_idempotent_response,
         escape_html, login_html_response, scopes_retain_exact_authority,
@@ -2997,19 +3001,20 @@ mod tests {
     }
 
     #[test]
-    fn refresh_reuse_revocation_is_bounded_to_the_session_and_client() {
+    fn refresh_reuse_revocation_is_bounded_to_one_family() {
         for required_fragment in [
             "UPDATE iam.access_tokens",
-            "revocation_reason = COALESCE(revocation_reason, $3)",
-            "authentication_session_id = $1",
-            "client_application_id = $2",
+            "revocation_reason = COALESCE(revocation_reason, $4)",
+            "oauth_refresh_family_id = $1",
+            "authentication_session_id = $2",
+            "client_application_id = $3",
         ] {
             assert!(
-                OAUTH_SESSION_CLIENT_ACCESS_REVOCATION_QUERY.contains(required_fragment),
+                OAUTH_REFRESH_FAMILY_ACCESS_REVOCATION_QUERY.contains(required_fragment),
                 "refresh-reuse containment is missing `{required_fragment}`"
             );
         }
-        assert!(!OAUTH_SESSION_CLIENT_ACCESS_REVOCATION_QUERY.contains("authentication_sessions"));
+        assert!(!OAUTH_REFRESH_FAMILY_ACCESS_REVOCATION_QUERY.contains("authentication_sessions"));
     }
 
     #[test]
@@ -3083,3 +3088,7 @@ mod tests {
 #[cfg(test)]
 #[path = "testing_login_tests.rs"]
 mod testing_login_tests;
+
+#[cfg(test)]
+#[path = "oauth_family_tests.rs"]
+mod oauth_family_tests;
