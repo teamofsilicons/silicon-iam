@@ -14,7 +14,7 @@ provider callbacks, and browser navigations remain outside this crate.
 
 ```toml
 [dependencies]
-silicon-iam-client = "2.0.0"
+silicon-iam-client = "3.0.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 

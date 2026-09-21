@@ -1,4 +1,4 @@
-//! Exercise the selector's real OAuth reroute with the published UUID schema.
+//! Exercise the selector's OAuth reroute with canonical identity IDs and legacy membership IDs.
 use super::*;
 use crate::infrastructure::crypto::{DigestPurpose, SecretKind};
 use axum::http::{HeaderValue, Method, Request, header};
@@ -12,13 +12,13 @@ pub(super) async fn assert_selector_membership_transport(
     testing: &PgPool,
 ) -> anyhow::Result<()> {
     sqlx::query("INSERT INTO iam.testing_environments(id,organization_id,created_by_membership_id,name,key_digest,key_digest_key_version,key_ciphertext,key_nonce,key_encryption_key_version) VALUES($1,$2,$3,'Selector transport regression',decode(repeat('61',32),'hex'),1,decode(repeat('62',17),'hex'),decode(repeat('63',12),'hex'),1)")
-        .bind(ENVIRONMENT).bind(Uuid::from_u128(0x21)).bind(Uuid::from_u128(0x31))
+        .bind(ENVIRONMENT).bind(Id::from_u128(0x21)).bind(Id::from_u128(0x31))
         .execute(production).await?;
     let secret = state
         .crypto
         .generate_secret(SecretKind::ApplicationSecret)?;
     let (status, tokens) = testing_plane::scope(
-        SelectedEnvironment { id: ENVIRONMENT, organization_id: Uuid::from_u128(0x21) },
+        SelectedEnvironment { id: ENVIRONMENT, organization_id: Id::from_u128(0x21) },
         async {
             let digest = state.crypto.digest_secret(DigestPurpose::ApplicationSecret, &secret)?;
             sqlx::query("UPDATE iam.application_secrets SET secret_digest=$1,pepper_key_version=$2 WHERE application_id=$3")

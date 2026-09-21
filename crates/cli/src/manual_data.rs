@@ -189,7 +189,7 @@ pub(super) static DOCUMENTS: &[Document] = &[
         topic: "client",
         title: "Complete Rust client guide",
         source: "docs/client/README.md",
-        source_sha256: "b94f103a681bf0248cad88a2a25fe8c2c6a151db0093a875a7f108de0756049b",
+        source_sha256: "090f17127720ae9ab76e58a136ad98a0bf68c5f8d94ebb163e53c2bb4dae6874",
         format: "markdown",
         aliases: &["sdk", "rust"],
         content: include_str!("manual_assets/client.md"),
