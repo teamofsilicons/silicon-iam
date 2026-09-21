@@ -18,6 +18,7 @@ EXCLUDED_TEST_PATHS = %w[
   src/features/testing_environments/honeycomb/testing_apps/tests.rs
   src/features/applications/honeycomb/tests.rs
   src/features/applications/bundle_availability_tests.rs
+  src/features/applications/verification_tests.rs
   src/features/applications/live_tests.rs
   src/features/applications/login_history_tests.rs
   src/features/applications/obo_disclosure_tests.rs
@@ -62,6 +63,7 @@ EXPECTED_DELETE_TABLES = Set.new(%w[
 # These relations deliberately stay outside the API table capability manifest.
 # Access must remain mediated by narrow fixed-path functions or another process.
 CRITICAL_DENIED_TABLES = Set.new(%w[
+  application_access_keys
   honeycomb_publication_plans
   honeycomb_publication_decisions
   application_scope_messages

@@ -7,14 +7,14 @@ Seven transports, each with one job. Picking the wrong one is the most common in
 | Public | no credential | Signup, login initiation and verification, availability probes, provider callbacks |
 | IAM bearer | `Authorization: Bearer …` | Carbon or Silicon API access |
 | Browser session | secure `iam_session` cookie | Interactive application login and SSO navigation |
-| Application | HTTP Basic, app ID and app secret | Token exchange, introspection, revocation, and OBO |
+| Application | HTTP Basic, app ID and app secret | Token exchange, introspection, revocation, app verification, and OBO |
 | Platform admin | IAM bearer whose Carbon holds a current grant | `/api/v1/admin/*` |
 | Step-up | `X-Step-Up-Token`, *in addition to* a bearer | Ownership, credentials, SSO, deletion, privileged grants |
 | WorkOS | verified `WorkOS-Signature` | The WorkOS webhook receiver |
 
 ## Credential lifetimes
 
-These are exact. Startup rejects a deployment that overrides any of them.
+Fixed credential lifetimes are enforced at startup. Application identity keys allow the caller to select a lifetime within the documented range.
 
 | Credential or state | Lifetime |
 | --- | --- |
@@ -24,11 +24,12 @@ These are exact. Startup rejects a deployment that overrides any of them.
 | IAM session refresh family (Carbon or Silicon) | 900 days, absolute |
 | Application OAuth refresh family | 900 days, absolute |
 | Short-lived login token | 2 minutes, single use |
+| Application identity key (`app_access_key`) | 5 minutes by default; caller-selectable from 1 to 60 minutes |
 | Step-up token | 5 minutes, bound to one action on one resource |
 | Carbon invitation | 48 hours |
 | WorkOS setup link | 5 minutes |
 | OBO proof | 60 seconds maximum, single use |
-| One-time secret replay envelope | 10 minutes |
+| One-time secret replay envelope, where supported | 10 minutes; application identity key issuance has no replay |
 
 ## Refresh tokens rotate, and reuse is fatal
 

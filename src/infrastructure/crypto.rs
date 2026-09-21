@@ -101,6 +101,8 @@ pub enum SecretKind {
     OboProof,
     /// Single-use action-bound step-up assertion.
     StepUpAssertion,
+    /// Short-lived application identity key.
+    ApplicationAccessKey,
     /// Application client secret.
     ApplicationSecret,
     /// Application webhook signing secret generated for isolated testing.
@@ -136,6 +138,8 @@ pub enum DigestPurpose {
     StepUpAssertion,
     /// Silicon long-lived credential verification.
     SiliconCredential,
+    /// Application identity-key verification, independent of OAuth tokens.
+    ApplicationAccessKey,
     /// Application client-secret verification.
     ApplicationSecret,
     /// Webhook signing-key verification.
@@ -742,6 +746,7 @@ impl DigestPurpose {
             Self::StepUpAssertion => b"step-up-assertion",
             Self::SiliconCredential => b"silicon-credential",
             Self::ApplicationSecret => b"application-secret",
+            Self::ApplicationAccessKey => b"application-access-key",
             Self::WebhookSigningSecret => b"webhook-signing-secret",
             Self::SignupEmailOtp => b"signup-email-otp",
             Self::SignupPhoneOtp => b"signup-phone-otp",
@@ -879,6 +884,7 @@ const fn secret_prefix(kind: SecretKind) -> &'static str {
         SecretKind::OboProof => "obo_",
         SecretKind::StepUpAssertion => "sup_",
         SecretKind::ApplicationSecret => "ask_",
+        SecretKind::ApplicationAccessKey => "aak_",
         SecretKind::SiliconWebhookSigningSecret => "swhs_",
         SecretKind::ApplicationWebhookSigningSecret => "whs_",
     }

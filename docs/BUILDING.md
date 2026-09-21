@@ -60,6 +60,16 @@ fix with an optional PR. No automatic report submission belongs in error handlin
 
 ## Verify authorization and isolation
 
+For calls that need application identity, request an `app_access_key` using the
+calling application's credentials at `POST /api/v1/app-verification/keys`. Its
+default lifetime is five minutes; `ttl_seconds` accepts 60–3600 seconds. Send the
+calling app's ID and key to the receiving app. The receiver uses its own Basic
+credentials at `POST /api/v1/app-verification/verify`, then authorizes the action
+using its own policy. The key grants no user permissions and does not replace
+OBO. Keep it out of logs and persistent client settings; see
+[app verification](api/applications.html#app-verification) for expiry, revocation,
+concurrent keys and testing isolation.
+
 Verify raw signed webhook bytes and the event's identity before updating your
 cache. Maintain revocation-aware authorization; OBO proofs bind an exact
 request and are consumed once. Follow [webhooks](api/webhooks.html) and

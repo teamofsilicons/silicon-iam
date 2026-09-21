@@ -1335,6 +1335,9 @@ pub enum AppCommand {
     /// Application token exchange, refresh, introspection, and revocation.
     #[command(subcommand)]
     Token(AppTokenCommand),
+    /// Issue and verify short-lived application identity keys for inter-app calls.
+    #[command(subcommand)]
+    Verification(AppVerificationCommand),
     /// Discover scopes and manage critical-scope review discussions.
     #[command(subcommand)]
     Scopes(AppScopesCommand),
@@ -1727,6 +1730,36 @@ pub enum AppEnvironmentCommand {
     Clean {
         /// Environment identifier.
         environment_id: Uuid,
+    },
+}
+
+/// Application identity verification commands.
+#[derive(Debug, Subcommand)]
+pub enum AppVerificationCommand {
+    /// Issue a new identity key; prints its secret value and expiry once.
+    Issue {
+        /// Issuing local handle or canonical `org>handle`; local uses --org.
+        app_id: String,
+        /// Lifetime in seconds, 60–3600 inclusive. Defaults to 300 at IAM.
+        #[arg(long, value_parser = clap::value_parser!(i64).range(60..=3600))]
+        ttl_seconds: Option<i64>,
+        /// Issuing application's secret. Prompted for when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+    },
+    /// Verify a calling application's identity using the receiving app's credentials.
+    Verify {
+        /// Calling local handle or canonical `org>handle`; local uses --org.
+        app_id: String,
+        /// Receiving local handle or canonical `org>handle`; local uses --org.
+        #[arg(long = "as-app-id", value_name = "APP_ID")]
+        receiver_app_id: String,
+        /// Calling application's key. Prompted for when omitted.
+        #[arg(long)]
+        app_access_key: Option<String>,
+        /// Receiving application's secret. Prompted for when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
     },
 }
 
@@ -2162,6 +2195,47 @@ mod tests {
     fn the_grammar_is_internally_consistent() {
         Cli::command().debug_assert();
         assert_eq!(Cli::command().get_name(), "iam");
+    }
+
+    #[test]
+    fn app_verification_issuance_bounds_the_optional_lifetime() {
+        use clap::Parser as _;
+
+        let base = ["iam", "app", "verification", "issue", "acme>checkout"];
+        assert!(matches!(
+            Cli::try_parse_from(base),
+            Ok(Cli {
+                command: super::Command::App(super::AppCommand::Verification(
+                    super::AppVerificationCommand::Issue {
+                        ttl_seconds: None,
+                        ..
+                    }
+                )),
+                ..
+            })
+        ));
+        for value in ["60", "300", "3600"] {
+            assert!(Cli::try_parse_from(base.into_iter().chain(["--ttl-seconds", value])).is_ok());
+        }
+        for value in ["0", "59", "3601", "1.5"] {
+            assert!(Cli::try_parse_from(base.into_iter().chain(["--ttl-seconds", value])).is_err());
+        }
+    }
+
+    #[test]
+    fn app_verification_requires_a_separate_receiving_application() {
+        use clap::Parser as _;
+
+        let base = ["iam", "app", "verification", "verify", "acme>checkout"];
+        assert!(Cli::try_parse_from(base).is_err());
+        assert!(matches!(
+            Cli::try_parse_from(base.into_iter().chain(["--as-app-id", "vendor>billing"])),
+            Ok(Cli {
+                command: super::Command::App(super::AppCommand::Verification(
+                    super::AppVerificationCommand::Verify { app_id, receiver_app_id, .. }
+                )), ..
+            }) if app_id == "acme>checkout" && receiver_app_id == "vendor>billing"
+        ));
     }
 
     #[test]

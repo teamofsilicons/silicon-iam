@@ -33,7 +33,7 @@ struct RetentionPhaseOutcome {
     affected_rows: i64,
 }
 
-const RETENTION_PHASES: [&str; 18] = [
+const RETENTION_PHASES: [&str; 19] = [
     "authentication_events",
     "signup_sessions",
     "login_challenges",
@@ -46,6 +46,7 @@ const RETENTION_PHASES: [&str; 18] = [
     "step_up_assertions_delete",
     "step_up_challenges_delete",
     "obo_proofs",
+    "application_access_keys",
     "access_tokens",
     "refresh_token_families",
     "webhook_delivery_attempts",

@@ -216,6 +216,8 @@ fn application_route(method: &str, path: &str) -> bool {
             "/api/v1/app-auth/tokens"
                 | "/api/v1/oauth/introspect"
                 | "/api/v1/oauth/revoke"
+                | "/api/v1/app-verification/keys"
+                | "/api/v1/app-verification/verify"
                 | "/api/v1/obo-access/exchanges"
                 | "/api/v1/obo-access/verify"
         ),
@@ -250,6 +252,19 @@ mod tests {
         ] {
             assert!(!application_route("POST", route));
         }
+    }
+    #[test]
+    fn selectors_allow_only_post_for_application_verification() {
+        for route in [
+            "/api/v1/app-verification/keys",
+            "/api/v1/app-verification/verify",
+        ] {
+            assert!(application_route("POST", route));
+            for method in ["GET", "PUT", "PATCH", "DELETE"] {
+                assert!(!application_route(method, route));
+            }
+        }
+        assert!(!application_route("POST", "/api/v1/app-verification/admin"));
     }
     #[test]
     fn ambiguous_selectors_fail() {

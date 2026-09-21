@@ -115,6 +115,41 @@ An Application never starts or verifies an OTP challenge. IAM performs that
 identity ceremony on its own hosted login surface; the Rust client accepts
 only the resulting single-use SLT for a new Application login.
 
+## Application identity verification
+
+Use an app's own credentials to issue a short-lived identity key, then the
+receiving app's credentials to verify it. No user session or SLT is involved:
+
+```rust
+use silicon_iam_client::{Client, Credential, models};
+
+let caller = Client::new("https://backend.iam.teamofsilicons.com")?
+    .with_credential(Credential::application("acme>checkout", caller_secret));
+let issued = caller.app_verification()
+    .issue(&models::AppAccessKeyIssue { ttl_seconds: Some(300) }).await?;
+// Send issued.app_id and issued.app_access_key to the receiving application.
+let receiver = Client::new("https://backend.iam.teamofsilicons.com")?
+    .with_credential(Credential::application("vendor>billing", receiver_secret));
+let verified = receiver.app_verification().verify(&models::AppAccessKeyVerify {
+    app_id: issued.app_id,
+    app_access_key: issued.app_access_key,
+}).await?;
+if verified.valid_key {
+    // Identity is verified; authorize the requested action separately.
+}
+```
+
+An omitted `ttl_seconds` uses 300 seconds; 60–3600 seconds inclusive is accepted.
+Each issuance creates a distinct key and returns `app_access_key`, `valid_till`
+and `app_id`. The SDK stores nothing; never log or archive the secret. The two
+key-bearing models redact their `Debug` output, but serialization includes the key.
+Verification does not consume a key. Invalid keys return `valid_key: false` with
+no app details; invalid receiver credentials produce an authentication error.
+Secret rotation and application disablement revoke keys. For tests, set the
+same `EnvironmentKey` on each client and use that environment's app secrets;
+keys cannot cross environments or survive cleaning generations. Identity keys
+do not grant user permissions or replace OBO.
+
 ## What the API groups look like
 
 Every group hangs off the client and borrows it, so obtaining one is free:
@@ -134,6 +169,7 @@ Every group hangs off the client and borrows it, so obtaining one is free:
 | `client.silicons()` | Silicons, credentials, webhooks |
 | `client.applications()` | Applications, secrets, webhooks |
 | `client.oauth()` | Short-lived-token exchange, introspection, revocation |
+| `client.app_verification()` | Issue and verify short-lived application identity keys |
 | `client.obo()` | Catalog-bound signing and delegated access between applications |
 | `client.sso()` | An organization's SSO configuration |
 | `client.environments()` | Testing environments |
@@ -144,8 +180,9 @@ and to the browser.
 
 ## Idempotency is explicit
 
-Every mutating route requires an idempotency key, so mutations take a
-`Mutation` that carries one. The service binds the key to the caller, the route
+Ordinary mutating routes require an idempotency key, so those mutations take a
+`Mutation` that carries one. Application identity key issuance is an exception:
+it creates a fresh independent key on each call and has no replay storage. The service binds the key to the caller, the route
 and the exact body, then replays the original response for a repeat of the same
 request — which only helps if a retry presents the *same* key:
 

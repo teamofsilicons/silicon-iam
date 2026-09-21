@@ -5,6 +5,7 @@ pub mod app_bundles;
 pub mod app_reads;
 pub mod app_scopes;
 pub mod app_testing;
+pub mod app_verification;
 pub mod approval;
 pub mod auth;
 pub mod carbon;

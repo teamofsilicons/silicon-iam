@@ -368,6 +368,21 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | `iam silicon dead-letters` | `<silicon-id>` | Lists exhausted deliveries; optional paging. |
 | `iam silicon replay` | `<silicon-id>` and one or more `--delivery <uuid>` | Re-queues only the named dead letters. |
 
+### Application identity keys
+
+```sh
+iam app verification issue 'acme>checkout' --ttl-seconds 300 --json
+iam app verification verify 'acme>checkout' --as-app-id 'vendor>billing' --json
+```
+
+The first command prompts for the issuing application's secret and prints a new
+identity key with its expiry. The second prompts for the receiving application's
+secret and the caller's key. In noninteractive use, supply `--app-secret` and
+`--app-access-key` explicitly. Keep the key out of logs and archives. A valid key
+identifies the caller; the receiver still authorizes the action. Verification
+is repeatable until expiry, revocation, rotation, disablement or environment
+invalidation; it grants no user permissions and does not replace OBO.
+
 ### Applications, tokens, OBO, and webhooks
 
 | Command | Required input | Authority and important constraints |
@@ -380,6 +395,8 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | `iam app rotate-secret` | `<app-id>` | Step-up action `application.client_secret.rotate` on the Application UUID; returns the replacement client secret once. |
 | `iam app rotate-webhook-secret` | `<app-id> --webhook-secret <secret>` | Step-up action `application.webhook_secret.rotate` on the Application UUID. IAM stores the caller-chosen 32–512 visible-ASCII secret. |
 | `iam app discover` | `<target-app-id> --as-app-id <requester-app-id>` plus requester secret at flag or prompt | Application-authenticated base-URL discovery; may cross organizations and respects production/test credential separation. |
+| `iam app verification issue` | `<app-id>` plus issuing app secret at `--app-secret` or prompt | Returns a fresh `app_access_key`, expiry and app ID. `--ttl-seconds` accepts 60–3600; omitted means 300 seconds. Each call issues independently with no request-key replay. |
+| `iam app verification verify` | `<calling-app-id> --as-app-id <receiving-app-id>` plus caller's `--app-access-key` and receiver's `--app-secret` at flags or prompts | Proves calling app identity only. Invalid keys return `{valid_key:false}`; invalid receiving credentials are authentication errors. Use the same `--test` for both apps when testing. |
 | `iam app token` | `<subcommand>` | Application SLT exchange, refresh, introspection, and revocation namespace. |
 | `iam app token exchange` | `<app-id>` plus SLT and Application secret at flags or prompts | SLT is single-use. Optional idempotency key is 16–255 visible ASCII; reuse the same key and input after an uncertain result. |
 | `iam app token refresh` | `<app-id>` plus refresh token and Application secret at flags or prompts | Rotates the refresh and access tokens. Persist/reuse the same idempotency key after uncertainty; a new key with an already-used refresh token is a replay. |

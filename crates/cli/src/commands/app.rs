@@ -33,6 +33,9 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
         } => return discover(context, &app_id, &requester_app_id, app_secret).await,
         AppCommand::Read(args) => return super::app_reads::run(context, args).await,
         AppCommand::Token(command) => return token(context, command).await,
+        AppCommand::Verification(command) => {
+            return super::app_verification::run(context, command).await;
+        }
         AppCommand::Scopes(command) => return super::app_scopes::run(context, command).await,
         AppCommand::Bundle(command) => return super::app_bundles::run(context, command).await,
         AppCommand::Testing(command) => return super::app_testing::run(context, command).await,
@@ -246,6 +249,7 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
         AppCommand::Discover { .. }
         | AppCommand::Read(_)
         | AppCommand::Token(_)
+        | AppCommand::Verification(_)
         | AppCommand::Scopes(_)
         | AppCommand::Bundle(_)
         | AppCommand::Testing(_)

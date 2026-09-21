@@ -10,7 +10,7 @@ use tower::ServiceExt as _;
 
 pub(crate) async fn exercise(
     app: &axum::Router,
-    _state: &ApiState,
+    state: &ApiState,
     admin: &sqlx::PgPool,
     test_admin: &sqlx::PgPool,
     credential: &str,
@@ -215,6 +215,21 @@ pub(crate) async fn exercise(
     )
     .await?;
     revision = activated["iam_revision"].as_i64().unwrap_or_default();
+    let verification_app = crate::features::applications::router()
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::features::testing_environments::select_plane,
+        ))
+        .with_state(state.clone());
+    application_verification_selector(
+        &verification_app,
+        configured_app,
+        rotated["app_secret"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("test application secret missing"))?,
+        &authorization,
+    )
+    .await?;
     ensure!(
         send(
             app,
@@ -413,6 +428,110 @@ pub(crate) async fn exercise(
         production["iam_revision"].clone(),
     )
     .await?;
+    Ok(())
+}
+
+/// Exercise the real selector middleware with app credentials, without a root
+/// testing key. The same test-only credential must fail on the production plane.
+async fn application_verification_selector(
+    app: &axum::Router,
+    app_id: &str,
+    secret: &str,
+    production_authorization: &str,
+) -> anyhow::Result<()> {
+    let authorization = format!("Basic {}", STANDARD.encode(format!("{app_id}:{secret}")));
+    let request = |path: &str, credential: &str, testing: bool, body: &Value| {
+        let mut builder = Request::post(path)
+            .header("authorization", credential)
+            .header("content-type", "application/json");
+        if testing {
+            builder = builder.header("x-testing-application", credential);
+        }
+        builder
+            .body(Body::from(serde_json::to_vec(body)?))
+            .map_err(anyhow::Error::from)
+    };
+    let issued = app
+        .clone()
+        .oneshot(request(
+            "/api/v1/app-verification/keys",
+            &authorization,
+            true,
+            &json!({}),
+        )?)
+        .await?;
+    ensure!(
+        issued.status() == StatusCode::OK,
+        "test app selector could not issue key: {}",
+        issued.status()
+    );
+    ensure!(
+        issued
+            .headers()
+            .get("cache-control")
+            .is_some_and(|value| value == "no-store"),
+        "issued key response must not be cached"
+    );
+    let issued: Value = serde_json::from_slice(&to_bytes(issued.into_body(), 1024 * 1024).await?)?;
+    ensure!(
+        issued["app_id"] == app_id && issued["app_access_key"].is_string(),
+        "issued test key identity missing"
+    );
+    let verification = json!({"app_id": app_id, "app_access_key": issued["app_access_key"]});
+    let verified = app
+        .clone()
+        .oneshot(request(
+            "/api/v1/app-verification/verify",
+            &authorization,
+            true,
+            &verification,
+        )?)
+        .await?;
+    ensure!(
+        verified.status() == StatusCode::OK,
+        "test app selector could not verify key: {}",
+        verified.status()
+    );
+    let verified: Value =
+        serde_json::from_slice(&to_bytes(verified.into_body(), 1024 * 1024).await?)?;
+    ensure!(
+        verified
+            == json!({"valid_key": true, "valid_till": issued["valid_till"], "app_id": app_id}),
+        "test app verification identity/expiry mismatch"
+    );
+    let production = app
+        .clone()
+        .oneshot(request(
+            "/api/v1/app-verification/verify",
+            production_authorization,
+            false,
+            &verification,
+        )?)
+        .await?;
+    ensure!(
+        production.status() == StatusCode::OK,
+        "production verifier request failed: {}",
+        production.status()
+    );
+    let production: Value =
+        serde_json::from_slice(&to_bytes(production.into_body(), 1024 * 1024).await?)?;
+    ensure!(
+        production == json!({"valid_key": false}),
+        "test key leaked into production verification"
+    );
+    let missing_selector = app
+        .clone()
+        .oneshot(request(
+            "/api/v1/app-verification/keys",
+            &authorization,
+            false,
+            &json!({}),
+        )?)
+        .await?;
+    ensure!(
+        missing_selector.status() == StatusCode::UNAUTHORIZED,
+        "test app secret authenticated on production plane"
+    );
     Ok(())
 }
 

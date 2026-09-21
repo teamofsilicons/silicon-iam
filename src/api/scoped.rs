@@ -147,6 +147,8 @@ mod tests {
             (Method::POST, "/api/v1/auth/register"),
             (Method::POST, "/api/v1/auth/step-up/challenges"),
             (Method::POST, "/api/v1/app-auth/tokens"),
+            (Method::POST, "/api/v1/app-verification/keys"),
+            (Method::POST, "/api/v1/app-verification/verify"),
             (Method::POST, "/api/v1/obo-access/exchanges"),
             (Method::POST, "/api/v1/obo-access/verify"),
             (

@@ -9,6 +9,7 @@
 //! deliberately absent: they belong to the operator, to the provider and to
 //! the browser respectively, not to an API caller.
 
+pub mod app_verification;
 pub mod application_mutations;
 pub mod application_reads;
 pub mod application_scopes;
@@ -106,6 +107,12 @@ impl Client {
     #[must_use]
     pub const fn applications(&self) -> applications::Applications<'_> {
         applications::Applications(self)
+    }
+
+    /// Short-lived application identity keys for inter-application calls.
+    #[must_use]
+    pub const fn app_verification(&self) -> app_verification::AppVerification<'_> {
+        app_verification::AppVerification(self)
     }
 
     /// The OAuth endpoints an application calls as itself.

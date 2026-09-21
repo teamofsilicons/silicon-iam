@@ -275,6 +275,7 @@ DECLARE
         'silicon_webhook_subscriptions'
     ];
     denied_table_names text[] := ARRAY[
+        'application_access_keys',
         'honeycomb_publication_plans',
         'honeycomb_publication_decisions',
         'application_testing_environments',
@@ -653,6 +654,9 @@ DECLARE
         'list_action_approvals',
         'decide_action_approval',
         'lock_current_application_client',
+        'lock_application_verification_client',
+        'issue_application_access_key',
+        'verify_application_access_key',
         'lock_current_application_oauth_subject_authority',
         'lock_current_application_obo_exchange_authority',
         'lock_current_application_obo_exchange_authority_v2',
@@ -713,6 +717,7 @@ DECLARE
         'application_webhook_has_event_scope'
     ];
     non_api_definer_names text[] := ARRAY[
+        'revoke_application_access_keys',
         'register_membership_identifier',
         'honeycomb_publication_gates',
         'honeycomb_publication_is_current',

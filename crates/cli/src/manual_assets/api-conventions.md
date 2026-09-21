@@ -39,7 +39,7 @@ Versioned responses identify the path's contract in `Silicon-IAM-API-Version`. D
 
 IAM's own failures use a JSON error envelope with a stable `code` and an optional request correlation ID. A public edge or reverse proxy can answer before that contract is reached. An HTML `403` without an IAM envelope is not an IAM membership denial; record the HTTP status and any request ID, then inspect deployment logs. Do not invent a request ID or infer a particular firewall rule from that response alone. If a mutation's outcome is uncertain, retain its original idempotency key.
 
-Every externally initiated mutation requires an `Idempotency-Key` of 16–255 characters. The server scopes it to the authenticated caller, the route, and a digest of the request body.
+Externally initiated mutations require an `Idempotency-Key` of 16–255 characters where documented. The server scopes it to the authenticated caller, the route, and a digest of the request body. Application identity key issuance has no replay support; each request issues an independent key.
 
 - Repeating an identical validated request returns the stored result, and may carry `Idempotency-Replayed: true`.
 
@@ -49,7 +49,9 @@ Every externally initiated mutation requires an `Idempotency-Key` of 16–255 ch
 
 **A key belongs to an intent, not to a request.** Mint it when the user submits, and reuse it for every transport retry of that submission. A fresh key per attempt lets the server execute the mutation twice — which is the exact thing idempotency exists to prevent.
 
-Two deliberate exceptions. **OBO proof verification** accepts no idempotency key, never stores a successful response, and answers `409` on every attempt after the proof is consumed — it is single-use by design. And a response containing a **newly generated secret** stays replayable for only ten minutes, rather than the usual twenty-four hours.
+**OBO proof verification** accepts no idempotency key, never stores a successful response, and answers `409` on every attempt after the proof is consumed — it is single-use by design. And a response containing a **newly generated secret** on a route supporting idempotency stays replayable for only ten minutes, rather than the usual twenty-four hours.
+
+**Application identity keys** are stored only as hashes. Issuance at `POST /api/v1/app-verification/keys` returns a fresh key once, without idempotent replay. Retrying after an uncertain response may create another concurrently valid key; an unused key expires independently. Verification at `POST /api/v1/app-verification/verify` does not mutate or consume the key, so it can be repeated to check current validity.
 
 ## JSON Merge Patch
 

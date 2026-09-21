@@ -6,9 +6,9 @@ The first official contract is **v1** at `https://backend.iam.teamofsilicons.com
 
 Negotiate with unversioned `GET /api/version` and `Silicon-IAM-Supported-API-Versions: v1`, then verify the selected major and response header. `GET /api/v1/contracts` lists contract status and activity. Breaking changes receive a new major. A deprecated contract becomes eligible for sunset only after at least seven days without requests, with a conservative one-minute allowance for coalesced activity timestamps. Current v1 does not sunset merely because it is idle.
 
-Use direct IAM Carbon or Silicon bearers for IAM account and organization actions. Confidential applications use Basic credentials for token exchange, introspection, revocation, discovery, OBO, and application testing setup. Their OAuth bearers can read only resources covered by current approved scopes, user consent, and selected active memberships. They cannot approve their own additional permissions or enter first-party management flows.
+Use direct IAM Carbon or Silicon bearers for IAM account and organization actions. Confidential applications use Basic credentials for token exchange, introspection, revocation, discovery, app verification, OBO, and application testing setup. Their OAuth bearers can read only resources covered by current approved scopes, user consent, and selected active memberships. They cannot approve their own additional permissions or enter first-party management flows.
 
-Mutation endpoints require an `Idempotency-Key`; resource updates also require the documented strong `If-Match` version. Reuse the same key and payload for an uncertain retry. OBO verification is deliberately single-use and accepts no idempotency key. OAuth form endpoints use `application/x-www-form-urlencoded`; other endpoints use their declared JSON content type. See [conventions](api/conventions.html), [authentication](api/authentication.html), and [errors](api/errors.html).
+Mutation endpoints require an `Idempotency-Key` where documented; resource updates also require the documented strong `If-Match` version. Reuse the same key and payload for an uncertain retry. OBO verification is deliberately single-use and accepts no idempotency key. App verification key issuance creates an independent key on every request and has no idempotent replay. OAuth form endpoints use `application/x-www-form-urlencoded`; other endpoints use their declared JSON content type. See [conventions](api/conventions.html), [authentication](api/authentication.html), and [errors](api/errors.html).
 
 ## Example: external application login
 
@@ -40,6 +40,28 @@ A direct IAM client first gets `/app-auth/organizations?app_id=...`, then submit
 The scope catalog describes each permission and whether it is critical. Initial critical access waits for review; an existing application uses its prior effective permissions while additions are reviewed. Scope request threads support explanations, reviewer instructions, replies, approvals, and denial reasons with email notifications. Approval and user consent are separate requirements. [Applications guide](api/applications.html).
 
 Verified apps can discover another verified app's `base_url` and published OBO endpoints across organizations. The subject's organization comes from its selected memberships, independently of either app's owner. An OBO exchange accepts optional body `org_id` when selecting among those memberships, binds the exact request, and returns a single-use proof for the recipient to verify. [OBO guide](api/obo.html).
+
+## Verify an application's identity
+
+App A authenticates with its own HTTP Basic app credentials and sends
+`POST /api/v1/app-verification/keys` with JSON `{}` for the default five-minute
+lifetime, or `{"ttl_seconds":600}` to request ten minutes. The inclusive range is
+60–3600 seconds. IAM returns `{app_access_key, valid_till, app_id}` and stores only
+the key's hash. Multiple keys can remain valid concurrently.
+
+App A presents its ID and key to App B. App B authenticates to IAM with **App B's
+own credentials** and posts App A's `{app_id, app_access_key}` to
+`/api/v1/app-verification/verify`. A valid key returns
+`{valid_key:true, valid_till, app_id}`. An unknown, expired, revoked or mismatched
+key returns only `{valid_key:false}`. Invalid receiver credentials return 401.
+Verification does not consume the key. The receiver still authorizes the action;
+this key provides application identity without user permissions or OBO authority.
+
+These routes use the main IAM backend. Accepted app-secret rotation revokes keys
+issued under the previous secret, and disabling an app revokes its outstanding
+keys. Testing keys require the same environment and current cleaning generation
+and never verify in production. Keep keys out of logs and ordinary application
+reads. See the [complete flow](api/applications.html#app-verification).
 
 ## Batch and bundle login
 

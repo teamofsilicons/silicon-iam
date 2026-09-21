@@ -291,6 +291,10 @@ impl FromRequestParts<ApiState> for ApplicationClient {
         )
         .await
         .map_err(|_| ApiError::internal("application_client_context"))?;
+        // This lookup only finds candidates. The definitive projection below
+        // locks application/principal/secret and rechecks the exact credential.
+        // Locking the secret here first would invert management and verification
+        // lock order, allowing concurrent Basic authentication to deadlock.
         let candidate_rows = sqlx::query_as::<_, ClientSecretRow>(
             r"
             WITH supplied_digest (key_version, digest) AS (
@@ -313,7 +317,6 @@ impl FromRequestParts<ApiState> for ApplicationClient {
              AND secret.secret_digest = supplied_digest.digest
             WHERE secret.status = 'active'
                OR (secret.status = 'retiring' AND secret.retires_at > transaction_timestamp())
-            FOR UPDATE OF secret
             ",
         )
         .bind(versions)

@@ -6,9 +6,10 @@ info:
   description: |
     Normative public and privileged HTTP contract for Silicon IAM. PostgreSQL is
     authoritative; webhook delivery never substitutes for online authorization.
-    Timestamps are UTC RFC 3339 values. One-time secret responses can be replayed
-    for ten minutes only by the same caller using the same route, request digest,
-    and Idempotency-Key.
+    Timestamps are UTC RFC 3339 values. On routes supporting idempotency, one-time
+    secret responses can be replayed for ten minutes only by the same caller
+    using the same route, request digest, and Idempotency-Key. Application identity
+    key issuance returns each key once and has no idempotent replay.
     IAM-managed six-digit OTPs expire after ten minutes. Signup, Carbon login,
     invitation-join, and verified-channel step-up challenges allow ten failed
     verifications, then enter a 60-second cooldown before the current unexpired
@@ -40,6 +41,11 @@ tags:
     description: >-
       Strictly same-organization Application discovery, request-bound proof
       exchange, and single-use audience verification.
+  - name: App verification
+    description: >-
+      Short-lived application identity keys for inter-app communication. Each
+      endpoint authenticates an application using its own HTTP Basic credentials.
+      Keys prove application identity only and do not grant user or OBO authority.
   - { name: Webhooks }
   - name: Testing environments
     description: >-
@@ -3428,6 +3434,87 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
+  /api/v1/app-verification/keys:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    post:
+      tags: [App verification]
+      operationId: issueAppAccessKey
+      summary: Issue a short-lived identity key for the authenticated application
+      description: >-
+        Verifies the application's current secret, then generates a random
+        256-bit app_access_key. IAM stores only a hash with the authenticated
+        app_id, expiry, revocation state and environment context, including the
+        current testing generation. Multiple keys may remain valid concurrently.
+        The key is returned only in this response, never in ordinary application
+        reads or logs. Issuance has no idempotent replay: a repeated request creates
+        an independent key. Accepted app-secret rotation revokes keys issued under
+        the previous secret; disabling the application revokes its outstanding keys.
+        This identity API is available on the main IAM backend, not the scoped API.
+      security: [{ applicationBasic: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AppAccessKeyIssue' }
+      responses:
+        '200':
+          description: Key issued to the authenticated application.
+          headers:
+            Cache-Control: { schema: { const: no-store } }
+            Pragma: { schema: { const: no-cache } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppAccessKeyIssued' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/app-verification/verify:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    post:
+      tags: [App verification]
+      operationId: verifyAppAccessKey
+      summary: Verify a calling application's identity using the receiver's credentials
+      description: >-
+        The receiving application authenticates with its own app_id and app_secret
+        in HTTP Basic. The JSON app_id and app_access_key identify the calling
+        application. IAM hashes the submitted key and requires a matching calling
+        app_id, unexpired and unrevoked key, active calling application, and the
+        same environment context and current testing generation. Test keys never
+        verify in production or another testing environment. Unknown, expired,
+        revoked or mismatched keys return only valid_key:false. Invalid receiving
+        credentials return an authentication error. Verification does not consume
+        the key and may be repeated while it remains valid. The result proves
+        application identity only; the receiver authorizes the requested action.
+        It grants no user permissions and does not replace OBO. This identity API
+        is available on the main IAM backend, not the scoped API.
+      security: [{ applicationBasic: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AppAccessKeyVerify' }
+      responses:
+        '200':
+          description: Current key validity; invalid keys disclose no application details.
+          headers:
+            Cache-Control: { schema: { const: no-store } }
+            Pragma: { schema: { const: no-cache } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AppAccessKeyVerification' }
+              examples:
+                valid:
+                  value: { valid_key: true, valid_till: '2026-09-22T12:05:00Z', app_id: 'acme>billing' }
+                invalid:
+                  value: { valid_key: false }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
   /api/v1/obo-access/applications/{app_id}/endpoints:
     parameters:
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
@@ -6664,6 +6751,63 @@ components:
         webhook_signing_secret: { $ref: '#/components/schemas/ApplicationWebhookSecret' }
         webhook_secret_version: { type: integer, minimum: 1 }
         secret_replay_expires_at: { type: string, format: date-time }
+    AppAccessKeyIssue:
+      type: object
+      additionalProperties: false
+      description: Issue an application identity key; send an empty object for the default five-minute lifetime.
+      properties:
+        ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 60
+          maximum: 3600
+          default: 300
+          description: Requested lifetime in seconds, from one to sixty minutes inclusive; out-of-range values are rejected.
+    AppAccessKeyIssued:
+      type: object
+      additionalProperties: false
+      required: [app_access_key, valid_till, app_id]
+      x-redact-debug: true
+      description: Application identity key returned only at issuance. Keep this credential private and never log it.
+      properties:
+        app_access_key:
+          type: string
+          pattern: '^aak_[A-Za-z0-9_-]{43}$'
+          description: Opaque random 256-bit application identity key. IAM stores only its hash.
+        valid_till: { type: string, format: date-time, description: Absolute UTC expiry in RFC 3339 format. }
+        app_id: { $ref: '#/components/schemas/AppId' }
+    AppAccessKeyVerify:
+      type: object
+      additionalProperties: false
+      required: [app_id, app_access_key]
+      x-redact-debug: true
+      description: Calling application identity and key. Authenticate the receiving application separately using HTTP Basic.
+      properties:
+        app_id:
+          type: string
+          description: The calling application's claimed canonical app_id; a mismatch returns valid_key:false.
+        app_access_key:
+          type: string
+          description: The calling application's identity key; unknown or malformed key values return valid_key:false.
+    AppAccessKeyVerification:
+      type: object
+      additionalProperties: false
+      required: [valid_key]
+      description: Valid keys return app_id and valid_till from the stored record. Invalid keys return only valid_key:false.
+      properties:
+        valid_key: { type: boolean }
+        valid_till: { type: string, format: date-time, description: 'Stored expiry, present only when valid_key is true.' }
+        app_id: { $ref: '#/components/schemas/AppId' }
+      oneOf:
+        - properties:
+            valid_key: { const: true }
+          required: [valid_till, app_id]
+        - properties:
+            valid_key: { const: false }
+          not:
+            anyOf:
+              - required: [valid_till]
+              - required: [app_id]
     ApplicationSecretRotated:
       type: object
       required: [app_id, app_secret, app_secret_version, application_version, secret_replay_expires_at]

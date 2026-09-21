@@ -57,6 +57,7 @@ fn enrich(mut command: Command, path: &str) -> Command {
             arg.get_id().as_str(),
             "stk"
                 | "app_secret"
+                | "app_access_key"
                 | "slt"
                 | "refresh_token"
                 | "token"
@@ -319,6 +320,9 @@ fn notes(path: &str) -> String {
         }
         "iam app import" => {
             "Example:\n  iam --test <ENVIRONMENT_ID> app import 'tos>space-station'\n\nFirst obtain the environment key with `iam env key <ENVIRONMENT_ID>` in the\nproduction control plane, then sign in or sign up inside that test environment.\nThe source ID must be canonical. The test Carbon must administer any existing\ntarget organization. A fresh import does not change production or other environments.\nKeep the returned test client secret separate from the production credential."
+        }
+        "iam app verification" | "iam app verification issue" | "iam app verification verify" => {
+            "Workflow:\n  iam app verification issue 'acme>checkout' --ttl-seconds 300\n  iam app verification verify 'acme>checkout' --as-app-id 'vendor>billing'\n\nIssue authenticates the calling app; verify authenticates the receiving app.\nSupply each app's own --app-secret and the caller's --app-access-key at protected\nprompts, or as flags in noninteractive use. Issuance prints the new key once.\nEach issuance creates a new key; no request-key replay is available.\n\nUse the same --test environment for both apps when testing. Unknown, expired,\nrevoked or mismatched keys return valid_key: false without application details.\nA valid key proves app identity; the receiver still authorizes the requested action."
         }
         "iam app token exchange" => {
             "Workflow:\n  iam login --app-id 'tos>space-station' --grant-org tos\n  iam --org tos app token exchange 'tos>space-station'\n\nSupply the SLT and Application secret at the protected terminal prompts, or use\n--slt and --app-secret for a non-interactive process. SLTs expire quickly and\nare single-use: do not retry a consumed SLT as a new login. Preserve the returned\nrefresh token securely. Read `iam docs authorization` for initial access synchronization."

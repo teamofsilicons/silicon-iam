@@ -44,6 +44,8 @@ Timestamps are UTC RFC 3339. Request and response bodies are JSON unless an endp
 
 ## Application authority in v1
 
+For inter-app communication, an application can request a short-lived `app_access_key` using its own Basic credentials. A receiving application verifies the caller's ID and key using the receiver's own Basic credentials. This proves application identity; the receiver remains responsible for authorizing the action. The key grants no user permissions and does not replace OBO. See App verification (`iam docs api/applications`).
+
 Applications declare `app_scope` separately from their `webhook_scope` subscriptions. Critical permissions go through IAM or external-provider review. Users approve effective permissions and choose organizations before IAM hands the application a short-lived token. Apps never receive IAM credentials or verification codes.
 
 External OBO can connect applications owned by different organizations while preserving the user's selected membership context. Bundles offer one displayed login identity for same-organization applications; tokens remain individually bound. Application testing environments reproduce the same contract with isolated credentials, recursively imported dependencies, fixed test OTPs, and configurable inactivity retention.

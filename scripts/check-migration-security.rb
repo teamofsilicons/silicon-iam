@@ -92,8 +92,20 @@ if File.exist?(retention_path) && File.exist?(retention_cleanup_path)
   worker_source = File.read("src/worker/maintenance.rs")
   worker_phase_source = worker_source[/const RETENTION_PHASES:.*?= \[(.*?)\];/m, 1]
   worker_phases = worker_phase_source&.scan(/"([a-z0-9_]+)"/)&.flatten
-  unless declared_phases&.length == 18 && declared_phases == worker_phases
-    issues << "active retention migration and worker must share one exact 18-phase vocabulary"
+  key_retention = File.read("migrations/0115_application_access_keys.sql")
+  key_retention_requirements = [
+    /run_worker_retention_maintenance_before_profile_projection\(text,integer,integer,integer,integer,integer,integer,integer\)/,
+    /''application_access_keys'',\\n        ''access_tokens'',/,
+    /IF p_phase = 'application_access_keys' THEN[\s\S]*expires_at<clock_timestamp\(\)-make_interval\(days=>p_token_metadata_days\)/,
+    /FOR UPDATE SKIP LOCKED LIMIT p_limit[\s\S]*DELETE FROM iam\.application_access_keys/,
+    /position\('DELETE FROM iam\.application_access_keys' IN definition\)=0/
+  ]
+  unless key_retention_requirements.all? { |pattern| key_retention.match?(pattern) }
+    issues << "application identity key retention must extend the authenticated wrapper with a bounded token-metadata cleanup phase"
+  end
+  declared_phases&.insert(declared_phases.index("access_tokens"), "application_access_keys")
+  unless declared_phases&.length == 19 && declared_phases == worker_phases
+    issues << "active retention migrations and worker must share one exact 19-phase vocabulary"
   end
   cleanup_requirements = {
     "makes the retired retention core invoker-rights" =>

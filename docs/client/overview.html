@@ -15,7 +15,7 @@
       <code>members()</code>, <code>invitations()</code>, <code>tags()</code>,
       <code>trust()</code>, <code>governance()</code>, and <code>sso()</code></td></tr>
     <tr><td><strong>Silicons and Applications</strong></td><td><code>silicons()</code>,
-      <code>applications()</code>, <code>oauth()</code>, and catalog-bound OBO signing through
+      <code>applications()</code>, <code>oauth()</code>, <code>app_verification()</code>, and catalog-bound OBO signing through
       <code>obo()</code></td></tr>
     <tr><td><strong>Operations</strong></td><td><code>system()</code> and
       <code>environments()</code></td></tr>
@@ -27,7 +27,7 @@
 <p>
   The crate is not restricted to an Application credential. Build an anonymous client for public
   routes, clone it with an IAM bearer for Carbon or Silicon administration, or clone it with an
-  Application Basic credential for OAuth, discovery and OBO. The <code>cli-session</code> feature
+  Application Basic credential for OAuth, app identity verification, discovery and OBO. The <code>cli-session</code> feature
   that starts and verifies direct Carbon login challenges is reserved for the official CLI;
   normal Application integrations begin login only with an SLT.
 </p>
@@ -44,11 +44,12 @@
 <h2>The design rule</h2>
 
 <p>
-  Inputs with security meaning stay visible at the call site. A mutating method takes a
+  Inputs with security meaning stay visible at the call site. An ordinary mutating method takes a
   <code>Mutation</code>; an optimistic update takes the current resource version; a privileged
   mutation takes a step-up assertion; and a test-plane call carries an
   <code>EnvironmentKey</code>. That makes accidental omission a compile-time or service error
-  instead of hidden client state.
+  instead of hidden client state. App identity key issuance is an exception: every call creates
+  a fresh key, without an idempotency key or replay storage.
 </p>
 
 <p>
@@ -67,8 +68,9 @@
     <code>Vary</code>.</li>
   <li>The HTTP timeout defaults to 30 seconds and can be changed on
     <code>ClientBuilder</code>.</li>
-  <li>Each method sends once. After an uncertain mutation, the caller decides whether to retry and
-    must reuse the original <code>Mutation</code>.</li>
+  <li>Each method sends once. After an uncertain replayable mutation, the caller decides whether
+    to retry and must reuse the original <code>Mutation</code>. Repeating app identity key issuance
+    creates an independent key.</li>
   <li><code>Error::Api</code> retains the service envelope and request ID.
     <code>Error::RateLimited</code> additionally exposes the parsed delay and rate-limit counts.</li>
   <li>Credential wrapper types redact secrets from <code>Debug</code>. Successful response models

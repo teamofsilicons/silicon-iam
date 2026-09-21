@@ -13,7 +13,7 @@
     <tr><td>Browser session</td><td>secure <code>iam_session</code> cookie</td>
       <td>Interactive application login and SSO navigation</td></tr>
     <tr><td>Application</td><td>HTTP Basic, app ID and app secret</td>
-      <td>Token exchange, introspection, revocation, and OBO</td></tr>
+      <td>Token exchange, introspection, revocation, app verification, and OBO</td></tr>
     <tr><td>Platform admin</td><td>IAM bearer whose Carbon holds a current grant</td>
       <td><code>/api/v1/admin/*</code></td></tr>
     <tr><td>Step-up</td><td><code>X-Step-Up-Token</code>, <em>in addition to</em> a bearer</td>
@@ -25,7 +25,7 @@
 
 <h2>Credential lifetimes</h2>
 
-<p>These are exact. Startup rejects a deployment that overrides any of them.</p>
+<p>Fixed credential lifetimes are enforced at startup. Application identity keys allow the caller to select a lifetime within the documented range.</p>
 
 <table>
   <thead><tr><th>Credential or state</th><th>Lifetime</th></tr></thead>
@@ -36,11 +36,12 @@
     <tr><td>IAM session refresh family (Carbon or Silicon)</td><td>900 days, absolute</td></tr>
     <tr><td>Application OAuth refresh family</td><td>900 days, absolute</td></tr>
     <tr><td>Short-lived login token</td><td>2 minutes, single use</td></tr>
+    <tr><td>Application identity key (<code>app_access_key</code>)</td><td>5 minutes by default; caller-selectable from 1 to 60 minutes</td></tr>
     <tr><td>Step-up token</td><td>5 minutes, bound to one action on one resource</td></tr>
     <tr><td>Carbon invitation</td><td>48 hours</td></tr>
     <tr><td>WorkOS setup link</td><td>5 minutes</td></tr>
     <tr><td>OBO proof</td><td>60 seconds maximum, single use</td></tr>
-    <tr><td>One-time secret replay envelope</td><td>10 minutes</td></tr>
+    <tr><td>One-time secret replay envelope, where supported</td><td>10 minutes; application identity key issuance has no replay</td></tr>
   </tbody>
 </table>
 

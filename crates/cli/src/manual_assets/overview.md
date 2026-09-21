@@ -34,6 +34,7 @@ references below to understand each authorization and testing boundary.
 | Perform IAM actions from an application | [IAM permissions](IAM_SCOPES.md) and [scoped backend](SCOPED_BACKEND.md) |
 | Implement permission and organization consent | [Consent](ORGANIZATION_CONSENT.md) |
 | Sign in to several applications | [Batch login](BATCH_LOGIN.md) or [bundles](BUNDLES.md) |
+| Verify a calling application's identity | [App verification](api/applications.html#app-verification) |
 | Call an external application for a user | [OBO](api/obo.html) |
 | Keep authorization caches current | [Webhooks](api/webhooks.html) |
 | Test without production data | [Testing environments](api/testing-environments.html) |

@@ -137,3 +137,21 @@ The token must have been issued to the calling Application as both client and au
 5. On an authoritative terminal API error, fix the request or stop; do not blindly retry it.
 
 The crate sends each call once and does not persist mutations for you. OBO proof verification is intentionally different: it consumes a single-use proof and accepts no idempotency key, so an ambiguous verification must not be retried.
+
+## Application identity keys
+
+Use `app_verification()` for inter-application identity without a user token. Issue with the calling app's credentials, then verify with the receiving app's credentials. The receiving app still authorizes the requested action; an identity key grants no user permissions and does not replace OBO.
+
+```
+use silicon_iam_client::models;
+
+let issued = caller.app_verification()
+    .issue(&models::AppAccessKeyIssue { ttl_seconds: Some(300) }).await?;
+// Transfer the app ID and key securely to the receiver.
+let verified = receiver.app_verification().verify(&models::AppAccessKeyVerify {
+    app_id: issued.app_id,
+    app_access_key: issued.app_access_key,
+}).await?;
+```
+
+Omit `ttl_seconds` for 300 seconds; the accepted range is 60–3600 inclusive. Issuance creates a fresh independent key without idempotent replay. Keep the key out of logs and archives. Verification is repeatable and returns `valid_key: false` without app details for unknown, expired, revoked or mismatched keys. Invalid receiver credentials are authentication errors. Secret rotation and application disablement revoke prior keys. In testing, configure both clients with the same `EnvironmentKey` and test app secrets. Keys cannot cross environments or survive cleaning generations.

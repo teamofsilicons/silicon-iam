@@ -12,6 +12,8 @@
   "/api/v1/app-auth/organizations",
   "/api/v1/app-auth/short-lived-tokens",
   "/api/v1/app-auth/tokens",
+  "/api/v1/app-verification/keys",
+  "/api/v1/app-verification/verify",
   "/api/v1/application-bundles",
   "/api/v1/application-bundles/{bundle_id}",
   "/api/v1/application-directory/{app_id}",

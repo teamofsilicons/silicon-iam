@@ -143,7 +143,7 @@ pub(super) struct WebhookReplace {
     pub(super) webhook_secret: Option<SecretString>,
 }
 
-fn deserialize_secret_string<'de, D>(deserializer: D) -> Result<SecretString, D::Error>
+pub(super) fn deserialize_secret_string<'de, D>(deserializer: D) -> Result<SecretString, D::Error>
 where
     D: Deserializer<'de>,
 {

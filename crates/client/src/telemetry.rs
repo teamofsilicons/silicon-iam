@@ -284,7 +284,7 @@ pub fn safe_context(value: &Value) -> Value {
 }
 fn contains_secret(value: &str) -> bool {
     [
-        "stk-", "slt_", "rft_", "sat_", "sscli-", "table-", "Bearer ", "apikey-",
+        "stk-", "slt_", "rft_", "sat_", "aak_", "sscli-", "table-", "Bearer ", "apikey-",
     ]
     .iter()
     .any(|prefix| value.contains(prefix))
@@ -308,6 +308,15 @@ mod tests {
         assert!(value.get("command").is_none());
         assert!(!value.to_string().contains("alice"));
         assert_eq!(route("/unknown/slt_secret"), "<unmatched>");
+    }
+
+    #[test]
+    fn app_identity_keys_are_dropped_even_from_allowlisted_labels() {
+        let value = safe_context(&json!({
+            "command":"iam app verification issue", "outcome":"aak_secret",
+            "code":"received_aak_secret", "app_access_key":"aak_secret"
+        }));
+        assert_eq!(value, json!({"command":"iam app verification issue"}));
     }
     #[test]
     fn wrong_table_and_insecure_destinations_are_rejected_before_any_sender_starts() {

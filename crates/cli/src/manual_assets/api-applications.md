@@ -125,11 +125,64 @@ Role, tags, capabilities, and profile fields require their corresponding current
 
 Introspection may use `X-Org-ID` to select an already authorized organization. A well-formed unselected organization, another app's token, or an invalid token yields `{"active":false}`. A malformed or duplicated header is a request error. Webhooks keep caches informed; they do not replace current authorization checks.
 
+## App verification for inter-app communication
+
+An `app_access_key` lets a receiving application check the calling application's identity without receiving its long-lived app secret. Use the main IAM backend for these identity endpoints. They are not scoped APIs and do not require a user session.
+
+The calling application authenticates to IAM using its own HTTP Basic app ID and current secret. Send an empty JSON object for the default five-minute lifetime, or select `ttl_seconds` from 60 to 3600 inclusive. Values outside that range are rejected.
+
+```
+POST /api/v1/app-verification/keys
+Authorization: Basic <base64(acme>billing:billing_app_secret)>
+Content-Type: application/json
+
+{"ttl_seconds":300}
+```
+
+```
+{
+  "app_access_key": "aak_<43 base64url characters>",
+  "valid_till": "2026-09-22T12:05:00Z",
+  "app_id": "acme>billing"
+}
+```
+
+IAM verifies the supplied app secret against its stored verification hash, generates a cryptographically random 256-bit key, and stores only the key's hash with the authenticated app ID, expiry, revocation state, environment, and current testing generation when applicable. It returns the raw key only at issuance. Do not log it or expose it through ordinary application reads. Multiple keys may remain valid concurrently; each has its own expiry. Issuance does not support idempotent replay, so repeating a request creates another independent key.
+
+The caller presents its `app_id` and `app_access_key` to the receiving application over the applications' protected transport. The receiver authenticates to IAM with **its own credentials** and submits the caller's ID and key:
+
+```
+POST /api/v1/app-verification/verify
+Authorization: Basic <base64(acme>reports:reports_app_secret)>
+Content-Type: application/json
+
+{
+  "app_id": "acme>billing",
+  "app_access_key": "<key received from billing>"
+}
+```
+
+For a valid key IAM returns the app ID and expiry from the stored record:
+
+```
+{
+  "valid_key": true,
+  "valid_till": "2026-09-22T12:05:00Z",
+  "app_id": "acme>billing"
+}
+```
+
+An unknown, expired, revoked or mismatched key returns `{"valid_key":false}`, without app details. Invalid receiver credentials return `401`. Verification checks current validity without consuming the key; it can be repeated until expiry or revocation. Both endpoints return `Cache-Control: no-store` and `Pragma: no-cache`.
+
+Accepted app-secret rotation revokes keys issued under the previous secret, and disabling an application revokes its outstanding keys. Verification requires an active caller and matching environment context. For testing, both applications use their test credentials and the same `X-Testing-Environment-Key`. A test key must match the current cleaning generation and never verifies in production, another environment, or a later generation.
+
+**A valid key proves application identity only.** It grants no user permissions, organization membership, endpoint access, or OBO authority. The receiver must authorize the requested action using its own policy. This key is reusable during its lifetime and is not bound to one receiver or request; use OBO when an action needs delegated user authority and exact request binding.
+
 ## Credentials and revocation
 
 `POST /api/v1/oauth/revoke` uses Basic authentication, a form-encoded `token`, and an idempotency key. Revoking an access token invalidates that token. Revoking a refresh token revokes its application family. Unknown tokens return success. This operation does not revoke the parent IAM session.
 
-Client-secret rotation uses `POST /api/v1/applications/{app_id}/client-secret-rotations`, the current application version, and a verified-channel step-up for `application.client_secret.rotate`. The previous secret stops working immediately; coordinate replacement across application instances. Webhook-secret rotation uses `…/webhook-secret-rotations`, a caller-supplied successor `webhook_secret`, and `application.webhook_secret.rotate` step-up. Retain previous webhook key versions while in-flight deliveries drain.
+Client-secret rotation uses `POST /api/v1/applications/{app_id}/client-secret-rotations`, the current application version, and a verified-channel step-up for `application.client_secret.rotate`. The previous secret stops working immediately, and its application identity keys are revoked; coordinate replacement across application instances. Webhook-secret rotation uses `…/webhook-secret-rotations`, a caller-supplied successor `webhook_secret`, and `application.webhook_secret.rotate` step-up. Retain previous webhook key versions while in-flight deliveries drain.
 
 ## Discovery and webhook destinations
 

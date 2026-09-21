@@ -81,9 +81,41 @@ Content-Type: application/json
 <p>Application tokens are opaque. Use Basic-authenticated <code>POST /api/v1/oauth/introspect</code> with form fields <code>token</code> and optional <code>token_type_hint</code> to check current validity. An active access token returns <code>authorization</code> for one selected organization, or <code>authorizations</code> when several apply. These snapshots include the principal, membership ID/version, authorization epoch, audience, and testing plane. Fetch one after first login or cache loss.</p>
 <p>Role, tags, capabilities, and profile fields require their corresponding currently approved and consented permissions. Basic profile means display name, photo, description, and timezone. Organization profile access is limited to identifiers, name, logo, description, and resource version; it excludes SSO/security configuration. Own trust access reveals effective trust from the user’s perspective, while raw organization trust configuration needs its separate critical scope. Null means undisclosed. An application bearer can use the documented self and organization read endpoints within those same grants; list and search operations require the matching critical directory permissions. Missing permissions never default to full access. First-party management operations remain reserved for direct IAM sessions.</p>
 <p>Introspection may use <code>X-Org-ID</code> to select an already authorized organization. A well-formed unselected organization, another app's token, or an invalid token yields <code>{"active":false}</code>. A malformed or duplicated header is a request error. Webhooks keep caches informed; they do not replace current authorization checks.</p>
+<h2 id="app-verification">App verification for inter-app communication</h2>
+<p>An <code>app_access_key</code> lets a receiving application check the calling application's identity without receiving its long-lived app secret. Use the main IAM backend for these identity endpoints. They are not scoped APIs and do not require a user session.</p>
+<p>The calling application authenticates to IAM using its own HTTP Basic app ID and current secret. Send an empty JSON object for the default five-minute lifetime, or select <code>ttl_seconds</code> from 60 to 3600 inclusive. Values outside that range are rejected.</p>
+<pre><code>POST /api/v1/app-verification/keys
+Authorization: Basic &lt;base64(acme&gt;billing:billing_app_secret)&gt;
+Content-Type: application/json
+
+{"ttl_seconds":300}</code></pre>
+<pre><code>{
+  "app_access_key": "aak_&lt;43 base64url characters&gt;",
+  "valid_till": "2026-09-22T12:05:00Z",
+  "app_id": "acme&gt;billing"
+}</code></pre>
+<p>IAM verifies the supplied app secret against its stored verification hash, generates a cryptographically random 256-bit key, and stores only the key's hash with the authenticated app ID, expiry, revocation state, environment, and current testing generation when applicable. It returns the raw key only at issuance. Do not log it or expose it through ordinary application reads. Multiple keys may remain valid concurrently; each has its own expiry. Issuance does not support idempotent replay, so repeating a request creates another independent key.</p>
+<p>The caller presents its <code>app_id</code> and <code>app_access_key</code> to the receiving application over the applications' protected transport. The receiver authenticates to IAM with <strong>its own credentials</strong> and submits the caller's ID and key:</p>
+<pre><code>POST /api/v1/app-verification/verify
+Authorization: Basic &lt;base64(acme&gt;reports:reports_app_secret)&gt;
+Content-Type: application/json
+
+{
+  "app_id": "acme&gt;billing",
+  "app_access_key": "&lt;key received from billing&gt;"
+}</code></pre>
+<p>For a valid key IAM returns the app ID and expiry from the stored record:</p>
+<pre><code>{
+  "valid_key": true,
+  "valid_till": "2026-09-22T12:05:00Z",
+  "app_id": "acme&gt;billing"
+}</code></pre>
+<p>An unknown, expired, revoked or mismatched key returns <code>{"valid_key":false}</code>, without app details. Invalid receiver credentials return <code>401</code>. Verification checks current validity without consuming the key; it can be repeated until expiry or revocation. Both endpoints return <code>Cache-Control: no-store</code> and <code>Pragma: no-cache</code>.</p>
+<p>Accepted app-secret rotation revokes keys issued under the previous secret, and disabling an application revokes its outstanding keys. Verification requires an active caller and matching environment context. For testing, both applications use their test credentials and the same <code>X-Testing-Environment-Key</code>. A test key must match the current cleaning generation and never verifies in production, another environment, or a later generation.</p>
+<p><strong>A valid key proves application identity only.</strong> It grants no user permissions, organization membership, endpoint access, or OBO authority. The receiver must authorize the requested action using its own policy. This key is reusable during its lifetime and is not bound to one receiver or request; use OBO when an action needs delegated user authority and exact request binding.</p>
 <h2>Credentials and revocation</h2>
 <p><code>POST /api/v1/oauth/revoke</code> uses Basic authentication, a form-encoded <code>token</code>, and an idempotency key. Revoking an access token invalidates that token. Revoking a refresh token revokes its application family. Unknown tokens return success. This operation does not revoke the parent IAM session.</p>
-<p>Client-secret rotation uses <code>POST /api/v1/applications/{app_id}/client-secret-rotations</code>, the current application version, and a verified-channel step-up for <code>application.client_secret.rotate</code>. The previous secret stops working immediately; coordinate replacement across application instances. Webhook-secret rotation uses <code>…/webhook-secret-rotations</code>, a caller-supplied successor <code>webhook_secret</code>, and <code>application.webhook_secret.rotate</code> step-up. Retain previous webhook key versions while in-flight deliveries drain.</p>
+<p>Client-secret rotation uses <code>POST /api/v1/applications/{app_id}/client-secret-rotations</code>, the current application version, and a verified-channel step-up for <code>application.client_secret.rotate</code>. The previous secret stops working immediately, and its application identity keys are revoked; coordinate replacement across application instances. Webhook-secret rotation uses <code>…/webhook-secret-rotations</code>, a caller-supplied successor <code>webhook_secret</code>, and <code>application.webhook_secret.rotate</code> step-up. Retain previous webhook key versions while in-flight deliveries drain.</p>
 <h2>Discovery and webhook destinations</h2>
 <p>A verified application can discover any other verified application's backend through Basic-authenticated <code>GET /api/v1/application-directory/{app_id}</code>. It returns only <code>{app_id, base_url}</code>. Discovery and OBO may cross application-owning organizations. In a test environment both credentials and targets resolve in that environment, without production fallback.</p>
 <p><code>PUT /api/v1/applications/{app_id}/webhook</code> proposes a destination. Production delivery stays on the current destination until approval. A current owning-organization Carbon owner/admin or an IAM application reviewer can read the pending endpoint and approve with <code>POST …/webhook/approvals</code>, an empty body, current application <code>If-Match</code>, idempotency key, and <code>application.webhook.approve</code> step-up bound to the application UUID. Endpoint approval is available while an application is under review or verified; scope review remains separate. Testing-environment destinations activate immediately. See <a href="https://docs.iam.teamofsilicons.com/api/webhooks/">Webhooks</a> and <a href="https://docs.iam.teamofsilicons.com/api/testing-environments/">Testing environments</a>.</p>

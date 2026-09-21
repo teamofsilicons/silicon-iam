@@ -509,6 +509,19 @@ For versioning we have Contract Governance/API/service contract lifecycle manage
 7) Version policy
 
 
+# App Verification
+
+IAM provides application verification for inter-app communication. An application requests an `app_access_key` by authenticating with its `app_id` and `app_secret`. IAM verifies the supplied secret against its stored verification hash, then generates a cryptographically random, short-lived `app_access_key`. Its lifetime defaults to 5 minutes; the application may request a lifetime from 1 to 60 minutes inclusive. Reject lifetimes outside this range.
+
+Return the key and its expiry to the authenticated application. Store only the key's hash, together with the authenticated application's `app_id`, expiry, revocation state and environment context, including the current testing generation when applicable. Multiple keys may remain valid concurrently, each with its own expiry. Never include keys in logs or ordinary application reads.
+
+The calling application presents its `app_id` and `app_access_key` to the receiving application. To verify them, the receiving application authenticates to IAM using its own application credentials and submits the calling application's `app_id` and `app_access_key`. IAM hashes the submitted key and compares it with the stored record. Verification requires a matching calling `app_id`, an unexpired and unrevoked key, an active calling application, and matching environment context. Test keys must also belong to the current testing generation and must never verify in production. Accepted app-secret rotation revokes keys issued under the previous secret; disabling an application revokes its outstanding keys.
+
+Successful verification returns `{valid_key: true, valid_till, app_id}`, using the expiry and application ID from the stored record. An unknown, expired, revoked or mismatched key returns `{valid_key: false}` without application details. Invalid credentials for the receiving application return an authentication error.
+
+A valid `app_access_key` proves the calling application's identity. The receiving application remains responsible for authorizing the requested action; this key does not grant user permissions or replace OBO.
+
+
 # Testing Environments
 
 IAM provides isolated identity and authentication inside testing environments managed by Honeycomb. IAM only prepares and manages its own test records; the environment lifecycle and other applications' test data are outside its ownership.

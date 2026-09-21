@@ -1362,6 +1362,70 @@ pub struct ApiVersionNegotiation {
     pub commit: String,
 }
 
+/// Issue an application identity key; send an empty object for the default
+/// five-minute lifetime.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AppAccessKeyIssue {
+    /// Requested lifetime in seconds, from one to sixty minutes inclusive;
+    /// out-of-range values are rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_seconds: Option<i64>,
+}
+
+/// Application identity key returned only at issuance. Keep this credential
+/// private and never log it.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AppAccessKeyIssued {
+    /// Opaque random 256-bit application identity key. IAM stores only its
+    /// hash.
+    pub app_access_key: String,
+    /// Absolute UTC expiry in RFC 3339 format.
+    #[serde(with = "time::serde::rfc3339")]
+    pub valid_till: OffsetDateTime,
+    /// The contract's `app_id`.
+    pub app_id: AppId,
+}
+impl std::fmt::Debug for AppAccessKeyIssued {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AppAccessKeyIssued(<redacted>)")
+    }
+}
+
+/// Valid keys return app_id and valid_till from the stored record. Invalid
+/// keys return only valid_key:false.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AppAccessKeyVerification {
+    /// The contract's `valid_key`.
+    pub valid_key: bool,
+    /// Stored expiry, present only when valid_key is true.
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub valid_till: Option<OffsetDateTime>,
+    /// The contract's `app_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<AppId>,
+}
+
+/// Calling application identity and key. Authenticate the receiving
+/// application separately using HTTP Basic.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AppAccessKeyVerify {
+    /// The calling application's claimed canonical app_id; a mismatch returns
+    /// valid_key:false.
+    pub app_id: String,
+    /// The calling application's identity key; unknown or malformed key
+    /// values return valid_key:false.
+    pub app_access_key: String,
+}
+impl std::fmt::Debug for AppAccessKeyVerify {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AppAccessKeyVerify(<redacted>)")
+    }
+}
+
 /// Organization-owned Application. created_by is immutable provenance and
 /// does not confer management authority.
 #[derive(Clone, Debug, Serialize, Deserialize)]

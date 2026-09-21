@@ -18,6 +18,7 @@ mod scoped_auth;
 mod scopes;
 pub(crate) mod security;
 mod validation;
+mod verification;
 mod webhooks;
 
 pub(crate) use applications::{load_detail, webhook_secret_fingerprint};
@@ -56,6 +57,11 @@ use crate::api::ApiState;
 pub fn router() -> Router<ApiState> {
     Router::new()
         .merge(bundle_router())
+        .route("/api/v1/app-verification/keys", post(verification::issue))
+        .route(
+            "/api/v1/app-verification/verify",
+            post(verification::verify),
+        )
         .merge(honeycomb::router())
         .route("/api/v1/application-scopes", get(scopes::catalog))
         .route(

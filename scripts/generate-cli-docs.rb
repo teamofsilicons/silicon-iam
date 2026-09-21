@@ -136,6 +136,7 @@ excluded = %w[
   docs/INTEGRATION_FIXES_2026-09-05.md
   docs/SESSION_BOUND_CONSENT_FIX.md
   docs/PRIVATE_APPLICATION_LOGIN_ERRORS.md
+  docs/deployment-verification-2026-09-21.md
   docs/frontend/deployment.md
   docs/frontend/manual-qa.md
   docs/frontend/scope-approvals.md

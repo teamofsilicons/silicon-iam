@@ -189,6 +189,139 @@ fn unclassified_obo_endpoints_are_rejected_by_the_client_contract() {
 }
 
 #[tokio::test]
+async fn app_verification_issuance_uses_basic_auth_without_secret_replay() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    for lifetime in [None, Some(60), Some(3600)] {
+        let (client, capture, server) = service(json!({
+            "app_id":"acme>checkout", "app_access_key":"aak_generated_secret",
+            "valid_till":"2026-09-22T00:05:00Z"
+        }));
+        let issued = client
+            .with_credential(Credential::application(
+                "acme>checkout",
+                "ask_issuer_secret",
+            ))
+            .app_verification()
+            .issue(&models::AppAccessKeyIssue {
+                ttl_seconds: lifetime,
+            })
+            .await
+            .expect("issue app identity key");
+        assert_eq!(issued.app_access_key, "aak_generated_secret");
+        assert!(!format!("{issued:?}").contains("aak_generated_secret"));
+        let (headers, body) = capture.recv().expect("captured issuance");
+        assert!(headers.starts_with("POST /api/v1/app-verification/keys "));
+        assert!(headers.contains(&format!(
+            "authorization: Basic {}\r\n",
+            STANDARD.encode("acme>checkout:ask_issuer_secret")
+        )));
+        assert!(!headers.to_ascii_lowercase().contains("idempotency-key:"));
+        assert_eq!(
+            body,
+            lifetime.map_or_else(|| json!({}), |value| json!({"ttl_seconds":value}))
+        );
+        server.join().expect("mock completed");
+    }
+}
+
+#[tokio::test]
+async fn app_verification_uses_receiver_credentials_and_keeps_the_testing_context() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    for valid in [false, true] {
+        let response = if valid {
+            json!({"valid_key":true,"app_id":"acme>checkout","valid_till":"2026-09-22T00:05:00Z"})
+        } else {
+            json!({"valid_key":false})
+        };
+        let (client, capture, server) = service(response);
+        let input = models::AppAccessKeyVerify {
+            app_id: "acme>checkout".to_owned(),
+            app_access_key: "aak_calling_key".to_owned(),
+        };
+        let verified = client
+            .with_credential(Credential::application(
+                "vendor>billing",
+                "ask_receiver_secret",
+            ))
+            .with_environment(
+                silicon_iam_client::EnvironmentKey::new("X".repeat(32)).expect("test key"),
+            )
+            .app_verification()
+            .verify(&input)
+            .await
+            .expect("check calling app identity");
+        assert_eq!(verified.valid_key, valid);
+        assert_eq!(verified.app_id.as_deref(), valid.then_some("acme>checkout"));
+        assert_eq!(verified.valid_till.is_some(), valid);
+        assert!(!format!("{input:?}").contains("aak_calling_key"));
+        let (headers, body) = capture.recv().expect("captured verification");
+        assert!(headers.starts_with("POST /api/v1/app-verification/verify "));
+        assert!(headers.contains(&format!(
+            "authorization: Basic {}\r\n",
+            STANDARD.encode("vendor>billing:ask_receiver_secret")
+        )));
+        assert!(headers.contains(&format!(
+            "x-testing-environment-key: {}\r\n",
+            "X".repeat(32)
+        )));
+        assert!(!headers.to_ascii_lowercase().contains("idempotency-key:"));
+        assert_eq!(
+            body,
+            json!({"app_id":"acme>checkout", "app_access_key":"aak_calling_key"})
+        );
+        server.join().expect("mock completed");
+    }
+}
+
+#[tokio::test]
+async fn app_verification_rejects_invalid_lifetimes_before_sending() {
+    let client = Client::new("http://127.0.0.1:1").expect("loopback client");
+    for seconds in [-1, 0, 59, 3601, i64::MAX] {
+        let result = client
+            .app_verification()
+            .issue(&models::AppAccessKeyIssue {
+                ttl_seconds: Some(seconds),
+            })
+            .await;
+        assert!(matches!(result, Err(silicon_iam_client::Error::Invalid(_))));
+    }
+}
+
+#[tokio::test]
+async fn app_verification_rejects_incomplete_or_inconsistent_identity_responses() {
+    for response in [
+        json!({"valid_key":true}),
+        json!({"valid_key":true,"app_id":"acme>checkout"}),
+        json!({"valid_key":true,"valid_till":"2026-09-22T00:05:00Z"}),
+        json!({"valid_key":true,"app_id":"other>app","valid_till":"2026-09-22T00:05:00Z"}),
+        json!({"valid_key":false,"app_id":"acme>checkout"}),
+        json!({"valid_key":false,"valid_till":"2026-09-22T00:05:00Z"}),
+        json!({"valid_key":false,"app_id":null}),
+        json!({"valid_key":false,"valid_till":null}),
+    ] {
+        let (client, captured, server) = service(response);
+        let result = client
+            .with_credential(Credential::application(
+                "vendor>billing",
+                "ask_receiver_secret",
+            ))
+            .app_verification()
+            .verify(&models::AppAccessKeyVerify {
+                app_id: "acme>checkout".to_owned(),
+                app_access_key: "aak_calling_key".to_owned(),
+            })
+            .await;
+        assert!(matches!(result, Err(silicon_iam_client::Error::Decode(_))));
+        captured
+            .recv_timeout(Duration::from_secs(5))
+            .expect("request reached mock");
+        server.join().expect("mock completed");
+    }
+}
+
+#[tokio::test]
 async fn scoped_profile_reads_preserve_undisclosed_fields_as_absent() {
     let (client, capture, server) = service(json!({"display_name":"Ada","version":8}));
     let client = client.with_credential(Credential::bearer("act_application_user"));

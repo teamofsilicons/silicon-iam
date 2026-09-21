@@ -8,11 +8,11 @@
 | --- | --- |
 | **Identity and IAM sessions** | `signup()`, `auth()`, and `carbons()` |
 | **Organizations** | `organizations()`, `members()`, `invitations()`, `tags()`, `trust()`, `governance()`, and `sso()` |
-| **Silicons and Applications** | `silicons()`, `applications()`, `oauth()`, and catalog-bound OBO signing through `obo()` |
+| **Silicons and Applications** | `silicons()`, `applications()`, `oauth()`, `app_verification()`, and catalog-bound OBO signing through `obo()` |
 | **Operations** | `system()` and `environments()` |
 | **Inbound webhooks** | `WebhookVerifier` authenticates exact bytes, timestamp, event ID and secret version before parsing. |
 
-The crate is not restricted to an Application credential. Build an anonymous client for public routes, clone it with an IAM bearer for Carbon or Silicon administration, or clone it with an Application Basic credential for OAuth, discovery and OBO. The `cli-session` feature that starts and verifies direct Carbon login challenges is reserved for the official CLI; normal Application integrations begin login only with an SLT.
+The crate is not restricted to an Application credential. Build an anonymous client for public routes, clone it with an IAM bearer for Carbon or Silicon administration, or clone it with an Application Basic credential for OAuth, app identity verification, discovery and OBO. The `cli-session` feature that starts and verifies direct Carbon login challenges is reserved for the official CLI; normal Application integrations begin login only with an SLT.
 
 ## What it deliberately does not cover
 
@@ -20,7 +20,7 @@ Platform-administrator routes, inbound provider webhooks and the browser-hosted 
 
 ## The design rule
 
-Inputs with security meaning stay visible at the call site. A mutating method takes a `Mutation`; an optimistic update takes the current resource version; a privileged mutation takes a step-up assertion; and a test-plane call carries an `EnvironmentKey`. That makes accidental omission a compile-time or service error instead of hidden client state.
+Inputs with security meaning stay visible at the call site. An ordinary mutating method takes a `Mutation`; an optimistic update takes the current resource version; a privileged mutation takes a step-up assertion; and a test-plane call carries an `EnvironmentKey`. That makes accidental omission a compile-time or service error instead of hidden client state. App identity key issuance is an exception: every call creates a fresh key, without an idempotency key or replay storage.
 
 JSON Merge Patch has three states. For generated fields typed `Option<Option<T>>`, `None` omits the field and leaves it unchanged, `Some(None)` sends JSON `null` and clears it, and `Some(Some(value))` replaces it.
 
@@ -30,7 +30,7 @@ JSON Merge Patch has three states. For generated fields typed `Option<Option<T>>
 
 - The HTTP timeout defaults to 30 seconds and can be changed on `ClientBuilder`.
 
-- Each method sends once. After an uncertain mutation, the caller decides whether to retry and must reuse the original `Mutation`.
+- Each method sends once. After an uncertain replayable mutation, the caller decides whether to retry and must reuse the original `Mutation`. Repeating app identity key issuance creates an independent key.
 
 - `Error::Api` retains the service envelope and request ID. `Error::RateLimited` additionally exposes the parsed delay and rate-limit counts.
 

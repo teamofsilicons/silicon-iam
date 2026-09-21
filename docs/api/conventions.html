@@ -61,9 +61,10 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
 </p>
 
 <p>
-  Every externally initiated mutation requires an <code>Idempotency-Key</code> of 16–255
-  characters. The server scopes it to the authenticated caller, the route, and a digest of the
-  request body.
+  Externally initiated mutations require an <code>Idempotency-Key</code> of 16–255
+  characters where documented. The server scopes it to the authenticated caller, the route,
+  and a digest of the request body. Application identity key issuance has no replay support;
+  each request issues an independent key.
 </p>
 
 <ul>
@@ -84,12 +85,14 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
 </div>
 
 <p>
-  Two deliberate exceptions. <strong>OBO proof verification</strong> accepts no idempotency key,
+  <strong>OBO proof verification</strong> accepts no idempotency key,
   never stores a successful response, and answers <code>409</code> on every attempt after the
   proof is consumed — it is single-use by design. And a response containing a
-  <strong>newly generated secret</strong> stays replayable for only ten minutes, rather than the
-  usual twenty-four hours.
+  <strong>newly generated secret</strong> on a route supporting idempotency stays replayable
+  for only ten minutes, rather than the usual twenty-four hours.
 </p>
+
+<p><strong>Application identity keys</strong> are stored only as hashes. Issuance at <code>POST /api/v1/app-verification/keys</code> returns a fresh key once, without idempotent replay. Retrying after an uncertain response may create another concurrently valid key; an unused key expires independently. Verification at <code>POST /api/v1/app-verification/verify</code> does not mutate or consume the key, so it can be repeated to check current validity.</p>
 
 <h2>JSON Merge Patch</h2>
 

@@ -4,7 +4,9 @@ use secrecy::{ExposeSecret as _, SecretString};
 
 /// A caller-generated key that makes one mutation safe to repeat.
 ///
-/// Every mutating route in Silicon IAM requires one. The service binds it to
+/// Ordinary mutating routes in Silicon IAM require one. Application identity
+/// key issuance is an exception: it creates a fresh key without replay storage.
+/// For replayable mutations, the service binds the key to
 /// the caller, the route and the exact request body, then replays the original
 /// response for a repeat of the same request -- which is only useful if a retry
 /// presents the *same* key. Generate one per logical operation and reuse it for
