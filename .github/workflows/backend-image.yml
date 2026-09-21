@@ -1,0 +1,31 @@
+name: Build pinned ARM64 backend image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the backend from this exact revision
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          docker build --build-arg BUILD_REVISION="$REVISION" --build-arg CARGO_BUILD_JOBS=4 --tag "silicon-iam:release-$REVISION" .
+          docker image inspect "silicon-iam:release-$REVISION" > image.json
+          docker save "silicon-iam:release-$REVISION" | gzip -1 > iam-arm64-image.tar.gz
+          sha256sum iam-arm64-image.tar.gz > iam-arm64-image.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iam-arm64-backend-image
+          path: |
+            iam-arm64-image.tar.gz
+            iam-arm64-image.tar.gz.sha256
+            image.json
+          compression-level: 0
+          retention-days: 7

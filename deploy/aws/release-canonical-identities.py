@@ -207,8 +207,10 @@ class Release:
         require(table in CREDENTIAL_TABLES, "Unexpected credential table")
         # Only identity references change representation. Token digests, resource
         # IDs, expiry/revocation state, epochs, ciphertext and all other fields stay.
+        # oauth_refresh_family_id is additive provenance backfilled by migration 0116;
+        # it is not credential material and did not exist in earlier row fingerprints.
         excluded = ("'subject_principal_id','client_application_id','audience_application_id',"
-                    "'application_id','created_by_carbon_id','silicon_id'")
+                    "'application_id','created_by_carbon_id','silicon_id','oauth_refresh_family_id'")
         return (f"SELECT count(*)::text||':'||COALESCE(md5(string_agg("
                 f"(to_jsonb(t)-ARRAY[{excluded}])::text,'' ORDER BY id)),md5('')) FROM iam.{table} t")
 
