@@ -512,6 +512,7 @@ DECLARE
     function_record record;
     api_function_names text[] := ARRAY[
         'application_encryption_contexts',
+        'canonical_replay_contexts',
         'resolve_membership_identifiers',
         'authorize_scoped_testing_environment_creation',
         'create_testing_actor_login',
@@ -900,6 +901,7 @@ DECLARE
     function_record record;
     worker_function_names text[] := ARRAY[
         'application_encryption_contexts',
+        'canonical_replay_contexts',
         'resolve_membership_identifiers',
         'get_worker_testing_environment_webhook_key_v2',
         'claim_honeycomb_management_events',

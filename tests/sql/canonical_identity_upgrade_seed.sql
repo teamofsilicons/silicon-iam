@@ -62,7 +62,7 @@ BEGIN
  INSERT INTO iam.audit_events(id,request_id,actor_principal_id,actor_kind,action,target_type,target_id,aggregate_type,aggregate_id,aggregate_version)
  VALUES(pg_temp.fixture_id(plane,'contact-audit'),pg_temp.fixture_id(plane,'contact-request'),carbon,'carbon','contact.updated','carbon_contact',carbon,'carbon_contact',carbon,1);
  INSERT INTO iam.outbox_events(id,aggregate_type,aggregate_id,aggregate_version,event_type,payload)
- VALUES(pg_temp.fixture_id(plane,'contact-event'),'carbon_contact',carbon,1,'contact.updated','{}');
+ VALUES(pg_temp.fixture_id(plane,'contact-event'),'carbon_contact',carbon,1,'contact.updated',jsonb_build_object('resource',jsonb_build_object('id',carbon,'type','carbon_contact'),'contact',jsonb_build_object('id',carbon),'actor',jsonb_build_object('id',carbon,'actor_type','carbon')));
  IF testing AND plane=2 THEN
   INSERT INTO iam.principals(id,kind,status) VALUES(pg_temp.fixture_id(plane,'exclusive'),'carbon','provisioning');
   INSERT INTO iam.carbons(id,carbon_id,display_name) VALUES(pg_temp.fixture_id(plane,'exclusive'),'exclusive-owner','Environment two only');

@@ -43,8 +43,11 @@ BEGIN
  END IF;
  IF NOT EXISTS(SELECT 1 FROM iam.audit_events WHERE id=pg_temp.fixture_id(plane,'contact-audit')
   AND target_id=pg_temp.fixture_id(plane,'carbon')::text AND aggregate_id=pg_temp.fixture_id(plane,'carbon')::text)
- OR NOT EXISTS(SELECT 1 FROM iam.outbox_events WHERE id=pg_temp.fixture_id(plane,'contact-event')
-  AND aggregate_id=pg_temp.fixture_id(plane,'carbon')::text) THEN
+ OR NOT EXISTS(SELECT 1 FROM iam.outbox_events event WHERE event.id=pg_temp.fixture_id(plane,'contact-event')
+  AND aggregate_id=pg_temp.fixture_id(plane,'carbon')::text
+  AND event.payload#>>'{resource,id}'=pg_temp.fixture_id(plane,'carbon')::text
+  AND event.payload#>>'{contact,id}'=pg_temp.fixture_id(plane,'carbon')::text
+  AND event.payload#>>'{actor,id}'='migration-owner') THEN
   RAISE EXCEPTION 'resource UUID collision was incorrectly mapped to an identity';
  END IF;
  IF NOT EXISTS(SELECT 1 FROM iam.refresh_tokens token JOIN iam.refresh_token_families family ON family.id=token.family_id

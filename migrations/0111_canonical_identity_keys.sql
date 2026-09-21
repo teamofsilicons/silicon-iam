@@ -212,7 +212,19 @@ BEGIN
  IF jsonb_typeof(value)='object' THEN
   result:='{}';
   FOR item IN SELECT * FROM jsonb_each(value) LOOP
-   result:=result||jsonb_build_object(item.key,pg_temp.canonical_identity_json(item.value,item.key));
+   -- A resource UUID can have the same bytes as a principal UUID. Only
+   -- identity objects may translate their generic id; typed FK field names
+   -- remain translated recursively everywhere.
+   IF item.key='id' AND NOT (
+      COALESCE(value->>'actor_type',value->>'type','') IN ('carbon','silicon','application','service')
+      OR (COALESCE(value->>'type','')='' AND (
+          COALESCE(field,'') IN ('actor','subject','principal','recipient')
+          OR value ? 'carbon_id' OR value ? 'silicon_id' OR value ? 'app_id'))
+   ) THEN
+    result:=result||jsonb_build_object(item.key,item.value);
+   ELSE
+    result:=result||jsonb_build_object(item.key,pg_temp.canonical_identity_json(item.value,item.key));
+   END IF;
   END LOOP;
   RETURN result;
  ELSIF jsonb_typeof(value)='array' THEN

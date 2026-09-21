@@ -57,8 +57,14 @@ async fn load_encryption(
     testing: Option<&PgPool>,
 ) -> anyhow::Result<EncryptionService> {
     let mut encryption = EncryptionService::from_settings(settings)?;
+    sqlx::query("SELECT count(*) FROM iam_private.canonical_replay_contexts()")
+        .execute(production)
+        .await?;
     encryption.load_application_contexts(production).await?;
     if let Some(testing) = testing {
+        sqlx::query("SELECT count(*) FROM iam_private.canonical_replay_contexts()")
+            .execute(testing)
+            .await?;
         encryption.load_application_contexts(testing).await?;
     }
     Ok(encryption)

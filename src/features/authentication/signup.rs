@@ -812,6 +812,27 @@ pub(super) async fn complete_signup(
             profile_photo.as_str().as_bytes(),
         ],
     );
+    let request_digest = if state.crypto.replay.active() {
+        // Description was absent in the equivalent old signup contract. A
+        // previously nonempty removed Description remains a digest conflict.
+        idempotency::ReplayDigest::with_legacy(
+            request_digest,
+            idempotency::digest_parts(
+                b"signup-complete",
+                &[
+                    signup_session_id.as_bytes(),
+                    input.carbon_id.as_str().as_bytes(),
+                    input.display_name.as_bytes(),
+                    input.timezone.as_bytes(),
+                    &[0],
+                    b"",
+                    profile_photo.as_str().as_bytes(),
+                ],
+            ),
+        )
+    } else {
+        request_digest.into()
+    };
     let mut transaction = serializable(state.db(), "signup_complete_transaction").await?;
     let record_id = match idempotency::begin::<CarbonSelfResponse>(
         &mut transaction,

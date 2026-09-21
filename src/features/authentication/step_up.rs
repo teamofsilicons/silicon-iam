@@ -134,7 +134,8 @@ pub(super) async fn create_challenge(
     input: StepUpChallengeInput,
 ) -> Result<Outcome<AuthSessionResponse>, AppError> {
     let principal_id = sessions::carbon_context(context)?;
-    let request_digest = idempotency::digest_parts(
+    let request_digest = idempotency::digest_parts_with_legacy(
+        &state.crypto,
         b"step-up-challenge-create",
         &[
             principal_id.as_bytes(),
@@ -143,6 +144,7 @@ pub(super) async fn create_challenge(
             input.action.database_value().as_bytes(),
             input.resource_id.as_bytes(),
         ],
+        &[0, 4],
     );
     let mut transaction = serializable(state.db(), "step_up_create_transaction").await?;
     let record_id = match idempotency::begin::<AuthSessionResponse>(
@@ -545,7 +547,8 @@ pub(super) async fn verify_challenge(
 ) -> Result<Outcome<StepUpVerificationOutcome>, AppError> {
     let principal_id = sessions::carbon_context(context)?;
     let bound_otp = otp::bound_secret("step-up-otp", challenge_id, &code);
-    let request_digest = idempotency::digest_parts(
+    let request_digest = idempotency::digest_parts_with_legacy(
+        &state.crypto,
         b"step-up-challenge-verify",
         &[
             principal_id.as_bytes(),
@@ -553,6 +556,7 @@ pub(super) async fn verify_challenge(
             challenge_id.as_bytes(),
             code.expose_secret().as_bytes(),
         ],
+        &[0],
     );
     let mut transaction = serializable(state.db(), "step_up_verify_transaction").await?;
     let record_id = match idempotency::begin::<StepUpVerificationOutcome>(

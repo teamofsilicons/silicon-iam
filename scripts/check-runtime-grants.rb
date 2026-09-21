@@ -104,6 +104,8 @@ def production_api_paths
   all_paths = Dir["src/**/*.rs"].sort
   all_paths.reject do |path|
     path.start_with?("src/worker/") ||
+      # Called only by the offline operator binary with migrator authority.
+      path == "src/infrastructure/canonical_replay/cutover.rs" ||
       EXCLUDED_TEST_PATHS.include?(path) ||
       (path.start_with?("src/bin/") && path != API_BINARY_PATH)
   end

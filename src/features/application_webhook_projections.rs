@@ -493,6 +493,17 @@ fn project_member(
             "organization_application_webhook_resource_principal",
         ));
     }
+    // Keep the canonical membership handle even when profile disclosure is
+    // withdrawn. Consumers correlate tombstones with authorization snapshots.
+    let mut resource = resource;
+    if let Some(org_id) = source_object
+        .get("organization")
+        .and_then(|organization| organization.get("org_id"))
+        .and_then(Value::as_str)
+    {
+        resource["membership_id"] =
+            Value::String(format!("{}[{org_id}]", source.principal_id));
+    }
     let mut projected = Map::from_iter([("resource".to_owned(), resource)]);
     if !authorization.authorized_after {
         projected.insert(
@@ -1950,6 +1961,7 @@ mod tests {
                         "id": silicon_membership_id,
                         "principal_id": silicon_id,
                         "principal_type": "silicon",
+                        "membership_id": format!("{silicon_id}[projection-org]"),
                         "version": 1,
                         "status": "active",
                     },

@@ -80,6 +80,10 @@ name = "iam-worker"
 path = "src/bin/iam_worker.rs"
 
 [[bin]]
+name = "iam-canonical-cutover"
+path = "src/bin/iam_canonical_cutover.rs"
+
+[[bin]]
 name = "iam-migrate"
 path = "src/bin/iam_migrate.rs"
 

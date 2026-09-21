@@ -39,6 +39,7 @@ pub struct CryptoService {
     token_peppers: Keyring,
     blind_index_keys: Keyring,
     encryption: EncryptionService,
+    pub(crate) replay: super::canonical_replay::Bridge,
 }
 
 /// Restricted authenticated-encryption capability for delivery workers.
@@ -244,7 +245,8 @@ impl CryptoService {
     /// # Errors
     /// Fails startup if metadata cannot be read or contains invalid handles.
     pub async fn load_application_contexts(&mut self, pool: &sqlx::PgPool) -> anyhow::Result<()> {
-        self.encryption.load_application_contexts(pool).await
+        self.encryption.load_application_contexts(pool).await?;
+        self.replay.load(pool).await
     }
     /// Builds the service from already validated runtime settings.
     ///
@@ -263,6 +265,7 @@ impl CryptoService {
                 &settings.blind_index_keys,
             )?,
             encryption: EncryptionService::from_settings(&settings.encryption_keys)?,
+            replay: super::canonical_replay::Bridge::default(),
         })
     }
 

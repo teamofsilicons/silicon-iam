@@ -126,7 +126,7 @@ const APPLICATION_LOGOUT_AUTHORITY_QUERY: &str = r"
 
 struct LogoutRequestBinding {
     caller_scope: Vec<u8>,
-    request_digest: [u8; 32],
+    request_digest: idempotency::ReplayDigest,
 }
 
 pub(super) struct LogoutCommand<'a> {
@@ -381,9 +381,11 @@ pub(super) async fn revoke_session(
     session_id: Id,
 ) -> Result<Outcome<()>, AppError> {
     let principal_id = carbon_context(context)?;
-    let request_digest = idempotency::digest_parts(
+    let request_digest = idempotency::digest_parts_with_legacy(
+        &state.crypto,
         b"session-revoke",
         &[principal_id.as_bytes(), session_id.as_bytes()],
+        &[0],
     );
     let mut transaction = serializable(state.db(), "session_revoke_transaction").await?;
     let record_id = match idempotency::begin::<EmptyMutationOutcome>(
@@ -480,12 +482,48 @@ pub(super) async fn logout(
     command: LogoutCommand<'_>,
 ) -> Result<Outcome<()>, AppError> {
     validate_logout_trigger_mode(command.trigger, command.mode)?;
-    let binding = logout_request_binding(
+    let mut binding = logout_request_binding(
         command.principal_id,
         command.authentication_session_id,
         command.trigger,
         command.mode,
     );
+    let mode_value = match command.mode {
+        LogoutMode::CurrentSession => b"current".as_slice(),
+        LogoutMode::AllSessions => b"all".as_slice(),
+    };
+    binding.request_digest = match command.trigger {
+        LogoutTrigger::FirstPartyCarbon => idempotency::digest_parts_with_legacy(
+            &state.crypto,
+            b"logout",
+            &[
+                command.principal_id.as_bytes(),
+                command.authentication_session_id.as_bytes(),
+                mode_value,
+            ],
+            &[0],
+        ),
+        LogoutTrigger::Application { application_id, .. } => {
+            let caller = idempotency::digest_parts_with_legacy(
+                &state.crypto,
+                b"application-triggered-logout-caller",
+                &[command.principal_id.as_bytes(), application_id.as_bytes()],
+                &[0, 1],
+            );
+            idempotency::digest_parts_with_legacy(
+                &state.crypto,
+                b"application-triggered-logout",
+                &[
+                    command.principal_id.as_bytes(),
+                    command.authentication_session_id.as_bytes(),
+                    application_id.as_bytes(),
+                    mode_value,
+                ],
+                &[0, 2],
+            )
+            .with_caller(caller.legacy())
+        }
+    };
     let mut transaction = serializable(state.db(), "logout_transaction").await?;
 
     if matches!(command.credential_state, LogoutCredentialState::ReplayOnly) {
@@ -562,7 +600,8 @@ fn logout_request_binding(
                     authentication_session_id.as_bytes(),
                     mode_value,
                 ],
-            ),
+            )
+            .into(),
         },
         LogoutTrigger::Application { application_id, .. } => LogoutRequestBinding {
             caller_scope: idempotency::digest_parts(
@@ -578,7 +617,8 @@ fn logout_request_binding(
                     application_id.as_bytes(),
                     mode_value,
                 ],
-            ),
+            )
+            .into(),
         },
     }
 }

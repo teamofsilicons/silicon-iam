@@ -173,18 +173,36 @@ pub async fn claim(
     crypto: &CryptoService,
     request: IdempotencyRequest<'_>,
 ) -> Result<IdempotencyClaim, AppError> {
+    claim_with_legacy(transaction, crypto, request, None).await
+}
+
+pub(crate) async fn claim_with_legacy(
+    transaction: &mut Transaction<'_, Postgres>,
+    crypto: &CryptoService,
+    request: IdempotencyRequest<'_>,
+    legacy: Option<(SecretString, SecretString)>,
+) -> Result<IdempotencyClaim, AppError> {
     validate_route(request.route)?;
-    let candidates = digest_candidates(
+    let mut candidates = digest_candidates(
         crypto,
         request.caller_scope,
         request.key.secret(),
         request.request_payload,
     )?;
+    if let Some((caller, payload)) = legacy {
+        candidates.extend(raw_digest_candidates(
+            crypto,
+            &caller,
+            request.key.secret(),
+            &payload,
+        )?);
+    }
     acquire_rotation_locks(transaction, request.route, &candidates).await?;
 
     for candidate in &candidates {
         if let Some(existing) = find_existing(transaction, request.route, *candidate).await? {
-            return classify_existing(crypto, existing, candidate.request);
+            let matched = matching_request(&candidates, *candidate, &existing.request_digest);
+            return classify_existing(crypto, existing, matched);
         }
     }
 
@@ -261,18 +279,36 @@ pub async fn replay_if_present(
     crypto: &CryptoService,
     request: IdempotencyRequest<'_>,
 ) -> Result<Option<ReplayResponse>, AppError> {
+    replay_if_present_with_legacy(transaction, crypto, request, None).await
+}
+
+pub(crate) async fn replay_if_present_with_legacy(
+    transaction: &mut Transaction<'_, Postgres>,
+    crypto: &CryptoService,
+    request: IdempotencyRequest<'_>,
+    legacy: Option<(SecretString, SecretString)>,
+) -> Result<Option<ReplayResponse>, AppError> {
     validate_route(request.route)?;
-    let candidates = digest_candidates(
+    let mut candidates = digest_candidates(
         crypto,
         request.caller_scope,
         request.key.secret(),
         request.request_payload,
     )?;
-    for candidate in candidates {
-        let Some(existing) = find_existing(transaction, request.route, candidate).await? else {
+    if let Some((caller, payload)) = legacy {
+        candidates.extend(raw_digest_candidates(
+            crypto,
+            &caller,
+            request.key.secret(),
+            &payload,
+        )?);
+    }
+    for candidate in &candidates {
+        let Some(existing) = find_existing(transaction, request.route, *candidate).await? else {
             continue;
         };
-        return match classify_existing(crypto, existing, candidate.request)? {
+        let matched = matching_request(&candidates, *candidate, &existing.request_digest);
+        return match classify_existing(crypto, existing, matched)? {
             IdempotencyClaim::Replay(replay) => Ok(Some(replay)),
             IdempotencyClaim::Acquired(_) => Err(internal("idempotency_preflight")),
         };
@@ -504,6 +540,42 @@ fn digest_candidates(
     key: &SecretString,
     request: &SecretString,
 ) -> Result<Vec<DigestCandidate>, AppError> {
+    let mut candidates = raw_digest_candidates(crypto, caller, key, request)?;
+    if let Some((legacy_caller, legacy_request)) = crypto.replay.inputs(caller, request) {
+        // Current request digest is also valid under the old caller namespace
+        // when the payload contains no migrated fields.
+        candidates.extend(raw_digest_candidates(crypto, &legacy_caller, key, request)?);
+        candidates.extend(raw_digest_candidates(
+            crypto,
+            &legacy_caller,
+            key,
+            &legacy_request,
+        )?);
+    }
+    Ok(candidates)
+}
+
+fn matching_request(
+    candidates: &[DigestCandidate],
+    candidate: DigestCandidate,
+    stored: &[u8],
+) -> SecretDigest {
+    candidates
+        .iter()
+        .find(|item| {
+            item.caller == candidate.caller
+                && item.key == candidate.key
+                && bool::from(stored.ct_eq(item.request.as_bytes().as_slice()))
+        })
+        .map_or(candidate.request, |item| item.request)
+}
+
+fn raw_digest_candidates(
+    crypto: &CryptoService,
+    caller: &SecretString,
+    key: &SecretString,
+    request: &SecretString,
+) -> Result<Vec<DigestCandidate>, AppError> {
     let callers = crypto
         .digest_secrets(DigestPurpose::IdempotencyCallerScope, caller)
         .map_err(|_| internal("idempotency_digest"))?;
@@ -546,9 +618,15 @@ async fn acquire_rotation_locks(
     route: &'static str,
     candidates: &[DigestCandidate],
 ) -> Result<(), AppError> {
-    for candidate in candidates {
+    let mut locks: Vec<_> = candidates
+        .iter()
+        .map(|candidate| advisory_lock_id(route, *candidate))
+        .collect();
+    locks.sort_unstable();
+    locks.dedup();
+    for lock in locks {
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(advisory_lock_id(route, *candidate))
+            .bind(lock)
             .execute(&mut **transaction)
             .await?;
     }

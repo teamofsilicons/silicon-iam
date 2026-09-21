@@ -36,6 +36,7 @@ RUN --mount=type=cache,id=silicon-iam-cargo-registry,target=/usr/local/cargo/reg
     && install -D -m 0755 target/release/iam-scoped-auth-init /opt/silicon-iam/iam-scoped-auth-init \
     && install -D -m 0755 target/release/iam-worker /opt/silicon-iam/iam-worker \
     && install -D -m 0755 target/release/iam-migrate /opt/silicon-iam/iam-migrate \
+    && install -D -m 0755 target/release/iam-canonical-cutover /opt/silicon-iam/iam-canonical-cutover \
     && install -D -m 0755 target/release/iam-bootstrap-admin /opt/silicon-iam/iam-bootstrap-admin \
     && install -D -m 0755 target/release/iam-bootstrap-apps /opt/silicon-iam/iam-bootstrap-apps \
     && install -D -m 0755 target/release/iam-activate-key-version /opt/silicon-iam/iam-activate-key-version
@@ -61,6 +62,7 @@ COPY --from=builder /opt/silicon-iam/iam-scoped-api /usr/local/bin/iam-scoped-ap
 COPY --from=builder /opt/silicon-iam/iam-scoped-auth-init /usr/local/bin/iam-scoped-auth-init
 COPY --from=builder /opt/silicon-iam/iam-worker /usr/local/bin/iam-worker
 COPY --from=builder /opt/silicon-iam/iam-migrate /usr/local/bin/iam-migrate
+COPY --from=builder /opt/silicon-iam/iam-canonical-cutover /usr/local/bin/iam-canonical-cutover
 COPY --from=builder /opt/silicon-iam/iam-bootstrap-admin /usr/local/bin/iam-bootstrap-admin
 COPY --from=builder /opt/silicon-iam/iam-bootstrap-apps /usr/local/bin/iam-bootstrap-apps
 COPY --from=builder /opt/silicon-iam/iam-activate-key-version /usr/local/bin/iam-activate-key-version

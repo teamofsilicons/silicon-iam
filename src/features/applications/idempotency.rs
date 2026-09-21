@@ -2,6 +2,7 @@
 
 use crate::domain::id::Id;
 use axum::http::HeaderMap;
+use base64::Engine as _;
 use secrecy::SecretString;
 use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
@@ -69,11 +70,12 @@ pub(super) async fn claim<T: DeserializeOwned>(
 
     for candidate in &candidates {
         if let Some(row) = find_existing(transaction, route, *candidate).await? {
+            let matched = matching_request(&candidates, *candidate, &row.request_digest);
             return classify_existing(
                 transaction,
                 crypto,
                 row,
-                candidate.request,
+                matched,
                 &lease_owner,
                 one_time_secret,
             )
@@ -151,11 +153,14 @@ pub(super) async fn replay_if_present<T: DeserializeOwned>(
     canonical_request: &[u8],
 ) -> Result<Option<Replay<T>>, ApiError> {
     let candidates = request_candidates(crypto, headers, caller_scope, canonical_request)?;
-    for candidate in candidates {
-        let Some(row) = find_existing(transaction, route, candidate).await? else {
+    for candidate in &candidates {
+        let Some(row) = find_existing(transaction, route, *candidate).await? else {
             continue;
         };
-        if !request_digest_matches(&row, candidate.request) {
+        if !request_digest_matches(
+            &row,
+            matching_request(&candidates, *candidate, &row.request_digest),
+        ) {
             return Err(ApiError::conflict("idempotency_conflict"));
         }
         if row.status == "completed" && row.response_live {
@@ -188,7 +193,18 @@ fn request_candidates(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         canonical_request,
     ));
-    digest_candidates(crypto, &caller, &key, &request)
+    let mut candidates = digest_candidates(crypto, &caller, &key, &request)?;
+    if let Ok(json) = std::str::from_utf8(canonical_request)
+        && crypto.replay.active()
+    {
+        let old = crate::infrastructure::canonical_replay::legacy_json(json, |id| {
+            crypto.replay.legacy_identity(id.as_bytes())
+        });
+        let old = SecretString::from(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(old));
+        let old_caller = SecretString::from(crypto.replay.caller(caller_scope));
+        candidates.extend(raw_digest_candidates(crypto, &old_caller, &key, &old)?);
+    }
+    Ok(candidates)
 }
 
 /// Returns the one canonical client idempotency key used by request binding.
@@ -309,6 +325,42 @@ fn digest_candidates(
     key: &SecretString,
     request: &SecretString,
 ) -> Result<Vec<DigestCandidate>, ApiError> {
+    let mut candidates = raw_digest_candidates(crypto, caller, key, request)?;
+    if let Some((legacy_caller, legacy_request)) = crypto.replay.inputs(caller, request) {
+        // Current request digest is also valid under the old caller namespace
+        // when the payload contains no migrated fields.
+        candidates.extend(raw_digest_candidates(crypto, &legacy_caller, key, request)?);
+        candidates.extend(raw_digest_candidates(
+            crypto,
+            &legacy_caller,
+            key,
+            &legacy_request,
+        )?);
+    }
+    Ok(candidates)
+}
+
+fn matching_request(
+    candidates: &[DigestCandidate],
+    candidate: DigestCandidate,
+    stored: &[u8],
+) -> SecretDigest {
+    candidates
+        .iter()
+        .find(|item| {
+            item.caller == candidate.caller
+                && item.key == candidate.key
+                && bool::from(stored.ct_eq(item.request.as_bytes().as_slice()))
+        })
+        .map_or(candidate.request, |item| item.request)
+}
+
+fn raw_digest_candidates(
+    crypto: &CryptoService,
+    caller: &SecretString,
+    key: &SecretString,
+    request: &SecretString,
+) -> Result<Vec<DigestCandidate>, ApiError> {
     let callers = crypto
         .digest_secrets(DigestPurpose::IdempotencyCallerScope, caller)
         .map_err(|_| ApiError::internal("idempotency_caller_digest"))?;
@@ -351,9 +403,15 @@ async fn acquire_rotation_locks(
     route: &'static str,
     candidates: &[DigestCandidate],
 ) -> Result<(), ApiError> {
-    for candidate in candidates {
+    let mut locks: Vec<_> = candidates
+        .iter()
+        .map(|candidate| advisory_lock_id(route, *candidate))
+        .collect();
+    locks.sort_unstable();
+    locks.dedup();
+    for lock in locks {
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(advisory_lock_id(route, *candidate))
+            .bind(lock)
             .execute(&mut **transaction)
             .await
             .map_err(|_| ApiError::internal("idempotency_lock"))?;
@@ -522,6 +580,58 @@ mod tests {
         Claim, advisory_lock_id, claim, complete, digest_candidates, replay_if_present,
         required_key,
     };
+
+    #[test]
+    fn canonical_cutover_candidates_match_old_application_requests() {
+        let old_app = uuid::Uuid::from_u128(51);
+        let old = crypto(1, &[(1, 11)]);
+        let mut current = old.clone();
+        current.replay = crate::infrastructure::canonical_replay::Bridge::fixture(
+            &[(None, "test>app", old_app)],
+            time::OffsetDateTime::now_utc() + time::Duration::hours(1),
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "idempotency-key",
+            HeaderValue::from_static("canonical-cutover-application"),
+        );
+        let before = super::request_candidates(
+            &old,
+            &headers,
+            &format!("application:{old_app}"),
+            format!(r#"{{"application_id":"{old_app}","endpoint_id":"fixed"}}"#).as_bytes(),
+        );
+        let after = super::request_candidates(
+            &current,
+            &headers,
+            "application:test>app",
+            br#"{"application_id":"test>app","endpoint_id":"fixed"}"#,
+        );
+        let (Ok(before), Ok(after)) = (before, after) else {
+            panic!("valid candidates")
+        };
+        assert!(
+            before
+                .iter()
+                .all(|old| after.iter().any(|new| old.caller == new.caller
+                    && old.key == new.key
+                    && old.request == new.request))
+        );
+        let changed = super::request_candidates(
+            &current,
+            &headers,
+            "application:test>app",
+            br#"{"application_id":"test>app","endpoint_id":"changed"}"#,
+        );
+        let Ok(changed) = changed else {
+            panic!("valid candidates")
+        };
+        assert!(before.iter().all(|old| {
+            !changed
+                .iter()
+                .any(|new| old.caller == new.caller && old.request == new.request)
+        }));
+    }
 
     const ROUTE: &str = "POST /api/v1/obo-access/exchanges";
 
