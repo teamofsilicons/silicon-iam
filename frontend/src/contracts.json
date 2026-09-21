@@ -706,7 +706,7 @@
   },
   "StepUpAction": {
     "type": "string",
-    "description": "Closed privileged-action catalog. account.session_revoke binds resource_id to the target session UUID; account.sessions_revoke_all binds it to the current Carbon principal UUID. The Silicon-webhook redirect action binds it to the target Silicon membership UUID. The Application client-secret rotation, webhook-secret rotation and webhook approval actions bind it to the canonical Application ID. Every action requires one non-null resource_id.",
+    "description": "Closed privileged-action catalog. account.session_revoke binds resource_id to the target session UUID; account.sessions_revoke_all binds it to the current immutable Carbon ID. The Silicon-webhook redirect action binds it to the target canonical Silicon membership ID. The Application client-secret rotation, webhook-secret rotation and webhook approval actions bind it to the canonical Application ID. Every action requires one non-null resource_id.",
     "enum": [
       "account.session_revoke",
       "account.sessions_revoke_all",
@@ -1875,7 +1875,10 @@
       },
       "job_description": {
         "type": "string",
-        "maxLength": 5000
+        "maxLength": 5000,
+        "x-sdk-deserialization-aliases": [
+          "job_role"
+        ]
       },
       "tags": {
         "type": "array",
@@ -2079,7 +2082,10 @@
       },
       "job_description": {
         "type": "string",
-        "maxLength": 5000
+        "maxLength": 5000,
+        "x-sdk-deserialization-aliases": [
+          "job_role"
+        ]
       }
     }
   },
@@ -2360,7 +2366,10 @@
       },
       "job_description": {
         "type": "string",
-        "maxLength": 5000
+        "maxLength": 5000,
+        "x-sdk-deserialization-aliases": [
+          "job_role"
+        ]
       },
       "tag_ids": {
         "type": "array",
@@ -2608,7 +2617,10 @@
       },
       "job_description": {
         "type": "string",
-        "maxLength": 5000
+        "maxLength": 5000,
+        "x-sdk-deserialization-aliases": [
+          "job_role"
+        ]
       },
       "reports_to_membership_id": {
         "type": [
@@ -3849,10 +3861,16 @@
         "type": "string"
       },
       "old_job_description": {
-        "type": "string"
+        "type": "string",
+        "x-sdk-deserialization-aliases": [
+          "old_job_role"
+        ]
       },
       "new_job_description": {
-        "type": "string"
+        "type": "string",
+        "x-sdk-deserialization-aliases": [
+          "new_job_role"
+        ]
       },
       "requested_by": {
         "$ref": "#/components/schemas/ActorRef"
@@ -4557,7 +4575,6 @@
           "string",
           "null"
         ],
-        "format": "uuid",
         "description": "Canonical Application ID for binding webhook-approval step-up. Returned on webhook configuration reads and mutations."
       },
       "active_url": {
@@ -6959,7 +6976,10 @@
     "additionalProperties": false,
     "properties": {
       "carbon_id": {
-        "type": "string"
+        "type": "string",
+        "x-sdk-deserialization-aliases": [
+          "principal_id"
+        ]
       },
       "email": {
         "type": "string"

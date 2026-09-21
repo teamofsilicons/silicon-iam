@@ -1040,11 +1040,11 @@ pub enum SsoConfigurationStatus {
 
 /// Closed privileged-action catalog. account.session_revoke binds resource_id
 /// to the target session UUID; account.sessions_revoke_all binds it to the
-/// current Carbon principal UUID. The Silicon-webhook redirect action binds
-/// it to the target Silicon membership UUID. The Application client-secret
-/// rotation, webhook-secret rotation and webhook approval actions bind it to
-/// the canonical Application ID. Every action requires one non-null
-/// resource_id.
+/// current immutable Carbon ID. The Silicon-webhook redirect action binds it
+/// to the target canonical Silicon membership ID. The Application
+/// client-secret rotation, webhook-secret rotation and webhook approval
+/// actions bind it to the canonical Application ID. Every action requires one
+/// non-null resource_id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepUpAction {
@@ -1980,7 +1980,7 @@ pub struct ApplicationWebhook {
     /// Canonical Application ID for binding webhook-approval step-up.
     /// Returned on webhook configuration reads and mutations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub application_id: Option<Uuid>,
+    pub application_id: Option<String>,
     /// Null until the application's initial destination is approved; a
     /// verified application's pending endpoint may be approved by its current
     /// organization owner/admin or an IAM platform reviewer.

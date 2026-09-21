@@ -2855,7 +2855,7 @@ dependencies = [
 
 [[package]]
 name = "silicon-iam-cli"
-version = "3.0.1"
+version = "3.0.2"
 dependencies = [
  "clap",
  "http",
@@ -2874,7 +2874,7 @@ dependencies = [
 
 [[package]]
 name = "silicon-iam-client"
-version = "3.0.1"
+version = "3.0.2"
 dependencies = [
  "base64 0.22.1",
  "hex",

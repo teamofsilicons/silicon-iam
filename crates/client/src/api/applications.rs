@@ -366,6 +366,30 @@ impl Applications<'_> {
 mod tests {
     use crate::{Client, Error, Mutation};
 
+    #[test]
+    fn webhook_approval_accepts_a_canonical_application_identity() {
+        let mut payload = serde_json::json!({
+            "application_id": "acme>billing",
+            "active_url": null,
+            "pending_url": "https://hooks.example.test/iam",
+            "status": "pending_review",
+            "secret_version": 1,
+            "version": 1
+        });
+        let Ok(webhook) =
+            serde_json::from_value::<crate::models::ApplicationWebhook>(payload.clone())
+        else {
+            panic!("the canonical application identity must decode for webhook approval");
+        };
+        assert_eq!(webhook.application_id.as_deref(), Some("acme>billing"));
+        payload["application_id"] = serde_json::Value::Null;
+        let Ok(webhook) = serde_json::from_value::<crate::models::ApplicationWebhook>(payload)
+        else {
+            panic!("an undisclosed application identity must remain nullable");
+        };
+        assert_eq!(webhook.application_id, None);
+    }
+
     #[tokio::test]
     async fn production_clients_refuse_the_test_only_import_before_sending() {
         let Ok(client) = Client::new("https://example.test") else {

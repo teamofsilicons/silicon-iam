@@ -6716,7 +6716,6 @@ components:
       properties:
         application_id:
           type: [string, 'null']
-          format: uuid
           description: Canonical Application ID for binding webhook-approval step-up. Returned on webhook configuration reads and mutations.
         active_url:
           type: [string, 'null']

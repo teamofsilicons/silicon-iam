@@ -1012,8 +1012,8 @@ fn report_webhook(context: &Context, webhook: &models::ApplicationWebhook) -> Re
         Format::Json => json(webhook),
         Format::Text => {
             let mut table = Table::new(["field", "value"]);
-            if let Some(application_id) = webhook.application_id {
-                table.row(["application_id", &application_id.to_string()]);
+            if let Some(application_id) = &webhook.application_id {
+                table.row(["application_id", application_id.as_str()]);
             }
             table.row(["active_url", &or_dash(webhook.active_url.as_deref())]);
             table.row(["pending_url", &or_dash(webhook.pending_url.as_deref())]);
