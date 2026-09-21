@@ -343,7 +343,7 @@ Resources:
                   Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/${PublicNetworkInterfaceId}
                   Condition:
                     StringEquals:
-                      ec2:Attribute: attachment
+                      ec2:Attribute: Attachment
                       ec2:ResourceTag/Service: silicon-iam
                 # Updating attachment retention also authorizes the attached
                 # instance. That resource has no ec2:Attribute condition key;

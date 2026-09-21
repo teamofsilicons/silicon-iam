@@ -135,6 +135,8 @@ statement permits the instance resource only when it has the IAM service and
 production ASG tags. The attribute restriction remains on the exact ENI; the
 instance evaluation does not expose `ec2:Attribute`. This split follows the
 decoded live-role dry-run denial observed during the 2026-09-21 validation.
+The ENI context uses the case-sensitive value `Attachment`, even though the CLI
+option is `--attachment`; the policy and regression fixture use that exact value.
 The policy has no detach,
 EIP, DNS, S3 write or bucket-list permission. Resource types and attribute
 conditions follow the [EC2 authorization reference](https://docs.aws.amazon.com/service-authorization/latest/reference/list_ec2.html).

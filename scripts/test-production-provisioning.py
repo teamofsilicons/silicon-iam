@@ -181,7 +181,9 @@ class BootstrapTests(unittest.TestCase):
         prefix = "arn:aws:ec2:us-east-1:234951665042:"
         eni = prefix + "network-interface/eni-retained"
         instance = prefix + "instance/i-replacement"
-        eni_context = {"ec2:ResourceTag/Service": "silicon-iam", "ec2:Attribute": "attachment"}
+        # EC2's actual authorization context uses capital-A Attachment, even
+        # though the AWS CLI option is lowercase --attachment.
+        eni_context = {"ec2:ResourceTag/Service": "silicon-iam", "ec2:Attribute": "Attachment"}
         # Real decoded AWS denial: the attached-instance evaluation carries
         # these resource tags but no ec2:Attribute key.
         instance_context = {"ec2:ResourceTag/Service": "silicon-iam",
