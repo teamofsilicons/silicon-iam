@@ -5420,8 +5420,8 @@ components:
       description: >-
         Closed privileged-action catalog. account.session_revoke binds
         resource_id to the target session UUID; account.sessions_revoke_all
-        binds it to the current Carbon principal UUID. The Silicon-webhook
-        redirect action binds it to the target Silicon membership UUID. The
+        binds it to the current immutable Carbon ID. The Silicon-webhook
+        redirect action binds it to the target canonical Silicon membership ID. The
         Application client-secret rotation, webhook-secret rotation and
         webhook approval actions bind it to the canonical Application ID.
         Every action requires one non-null resource_id.
