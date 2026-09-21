@@ -103,7 +103,12 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
         workos: None,
         settings: Arc::new(settings),
     };
-    assert_selector_membership_transport(&state, &production, &testing).await?;
+    Box::pin(assert_selector_membership_transport(
+        &state,
+        &production,
+        &testing,
+    ))
+    .await?;
     ensure!(
         exchange(&state, "test_carbon", "production-actor-login")
             .await?

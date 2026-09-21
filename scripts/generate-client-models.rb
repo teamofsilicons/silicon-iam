@@ -280,6 +280,9 @@ generator.structs.sort.each do |name, schema|
       out << "    /// `None` omits this field; `Some(None)` sends JSON null to clear it.\n"
     end
     attributes = []
+    Array(property_schema["x-sdk-deserialization-aliases"]).each do |legacy_name|
+      attributes << "alias = #{legacy_name.inspect}"
+    end
     attributes << "rename = \"#{property}\"" if ident != property
     if merge_patch_field
       raise "nullable date-time merge-patch fields need an RFC3339 double-option adapter" if rust.include?("OffsetDateTime")

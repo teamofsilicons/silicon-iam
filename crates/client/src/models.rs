@@ -2413,6 +2413,7 @@ pub struct DirectoryRole {
     /// The contract's `org_role`.
     pub org_role: DirectoryRoleOrgRole,
     /// The contract's `job_description`.
+    #[serde(alias = "job_role")]
     pub job_description: String,
 }
 
@@ -2537,6 +2538,7 @@ impl std::fmt::Debug for HoneycombConfiguration {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HoneycombNotificationRecipient {
     /// The contract's `carbon_id`.
+    #[serde(alias = "principal_id")]
     pub carbon_id: String,
     /// The contract's `email`.
     pub email: String,
@@ -3077,6 +3079,7 @@ pub struct Invite {
     /// The contract's `org_role`.
     pub org_role: serde_json::Value,
     /// The contract's `job_description`.
+    #[serde(alias = "job_role")]
     pub job_description: String,
     /// The contract's `tag_ids`.
     pub tag_ids: Vec<Uuid>,
@@ -3253,6 +3256,7 @@ pub struct Membership {
     /// The contract's `org_role`.
     pub org_role: MembershipOrgRole,
     /// The contract's `job_description`.
+    #[serde(alias = "job_role")]
     pub job_description: String,
     /// The contract's `tags`.
     pub tags: Vec<TagSummary>,
@@ -3664,8 +3668,10 @@ pub struct RoleHistory {
     /// The contract's `membership_id`.
     pub membership_id: String,
     /// The contract's `old_job_description`.
+    #[serde(alias = "old_job_role")]
     pub old_job_description: String,
     /// The contract's `new_job_description`.
+    #[serde(alias = "new_job_role")]
     pub new_job_description: String,
     /// The contract's `requested_by`.
     pub requested_by: ActorRef,
@@ -3777,6 +3783,7 @@ pub struct Silicon {
     /// The contract's `profile_photo`.
     pub profile_photo: String,
     /// The contract's `job_description`.
+    #[serde(alias = "job_role")]
     pub job_description: String,
     /// The contract's `reports_to_membership_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

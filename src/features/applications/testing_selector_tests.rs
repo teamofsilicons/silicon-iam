@@ -17,7 +17,7 @@ pub(super) async fn assert_selector_membership_transport(
     let secret = state
         .crypto
         .generate_secret(SecretKind::ApplicationSecret)?;
-    let (status, tokens) = testing_plane::scope(
+    let (status, tokens) = Box::pin(testing_plane::scope(
         SelectedEnvironment { id: ENVIRONMENT, organization_id: Id::from_u128(0x21) },
         async {
             let digest = state.crypto.digest_secret(DigestPurpose::ApplicationSecret, &secret)?;
@@ -29,7 +29,7 @@ pub(super) async fn assert_selector_membership_transport(
             tx.commit().await?;
             exchange(state, "test_carbon", "selector-membership-transport-login").await
         },
-    ).await?;
+    )).await?;
     ensure!(
         status == StatusCode::OK,
         "selector test token issuance failed: {tokens}"

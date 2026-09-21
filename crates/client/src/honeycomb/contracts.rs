@@ -233,7 +233,7 @@ impl ManagementClient {
         &self,
         plan: Uuid,
         provider: &str,
-        after: Option<Uuid>,
+        after: Option<&str>,
         limit: Option<u16>,
     ) -> Result<models::HoneycombNotificationRecipients> {
         let mut query = vec![("provider", provider.to_owned())];
@@ -261,7 +261,7 @@ impl ManagementClient {
     pub async fn organization_recipients(
         &self,
         org: &str,
-        after: Option<Uuid>,
+        after: Option<&str>,
         limit: Option<u16>,
     ) -> Result<models::HoneycombOrganizationRecipients> {
         let mut query = Vec::new();
