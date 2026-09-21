@@ -94,7 +94,7 @@ aws cloudformation validate-template --profile silicon-production --region us-ea
   --template-body file://deploy/aws/production.yaml
 ```
 
-The source passes the eight offline recovery checks and AWS template validation.
+The source passes the nine offline recovery checks and AWS template validation.
 `cfn-lint` has no errors; it reports W1030 for the empty default of the optional
 scoped-secret ARN. The direct-mode rule requires that ARN, and its policy only
 exists when direct mode is selected. The generated payload is approximately
@@ -129,9 +129,21 @@ existing account. A failed recovery never steals or deletes the retained ENI.
 
 The new IAM policy grants only scoped-secret read, `s3:GetObjectVersion` on this
 key and version, ENI describe, attach of the exact ENI to a tagged IAM instance,
-and modification of that ENI's attachment retention attribute. It has no detach,
+and modification of that ENI's attachment retention attribute. AWS additionally
+authorizes the attached instance for that retention update, so a separate
+statement permits the instance resource only when it has the IAM service and
+production ASG tags. The attribute restriction remains on the exact ENI; the
+instance evaluation does not expose `ec2:Attribute`. This split follows the
+decoded live-role dry-run denial observed during the 2026-09-21 validation.
+The policy has no detach,
 EIP, DNS, S3 write or bucket-list permission. Resource types and attribute
 conditions follow the [EC2 authorization reference](https://docs.aws.amazon.com/service-authorization/latest/reference/list_ec2.html).
+
+Before resuming replacement, use the instance role to download and validate the
+pinned archive, compare its files and the scoped keyring with the current host,
+and run both EC2 attachment/retention requests with `--dry-run`. Require
+`DryRunOperation` for both; `UnauthorizedOperation` is a recovery blocker.
+Dry-run permission checks do not attach an interface or change its retention.
 
 If fresh provisioning fails after writing an environment file, do not remove
 the existing-host guard or blindly rerun database preparation. Inspect the

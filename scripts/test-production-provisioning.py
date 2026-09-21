@@ -2,6 +2,7 @@
 """Offline regression checks for the bounded singleton recovery bootstrap."""
 import base64
 import copy
+import fnmatch
 import hashlib
 import importlib.util
 import io
@@ -155,6 +156,44 @@ class IngressTests(unittest.TestCase):
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_retention_authorizes_both_required_resources_without_broadening_eni_scope(self):
+        # Ruby/YAML is already required by the repository's CI checks. Its YAML
+        # reader retains the scalar values of these CloudFormation intrinsics.
+        template = json.loads(subprocess.check_output([
+            "ruby", "-rjson", "-ryaml", "-e", "puts JSON.generate(YAML.load_file(ARGV[0]))",
+            str(ROOT / "deploy/aws/production.yaml")], text=True))
+        policy = template["Resources"]["InstanceRole"]["Properties"]["Policies"][1][1]["PolicyDocument"]
+        substitutions = {"AWS::Partition": "aws", "AWS::Region": "us-east-1",
+                         "AWS::AccountId": "234951665042", "PublicNetworkInterfaceId": "eni-retained"}
+
+        def allowed(resource, context, action="ec2:ModifyNetworkInterfaceAttribute"):
+            for statement in policy["Statement"]:
+                if statement["Action"] != action or statement["Effect"] != "Allow":
+                    continue
+                pattern = statement["Resource"]
+                for key, value in substitutions.items():
+                    pattern = pattern.replace("${" + key + "}", value)
+                conditions = statement.get("Condition", {}).get("StringEquals", {})
+                if fnmatch.fnmatchcase(resource, pattern) and all(context.get(key) == value for key, value in conditions.items()):
+                    return True
+            return False
+
+        prefix = "arn:aws:ec2:us-east-1:234951665042:"
+        eni = prefix + "network-interface/eni-retained"
+        instance = prefix + "instance/i-replacement"
+        eni_context = {"ec2:ResourceTag/Service": "silicon-iam", "ec2:Attribute": "attachment"}
+        # Real decoded AWS denial: the attached-instance evaluation carries
+        # these resource tags but no ec2:Attribute key.
+        instance_context = {"ec2:ResourceTag/Service": "silicon-iam",
+                            "ec2:ResourceTag/aws:autoscaling:groupName": "silicon-iam-production"}
+        self.assertTrue(allowed(eni, eni_context))
+        self.assertTrue(allowed(instance, instance_context))
+        self.assertFalse(allowed(prefix + "network-interface/eni-other", eni_context))
+        self.assertFalse(allowed(eni, eni_context | {"ec2:Attribute": "groupSet"}))
+        self.assertFalse(allowed(instance, {"ec2:ResourceTag/Service": "silicon-iam"}))
+        self.assertFalse(allowed(instance, instance_context | {"ec2:ResourceTag/Service": "another-app"}))
+        self.assertFalse(allowed(eni, eni_context, "ec2:DetachNetworkInterface"))
+
     def test_embedded_sources_are_exact_and_bash_valid(self):
         content = renderer.script()
         self.assertLess(len(content.encode()), 14000)

@@ -345,6 +345,16 @@ Resources:
                     StringEquals:
                       ec2:Attribute: attachment
                       ec2:ResourceTag/Service: silicon-iam
+                # Updating attachment retention also authorizes the attached
+                # instance. That resource has no ec2:Attribute condition key;
+                # keep its allow separate from the exact-ENI attribute allow.
+                - Effect: Allow
+                  Action: ec2:ModifyNetworkInterfaceAttribute
+                  Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                  Condition:
+                    StringEquals:
+                      ec2:ResourceTag/Service: silicon-iam
+                      ec2:ResourceTag/aws:autoscaling:groupName: silicon-iam-production
           - !Ref AWS::NoValue
       Tags:
         - Key: Service
