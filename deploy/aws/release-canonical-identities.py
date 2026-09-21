@@ -399,8 +399,11 @@ class Release:
         self.checkpoint("healthy-acceptance-gates-pending")
 
     def failure(self):
-        if self.state["services_stopped"]:
+        # A final environment/readiness assertion can fail after services restart.
+        # Such a failure still follows the post-migration recovery path.
+        if self.state["services_stopped"] or self.state["migration_started"]:
             subprocess.run(["systemctl", "stop", *(f"silicon-iam-{service}" for service in SERVICES)], capture_output=True)
+            self.state["services_stopped"] = True
         if self.state["migration_started"]:
             self.state["recovery"] = ("Keep all services stopped. Forward repair using the release migration ledger, or "
                 "restore BOTH verified databases and saved configuration together before starting the previous image. "
