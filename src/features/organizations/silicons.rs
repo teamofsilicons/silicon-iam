@@ -4,6 +4,7 @@ use super::application_reads::{self, ReadScopes};
 
 use std::{borrow::Cow, collections::BTreeMap};
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -14,7 +15,6 @@ use secrecy::ExposeSecret as _;
 use serde_json::json;
 use sqlx::{Postgres, Transaction};
 use time::{Duration, OffsetDateTime};
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -38,8 +38,8 @@ const SILICON_REMOVE_ROUTE: &str = "DELETE /api/v1/organizations/{org_id}/silico
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct SiliconIdentity {
-    principal_id: Uuid,
-    membership_id: Uuid,
+    principal_id: Id,
+    membership_id: Id,
     version: i64,
     membership_version: i64,
     status: String,
@@ -62,7 +62,7 @@ pub(super) async fn list_silicons(
     let profile_base = silicon_profile_base(&state)?;
     let mut items = sqlx::query_as::<_, SiliconResponse>(SILICON_LIST_SQL)
         .bind(scope.access.organization_id)
-        .bind(cursor)
+        .bind(cursor.map(|id| id.to_string()))
         .bind(limit + 1)
         .bind(query.tag_id)
         .bind(profile_base)
@@ -133,8 +133,12 @@ pub(super) async fn create_silicon(
         .map_err(|_| AppError::Internal {
             category: "silicon_token_digest",
         })?;
-    let principal_id = Uuid::now_v7();
-    let membership_id = Uuid::now_v7();
+    let principal_id = Id::identity(&format!("{}:{org_id}", input.silicon_id)).map_err(|_| {
+        AppError::Internal {
+            category: "canonical_silicon_identity",
+        }
+    })?;
+    let membership_id = Id::now_v7();
     sqlx::query(
         r"
         INSERT INTO iam.principals (id, kind, status, activated_at)
@@ -163,9 +167,9 @@ pub(super) async fn create_silicon(
         r"
         INSERT INTO iam.silicons (
             id, organization_id, membership_id, organization_handle,
-            silicon_handle, display_name, timezone_id, description,
+            silicon_handle, display_name, timezone_id,
             profile_photo_override_uri, reports_to_membership_id, provisioning_status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active')
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active')
         ",
     )
     .bind(principal_id)
@@ -175,7 +179,6 @@ pub(super) async fn create_silicon(
     .bind(&input.silicon_id)
     .bind(input.display_name.as_deref())
     .bind(input.timezone.as_deref())
-    .bind(input.description.as_deref())
     .bind(&input.profile_photo)
     .bind(input.reports_to_membership_id)
     .execute(&mut *scope.transaction)
@@ -192,7 +195,7 @@ pub(super) async fn create_silicon(
         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(scope.access.organization_id)
     .bind(principal_id)
     .bind(prefix)
@@ -346,10 +349,7 @@ pub(super) async fn update_silicon(
         == crate::domain::actor::ActorType::Silicon
         && authenticated.0.subject.id == identity.principal_id
         && scope.access.membership_id == identity.membership_id;
-    if (input.display_name.is_some()
-        || input.timezone.is_some()
-        || input.description.is_some()
-        || input.profile_photo.is_some())
+    if (input.display_name.is_some() || input.timezone.is_some() || input.profile_photo.is_some())
         && !edits_own_profile
     {
         support::require_capability(&scope.access, Capability::SiliconsUpdateDirectory)?;
@@ -358,13 +358,25 @@ pub(super) async fn update_silicon(
         support::require_capability(&scope.access, Capability::SiliconsManageHierarchy)?;
     }
     let hierarchy_change = input.reports_to_membership_id.is_some();
-    let affected_membership_ids = lock_hierarchy_subtree(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        identity.membership_id,
-        hierarchy_change,
-    )
-    .await?;
+    let self_profile_only = edits_own_profile && !hierarchy_change;
+    let affected_membership_ids = if self_profile_only {
+        vec![
+            sqlx::query_scalar::<_, Id>("SELECT iam_private.lock_silicon_self_profile($1, $2)")
+                .bind(scope.access.organization_id)
+                .bind(identity.principal_id)
+                .fetch_one(&mut *scope.transaction)
+                .await
+                .map_err(support::database)?,
+        ]
+    } else {
+        lock_hierarchy_subtree(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            identity.membership_id,
+            hierarchy_change,
+        )
+        .await?
+    };
     validate_references(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -393,41 +405,57 @@ pub(super) async fn update_silicon(
     .into_iter()
     .map(|member| (member.id, member))
     .collect::<BTreeMap<_, _>>();
-    let result = sqlx::query(
-        r"
+    let changed = if self_profile_only {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT iam_private.update_silicon_self_profile($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(scope.access.organization_id)
+        .bind(identity.principal_id)
+        .bind(expected_version)
+        .bind(input.display_name.as_deref())
+        .bind(input.timezone.as_deref())
+        .bind(false)
+        .bind(None::<&str>)
+        .bind(input.profile_photo.is_some())
+        .bind(input.profile_photo.as_ref().and_then(Clone::clone))
+        .fetch_one(&mut *scope.transaction)
+        .await
+        .map_err(support::database)?
+    } else {
+        sqlx::query(
+            r"
         UPDATE iam.silicons
         SET display_name = COALESCE($4, display_name),
             timezone_id = COALESCE($5, timezone_id),
-            description = CASE WHEN $6 THEN $7 ELSE description END,
-            profile_photo_override_uri = CASE WHEN $8 THEN $9 ELSE profile_photo_override_uri END,
-            reports_to_membership_id = CASE WHEN $10 THEN $11 ELSE reports_to_membership_id END,
+            profile_photo_override_uri = CASE WHEN $6 THEN $7 ELSE profile_photo_override_uri END,
+            reports_to_membership_id = CASE WHEN $8 THEN $9 ELSE reports_to_membership_id END,
             updated_at = transaction_timestamp()
         WHERE organization_id = $1 AND id = $2 AND version = $3
           AND provisioning_status <> 'deleted'
           AND (
               ($4::text IS NOT NULL AND display_name IS DISTINCT FROM $4)
               OR ($5::text IS NOT NULL AND timezone_id IS DISTINCT FROM $5)
-              OR ($6 AND description IS DISTINCT FROM $7)
-              OR ($8 AND profile_photo_override_uri IS DISTINCT FROM $9)
-              OR ($10 AND reports_to_membership_id IS DISTINCT FROM $11)
+              OR ($6 AND profile_photo_override_uri IS DISTINCT FROM $7)
+              OR ($8 AND reports_to_membership_id IS DISTINCT FROM $9)
           )
         ",
-    )
-    .bind(scope.access.organization_id)
-    .bind(identity.principal_id)
-    .bind(expected_version)
-    .bind(input.display_name.as_deref())
-    .bind(input.timezone.as_deref())
-    .bind(input.description.is_some())
-    .bind(input.description.as_ref().and_then(Clone::clone))
-    .bind(input.profile_photo.is_some())
-    .bind(input.profile_photo.as_ref().and_then(Clone::clone))
-    .bind(input.reports_to_membership_id.is_some())
-    .bind(input.reports_to_membership_id.flatten())
-    .execute(&mut *scope.transaction)
-    .await
-    .map_err(|error| support::conflict_from_database(error, "invalid_reporting_hierarchy"))?;
-    if result.rows_affected() != 1 {
+        )
+        .bind(scope.access.organization_id)
+        .bind(identity.principal_id)
+        .bind(expected_version)
+        .bind(input.display_name.as_deref())
+        .bind(input.timezone.as_deref())
+        .bind(input.profile_photo.is_some())
+        .bind(input.profile_photo.as_ref().and_then(Clone::clone))
+        .bind(input.reports_to_membership_id.is_some())
+        .bind(input.reports_to_membership_id.flatten())
+        .execute(&mut *scope.transaction)
+        .await
+        .map_err(|error| support::conflict_from_database(error, "invalid_reporting_hierarchy"))?
+        .rows_affected()
+            == 1
+    };
+    if !changed {
         let current = fetch_identity(
             &mut scope.transaction,
             scope.access.organization_id,
@@ -462,13 +490,15 @@ pub(super) async fn update_silicon(
         &changed_membership_ids,
     )
     .await?;
-    touch_membership_projections(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        &changed_membership_ids,
-        hierarchy_change.then_some(identity.membership_id),
-    )
-    .await?;
+    if !self_profile_only {
+        touch_membership_projections(
+            &mut scope.transaction,
+            scope.access.organization_id,
+            &changed_membership_ids,
+            hierarchy_change.then_some(identity.membership_id),
+        )
+        .await?;
+    }
     let after_silicons = fetch_silicons(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -725,7 +755,7 @@ pub(super) async fn remove_silicon(
 
 pub(super) async fn fetch_silicon(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
     silicon_id: &str,
     profile_base: &str,
 ) -> Result<SiliconResponse, AppError> {
@@ -741,8 +771,8 @@ pub(super) async fn fetch_silicon(
 
 pub(super) async fn fetch_silicons(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_ids: &[Uuid],
+    organization_id: Id,
+    membership_ids: &[Id],
     profile_base: &str,
 ) -> Result<Vec<SiliconResponse>, AppError> {
     if membership_ids.is_empty() {
@@ -762,10 +792,10 @@ pub(super) async fn fetch_silicons(
 /// derived levels before/after and version only projections that changed.
 pub(super) async fn lock_hierarchy_subtree(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    root_membership_id: Uuid,
+    organization_id: Id,
+    root_membership_id: Id,
     include_descendants: bool,
-) -> Result<Vec<Uuid>, AppError> {
+) -> Result<Vec<Id>, AppError> {
     if include_descendants {
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 734921))")
             .bind(organization_id)
@@ -773,7 +803,7 @@ pub(super) async fn lock_hierarchy_subtree(
             .await
             .map_err(support::database)?;
     }
-    let ids = sqlx::query_scalar::<_, Uuid>(
+    let ids = sqlx::query_scalar::<_, Id>(
         r"
         WITH RECURSIVE subtree AS (
             SELECT silicon.membership_id
@@ -816,9 +846,9 @@ pub(super) async fn lock_hierarchy_subtree(
 
 pub(super) async fn touch_silicon_descendants(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    target_membership_id: Uuid,
-    changed_membership_ids: &[Uuid],
+    organization_id: Id,
+    target_membership_id: Id,
+    changed_membership_ids: &[Id],
 ) -> Result<(), AppError> {
     let descendants = changed_membership_ids
         .iter()
@@ -847,9 +877,9 @@ pub(super) async fn touch_silicon_descendants(
 
 pub(super) async fn touch_membership_projections(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_ids: &[Uuid],
-    authorization_membership_id: Option<Uuid>,
+    organization_id: Id,
+    membership_ids: &[Id],
+    authorization_membership_id: Option<Id>,
 ) -> Result<(), AppError> {
     if membership_ids.is_empty() {
         return Ok(());
@@ -880,7 +910,7 @@ pub(super) fn hierarchy_projection_changed(
 
 async fn fetch_identity(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
     silicon_id: &str,
 ) -> Result<SiliconIdentity, AppError> {
     sqlx::query_as::<_, SiliconIdentity>(
@@ -921,9 +951,9 @@ fn require_active_version(identity: &SiliconIdentity, version: i64) -> Result<()
 
 async fn validate_references(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    tag_ids: &[Uuid],
-    reports_to: Option<Uuid>,
+    organization_id: Id,
+    tag_ids: &[Id],
+    reports_to: Option<Id>,
 ) -> Result<(), AppError> {
     let tag_count = sqlx::query_scalar::<_, i64>(
         "SELECT count(*) FROM iam.organization_tags WHERE organization_id = $1 AND id = ANY($2) AND status = 'active'",
@@ -946,8 +976,8 @@ async fn validate_references(
 
 async fn validate_active_silicon(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
 ) -> Result<(), AppError> {
     let active = sqlx::query_scalar::<_, bool>(
         r"
@@ -977,10 +1007,10 @@ async fn validate_active_silicon(
 
 async fn assign_tags(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
-    actor_membership_id: Uuid,
-    tag_ids: &[Uuid],
+    organization_id: Id,
+    membership_id: Id,
+    actor_membership_id: Id,
+    tag_ids: &[Id],
 ) -> Result<(), AppError> {
     let assigned_count = sqlx::query_scalar::<_, i64>(
         "SELECT iam_private.assign_initial_silicon_tags($1, $2, $3, $4)",
@@ -1008,7 +1038,7 @@ pub(super) async fn record_silicon_change(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     authenticated: &Authenticated,
-    organization_id: Uuid,
+    organization_id: Id,
     action: &'static str,
     event_type: &'static str,
     before: &SiliconResponse,
@@ -1062,7 +1092,6 @@ pub(super) fn validate_global_silicon_id(value: &str, org_id: &str) -> Result<()
         silicon_id: handle.to_owned(),
         display_name: Some(handle.to_owned()),
         timezone: Some("UTC".to_owned()),
-        description: None,
         profile_photo: None,
         job_role: String::new(),
         reports_to_membership_id: None,
@@ -1115,7 +1144,7 @@ const SILICON_LIST_SQL: &str = concat!(
     SELECT silicon.id AS principal_id, silicon.membership_id,
            silicon.global_silicon_id AS silicon_id,
            organization.org_id,
-           silicon.display_name, silicon.timezone_id AS timezone, silicon.description,
+           silicon.display_name, silicon.timezone_id AS timezone,
            COALESCE(silicon.profile_photo_override_uri,
                     $5 || '?id=' || silicon.global_silicon_id || '&level=' || hierarchy.level::text) AS profile_photo,
            membership.job_role, silicon.reports_to_membership_id,
@@ -1143,7 +1172,7 @@ const SILICON_LIST_SQL: &str = concat!(
     JOIN iam.organization_memberships membership ON membership.organization_id = silicon.organization_id AND membership.id = silicon.membership_id
     JOIN hierarchy ON hierarchy.id = silicon.id
     WHERE silicon.organization_id = $1 AND membership.status = 'active' AND silicon.provisioning_status <> 'deleted'
-      AND ($2::uuid IS NULL OR silicon.id > $2)
+      AND ($2::text IS NULL OR silicon.id > $2)
       AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM iam.membership_tags filter_tag
           WHERE filter_tag.organization_id = silicon.organization_id AND filter_tag.membership_id = silicon.membership_id AND filter_tag.tag_id = $4))
     ORDER BY silicon.id
@@ -1165,7 +1194,7 @@ const SILICON_BY_ID_SQL: &str = r"
     SELECT silicon.id AS principal_id, silicon.membership_id,
            silicon.global_silicon_id AS silicon_id,
            organization.org_id,
-           silicon.display_name, silicon.timezone_id AS timezone, silicon.description,
+           silicon.display_name, silicon.timezone_id AS timezone,
            COALESCE(silicon.profile_photo_override_uri,
                     $3 || '?id=' || silicon.global_silicon_id || '&level=' || hierarchy.level::text) AS profile_photo,
            membership.job_role, silicon.reports_to_membership_id,
@@ -1211,7 +1240,7 @@ const SILICON_BY_MEMBERSHIPS_SQL: &str = r"
     SELECT silicon.id AS principal_id, silicon.membership_id,
            silicon.global_silicon_id AS silicon_id,
            organization.org_id,
-           silicon.display_name, silicon.timezone_id AS timezone, silicon.description,
+           silicon.display_name, silicon.timezone_id AS timezone,
            COALESCE(silicon.profile_photo_override_uri,
                     $3 || '?id=' || silicon.global_silicon_id || '&level=' || hierarchy.level::text) AS profile_photo,
            membership.job_role, silicon.reports_to_membership_id,
@@ -1258,36 +1287,23 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires isolated PostgreSQL via IAM_TEST_DATABASE_ADMIN_URL or Docker"]
     async fn live_hierarchy_scope_versions_only_changed_subtree_resources() -> anyhow::Result<()> {
         use anyhow::ensure;
-        use sqlx::postgres::PgPoolOptions;
-        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-        use testcontainers_modules::postgres::Postgres as TestPostgres;
 
-        let container = TestPostgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&format!(
-                "postgres://postgres:postgres@{host}:{port}/postgres"
-            ))
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let owner_id = Uuid::from_u128(0xb01);
-        let organization_id = Uuid::from_u128(0xb02);
-        let owner_membership_id = Uuid::from_u128(0xb03);
-        let root_id = Uuid::from_u128(0xb04);
-        let root_membership_id = Uuid::from_u128(0xb05);
-        let child_id = Uuid::from_u128(0xb06);
-        let child_membership_id = Uuid::from_u128(0xb07);
-        let grandchild_id = Uuid::from_u128(0xb08);
-        let grandchild_membership_id = Uuid::from_u128(0xb09);
+        let owner_id = Id::fixture("hierarchy-owner");
+        let organization_id = Id::from_u128(0xb02);
+        let owner_membership_id = Id::from_u128(0xb03);
+        let root_id = Id::fixture("root:hierarchy-org");
+        let root_membership_id = Id::from_u128(0xb05);
+        let child_id = Id::fixture("child:hierarchy-org");
+        let child_membership_id = Id::from_u128(0xb07);
+        let grandchild_id = Id::fixture("grandchild:hierarchy-org");
+        let grandchild_membership_id = Id::from_u128(0xb09);
         let seed = format!(
             r"
             INSERT INTO iam.cryptographic_key_versions (purpose, key_version, status)
@@ -1382,7 +1398,7 @@ mod tests {
             Some(child_membership_id),
         )
         .await?;
-        let silicon_versions = sqlx::query_as::<_, (Uuid, i64)>(
+        let silicon_versions = sqlx::query_as::<_, (Id, i64)>(
             "SELECT membership_id, version FROM iam.silicons WHERE organization_id = $1 AND membership_id = ANY($2) ORDER BY membership_id",
         )
         .bind(organization_id)
@@ -1393,7 +1409,7 @@ mod tests {
             silicon_versions == vec![(child_membership_id, 2), (grandchild_membership_id, 2)],
             "each changed Silicon aggregate must advance exactly once"
         );
-        let membership_versions = sqlx::query_as::<_, (Uuid, i64, i64)>(
+        let membership_versions = sqlx::query_as::<_, (Id, i64, i64)>(
             "SELECT id, version, authz_epoch FROM iam.organization_memberships WHERE organization_id = $1 AND id = ANY($2) ORDER BY id",
         )
         .bind(organization_id)

@@ -91,10 +91,6 @@ pub(super) fn signup_completion(
     if !crate::domain::timezone::is_valid_identifier(&timezone) {
         return Err(validation("timezone", "must be a valid IANA TZ identifier"));
     }
-    let description = input
-        .description
-        .map(|value| bounded_text("description", value, 0, 5_000, true))
-        .transpose()?;
     let profile_photo = input
         .profile_photo
         .map(|value| profile_photo(&value, production))
@@ -103,7 +99,6 @@ pub(super) fn signup_completion(
         carbon_id,
         display_name,
         timezone,
-        description,
         profile_photo,
     })
 }
@@ -203,7 +198,6 @@ mod tests {
             carbon_id: "timezone_test".to_owned(),
             display_name: "Time Zone Test".to_owned(),
             timezone: Some("Asia/Kolkata".to_owned()),
-            description: None,
             profile_photo: None,
         };
         assert!(matches!(
@@ -215,7 +209,6 @@ mod tests {
             carbon_id: "timezone_test".to_owned(),
             display_name: "Time Zone Test".to_owned(),
             timezone: Some("Mars/Olympus_Mons".to_owned()),
-            description: None,
             profile_photo: None,
         };
         assert!(signup_completion(invalid, false).is_err());
@@ -224,7 +217,6 @@ mod tests {
             carbon_id: "timezone_test".to_owned(),
             display_name: "Time Zone Test".to_owned(),
             timezone: None,
-            description: None,
             profile_photo: None,
         };
         assert!(matches!(

@@ -1,12 +1,10 @@
 //! The UI eligibility hint must respect the same tenant and authority boundary as bundles.
 
+use crate::domain::id::Id;
 use anyhow::{Context as _, ensure};
 use axum::{http::StatusCode, response::IntoResponse as _};
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgPoolOptions};
-use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-use testcontainers_modules::postgres::Postgres as PostgresImage;
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use super::{
     applications::APPLICATION_LIST_QUERY,
@@ -16,38 +14,22 @@ use super::{
 };
 
 #[tokio::test]
-#[ignore = "requires Docker; checks fresh and upgraded production/testing runtime roles"]
+#[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL; checks fresh and upgraded production/testing runtime roles"]
 async fn bundle_availability_and_organization_pages_preserve_authority() -> anyhow::Result<()> {
-    let container = PostgresImage::default()
-        .with_tag("16-alpine")
-        .start()
-        .await?;
-    let base_url = format!(
-        "postgres://postgres:postgres@{}:{}",
-        container.get_host().await?,
-        container.get_host_port_ipv4(5432).await?
-    );
-    let admin = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&format!("{base_url}/postgres"))
-        .await?;
-    sqlx::raw_sql("CREATE ROLE silicon_iam_api NOLOGIN; CREATE ROLE silicon_iam_worker NOLOGIN; CREATE ROLE silicon_iam_key_operator NOLOGIN; CREATE ROLE bundle_runtime LOGIN PASSWORD 'bundle-test-only' IN ROLE silicon_iam_api;").execute(&admin).await?;
     for (database, testing, upgrade) in [
         ("bundle_production", false, false),
         ("bundle_testing", true, false),
         ("bundle_production_upgrade", false, true),
         ("bundle_testing_upgrade", true, true),
     ] {
-        // Database identifiers are the four closed literals above.
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE DATABASE {database}")))
-            .execute(&admin)
-            .await?;
+        let disposable = crate::test_database::TestDatabase::start().await?;
         let pool = PgPoolOptions::new().max_connections(3).after_connect(move |connection, _| Box::pin(async move {
             if testing {
                 sqlx::query("SELECT set_config('iam.testing_environment_id','00000000-0000-0000-0000-000000000801',false)").execute(connection).await?;
             }
             Ok(())
-        })).connect(&format!("{base_url}/{database}")).await?;
+        })).connect(&disposable.url).await?;
+        sqlx::raw_sql("DO $$ BEGIN CREATE ROLE silicon_iam_api NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$; DO $$ BEGIN CREATE ROLE silicon_iam_worker NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$; DO $$ BEGIN CREATE ROLE silicon_iam_key_operator NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$; DO $$ BEGIN CREATE ROLE bundle_runtime LOGIN PASSWORD 'bundle-test-only' IN ROLE silicon_iam_api; EXCEPTION WHEN duplicate_object THEN NULL; END $$;").execute(&pool).await?;
         if upgrade {
             let base = sqlx::migrate::Migrator::with_migrations(
                 sqlx::migrate!("./migrations")
@@ -95,12 +77,16 @@ async fn bundle_availability_and_organization_pages_preserve_authority() -> anyh
             .await
             .with_context(|| format!("pagination in {database}"))?;
         if testing {
+            let mut runtime_url = url::Url::parse(&disposable.url)?;
+            runtime_url
+                .set_username("bundle_runtime")
+                .map_err(|()| anyhow::anyhow!("runtime username"))?;
+            runtime_url
+                .set_password(Some("bundle-test-only"))
+                .map_err(|()| anyhow::anyhow!("runtime password"))?;
             let runtime_pool = PgPoolOptions::new()
                 .max_connections(1)
-                .connect(&format!(
-                    "{}/{database}",
-                    base_url.replace("postgres:postgres@", "bundle_runtime:bundle-test-only@")
-                ))
+                .connect(runtime_url.as_str())
                 .await?;
             assert_testing_boundary(&runtime_pool)
                 .await
@@ -109,13 +95,12 @@ async fn bundle_availability_and_organization_pages_preserve_authority() -> anyh
         }
         pool.close().await;
     }
-    admin.close().await;
     Ok(())
 }
 
 async fn seed(pool: &PgPool) -> anyhow::Result<()> {
     super::live_tests::seed_protocol_rows(pool).await?;
-    sqlx::raw_sql(r"
+    let mut seed = r"
         BEGIN;
         INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES
           ('00000000-0000-0000-0000-000000000022','pagination_org','00000000-0000-0000-0000-000000000001','Pagination'),
@@ -136,7 +121,25 @@ async fn seed(pool: &PgPool) -> anyhow::Result<()> {
           ('00000000-0000-0000-0000-000000000502','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000012',0),
           ('00000000-0000-0000-0000-000000000503','00000000-0000-0000-0000-000000000022','00000000-0000-0000-0000-000000000013',0);
         COMMIT;
-    ").execute(pool).await?;
+    ".to_owned();
+    let canonical: bool = sqlx::query_scalar("SELECT atttypid='text'::regtype FROM pg_attribute WHERE attrelid='iam.principals'::regclass AND attname='id'").fetch_one(pool).await?;
+    if canonical {
+        for (legacy, identity) in [
+            ("00000000-0000-0000-0000-000000000001", "test_carbon"),
+            ("00000000-0000-0000-0000-000000000002", "test_admin"),
+            ("00000000-0000-0000-0000-000000000011", "test_org>app-alpha"),
+            ("00000000-0000-0000-0000-000000000012", "test_org>app-beta"),
+            (
+                "00000000-0000-0000-0000-000000000013",
+                "pagination_org>app-gamma",
+            ),
+        ] {
+            seed = seed.replace(legacy, identity);
+        }
+    }
+    sqlx::raw_sql(sqlx::AssertSqlSafe(seed))
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -144,7 +147,7 @@ async fn runtime(tx: &mut Transaction<'_, Postgres>, actor: u128) -> anyhow::Res
     sqlx::query("SET LOCAL ROLE silicon_iam_api")
         .execute(&mut **tx)
         .await?;
-    sqlx::query("SELECT set_config('iam.principal_id',$1,true),set_config('iam.organization_id','',true),set_config('iam.application_id','',true)").bind(Uuid::from_u128(actor).to_string()).execute(&mut **tx).await?;
+    sqlx::query("SELECT set_config('iam.principal_id',$1,true),set_config('iam.organization_id','',true),set_config('iam.application_id','',true)").bind(if actor == 1 { "test_carbon" } else { "test_admin" }).execute(&mut **tx).await?;
     Ok(())
 }
 
@@ -212,7 +215,7 @@ async fn assert_eligibility(pool: &PgPool) -> anyhow::Result<()> {
             None,
         ),
         (
-            "UPDATE iam.principals SET status='suspended',suspended_at=transaction_timestamp() WHERE id='00000000-0000-0000-0000-000000000002'",
+            "UPDATE iam.principals SET status='suspended',suspended_at=transaction_timestamp() WHERE id='test_admin'",
             None,
         ),
     ] {
@@ -227,11 +230,9 @@ async fn assert_eligibility(pool: &PgPool) -> anyhow::Result<()> {
     }
     let mut tx = pool.begin().await?;
     runtime(&mut tx, 1).await?;
-    sqlx::query(
-        "SELECT set_config('iam.application_id','00000000-0000-0000-0000-000000000011',true)",
-    )
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("SELECT set_config('iam.application_id','test_org>app-alpha',true)")
+        .execute(&mut *tx)
+        .await?;
     ensure!(
         availability(&mut tx, "test_org").await?.is_none(),
         "delegated applications cannot inspect eligibility"
@@ -251,14 +252,14 @@ async fn assert_pages(pool: &PgPool) -> anyhow::Result<()> {
     let org = organization_filter(&mut tx, Some("test_org"))
         .await
         .map_err(api_error)?;
-    ensure!(org == Some(Uuid::from_u128(0x21)));
-    let mut cursor: Option<(OffsetDateTime, Uuid)> = None;
+    ensure!(org == Some(Id::from_u128(0x21)));
+    let mut cursor: Option<(OffsetDateTime, Id)> = None;
     for expected in ["test_org>app-beta", "test_org>app-alpha"] {
         let rows = sqlx::query_as::<_, ApplicationView>(APPLICATION_LIST_QUERY)
-            .bind(Uuid::from_u128(1))
+            .bind(Id::fixture("test_carbon"))
             .bind(None::<String>)
             .bind(cursor.map(|value| value.0))
-            .bind(cursor.map(|value| value.1))
+            .bind(cursor.map(|value| value.1.to_string()))
             .bind(1_i64)
             .bind(org)
             .fetch_all(&mut *tx)
@@ -271,7 +272,7 @@ async fn assert_pages(pool: &PgPool) -> anyhow::Result<()> {
     }
     cursor = None;
     for expected in ["test_org>bundle-two", "test_org>bundle-one"] {
-        let rows = sqlx::query_as::<_, (Uuid, OffsetDateTime, String)>(BUNDLE_LIST_QUERY)
+        let rows = sqlx::query_as::<_, (Id, OffsetDateTime, String)>(BUNDLE_LIST_QUERY)
             .bind(cursor.map(|value| value.0))
             .bind(cursor.map(|value| value.1))
             .bind(1_i64)

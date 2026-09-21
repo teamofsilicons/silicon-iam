@@ -16,11 +16,11 @@ A Silicon has no organization-local form. The handle you submit at creation is i
 
 ## Identifiers, and what they are not
 
-Persistent records use UUIDv7 primary keys. Public handles are immutable normalised labels — they are never foreign keys, and they are never reused after deletion.
+Carbon, Silicon, and Application IDs are immutable canonical identity keys, including in storage and foreign keys. They are never reused after deletion. Other resources retain UUID keys.
 
 A public `membership_id` is `carbon_id[org_id]` or `silicon_id[org_id]`, using the full Silicon ID: for example `saket[tos]` and `helper:tos[tos]`. URL-encode the brackets in path segments. These stable identifiers also appear in relationship fields, trust selectors and webhook membership references. UUID membership keys remain private to storage. Identifier resolution never grants access; tenant, consent and resource authorization still apply.
 
-A typed `principal_id` prevents collisions between a Carbon and a Silicon whose public labels happen to look alike. Never key your own storage on the public handle alone.
+Use the permanent `carbon_id`, full `silicon_id`, or `app_id` as the identity key. Generic actor objects expose the same identifier as `public_id`. There is no separate principal UUID.
 
 ## How to read this documentation
 

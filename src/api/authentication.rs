@@ -1,5 +1,6 @@
 //! Authentication extractors shared by protected HTTP routes.
 
+use crate::domain::id::Id;
 use axum::{
     extract::FromRequestParts,
     http::{HeaderMap, header, request::Parts},
@@ -7,7 +8,6 @@ use axum::{
 use secrecy::SecretString;
 use sqlx::FromRow;
 use subtle::ConstantTimeEq as _;
-use uuid::Uuid;
 
 use crate::{
     domain::actor::{ActorRef, ActorType},
@@ -31,16 +31,16 @@ pub(crate) struct Authenticated(pub(crate) AccessContext);
 /// Carbon session and immutable trigger identity accepted by global logout.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LogoutAuthenticated {
-    pub(crate) principal_id: Uuid,
-    pub(crate) authentication_session_id: Uuid,
+    pub(crate) principal_id: Id,
+    pub(crate) authentication_session_id: Id,
     pub(crate) trigger: LogoutTrigger,
     pub(crate) credential_state: LogoutCredentialState,
 }
 
 #[derive(FromRow)]
 struct BrowserLogoutSessionRow {
-    session_id: Uuid,
-    carbon_id: Uuid,
+    session_id: Id,
+    carbon_id: Id,
     authority_active: bool,
 }
 
@@ -65,14 +65,14 @@ const BROWSER_LOGOUT_SESSION_QUERY: &str = r"
 
 #[derive(Clone, Copy)]
 struct LogoutBearerContext<'a> {
-    token_id: Uuid,
-    authentication_session_id: Uuid,
+    token_id: Id,
+    authentication_session_id: Id,
     subject: ActorRef,
-    client_application_id: Option<Uuid>,
-    audience_application_id: Option<Uuid>,
+    client_application_id: Option<Id>,
+    audience_application_id: Option<Id>,
     audience: &'a str,
-    organization_id: Option<Uuid>,
-    membership_id: Option<Uuid>,
+    organization_id: Option<Id>,
+    membership_id: Option<Id>,
     scopes: &'a [String],
 }
 
@@ -220,6 +220,10 @@ fn map_access_token_error(error: &AccessTokenError) -> AppError {
     }
 }
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 fn logout_bearer_identity(
     access: LogoutBearerContext<'_>,
     credential_state: LogoutCredentialState,
@@ -321,8 +325,8 @@ fn map_browser_cookie_error(error: BrowserSessionCookieError) -> AppError {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::id::Id;
     use http::{HeaderMap, HeaderValue};
-    use uuid::Uuid;
 
     use crate::{
         domain::actor::{ActorRef, ActorType},
@@ -366,10 +370,10 @@ mod tests {
 
     #[test]
     fn logout_accepts_only_direct_carbon_or_bound_application_bearers() {
-        let principal_id = Uuid::from_u128(1);
+        let principal_id = Id::from_u128(1);
         let mut access = AccessContext {
-            token_id: Uuid::from_u128(2),
-            authentication_session_id: Uuid::from_u128(3),
+            token_id: Id::from_u128(2),
+            authentication_session_id: Id::from_u128(3),
             subject: ActorRef {
                 actor_type: ActorType::Carbon,
                 id: principal_id,
@@ -404,8 +408,8 @@ mod tests {
                 ..
             })
         ));
-        access.client_application_id = Some(Uuid::from_u128(4));
-        access.audience_application_id = Some(Uuid::from_u128(4));
+        access.client_application_id = Some(Id::from_u128(4));
+        access.audience_application_id = Some(Id::from_u128(4));
         access.audience = "configured-app".to_owned();
         assert!(matches!(
             logout_bearer_identity(
@@ -418,10 +422,10 @@ mod tests {
                     access_token_id,
                 },
                 ..
-            }) if application_id == Uuid::from_u128(4)
-                && access_token_id == Uuid::from_u128(2)
+            }) if application_id == Id::from_u128(4)
+                && access_token_id == Id::from_u128(2)
         ));
-        access.audience_application_id = Some(Uuid::from_u128(5));
+        access.audience_application_id = Some(Id::from_u128(5));
         assert!(
             logout_bearer_identity(
                 LogoutBearerContext::from(&access),

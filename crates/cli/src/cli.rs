@@ -74,6 +74,11 @@ pub struct Global {
     #[arg(long, global = true)]
     pub step_up: Option<String>,
 
+    /// Reuse the request key returned with a sensitive-action approval request.
+    /// Repeat the exact same command and inputs after approval.
+    #[arg(long, global = true)]
+    pub request_key: Option<String>,
+
     /// Emit machine-readable JSON (equivalent to --output json).
     #[arg(long, global = true)]
     pub json: bool,
@@ -312,8 +317,6 @@ pub enum CarbonCommand {
             .args([
                 "display_name",
                 "timezone",
-                "description",
-                "clear_description",
                 "profile_photo",
                 "clear_profile_photo"
             ])
@@ -327,12 +330,6 @@ pub enum CarbonCommand {
         /// New IANA time zone, such as `Asia/Kolkata`.
         #[arg(long)]
         timezone: Option<String>,
-        /// New profile description.
-        #[arg(long)]
-        description: Option<String>,
-        /// Remove the current profile description.
-        #[arg(long, conflicts_with = "description")]
-        clear_description: bool,
         /// New profile-photo URL.
         #[arg(long)]
         profile_photo: Option<String>,
@@ -701,9 +698,9 @@ pub enum InviteCommand {
         /// Email address to invite.
         #[arg(long)]
         email: Option<String>,
-        /// Job role granted on acceptance.
+        /// Job description granted on acceptance.
         #[arg(long)]
-        job_role: String,
+        job_description: String,
         /// Trust boundary the new member starts with.
         #[arg(
             long,
@@ -876,6 +873,32 @@ pub enum TrustCommand {
 /// Governance commands.
 #[derive(Debug, Subcommand)]
 pub enum ApprovalCommand {
+    /// List sensitive-action requests, including their exact proposed changes.
+    Actions,
+    /// List effective sensitive-action policies and defaults.
+    Policies,
+    /// Approve or reject an exact sensitive-action request.
+    DecideAction {
+        /// Request ID from `iam approval actions`.
+        request_id: Uuid,
+        /// Version shown when you reviewed the proposed change.
+        #[arg(long)]
+        expected_version: i64,
+        /// Decision for the reviewed change.
+        #[arg(long, value_parser = ["approve", "reject"])]
+        decision: String,
+    },
+    /// Configure a sensitive-action policy from a JSON file.
+    ConfigurePolicy {
+        /// Action identifier from `iam approval policies`.
+        action: String,
+        /// Current rule version (zero for an unmodified default).
+        #[arg(long)]
+        expected_version: i64,
+        /// JSON containing `allowed_actors`, approval and `auto_approve`.
+        #[arg(long)]
+        file: PathBuf,
+    },
     /// List approval requests.
     List {
         /// Only requests in this state.
@@ -920,16 +943,16 @@ pub enum ApprovalCommand {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Request a Silicon job-role change. Silicon-only; Carbon callers are forbidden.
+    /// Submit a job-description change under the organization action policy.
     RequestRole {
         /// Membership whose role should change.
         #[arg(long)]
         membership_id: String,
         /// The role being asked for.
         #[arg(long)]
-        job_role: String,
+        job_description: String,
     },
-    /// Request a Silicon tag change. Silicon-only; Carbon callers are forbidden.
+    /// Add or remove member tags under the organization action policy.
     #[command(group(
         clap::ArgGroup::new("changes")
             .args(["add", "remove"])
@@ -947,12 +970,12 @@ pub enum ApprovalCommand {
         #[arg(long = "remove", value_name = "TAG_ID")]
         remove: Vec<Uuid>,
     },
-    /// Set a member's job role directly.
+    /// Set a member's job description directly.
     SetRole {
         /// Membership identifier.
         membership_id: String,
         /// The role to set.
-        job_role: String,
+        job_description: String,
     },
     /// Replace a member's tags directly.
     SetTags {
@@ -962,7 +985,7 @@ pub enum ApprovalCommand {
         #[arg(long = "tag", value_name = "TAG_ID")]
         tags: Vec<Uuid>,
     },
-    /// Show a member's job-role history.
+    /// Show a member's job-description history.
     RoleHistory {
         /// Membership identifier.
         membership_id: String,
@@ -998,9 +1021,9 @@ pub enum SiliconCommand {
         /// supplies its organization when none is selected and must match one
         /// that is selected.
         handle: String,
-        /// Job role this Silicon holds.
+        /// Job description this Silicon holds.
         #[arg(long)]
-        job_role: String,
+        job_description: String,
         /// Display name.
         #[arg(long)]
         display_name: Option<String>,
@@ -1022,8 +1045,6 @@ pub enum SiliconCommand {
             .args([
                 "display_name",
                 "timezone",
-                "description",
-                "clear_description",
                 "profile_photo",
                 "clear_profile_photo",
                 "reports_to",
@@ -1041,12 +1062,6 @@ pub enum SiliconCommand {
         /// New IANA time-zone identifier.
         #[arg(long)]
         timezone: Option<String>,
-        /// New description.
-        #[arg(long)]
-        description: Option<String>,
-        /// Remove the current description.
-        #[arg(long, conflicts_with = "description")]
-        clear_description: bool,
         /// New profile photo URL.
         #[arg(long)]
         profile_photo: Option<String>,
@@ -2471,7 +2486,7 @@ mod tests {
         let missing = [
             vec!["iam", "org", "update"],
             vec!["iam", "member", "update", id],
-            vec!["iam", "invite", "create", "--job-role", "Engineer"],
+            vec!["iam", "invite", "create", "--job-description", "Engineer"],
             vec![
                 "iam",
                 "trust",
@@ -2521,7 +2536,7 @@ mod tests {
                 "create",
                 "--email",
                 "person@example.test",
-                "--job-role",
+                "--job-description",
                 "Engineer",
             ])
             .is_ok()
@@ -2661,7 +2676,7 @@ mod tests {
     }
 
     #[test]
-    fn silicon_only_approval_requests_say_so_in_help() {
+    fn sensitive_change_commands_describe_the_action_policy() {
         let command = Cli::command();
         let Some(approval) = command.find_subcommand("approval") else {
             panic!("approval exists")
@@ -2676,8 +2691,8 @@ mod tests {
                 .map(ToString::to_string)
                 .unwrap_or_default();
             assert!(
-                about.contains("Silicon-only") && about.contains("Carbon callers are forbidden"),
-                "approval {name} help must state its caller boundary: {about}"
+                about.contains("organization action policy"),
+                "approval {name} help must state its policy boundary: {about}"
             );
         }
     }

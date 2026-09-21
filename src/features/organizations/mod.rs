@@ -1,5 +1,6 @@
 //! Organization tenancy, directory, Silicon, and governance HTTP slice.
 
+mod action_policies;
 pub(crate) mod application_reads;
 mod carbon_profile_events;
 mod directory;
@@ -30,6 +31,22 @@ use crate::api::ApiState;
 #[allow(clippy::too_many_lines)]
 pub fn router() -> Router<ApiState> {
     scoped_router()
+        .route(
+            "/api/v1/organizations/{org_id}/action-policies",
+            get(action_policies::list_policies),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/action-policies/{action}",
+            put(action_policies::update_policy),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/action-approvals",
+            get(action_policies::list_approvals),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/action-approvals/{request_id}/decisions",
+            post(action_policies::decide_approval),
+        )
         .route(
             "/api/v1/organizations/{org_id}/ownership-transfers",
             post(handlers::transfer_ownership),
@@ -216,6 +233,7 @@ pub(crate) fn scoped_router() -> Router<ApiState> {
             "/api/v1/organizations/{org_id}/members/{membership_id}/job-role",
             put(governance::replace_member_job_role),
         )
+        .layer(axum::middleware::from_fn(action_policies::capture_request))
 }
 
 #[cfg(test)]

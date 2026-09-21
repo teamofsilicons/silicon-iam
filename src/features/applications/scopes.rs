@@ -6,6 +6,7 @@ use super::{
     validation,
 };
 use crate::api::ApiState;
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Query, State},
@@ -13,7 +14,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction, types::Json as SqlJson};
 use std::collections::BTreeSet;
-use uuid::Uuid;
 
 #[derive(Deserialize)]
 pub(super) struct CatalogQuery {
@@ -108,9 +108,9 @@ pub(super) fn validate_webhook(values: &[String]) -> Result<(), ApiError> {
 }
 pub(super) async fn configure(
     tx: &mut Transaction<'_, Postgres>,
-    app: Uuid,
+    app: Id,
     scope: &ApplicationScope,
-    actor: Uuid,
+    actor: Id,
 ) -> Result<(), ApiError> {
     validate(scope)?;
     sqlx::query("SELECT iam_private.configure_application_scopes($1,$2,$3)")
@@ -124,7 +124,7 @@ pub(super) async fn configure(
 }
 pub(super) async fn policy(
     tx: &mut Transaction<'_, Postgres>,
-    app: Uuid,
+    app: Id,
 ) -> Result<LoginPolicy, ApiError> {
     sqlx::query_scalar::<_, Option<SqlJson<LoginPolicy>>>(
         "SELECT iam_private.application_login_scope_policy($1)",

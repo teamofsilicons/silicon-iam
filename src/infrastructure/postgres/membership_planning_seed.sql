@@ -1,5 +1,7 @@
--- Extends the common protocol fixture only in disposable test databases.
+-- Extends the common fixture before or after the canonical identity cutover.
 BEGIN;
+DO $fixture$
+DECLARE fixture text := $seed$
 INSERT INTO iam.principals(id,kind,status,activated_at) VALUES
 ('00000000-0000-0000-0000-000000000501','silicon','active',now());
 INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES
@@ -14,4 +16,12 @@ INSERT INTO iam.oauth_consent_grants(id,application_id,subject_principal_id,subj
 INSERT INTO iam.access_tokens(id,token_class,token_digest,digest_key_version,token_prefix,authentication_session_id,subject_principal_id,subject_kind,client_application_id,audience,audience_application_id,organization_id,membership_id,subject_auth_epoch,membership_authz_epoch,client_auth_epoch,expires_at) VALUES
 ('00000000-0000-0000-0000-000000000551','application_access',decode(repeat('55',32),'hex'),1,'oat_silicon1','00000000-0000-0000-0000-000000000541','00000000-0000-0000-0000-000000000501','silicon','00000000-0000-0000-0000-000000000011','test_org>app-alpha','00000000-0000-0000-0000-000000000011',NULL,NULL,1,NULL,1,now()+interval '15 minutes'),
 ('00000000-0000-0000-0000-000000000552','application_access',decode(repeat('56',32),'hex'),1,'oat_silicon2','00000000-0000-0000-0000-000000000541','00000000-0000-0000-0000-000000000501','silicon','00000000-0000-0000-0000-000000000011','test_org>app-alpha','00000000-0000-0000-0000-000000000011','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000531',1,1,1,now()+interval '15 minutes');
+$seed$;
+BEGIN
+ IF (SELECT atttypid='text'::regtype FROM pg_attribute WHERE attrelid='iam.principals'::regclass AND attname='id') THEN
+  fixture:=replace(fixture,'00000000-0000-0000-0000-000000000501','planner_silicon:test_org');
+  fixture:=replace(fixture,'00000000-0000-0000-0000-000000000011','test_org>app-alpha');
+ END IF;
+ EXECUTE fixture;
+END $fixture$;
 COMMIT;

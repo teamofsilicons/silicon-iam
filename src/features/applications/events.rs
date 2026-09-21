@@ -1,6 +1,6 @@
+use crate::domain::id::Id;
 use serde_json::Value;
 use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::{
     domain::actor::{ActorRef, ActorType},
@@ -10,15 +10,15 @@ use crate::{
 use super::error::ApiError;
 
 pub(super) struct Mutation {
-    pub(super) actor_id: Option<Uuid>,
-    pub(super) authentication_session_id: Option<Uuid>,
-    pub(super) organization_id: Uuid,
-    pub(super) application_id: Uuid,
+    pub(super) actor_id: Option<Id>,
+    pub(super) authentication_session_id: Option<Id>,
+    pub(super) organization_id: Id,
+    pub(super) application_id: Id,
     pub(super) action: &'static str,
     pub(super) target_type: &'static str,
-    pub(super) target_id: Option<Uuid>,
+    pub(super) target_id: Option<Id>,
     pub(super) aggregate_type: &'static str,
-    pub(super) aggregate_id: Uuid,
+    pub(super) aggregate_id: Id,
     pub(super) aggregate_version: i64,
     pub(super) before: Option<Value>,
     pub(super) after: Option<Value>,
@@ -77,16 +77,16 @@ pub(super) async fn record(
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn authentication_event(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
-    subject_id: Option<Uuid>,
+    application_id: Id,
+    subject_id: Option<Id>,
     subject_kind: Option<&str>,
-    session_id: Option<Uuid>,
+    session_id: Option<Id>,
     event_type: &'static str,
     outcome: &'static str,
     failure_code: Option<&'static str>,
     metadata: Value,
 ) -> Result<(), ApiError> {
-    let request_id = crate::request_context::current_request_uuid().unwrap_or_else(Uuid::now_v7);
+    let request_id = crate::request_context::current_request_uuid().unwrap_or_else(Id::now_v7);
     sqlx::query(
         r"
         INSERT INTO iam.authentication_events (
@@ -96,10 +96,10 @@ pub(super) async fn authentication_event(
         ) VALUES ($1, $2, $3, $4, $5::iam.principal_kind, $6, $7, $8, $9, $10)
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(event_type)
     .bind(outcome)
-    .bind(subject_id)
+    .bind(subject_id.map(|id| id.to_string()))
     .bind(subject_kind)
     .bind(application_id)
     .bind(session_id)

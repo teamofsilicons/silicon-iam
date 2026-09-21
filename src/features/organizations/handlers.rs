@@ -4,6 +4,7 @@ use super::application_reads::{self, ReadScopes};
 
 use std::{borrow::Cow, collections::BTreeMap, num::NonZeroU32, time::Duration};
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -14,7 +15,6 @@ use secrecy::SecretString;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -45,14 +45,14 @@ const TAG_UPDATE_ROUTE: &str = "PATCH /api/v1/organizations/{org_id}/tags/{tag_i
 const TAG_DELETE_ROUTE: &str = "DELETE /api/v1/organizations/{org_id}/tags/{tag_id}";
 
 struct TagWebhookScope {
-    assigned_membership_ids: Vec<Uuid>,
+    assigned_membership_ids: Vec<Id>,
 }
 
 #[derive(sqlx::FromRow)]
 struct ArchivedTag {
     tag_version: i64,
-    assignment_membership_ids: Vec<Uuid>,
-    archived_trust_rule_ids: Vec<Uuid>,
+    assignment_membership_ids: Vec<Id>,
+    archived_trust_rule_ids: Vec<Id>,
 }
 
 pub(super) async fn organization_id_availability(
@@ -199,8 +199,8 @@ pub(super) async fn create_organization(
     };
     enforce_actor_rate_limit(&state, &authenticated, "organization_create").await?;
 
-    let organization_id = Uuid::now_v7();
-    let owner_membership_id = Uuid::now_v7();
+    let organization_id = Id::now_v7();
+    let owner_membership_id = Id::now_v7();
     sqlx::query(
         r"
         INSERT INTO iam.organizations (
@@ -508,7 +508,7 @@ pub(super) async fn transfer_ownership(
     )
     .await?;
     let ownership_membership_ids = [scope.access.membership_id, input.new_owner_membership_id];
-    let locked_membership_ids = sqlx::query_scalar::<_, Uuid>(
+    let locked_membership_ids = sqlx::query_scalar::<_, Id>(
         r"
         SELECT membership.id
         FROM iam.organization_memberships AS membership
@@ -578,7 +578,7 @@ pub(super) async fn transfer_ownership(
         )
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(scope.access.organization_id)
     .bind(scope.access.membership_id)
     .execute(&mut *scope.transaction)
@@ -786,7 +786,7 @@ pub(super) async fn create_tag(
         Claim::Replay(response) => return Ok(response),
         Claim::Acquired(lease) => lease,
     };
-    let tag_id = Uuid::now_v7();
+    let tag_id = Id::now_v7();
     sqlx::query(
         r"
         INSERT INTO iam.organization_tags (
@@ -842,7 +842,7 @@ pub(super) async fn create_tag(
 pub(super) async fn get_tag(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, tag_id)): Path<(String, Uuid)>,
+    Path((org_id, tag_id)): Path<(String, Id)>,
 ) -> Result<Response, AppError> {
     ReadScopes::for_actor(&authenticated).require("organization.tags.read")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
@@ -859,7 +859,7 @@ pub(super) async fn get_tag(
 pub(super) async fn update_tag(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, tag_id)): Path<(String, Uuid)>,
+    Path((org_id, tag_id)): Path<(String, Id)>,
     headers: HeaderMap,
     Json(mut input): Json<TagInput>,
 ) -> Result<Response, AppError> {
@@ -981,7 +981,7 @@ pub(super) async fn update_tag(
 pub(super) async fn delete_tag(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, tag_id)): Path<(String, Uuid)>,
+    Path((org_id, tag_id)): Path<(String, Id)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
@@ -1026,7 +1026,7 @@ pub(super) async fn delete_tag(
     let history_ids = webhook_scope
         .assigned_membership_ids
         .iter()
-        .map(|_| Uuid::now_v7())
+        .map(|_| Id::now_v7())
         .collect::<Vec<_>>();
 
     let archived = sqlx::query_as::<_, ArchivedTag>(
@@ -1102,7 +1102,7 @@ fn map_tag_transition_error(error: sqlx::Error) -> AppError {
 pub(super) async fn list_tag_members(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, tag_id)): Path<(String, Uuid)>,
+    Path((org_id, tag_id)): Path<(String, Id)>,
     Query(query): Query<PageQuery>,
 ) -> Result<Response, AppError> {
     let scopes = ReadScopes::for_actor(&authenticated);
@@ -1141,8 +1141,8 @@ pub(super) async fn list_tag_members(
 
 async fn fetch_tag(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    tag_id: Uuid,
+    organization_id: Id,
+    tag_id: Id,
 ) -> Result<TagResponse, AppError> {
     sqlx::query_as::<_, TagResponse>(
         r"
@@ -1178,11 +1178,11 @@ async fn fetch_tag(
 /// block on the tag itself.
 async fn lock_tag_webhook_scope(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    tag_id: Uuid,
+    organization_id: Id,
+    tag_id: Id,
     expected_version: i64,
 ) -> Result<TagWebhookScope, AppError> {
-    let assigned_membership_ids = sqlx::query_scalar::<_, Vec<Uuid>>(
+    let assigned_membership_ids = sqlx::query_scalar::<_, Vec<Id>>(
         "SELECT iam_private.lock_organization_tag_scope($1, $2, $3)",
     )
     .bind(organization_id)
@@ -1198,7 +1198,7 @@ async fn lock_tag_webhook_scope(
 
 async fn fetch_organization(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
 ) -> Result<OrganizationResponse, AppError> {
     sqlx::query_as::<_, OrganizationResponse>(
         r"
@@ -1276,29 +1276,29 @@ fn take_page<T: PageItem>(items: &mut Vec<T>, limit: i64) -> Result<PageInfo, Ap
 }
 
 trait PageItem {
-    fn id(&self) -> Uuid;
+    fn id(&self) -> Id;
 }
 
 impl PageItem for OrganizationResponse {
-    fn id(&self) -> Uuid {
+    fn id(&self) -> Id {
         self.id
     }
 }
 
 impl PageItem for TagResponse {
-    fn id(&self) -> Uuid {
+    fn id(&self) -> Id {
         self.id
     }
 }
 
 impl PageItem for MembershipResponse {
-    fn id(&self) -> Uuid {
+    fn id(&self) -> Id {
         self.id
     }
 }
 
 impl PageItem for SiliconResponse {
-    fn id(&self) -> Uuid {
+    fn id(&self) -> Id {
         self.principal_id
     }
 }

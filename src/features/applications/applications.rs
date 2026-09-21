@@ -1,5 +1,6 @@
 #![allow(clippy::too_many_lines)]
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -11,7 +12,6 @@ use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::ApiState,
@@ -83,9 +83,9 @@ pub(super) const APPLICATION_LIST_QUERY: &str = r"
 
 pub(super) async fn resolve_creation_organization(
     transaction: &mut Transaction<'_, Postgres>,
-    carbon_id: Uuid,
+    carbon_id: Id,
     organization_handle: &str,
-) -> Result<Uuid, ApiError> {
+) -> Result<Id, ApiError> {
     // Resolved through an owner-rights function on purpose.
     //
     // The lock is the point of this lookup — the authority check and the insert
@@ -100,7 +100,7 @@ pub(super) async fn resolve_creation_organization(
     // inside it rather than as no row at all. Decoded as `Option` so a caller
     // without the authority still receives the not-found this returns, not a
     // decode failure reported as an internal error.
-    sqlx::query_scalar::<_, Option<Uuid>>(
+    sqlx::query_scalar::<_, Option<Id>>(
         r"
         SELECT iam_private.lock_application_creation_organization($1, $2)
         ",
@@ -115,10 +115,10 @@ pub(super) async fn resolve_creation_organization(
 
 pub(super) async fn lock_current_application_manager(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    carbon_id: Uuid,
+    organization_id: Id,
+    carbon_id: Id,
 ) -> Result<(), ApiError> {
-    let current = sqlx::query_scalar::<_, Uuid>(
+    let current = sqlx::query_scalar::<_, Id>(
         r"
         SELECT membership.id
         FROM iam.organizations AS organization
@@ -174,7 +174,7 @@ pub(super) async fn list(
         .bind(carbon_id)
         .bind(query.status)
         .bind(cursor_at)
-        .bind(cursor_id)
+        .bind(cursor_id.map(|id| id.to_string()))
         .bind(limit + 1)
         .bind(organization_id)
         .fetch_all(&mut *transaction)
@@ -271,10 +271,11 @@ pub(super) async fn create(
 
     ensure_application_id_available_for_testing(&state.pool, &qualified_app_id).await?;
 
-    let application_id = Uuid::now_v7();
-    let webhook_endpoint_id = Uuid::now_v7();
-    let webhook_key_id = Uuid::now_v7();
-    let client_secret_id = Uuid::now_v7();
+    let application_id = Id::identity(&qualified_app_id)
+        .map_err(|_| ApiError::internal("canonical_application_identity"))?;
+    let webhook_endpoint_id = Id::now_v7();
+    let webhook_key_id = Id::now_v7();
+    let client_secret_id = Id::now_v7();
     let client_secret = state
         .crypto
         .generate_secret(SecretKind::ApplicationSecret)
@@ -639,7 +640,7 @@ pub(super) async fn rotate_client_secret(
     .fetch_one(&mut *transaction)
     .await
     .map_err(|_| ApiError::internal("application_secret_rotation_version"))?;
-    let secret_id = Uuid::now_v7();
+    let secret_id = Id::now_v7();
     let secret = state
         .crypto
         .generate_secret(SecretKind::ApplicationSecret)
@@ -932,7 +933,7 @@ pub(super) async fn admin_list(
     )
     .bind(query.status)
     .bind(at)
-    .bind(id)
+    .bind(id.map(|id| id.to_string()))
     .bind(limit + 1)
     .fetch_all(&mut *transaction)
     .await
@@ -1117,7 +1118,7 @@ pub(super) async fn admin_decide(
         ) VALUES ($1, $2, $3, $4, $5, $6)
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(app.id)
     .bind(carbon_id)
     .bind(review_decision_name(&input.decision))
@@ -1178,7 +1179,7 @@ pub(super) async fn admin_decide(
 
 pub(super) async fn resolve_technical_app(
     transaction: &mut Transaction<'_, Postgres>,
-    carbon_id: Uuid,
+    carbon_id: Id,
     app_id: &str,
     for_update: bool,
 ) -> Result<ApplicationView, ApiError> {
@@ -1194,7 +1195,7 @@ pub(super) async fn resolve_technical_app(
 
 pub(super) async fn resolve_readable_app(
     transaction: &mut Transaction<'_, Postgres>,
-    carbon_id: Uuid,
+    carbon_id: Id,
     app_id: &str,
     for_update: bool,
 ) -> Result<ApplicationView, ApiError> {
@@ -1207,7 +1208,7 @@ pub(super) async fn resolve_readable_app(
 /// cannot update (or issue locking reads against) platform role grants.
 pub(super) async fn resolve_webhook_review_app(
     transaction: &mut Transaction<'_, Postgres>,
-    carbon_id: Uuid,
+    carbon_id: Id,
     app_id: &str,
     for_update: bool,
 ) -> Result<ApplicationView, ApiError> {
@@ -1271,7 +1272,7 @@ async fn resolve_admin_app(
 
 async fn resolve_app(
     transaction: &mut Transaction<'_, Postgres>,
-    carbon_id: Option<Uuid>,
+    carbon_id: Option<Id>,
     app_id: &str,
     access: &'static str,
     for_update: bool,
@@ -1300,7 +1301,7 @@ async fn resolve_app(
             ",
         )
         .bind(app_id)
-        .bind(carbon_id)
+        .bind(carbon_id.map(|id| id.to_string()))
         .bind(access)
         .fetch_optional(&mut **transaction)
         .await
@@ -1327,7 +1328,7 @@ async fn resolve_app(
             ",
         )
         .bind(app_id)
-        .bind(carbon_id)
+        .bind(carbon_id.map(|id| id.to_string()))
         .bind(access)
         .fetch_optional(&mut **transaction)
         .await
@@ -1346,8 +1347,8 @@ async fn resolve_app(
 
 async fn select_application_context(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
-    organization_id: Uuid,
+    application_id: Id,
+    organization_id: Id,
 ) -> Result<(), ApiError> {
     sqlx::query(
         r"
@@ -1366,7 +1367,7 @@ async fn select_application_context(
 pub(crate) async fn load_detail(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    application_id: Uuid,
+    application_id: Id,
     _include_admin_policy: bool,
 ) -> Result<ApplicationDetail, ApiError> {
     let application = sqlx::query_as::<_, ApplicationView>(
@@ -1492,7 +1493,7 @@ pub(crate) async fn load_detail(
 
 pub(super) async fn bump_application(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
+    application_id: Id,
 ) -> Result<i64, ApiError> {
     sqlx::query_scalar::<_, i64>(
         r"
@@ -1510,7 +1511,7 @@ pub(super) async fn bump_application(
 
 pub(super) async fn revoke_application_authority(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
+    application_id: Id,
     reason: &'static str,
 ) -> Result<(), ApiError> {
     sqlx::query(
@@ -1596,8 +1597,8 @@ pub(super) async fn revoke_application_authority(
 
 pub(super) async fn retire_application_credentials(
     transaction: &mut Transaction<'_, Postgres>,
-    reviewer: Uuid,
-    application_id: Uuid,
+    reviewer: Id,
+    application_id: Id,
 ) -> Result<(), ApiError> {
     sqlx::query(
         r"
@@ -1682,8 +1683,8 @@ pub(super) async fn retire_application_credentials(
 
 async fn apply_admin_decision(
     transaction: &mut Transaction<'_, Postgres>,
-    reviewer: Uuid,
-    application_id: Uuid,
+    reviewer: Id,
+    application_id: Id,
     input: &ApplicationAdminDecision,
 ) -> Result<(), ApiError> {
     let effective_scopes = if let Some(scopes) = &input.approved_scopes {
@@ -1780,7 +1781,7 @@ async fn apply_admin_decision(
         input.decision.as_str(),
         "approve" | "approve_pending_changes"
     ) {
-        sqlx::query_scalar::<_, Uuid>(
+        sqlx::query_scalar::<_, Id>(
             r"
             SELECT id FROM iam.application_webhook_endpoints
             WHERE application_id = $1 AND status = 'pending_review'
@@ -1985,12 +1986,11 @@ fn input_as_json(input: &ApplicationPatch) -> serde_json::Value {
 
 pub(super) async fn replace_obo_endpoints(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
+    application_id: Id,
     endpoints: &[ApplicationOboEndpoint],
 ) -> Result<(), ApiError> {
     for endpoint in endpoints {
-        let result = sqlx::query(
-            r"
+        let endpoint_query = r"
             INSERT INTO iam.application_obo_endpoints (
                 organization_id, application_id, endpoint_id, path, metadata_definition, critical, ttl_seconds
             )
@@ -2003,17 +2003,25 @@ pub(super) async fn replace_obo_endpoints(
                 status = 'active',
                 retired_at = NULL
             WHERE application_obo_endpoints.path = EXCLUDED.path
-            ",
-        )
-        .bind(application_id)
-        .bind(&endpoint.endpoint_id)
-        .bind(&endpoint.path)
-        .bind(sqlx::types::Json(&endpoint.metadata))
-        .bind(endpoint.critical)
-        .bind(endpoint.ttl_seconds)
-        .execute(&mut **transaction)
-        .await
-        .map_err(|error| map_obo_endpoint_write(&error))?;
+            ";
+        let endpoint_query = if crate::infrastructure::testing_plane::is_active() {
+            std::borrow::Cow::Owned(endpoint_query.replace(
+                "ON CONFLICT (application_id, endpoint_id)",
+                "ON CONFLICT (testing_environment_id, application_id, endpoint_id)",
+            ))
+        } else {
+            std::borrow::Cow::Borrowed(endpoint_query)
+        };
+        let result = sqlx::query(sqlx::AssertSqlSafe(endpoint_query.as_ref()))
+            .bind(application_id)
+            .bind(&endpoint.endpoint_id)
+            .bind(&endpoint.path)
+            .bind(sqlx::types::Json(&endpoint.metadata))
+            .bind(endpoint.critical)
+            .bind(endpoint.ttl_seconds)
+            .execute(&mut **transaction)
+            .await
+            .map_err(|error| map_obo_endpoint_write(&error))?;
         if result.rows_affected() != 1 {
             return Err(ApiError::conflict("obo_endpoint_path_immutable"));
         }
@@ -2237,24 +2245,30 @@ mod tests {
     /// security does not apply and the fault is invisible. This one provisions
     /// the restricted roles so the lookup runs exactly as production runs it.
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL on isolated local PostgreSQL"]
     #[allow(
         clippy::too_many_lines,
         reason = "the roles, grants and organization fixture form one end-to-end contract"
     )]
     async fn the_owning_organization_resolves_for_the_restricted_api_role() -> anyhow::Result<()> {
+        use crate::domain::id::Id;
         use anyhow::ensure;
-        use sqlx::postgres::PgPoolOptions;
-        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-        use testcontainers_modules::postgres::Postgres as TestPostgres;
-        use uuid::Uuid;
 
         const RUNTIME_ROLES: &str = "
-            CREATE ROLE silicon_iam_api NOLOGIN NOSUPERUSER NOBYPASSRLS;
-            CREATE ROLE silicon_iam_worker NOLOGIN NOSUPERUSER NOBYPASSRLS;
-            CREATE ROLE silicon_iam_key_operator NOLOGIN NOSUPERUSER NOBYPASSRLS;
-            CREATE ROLE silicon_iam_api_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS
-                IN ROLE silicon_iam_api;
+            DO $$ BEGIN
+              IF to_regrole('silicon_iam_api') IS NULL THEN
+                CREATE ROLE silicon_iam_api NOLOGIN NOSUPERUSER NOBYPASSRLS;
+              END IF;
+              IF to_regrole('silicon_iam_worker') IS NULL THEN
+                CREATE ROLE silicon_iam_worker NOLOGIN NOSUPERUSER NOBYPASSRLS;
+              END IF;
+              IF to_regrole('silicon_iam_key_operator') IS NULL THEN
+                CREATE ROLE silicon_iam_key_operator NOLOGIN NOSUPERUSER NOBYPASSRLS;
+              END IF;
+              IF to_regrole('silicon_iam_api_runtime') IS NULL THEN
+                CREATE ROLE silicon_iam_api_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS IN ROLE silicon_iam_api;
+              END IF;
+            END $$;
         ";
         let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
             .lines()
@@ -2262,18 +2276,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let container = TestPostgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&format!(
-                "postgres://postgres:postgres@{host}:{port}/postgres"
-            ))
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
         sqlx::raw_sql(sqlx::AssertSqlSafe(RUNTIME_ROLES))
             .execute(&pool)
@@ -2282,9 +2286,9 @@ mod tests {
             .execute(&pool)
             .await?;
 
-        let carbon_id = Uuid::from_u128(0x51_01);
-        let organization_id = Uuid::from_u128(0x51_02);
-        let membership_id = Uuid::from_u128(0x51_03);
+        let carbon_id = Id::fixture("owner-under-rls");
+        let organization_id = Id::from_u128(0x51_02);
+        let membership_id = Id::from_u128(0x51_03);
 
         let mut fixture = pool.begin().await?;
         sqlx::query(
@@ -2326,8 +2330,8 @@ mod tests {
                     decode(repeat('22', 12), 'hex'), 1, transaction_timestamp())
             ",
         )
-        .bind(Uuid::from_u128(0x51_05))
-        .bind(Uuid::from_u128(0x51_06))
+        .bind(Id::from_u128(0x51_05))
+        .bind(Id::from_u128(0x51_06))
         .bind(carbon_id)
         .execute(&mut *fixture)
         .await?;
@@ -2378,7 +2382,7 @@ mod tests {
         );
 
         // A Carbon with no membership must still be refused.
-        let stranger = Uuid::from_u128(0x51_04);
+        let stranger = Id::fixture("outside-under-rls");
         ensure!(
             super::resolve_creation_organization(&mut resolving, stranger, "tos")
                 .await

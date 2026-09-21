@@ -1,14 +1,14 @@
+use crate::domain::id::Id;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use super::error::ApiError;
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
 pub(super) struct Cursor {
     pub(super) at: OffsetDateTime,
-    pub(super) id: Uuid,
+    pub(super) id: Id,
 }
 
 pub(super) fn decode(value: Option<&str>) -> Result<Option<Cursor>, ApiError> {
@@ -25,7 +25,7 @@ pub(super) fn decode(value: Option<&str>) -> Result<Option<Cursor>, ApiError> {
         .transpose()
 }
 
-pub(super) fn encode(at: OffsetDateTime, id: Uuid) -> Result<String, ApiError> {
+pub(super) fn encode(at: OffsetDateTime, id: Id) -> Result<String, ApiError> {
     let bytes =
         serde_json::to_vec(&Cursor { at, id }).map_err(|_| ApiError::internal("cursor_encode"))?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))

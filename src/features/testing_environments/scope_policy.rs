@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::domain::id::Id;
 use serde::Serialize;
 use sqlx::{PgPool, Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::{
     api::ApiState,
@@ -23,14 +23,14 @@ use super::support;
     reason = "the local application, source application and organization identifiers bind import provenance"
 )]
 struct ImportedSource {
-    application_id: Uuid,
-    source_application_id: Uuid,
+    application_id: Id,
+    source_application_id: Id,
     org_id: String,
 }
 
 #[derive(sqlx::FromRow)]
 struct SourcePolicy {
-    source_application_id: Uuid,
+    source_application_id: Id,
     org_id: String,
     trusted_org: bool,
     allowed_scopes: Vec<String>,
@@ -38,8 +38,8 @@ struct SourcePolicy {
 
 #[derive(Serialize)]
 struct ImportedPolicy {
-    application_id: Uuid,
-    source_application_id: Uuid,
+    application_id: Id,
+    source_application_id: Id,
     org_id: String,
     trusted_org: bool,
     allowed_scopes: Vec<String>,
@@ -84,7 +84,7 @@ pub(super) async fn synchronize(
     .bind(
         imports
             .iter()
-            .map(|imported| imported.source_application_id)
+            .map(|imported| imported.source_application_id.to_string())
             .collect::<Vec<_>>(),
     )
     .fetch_all(production)

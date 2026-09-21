@@ -91,6 +91,8 @@ export async function request<T = RecordValue>(
     duration_ms: performance.now() - started,
     request_id: response.headers.get("x-request-id"),
   });
+  if ((path === "/api/v1/logout" && response.ok) || response.status === 401)
+    clearApprovalRetries();
   if (response.status === 204) return undefined as T;
   let value: RecordValue;
   try {
@@ -122,6 +124,73 @@ export async function request<T = RecordValue>(
   }
   return value as T;
 }
+// Persist only approval retry keys and hashed signatures; generic mutations also
+// carry secrets, so request bodies must never be written to browser storage.
+const APPROVAL_RETRIES = "iam.approval-retries.v1";
+type ApprovalRetry = { key: string; expiresAt: number };
+function approvalRetries(): Record<string, ApprovalRetry> {
+  try {
+    const entries = Object.entries(
+      JSON.parse(window.sessionStorage.getItem(APPROVAL_RETRIES) || "{}"),
+    );
+    return Object.fromEntries(
+      entries
+        .filter(([hash, entry]) => {
+          const value = entry as ApprovalRetry;
+          return (
+            /^[a-f0-9]{64}$/.test(hash) &&
+            typeof value?.key === "string" &&
+            /^[a-f0-9-]{36}$/.test(value.key) &&
+            Number.isFinite(value.expiresAt) &&
+            value.expiresAt > Date.now() &&
+            value.expiresAt <= Date.now() + 12 * 60 * 60 * 1000
+          );
+        })
+        .slice(-100),
+    ) as Record<string, ApprovalRetry>;
+  } catch {
+    return {};
+  }
+}
+function saveApprovalRetry(hash: string, key?: string) {
+  if (!hash) return;
+  try {
+    const entries = approvalRetries();
+    if (key)
+      entries[hash] = {
+        key,
+        expiresAt: entries[hash]?.expiresAt || Date.now() + 12 * 60 * 60 * 1000,
+      };
+    else delete entries[hash];
+    window.sessionStorage.setItem(
+      APPROVAL_RETRIES,
+      JSON.stringify(Object.fromEntries(Object.entries(entries).slice(-100))),
+    );
+  } catch {
+    /* Exact in-memory retries remain available with storage disabled. */
+  }
+}
+export function clearApprovalRetries() {
+  try {
+    window.sessionStorage.removeItem(APPROVAL_RETRIES);
+  } catch {
+    /* Optional storage. */
+  }
+}
+async function approvalRetryHash(signature: string): Promise<string> {
+  try {
+    const hash = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(signature),
+    );
+    return Array.from(new Uint8Array(hash), (value) =>
+      value.toString(16).padStart(2, "0"),
+    ).join("");
+  } catch {
+    return "";
+  }
+}
+
 // Each form owns this closure. Ambiguous retries reuse both the key and exact payload.
 export function mutation() {
   const pending = new Map<string, string>();
@@ -138,7 +207,11 @@ export function mutation() {
       serialized,
       options.version,
     ]);
-    const key = pending.get(signature) || crypto.randomUUID();
+    const retryHash = await approvalRetryHash(signature);
+    const key =
+      pending.get(signature) ||
+      approvalRetries()[retryHash]?.key ||
+      crypto.randomUUID();
     pending.set(signature, key);
     const headers: Record<string, string> = { "Idempotency-Key": key };
     if (serialized !== undefined)
@@ -157,16 +230,22 @@ export function mutation() {
         body: serialized,
       });
       pending.delete(signature);
+      saveApprovalRetry(retryHash);
       return result;
     } catch (error) {
+      if (error instanceof ApiError && error.code === "approval_required")
+        saveApprovalRetry(retryHash, key);
       if (
         error instanceof ApiError &&
         error.status >= 400 &&
         error.status < 500 &&
         ![408, 425, 429].includes(error.status) &&
+        error.code !== "approval_required" &&
         !error.code.startsWith("idempotency_")
-      )
+      ) {
         pending.delete(signature);
+        saveApprovalRetry(retryHash);
+      }
       throw error;
     }
   };

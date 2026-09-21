@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -14,7 +15,6 @@ use sha2::{Digest as _, Sha256};
 use sqlx::{FromRow, Postgres, Transaction};
 use subtle::ConstantTimeEq as _;
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::ApiState,
@@ -59,8 +59,8 @@ const WEBHOOK_APPROVAL_ROUTE: &str = "POST /api/v1/applications/{app_id}/webhook
 
 #[derive(FromRow)]
 struct EncryptedEndpointRow {
-    id: Uuid,
-    application_id: Uuid,
+    id: Id,
+    application_id: Id,
     url_ciphertext: Vec<u8>,
     url_nonce: Vec<u8>,
     encryption_key_version: i16,
@@ -69,7 +69,7 @@ struct EncryptedEndpointRow {
 
 #[derive(FromRow)]
 struct EncryptedSigningKeyRow {
-    id: Uuid,
+    id: Id,
     secret_ciphertext: Vec<u8>,
     secret_nonce: Vec<u8>,
     encryption_key_version: i16,
@@ -77,13 +77,13 @@ struct EncryptedSigningKeyRow {
 
 #[derive(FromRow)]
 struct CurrentReplayTarget {
-    endpoint_id: Uuid,
-    signing_key_id: Uuid,
+    endpoint_id: Id,
+    signing_key_id: Id,
 }
 
 #[derive(FromRow)]
 struct EncryptedProjectionRow {
-    projection_id: Uuid,
+    projection_id: Id,
     payload_ciphertext: Vec<u8>,
     payload_nonce: Vec<u8>,
     encryption_key_version: i16,
@@ -296,7 +296,7 @@ fn require_approvable_application(status: &str) -> Result<(), ApiError> {
 
 async fn pending_endpoint_for_approval(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
+    application_id: Id,
 ) -> Result<EncryptedEndpointRow, ApiError> {
     sqlx::query_as::<_, EncryptedEndpointRow>(
         r"
@@ -464,8 +464,8 @@ pub(super) async fn replace(
     .execute(&mut *transaction)
     .await
     .map_err(|_| ApiError::internal("webhook_pending_retire"))?;
-    let endpoint_id = Uuid::now_v7();
-    let signing_key_id = Uuid::now_v7();
+    let endpoint_id = Id::now_v7();
+    let signing_key_id = Id::now_v7();
     let signing_secret_version = next_signing_secret_version(&mut transaction, app.id).await?;
     let encrypted_url = state
         .crypto
@@ -656,7 +656,7 @@ pub(super) async fn rotate_secret(
     )
     .await?;
 
-    let endpoint_ids = sqlx::query_scalar::<_, Uuid>(
+    let endpoint_ids = sqlx::query_scalar::<_, Id>(
         r"
         SELECT id
         FROM iam.application_webhook_endpoints
@@ -693,7 +693,7 @@ pub(super) async fn rotate_secret(
 
     let mut new_key_ids = Vec::with_capacity(endpoint_ids.len());
     for endpoint_id in &endpoint_ids {
-        let signing_key_id = Uuid::now_v7();
+        let signing_key_id = Id::now_v7();
         let encrypted_secret = state
             .crypto
             .encrypt(
@@ -890,7 +890,7 @@ pub(super) async fn replay_dead_letters(
     // A replay batch intentionally shares one worker ordering lane. The worker
     // therefore claims only its earliest global sequence while unrelated
     // destinations and replay batches retain their normal parallelism.
-    let replay_batch_id = Uuid::now_v7();
+    let replay_batch_id = Id::now_v7();
     let mut replayed = Vec::with_capacity(deliveries.len());
     for delivery in deliveries {
         if !application_replay_is_authorized(&mut transaction, &state, app.id, &delivery).await? {
@@ -977,7 +977,7 @@ pub(super) async fn login_history(
 /// The caller first resolves application read authority in this transaction.
 pub(super) async fn login_history_items(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
+    application_id: Id,
     cursor: Option<cursor::Cursor>,
     limit: i64,
 ) -> Result<Vec<LoginEventView>, ApiError> {
@@ -1036,7 +1036,7 @@ pub(super) async fn login_history_items(
 
 async fn current_application_replay_target(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
+    application_id: Id,
 ) -> Result<CurrentReplayTarget, ApiError> {
     sqlx::query_as::<_, CurrentReplayTarget>(
         r"
@@ -1069,7 +1069,7 @@ async fn current_application_replay_target(
 async fn application_replay_is_authorized(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    application_id: Uuid,
+    application_id: Id,
     delivery: &DeadLetterRecord,
 ) -> Result<bool, ApiError> {
     let subscribed=sqlx::query_scalar::<_,bool>("SELECT COALESCE(bool_or(iam_private.application_webhook_accepts_event(id,$2)),false) FROM iam.application_webhook_endpoints WHERE application_id=$1 AND status='active'")
@@ -1178,8 +1178,8 @@ async fn application_replay_is_authorized(
 
 async fn authorize_captured_projection(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
-    organization_id: Option<Uuid>,
+    application_id: Id,
+    organization_id: Option<Id>,
     event_type: &str,
     payload: &serde_json::Value,
 ) -> Result<bool, ApiError> {
@@ -1249,7 +1249,7 @@ async fn authorize_captured_projection(
             let Some(membership_id) = member
                 .pointer("/resource/id")
                 .and_then(serde_json::Value::as_str)
-                .and_then(|value| Uuid::parse_str(value).ok())
+                .and_then(|value| Id::parse(value).ok())
             else {
                 return Ok(false);
             };
@@ -1273,7 +1273,7 @@ async fn authorize_captured_projection(
     let Some(principal_id) = current
         .get("principal_id")
         .and_then(serde_json::Value::as_str)
-        .and_then(|value| Uuid::parse_str(value).ok())
+        .and_then(|value| Id::parse(value).ok())
     else {
         return Ok(false);
     };
@@ -1335,6 +1335,8 @@ fn required_member_scopes(member: &serde_json::Value) -> BTreeSet<String> {
         ("/membership/trust", "organization.trust.read"),
         ("/membership/effective_trust", "self.trust.read"),
         ("/roles/org_role", "self.membership.read"),
+        ("/roles/job_description", "self.job_role.read"),
+        // Captured ciphertext from before the rename still needs this check.
         ("/roles/job_role", "self.job_role.read"),
         ("/roles/capabilities", "self.capabilities.read"),
         ("/contacts/email", "self.email.read"),
@@ -1376,10 +1378,10 @@ fn required_profile_scopes(current: &serde_json::Value) -> BTreeSet<String> {
 
 async fn current_membership_scopes(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
-    membership_id: Uuid,
+    application_id: Id,
+    membership_id: Id,
 ) -> Result<BTreeSet<String>, ApiError> {
-    let scope = sqlx::query_as::<_, (Uuid, Uuid)>(
+    let scope = sqlx::query_as::<_, (Id, Id)>(
         "SELECT principal_id,organization_id FROM iam.organization_memberships WHERE id=$1 AND status='active'",
     ).bind(membership_id).fetch_optional(&mut **transaction).await
     .map_err(|_| ApiError::internal("application_replay_membership"))?;
@@ -1396,16 +1398,16 @@ async fn current_membership_scopes(
 }
 async fn current_organization_scopes(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
-    organization_id: Uuid,
+    application_id: Id,
+    organization_id: Id,
 ) -> Result<BTreeSet<String>, ApiError> {
     current_resource_scopes(transaction, application_id, None, Some(organization_id)).await
 }
 async fn current_principal_scopes(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
-    principal_id: Uuid,
-    organization_id: Option<Uuid>,
+    application_id: Id,
+    principal_id: Id,
+    organization_id: Option<Id>,
 ) -> Result<BTreeSet<String>, ApiError> {
     current_resource_scopes(
         transaction,
@@ -1417,15 +1419,15 @@ async fn current_principal_scopes(
 }
 async fn current_resource_scopes(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
-    principal_id: Option<Uuid>,
-    organization_id: Option<Uuid>,
+    application_id: Id,
+    principal_id: Option<Id>,
+    organization_id: Option<Id>,
 ) -> Result<BTreeSet<String>, ApiError> {
     let values = sqlx::query_scalar::<_, String>(
         "SELECT * FROM iam_private.current_application_resource_scopes($1,$2,$3)",
     )
     .bind(application_id)
-    .bind(principal_id)
+    .bind(principal_id.map(|id| id.to_string()))
     .bind(organization_id)
     .fetch_all(&mut **transaction)
     .await
@@ -1452,21 +1454,21 @@ async fn current_resource_scopes(
     Ok(scopes)
 }
 
-fn value_uuid(payload: &serde_json::Value, keys: &[&str]) -> Option<Uuid> {
+fn value_uuid(payload: &serde_json::Value, keys: &[&str]) -> Option<Id> {
     keys.iter().find_map(|key| {
         payload
             .get(*key)
             .and_then(serde_json::Value::as_str)
-            .and_then(|value| Uuid::parse_str(value).ok())
+            .and_then(|value| Id::parse(value).ok())
     })
 }
 
 async fn record_replay_audit(
     transaction: &mut Transaction<'_, Postgres>,
     actor: ActorRef,
-    authentication_session_id: Uuid,
-    organization_id: Option<Uuid>,
-    application_id: Option<Uuid>,
+    authentication_session_id: Id,
+    organization_id: Option<Id>,
+    application_id: Option<Id>,
     delivery: &DeadLetterRecord,
 ) -> Result<(), ApiError> {
     postgres_events::record_audit(
@@ -1540,7 +1542,7 @@ fn replay_response(
 pub(super) async fn load_webhook(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    application_id: Uuid,
+    application_id: Id,
     application_version: i64,
 ) -> Result<WebhookView, ApiError> {
     let rows = sqlx::query_as::<_, EncryptedEndpointRow>(
@@ -1643,7 +1645,7 @@ fn webhook_response(
 
 async fn replacement_signing_key(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
+    application_id: Id,
 ) -> Result<EncryptedSigningKeyRow, ApiError> {
     let row = if crate::infrastructure::testing_plane::is_active() {
         sqlx::query_as::<_, EncryptedSigningKeyRow>(
@@ -1691,7 +1693,7 @@ async fn replacement_signing_key(
 
 async fn signing_secret_is_inherited(
     transaction: &mut Transaction<'_, Postgres>,
-    signing_key_id: Uuid,
+    signing_key_id: Id,
 ) -> Result<bool, ApiError> {
     if !crate::infrastructure::testing_plane::is_active() {
         return Ok(false);
@@ -1741,7 +1743,7 @@ fn decrypt_endpoint(
 
 fn decrypt_signing_secret(
     state: &ApiState,
-    application_id: Uuid,
+    application_id: Id,
     row: &EncryptedSigningKeyRow,
 ) -> Result<zeroize::Zeroizing<Vec<u8>>, ApiError> {
     let nonce = <[u8; 12]>::try_from(row.secret_nonce.as_slice())
@@ -1765,7 +1767,7 @@ fn decrypt_signing_secret(
 
 async fn next_signing_secret_version(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
+    application_id: Id,
 ) -> Result<i64, ApiError> {
     sqlx::query_scalar(
         "SELECT COALESCE(MAX(secret_version), 0) + 1 FROM iam.application_webhook_signing_keys WHERE application_id = $1",
@@ -1792,6 +1794,23 @@ mod tests {
     use time::macros::datetime;
 
     use super::{WebhookEndpointView, WebhookView, webhook_projection, webhook_response};
+
+    #[test]
+    fn replay_requires_current_job_description_consent_for_both_payload_versions() {
+        let remaining_scopes = std::collections::BTreeSet::from([
+            "self.identity.read".to_owned(),
+            "self.membership.read".to_owned(),
+        ]);
+        for field in ["job_description", "job_role"] {
+            let captured = serde_json::json!({"roles": {field: "Private job description"}});
+            let required = super::required_member_scopes(&captured);
+            assert!(required.contains("self.job_role.read"));
+            assert!(!required.is_subset(&remaining_scopes));
+            let mut restored = remaining_scopes.clone();
+            restored.insert("self.job_role.read".to_owned());
+            assert!(required.is_subset(&restored));
+        }
+    }
 
     fn endpoint(url: &str, status: &str) -> WebhookEndpointView {
         WebhookEndpointView {

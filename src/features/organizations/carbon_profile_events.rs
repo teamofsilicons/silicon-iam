@@ -1,8 +1,8 @@
 //! Transactional Silicon-webhook projections for Carbon profile changes.
 
+use crate::domain::id::Id;
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::{
     error::AppError,
@@ -17,9 +17,9 @@ const EVENT_TYPE: &str = "organization.membership.profile_updated.v1";
 
 #[derive(Debug, sqlx::FromRow)]
 struct ActiveCarbonMembership {
-    organization_id: Uuid,
-    membership_id: Uuid,
-    affected_tag_ids: Vec<Uuid>,
+    organization_id: Id,
+    membership_id: Id,
+    affected_tag_ids: Vec<Id>,
 }
 
 /// Same-transaction organization and tag scope for one Carbon membership.
@@ -30,9 +30,9 @@ struct ActiveCarbonMembership {
 /// read through the membership API.
 #[derive(Debug)]
 pub(crate) struct CarbonProfileSiliconRoute {
-    organization_id: Uuid,
-    membership_id: Uuid,
-    affected_tag_ids: Vec<Uuid>,
+    organization_id: Id,
+    membership_id: Id,
+    affected_tag_ids: Vec<Id>,
     membership: Value,
 }
 
@@ -47,7 +47,7 @@ pub(crate) struct CarbonProfileSiliconRoute {
 /// assignments.
 pub(crate) async fn capture_carbon_profile_silicon_routes(
     transaction: &mut Transaction<'_, Postgres>,
-    carbon_id: Uuid,
+    carbon_id: Id,
 ) -> Result<Vec<CarbonProfileSiliconRoute>, AppError> {
     let memberships = sqlx::query_as::<_, ActiveCarbonMembership>(
         "SELECT * FROM iam_private.lock_carbon_profile_silicon_routes($1)",
@@ -134,7 +134,6 @@ fn authorized_profile_state(profile: &Value) -> Result<Value, AppError> {
         "carbon_id",
         "display_name",
         "timezone",
-        "description",
         "profile_photo",
         "status",
         "version",
@@ -183,18 +182,17 @@ fn silicon_event_payload(
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::id::Id;
     use serde_json::json;
-    use uuid::Uuid;
 
     use super::{CarbonProfileSiliconRoute, authorized_profile_state, silicon_event_payload};
 
     fn profile(display_name: &str) -> serde_json::Value {
         json!({
-            "principal_id": Uuid::from_u128(1),
+            "principal_id": Id::from_u128(1),
             "carbon_id": "carbon-one",
             "display_name": display_name,
             "timezone": "UTC",
-            "description": "Engineer",
             "profile_photo": "https://iris.example/pfp/carbon?id=carbon-one",
             "email": "private@example.test",
             "phone_number": "+15555550100",
@@ -219,16 +217,16 @@ mod tests {
 
     #[test]
     fn silicon_payload_keeps_exact_state_and_both_tag_audiences() {
-        let membership_id = Uuid::from_u128(2);
-        let first_tag = Uuid::from_u128(3);
-        let second_tag = Uuid::from_u128(4);
+        let membership_id = Id::from_u128(2);
+        let first_tag = Id::from_u128(3);
+        let second_tag = Id::from_u128(4);
         let route = CarbonProfileSiliconRoute {
-            organization_id: Uuid::from_u128(5),
+            organization_id: Id::from_u128(5),
             membership_id,
             affected_tag_ids: vec![first_tag, second_tag],
             membership: json!({
                 "id": membership_id,
-                "job_role": "Engineer",
+                "job_description": "Engineer",
                 "tags": [{ "id": first_tag }, { "id": second_tag }],
                 "version": 7,
             }),
@@ -244,7 +242,10 @@ mod tests {
         assert_eq!(payload["changed_fields"], json!(["display_name"]));
         assert_eq!(payload["before"]["profile"]["display_name"], "Before");
         assert_eq!(payload["current"]["profile"]["display_name"], "Captured");
-        assert_eq!(payload["current"]["membership"]["job_role"], "Engineer");
+        assert_eq!(
+            payload["current"]["membership"]["job_description"],
+            "Engineer"
+        );
         assert_eq!(
             payload["affected_tags"]["before"],
             json!([first_tag, second_tag])

@@ -61,7 +61,7 @@ let current = application.oauth().introspect(
 ).await?;
 
 if current.active {
-    let actor = current.principal_id;
+    let actor = current.public_id;
 }
 ```
 

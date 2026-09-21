@@ -1,6 +1,6 @@
+use crate::domain::id::Id;
 use serde_json::Value;
 use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::error::AppError;
 
@@ -12,12 +12,12 @@ pub(super) struct SecurityMutation<'a> {
     pub(super) audit_action: &'a str,
     pub(super) audit_result: &'a str,
     pub(super) outbox_event: &'a str,
-    pub(super) subject_id: Option<Uuid>,
-    pub(super) actor_id: Option<Uuid>,
-    pub(super) authentication_session_id: Option<Uuid>,
-    pub(super) application_id: Option<Uuid>,
+    pub(super) subject_id: Option<Id>,
+    pub(super) actor_id: Option<Id>,
+    pub(super) authentication_session_id: Option<Id>,
+    pub(super) application_id: Option<Id>,
     pub(super) aggregate_type: &'a str,
-    pub(super) aggregate_id: Uuid,
+    pub(super) aggregate_id: Id,
     pub(super) aggregate_version: i64,
     pub(super) failure_code: Option<&'a str>,
     pub(super) metadata: Value,
@@ -29,7 +29,7 @@ pub(super) struct SecurityMutation<'a> {
 pub(super) async fn next_aggregate_version(
     transaction: &mut Transaction<'_, Postgres>,
     aggregate_type: &'static str,
-    aggregate_id: Uuid,
+    aggregate_id: Id,
 ) -> Result<i64, AppError> {
     sqlx::query_scalar::<_, i64>(
         r"
@@ -40,7 +40,7 @@ pub(super) async fn next_aggregate_version(
         ",
     )
     .bind(aggregate_type)
-    .bind(aggregate_id)
+    .bind(aggregate_id.to_string())
     .fetch_one(&mut **transaction)
     .await
     .map_err(|_| AppError::Internal {
@@ -78,12 +78,12 @@ pub(super) async fn record(
         )
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(mutation.authentication_event)
     .bind(mutation.authentication_outcome)
-    .bind(mutation.subject_id)
+    .bind(mutation.subject_id.map(|id| id.to_string()))
     .bind(mutation.authentication_session_id)
-    .bind(mutation.application_id)
+    .bind(mutation.application_id.map(|id| id.to_string()))
     .bind(request_id)
     .bind(mutation.failure_code)
     .bind(&mutation.metadata)
@@ -119,17 +119,17 @@ pub(super) async fn record(
         )
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(request_id)
-    .bind(mutation.actor_id)
+    .bind(mutation.actor_id.map(|id| id.to_string()))
     .bind(mutation.actor_id.and(mutation.authentication_session_id))
-    .bind(mutation.application_id)
+    .bind(mutation.application_id.map(|id| id.to_string()))
     .bind(mutation.audit_action)
     .bind(mutation.aggregate_type)
-    .bind(mutation.aggregate_id)
+    .bind(mutation.aggregate_id.to_string())
     .bind(mutation.audit_result)
     .bind(mutation.aggregate_type)
-    .bind(mutation.aggregate_id)
+    .bind(mutation.aggregate_id.to_string())
     .bind(mutation.aggregate_version)
     .bind(&mutation.metadata)
     .execute(&mut **transaction)
@@ -151,9 +151,9 @@ pub(super) async fn record(
         VALUES ($1, $2, $3, $4, $5, $6)
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(mutation.aggregate_type)
-    .bind(mutation.aggregate_id)
+    .bind(mutation.aggregate_id.to_string())
     .bind(mutation.aggregate_version)
     .bind(mutation.outbox_event)
     .bind(mutation.metadata)

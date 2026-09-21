@@ -6,7 +6,7 @@ use crate::{
     cli::TrustCommand,
     context::Context,
     error::{CliError, Result},
-    output::{Format, Table, json, json_empty, label, next_cursor, plain},
+    output::{Format, Table, json, json_empty, label, next_cursor},
 };
 
 /// Parses a boundary and level into the contract's trust value.
@@ -157,7 +157,6 @@ pub async fn run(context: &Context, command: TrustCommand) -> Result<()> {
                             label(&evaluation.trust.level)
                         ),
                     ]);
-                    table.row(["advisory", &plain(&evaluation.advisory)]);
                     table.row(["source", &label(&evaluation.source)]);
                     table.row([
                         "matched_rules",

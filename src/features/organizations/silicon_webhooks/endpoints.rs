@@ -1,5 +1,6 @@
 #![allow(clippy::too_many_lines)]
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, State},
@@ -12,7 +13,6 @@ use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use sqlx::{FromRow, Postgres, Transaction};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -36,18 +36,18 @@ const WEBHOOK_DELETE_ROUTE: &str =
     "DELETE /api/v1/organizations/{org_id}/silicons/{silicon_id}/webhook";
 #[derive(Clone, Debug, FromRow)]
 struct EndpointIdentity {
-    id: Uuid,
+    id: Id,
     status: String,
     version: i64,
 }
 
 #[derive(Clone, Debug)]
 struct SubscriptionSnapshot {
-    id: Uuid,
+    id: Id,
     mode: String,
     topics: Vec<String>,
     tag_filter_enabled: bool,
-    additional_tag_ids: Vec<Uuid>,
+    additional_tag_ids: Vec<Id>,
     version: i64,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
@@ -55,7 +55,7 @@ struct SubscriptionSnapshot {
 
 #[derive(FromRow)]
 struct SubscriptionBaseSnapshot {
-    id: Uuid,
+    id: Id,
     mode: String,
     tag_filter_enabled: bool,
     version: i64,
@@ -78,12 +78,12 @@ struct SubscriptionBeforeState {
 
 #[derive(Debug, Serialize)]
 struct SubscriptionTagFilterBeforeState {
-    additional_tag_ids: Vec<Uuid>,
+    additional_tag_ids: Vec<Id>,
 }
 
 #[derive(Debug, FromRow)]
 struct EncryptedEndpointRow {
-    id: Uuid,
+    id: Id,
     silicon_id: String,
     url_ciphertext: Vec<u8>,
     url_nonce: Vec<u8>,
@@ -233,8 +233,8 @@ pub(in crate::features::organizations) async fn replace_webhook(
     )?;
     let endpoint_id = current
         .as_ref()
-        .map_or_else(Uuid::now_v7, |endpoint| endpoint.id);
-    let key_id = Uuid::now_v7();
+        .map_or_else(Id::now_v7, |endpoint| endpoint.id);
+    let key_id = Id::now_v7();
     let secret_version = next_secret_version(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -439,7 +439,7 @@ pub(in crate::features::organizations) async fn delete_webhook(
         .execute(&mut *scope.transaction)
         .await
         .map_err(support::database)?;
-        let deleted_id = sqlx::query_scalar::<_, Uuid>(
+        let deleted_id = sqlx::query_scalar::<_, Id>(
             r"
             DELETE FROM iam.silicon_webhook_subscriptions
             WHERE organization_id = $1 AND silicon_id = $2
@@ -545,9 +545,9 @@ pub(in crate::features::organizations) async fn delete_webhook(
 
 async fn lock_subscription_snapshot(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    silicon_id: Uuid,
-    endpoint_id: Uuid,
+    organization_id: Id,
+    silicon_id: Id,
+    endpoint_id: Id,
 ) -> Result<Option<SubscriptionSnapshot>, AppError> {
     let Some(subscription) = sqlx::query_as::<_, SubscriptionBaseSnapshot>(
         r"
@@ -590,7 +590,7 @@ async fn lock_subscription_snapshot(
         .await
         .map_err(support::database)?
     };
-    let additional_tag_ids = sqlx::query_scalar::<_, Uuid>(
+    let additional_tag_ids = sqlx::query_scalar::<_, Id>(
         r"
         SELECT tag_id
         FROM iam.silicon_webhook_subscription_extra_tags
@@ -618,9 +618,9 @@ async fn lock_subscription_snapshot(
 fn subscription_deleted_event(
     subscription: Option<&SubscriptionSnapshot>,
     global_silicon_id: &str,
-    silicon_id: Uuid,
-    membership_id: Uuid,
-    endpoint_id: Uuid,
+    silicon_id: Id,
+    membership_id: Id,
+    endpoint_id: Id,
 ) -> Result<Option<MutationEvent<'static>>, AppError> {
     let Some(subscription) = subscription else {
         return Ok(None);
@@ -663,8 +663,8 @@ fn subscription_deleted_event(
 
 async fn lock_endpoint(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    silicon_id: Uuid,
+    organization_id: Id,
+    silicon_id: Id,
 ) -> Result<Option<EndpointIdentity>, AppError> {
     sqlx::query_as::<_, EndpointIdentity>(
         r"
@@ -684,9 +684,9 @@ async fn lock_endpoint(
 #[allow(clippy::too_many_arguments)]
 async fn persist_endpoint(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    silicon_id: Uuid,
-    endpoint_id: Uuid,
+    organization_id: Id,
+    silicon_id: Id,
+    endpoint_id: Id,
     encrypted_url: &EncryptedValue,
     canonical_url: &str,
     exists: bool,
@@ -738,10 +738,10 @@ async fn persist_endpoint(
 #[allow(clippy::too_many_arguments)]
 async fn insert_signing_key(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    silicon_id: Uuid,
-    endpoint_id: Uuid,
-    key_id: Uuid,
+    organization_id: Id,
+    silicon_id: Id,
+    endpoint_id: Id,
+    key_id: Id,
     secret_version: i64,
     encrypted_secret: &EncryptedValue,
     raw_secret: &str,
@@ -774,8 +774,8 @@ async fn insert_signing_key(
 
 async fn retire_keys_immediately(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    silicon_id: Uuid,
+    organization_id: Id,
+    silicon_id: Id,
 ) -> Result<(), AppError> {
     sqlx::query(
         r"
@@ -811,8 +811,8 @@ fn enforce_existing_version(
 
 async fn next_secret_version(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    silicon_id: Uuid,
+    organization_id: Id,
+    silicon_id: Id,
 ) -> Result<i64, AppError> {
     sqlx::query_scalar::<_, i64>(
         r"
@@ -842,7 +842,7 @@ async fn secret_replay_expiry(
 async fn load_webhook(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    organization_id: Uuid,
+    organization_id: Id,
     target: &TargetSilicon,
 ) -> Result<SiliconWebhookResponse, AppError> {
     let row = sqlx::query_as::<_, EncryptedEndpointRow>(
@@ -904,8 +904,8 @@ async fn load_webhook(
 }
 
 fn replace_claim_request(
-    organization_id: Uuid,
-    silicon_id: Uuid,
+    organization_id: Id,
+    silicon_id: Id,
     input: &SiliconWebhookReplace,
 ) -> serde_json::Value {
     json!({
@@ -921,22 +921,22 @@ mod tests {
 
     #[test]
     fn replacement_idempotency_is_bound_to_the_target_silicon() {
-        let organization_id = Uuid::now_v7();
+        let organization_id = Id::now_v7();
         let input = SiliconWebhookReplace {
             url: "https://hooks.example/events".to_owned(),
         };
-        let first = replace_claim_request(organization_id, Uuid::now_v7(), &input);
-        let second = replace_claim_request(organization_id, Uuid::now_v7(), &input);
+        let first = replace_claim_request(organization_id, Id::now_v7(), &input);
+        let second = replace_claim_request(organization_id, Id::now_v7(), &input);
         assert_ne!(first, second);
     }
 
     #[test]
     fn endpoint_delete_emits_the_actual_subscription_snapshot() {
-        let subscription_id = Uuid::from_u128(1);
-        let silicon_id = Uuid::from_u128(2);
-        let membership_id = Uuid::from_u128(3);
-        let endpoint_id = Uuid::from_u128(4);
-        let additional_tag_id = Uuid::from_u128(5);
+        let subscription_id = Id::from_u128(1);
+        let silicon_id = Id::from_u128(2);
+        let membership_id = Id::from_u128(3);
+        let endpoint_id = Id::from_u128(4);
+        let additional_tag_id = Id::from_u128(5);
         let snapshot = SubscriptionSnapshot {
             id: subscription_id,
             mode: "selected".to_owned(),
@@ -995,9 +995,9 @@ mod tests {
         let Ok(event) = subscription_deleted_event(
             None,
             "bot:acme",
-            Uuid::from_u128(1),
-            Uuid::from_u128(2),
-            Uuid::from_u128(3),
+            Id::from_u128(1),
+            Id::from_u128(2),
+            Id::from_u128(3),
         ) else {
             panic!("absence must not fail event construction");
         };

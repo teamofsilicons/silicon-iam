@@ -65,62 +65,18 @@
   that renders them as one is lying about the model.
 </p>
 
-<h2>Governance: who may change a role or a tag</h2>
-
-<table>
-  <thead><tr><th>Actor</th><th>Job roles and tags</th></tr></thead>
-  <tbody>
-    <tr><td>Owner or administrator</td><td>Changes them directly</td></tr>
-    <tr><td>Silicon</td><td>May only <em>request</em> a change</td></tr>
-    <tr><td>Ordinary member</td><td>Neither</td></tr>
-  </tbody>
-</table>
-
-<p>The quorum then depends on <em>who the change is about</em>:</p>
-
-<table>
-  <thead><tr><th>Target</th><th>Approvals required</th></tr></thead>
-  <tbody>
-    <tr><td>A Carbon</td><td>That Carbon <strong>and</strong> an owner or administrator</td></tr>
-    <tr><td>A Silicon</td><td>An owner or administrator only</td></tr>
-    <tr><td>A Silicon token rotation</td><td>The organization owner</td></tr>
-  </tbody>
-</table>
-
-<p>
-  Show the quorum per party, not as a single total. "1 of 2" hides which of the two is still
-  missing, and that is precisely the thing a reader needs.
-</p>
-
-<h3>The request lifecycle</h3>
-
-<ol>
-  <li>A Silicon opens a request via <code>POST …/role-change-requests</code> or
-    <code>POST …/members/{membership_id}/tag-change-requests</code>.</li>
-  <li>Each required party records a decision at
-    <code>POST …/approval-requests/{request_id}/decisions</code>, with
-    <code>If-Match</code> on the request version.</li>
-  <li>Once the quorum is met the change applies atomically and the request completes.</li>
-</ol>
-
-<p>
-  <code>immutable_payload</code> is fixed when the request opens, so nobody can approve one change
-  and have another take effect. A token-rotation decision additionally requires a
-  verified-channel step-up token.
-</p>
-
-<p>
-  <code>actionable_by_me=true</code> narrows the list to requests the caller can act on now, which
-  is the only filter most people want.
-</p>
+<h2>Sensitive-action policies</h2>
+<p>The owner, or an admin delegated <code>action_policies.manage</code>, configures an action's requester tier (any member, only admins, or only owner) and required approval (none, admin, or owner). The owner always acts directly. A permitted requester who can approve the action also acts directly.</p>
+<p>Automatic approval can match a requester's permanent Carbon ID, full Silicon ID, or membership tag. It satisfies approval without granting action permission. When approval is required, empty selector lists require manual approval.</p>
+<p>Submit the direct job-description, tag, profile, hierarchy, or trust mutation. Job Description changes apply directly by default, without approval. When a rule requires review, HTTP 428 <code>approval_required</code> returns the pending request and its request key. Review exact changes at <code>GET …/action-approvals</code> and decide at <code>POST …/action-approvals/{request_id}/decisions</code>. After approval, retry the identical mutation and request key.</p>
+<p>Approvals expire after twelve hours. Changed rules, resource versions, sessions, or request contents require fresh validation. The approval and action commit atomically. The old role-change and tag-change request routes return HTTP 410; token rotation continues to use its dedicated ownership and credential-verification flow.</p>
+<p><code>GET …/action-policies</code> lists every action with its current rule and defaults. Use <code>PUT …/action-policies/{action}</code> and If-Match to configure it.</p>
 
 <h2>History</h2>
 
 <p>
   <code>GET …/members/{membership_id}/job-role-history</code> and
-  <code>…/tag-history</code> record who requested each change, who approved it, when it applied,
-  and the linked approval request. A direct owner or administrator change has no
-  <code>approval_request_id</code> and no approvers, which is how you tell the two apart.
+  <code>…/tag-history</code> record the applied change and actor. Sensitive-action approvals retain the exact reviewed request and consumption status in the action-approvals list.
 </p>
 
 <p>

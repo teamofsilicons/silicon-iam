@@ -357,11 +357,10 @@ async fn bundle_logo_updates_distinguish_preserving_setting_and_clearing() {
 
 #[tokio::test]
 async fn application_login_history_preserves_events_with_private_actor_identifiers() {
-    let principal_id = Uuid::from_u128(23);
     let (client, capture, server) = service(json!({
         "items": [{
             "id": Uuid::from_u128(24),
-            "actor": {"principal_id": principal_id, "type": "silicon", "public_id": null},
+            "actor": {"type": "silicon", "public_id": null},
             "app_id": "acme>workspace", "org_id": "customer",
             "event_type": "oauth_token_exchange", "success": true,
             "request_id": "history-private-actor", "occurred_at": "2026-09-12T00:00:00Z"
@@ -374,7 +373,6 @@ async fn application_login_history_preserves_events_with_private_actor_identifie
         .await
         .expect("private actor identifier must not invalidate the history page");
     assert_eq!(history.items.len(), 1);
-    assert_eq!(history.items[0].actor.principal_id, principal_id);
     assert!(history.items[0].actor.public_id.is_none());
     assert!(history.items[0].success);
     let (headers, _) = capture.recv().expect("captured history request");
@@ -489,7 +487,7 @@ async fn scoped_silicon_creation_keeps_the_one_time_credential_and_sparse_identi
     });
     let (client, capture, server) = service(receipt.clone());
     let input: models::SiliconCreate =
-        serde_json::from_value(json!({"silicon_id":"helper","job_role":"Assistant"}))
+        serde_json::from_value(json!({"silicon_id":"helper","job_description":"Assistant"}))
             .expect("Silicon create input");
     let created = client
         .application_mutations()
@@ -501,7 +499,10 @@ async fn scoped_silicon_creation_keeps_the_one_time_credential_and_sparse_identi
     assert!(created["silicon"].get("reports_to_membership_id").is_none());
     let (headers, body) = capture.recv().expect("captured Silicon creation");
     assert!(headers.starts_with("POST /api/v1/organizations/customer/silicons "));
-    assert_eq!(body, json!({"silicon_id":"helper","job_role":"Assistant"}));
+    assert_eq!(
+        body,
+        json!({"silicon_id":"helper","job_description":"Assistant"})
+    );
     server.join().expect("mock completed");
 }
 

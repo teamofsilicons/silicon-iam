@@ -91,7 +91,7 @@ These are transient. Retry a `GET` freely, and a mutation only while reusing the
     "message": "The request was well-formed but could not be accepted.",
     "details": {
       "fields": [
-        { "field": "job_role", "message": "at most 5000 characters" }
+        { "field": "job_description", "message": "at most 5000 characters" }
       ]
     },
     "request_id": "018f2c1e-…"

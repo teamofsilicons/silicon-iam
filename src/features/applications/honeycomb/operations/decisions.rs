@@ -4,9 +4,9 @@ use super::*;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ScopeDecision {
-    operation_id: Uuid,
+    operation_id: Id,
     expected_iam_revision: i64,
-    environment_id: Option<Uuid>,
+    environment_id: Option<Id>,
     target_app_id: Option<String>,
     scopes: Vec<String>,
     decision: String,
@@ -15,10 +15,10 @@ struct ScopeDecision {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WebhookApproval {
-    operation_id: Uuid,
+    operation_id: Id,
     expected_iam_revision: i64,
-    environment_id: Option<Uuid>,
-    pending_endpoint_id: Uuid,
+    environment_id: Option<Id>,
+    pending_endpoint_id: Id,
 }
 
 pub(super) fn router() -> Router<ApiState> {
@@ -173,7 +173,7 @@ async fn webhook_approval(
     if app.version != input.expected_iam_revision {
         return Err(ApiError::conflict("iam_revision_conflict"));
     }
-    let pending=sqlx::query_scalar::<_,Uuid>("SELECT id FROM iam.application_webhook_endpoints WHERE application_id=$1 AND id=$2 AND status='pending_review' FOR UPDATE")
+    let pending=sqlx::query_scalar::<_,Id>("SELECT id FROM iam.application_webhook_endpoints WHERE application_id=$1 AND id=$2 AND status='pending_review' FOR UPDATE")
         .bind(app.id).bind(input.pending_endpoint_id).fetch_optional(&mut *tx).await.map_err(|_|ApiError::internal("honeycomb_pending_webhook"))?.ok_or_else(ApiError::not_found)?;
     security::require_step_up(
         &mut tx,

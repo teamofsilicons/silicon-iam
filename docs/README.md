@@ -77,3 +77,6 @@ curl -fsSL https://docs.iam.teamofsilicons.com/install.sh | sh
 ```
 
 See [telemetry](TELEMETRY.md) for collection, opt-out, private recording keys and delivery verification.
+
+- [Sensitive actions and defaults](SENSITIVE_ACTIONS.md)
+- [Canonical identity rollout](canonical-identity-rollout.md)

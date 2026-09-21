@@ -5,6 +5,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{State, rejection::JsonRejection},
@@ -17,7 +18,6 @@ use serde_json::json;
 use sqlx::{FromRow, Postgres, Transaction};
 use time::OffsetDateTime;
 use url::Url;
-use uuid::Uuid;
 
 use crate::{
     domain::actor::{ActorRef, ActorType},
@@ -44,11 +44,10 @@ const ME_ROUTE: &str = "PATCH /api/v1/me";
 
 #[derive(Clone, Debug, Deserialize, FromRow, Serialize)]
 pub(crate) struct CarbonProfileResponse {
-    principal_id: Uuid,
+    principal_id: Id,
     carbon_id: String,
     display_name: String,
     timezone: String,
-    description: Option<String>,
     profile_photo: String,
     email: String,
     phone_number: String,
@@ -74,22 +73,15 @@ pub(super) struct CarbonProfilePatch {
         skip_serializing_if = "Option::is_none",
         with = "serde_with::rust::double_option"
     )]
-    description: Option<Option<String>>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "serde_with::rust::double_option"
-    )]
     profile_photo: Option<Option<String>>,
 }
 
 #[derive(FromRow)]
 struct CarbonRow {
-    principal_id: Uuid,
+    principal_id: Id,
     carbon_id: String,
     display_name: String,
     timezone: String,
-    description: Option<String>,
     profile_photo_uri: Option<String>,
     status: String,
     version: i64,
@@ -99,7 +91,7 @@ struct CarbonRow {
 
 #[derive(FromRow)]
 struct ContactRow {
-    id: Uuid,
+    id: Id,
     kind: String,
     ciphertext: Vec<u8>,
     nonce: Vec<u8>,
@@ -184,8 +176,6 @@ pub(super) async fn patch(
     }
     let authorizations_before = profile_webhook_authorizations(&mut transaction, carbon_id).await?;
     let silicon_routes = capture_carbon_profile_silicon_routes(&mut transaction, carbon_id).await?;
-    let description_present = input.description.is_some();
-    let description = input.description.as_ref().and_then(Clone::clone);
     let photo_present = input.profile_photo.is_some();
     let profile_photo = input.profile_photo.as_ref().and_then(Clone::clone);
     let updated = sqlx::query(
@@ -193,22 +183,18 @@ pub(super) async fn patch(
         UPDATE iam.carbons
         SET display_name = COALESCE($2, display_name),
             timezone_id = COALESCE($3, timezone_id),
-            description = CASE WHEN $4 THEN $5 ELSE description END,
-            profile_photo_uri = CASE WHEN $6 THEN $7 ELSE profile_photo_uri END
-        WHERE id = $1 AND version = $8 AND deleted_at IS NULL
+            profile_photo_uri = CASE WHEN $4 THEN $5 ELSE profile_photo_uri END
+        WHERE id = $1 AND version = $6 AND deleted_at IS NULL
           AND (
               ($2::text IS NOT NULL AND display_name IS DISTINCT FROM $2)
               OR ($3::text IS NOT NULL AND timezone_id IS DISTINCT FROM $3)
-              OR ($4 AND description IS DISTINCT FROM $5)
-              OR ($6 AND profile_photo_uri IS DISTINCT FROM $7)
+              OR ($4 AND profile_photo_uri IS DISTINCT FROM $5)
           )
         ",
     )
     .bind(carbon_id)
     .bind(input.display_name.as_deref())
     .bind(input.timezone.as_deref())
-    .bind(description_present)
-    .bind(description.as_deref())
     .bind(photo_present)
     .bind(profile_photo.as_deref())
     .bind(expected_version)
@@ -236,13 +222,13 @@ pub(super) async fn patch(
         Some(json!({
             "display_name": before.display_name,
             "timezone": before.timezone,
-            "description": before.description,
+
             "profile_photo": before.profile_photo,
         })),
         Some(json!({
             "display_name": after.display_name,
             "timezone": after.timezone,
-            "description": after.description,
+
             "profile_photo": after.profile_photo,
         })),
     )
@@ -286,7 +272,7 @@ pub(super) async fn patch(
     raw_json_with_etag(StatusCode::OK, body, after.version, false)
 }
 
-fn require_self_service(authenticated: &Authenticated) -> Result<Uuid, AppError> {
+fn require_self_service(authenticated: &Authenticated) -> Result<Id, AppError> {
     let access = &authenticated.0;
     if access.subject.actor_type == ActorType::Carbon
         && access.audience == "silicon-iam"
@@ -304,14 +290,14 @@ fn require_self_service(authenticated: &Authenticated) -> Result<Uuid, AppError>
 pub(crate) async fn read_profile(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    carbon_id: Uuid,
+    carbon_id: Id,
     lock: bool,
 ) -> Result<CarbonProfileResponse, AppError> {
     let sql = if lock {
         r"
         SELECT carbon.id AS principal_id, carbon.carbon_id, carbon.display_name,
                carbon.timezone_id AS timezone,
-               carbon.description, carbon.profile_photo_uri, principal.status,
+               carbon.profile_photo_uri, principal.status,
                carbon.version, carbon.created_at, carbon.updated_at
         FROM iam.carbons AS carbon
         JOIN iam.principals AS principal
@@ -323,7 +309,7 @@ pub(crate) async fn read_profile(
         r"
         SELECT carbon.id AS principal_id, carbon.carbon_id, carbon.display_name,
                carbon.timezone_id AS timezone,
-               carbon.description, carbon.profile_photo_uri, principal.status,
+               carbon.profile_photo_uri, principal.status,
                carbon.version, carbon.created_at, carbon.updated_at
         FROM iam.carbons AS carbon
         JOIN iam.principals AS principal
@@ -360,7 +346,6 @@ pub(crate) async fn read_profile(
         carbon_id: carbon.carbon_id,
         display_name: carbon.display_name,
         timezone: carbon.timezone,
-        description: carbon.description,
         profile_photo,
         email,
         phone_number: phone,
@@ -415,11 +400,7 @@ fn validate_patch(
     mut input: CarbonProfilePatch,
     state: &ApiState,
 ) -> Result<CarbonProfilePatch, AppError> {
-    if input.display_name.is_none()
-        && input.timezone.is_none()
-        && input.description.is_none()
-        && input.profile_photo.is_none()
-    {
+    if input.display_name.is_none() && input.timezone.is_none() && input.profile_photo.is_none() {
         return Err(validation(
             "body",
             "must contain at least one profile field",
@@ -434,12 +415,6 @@ fn validate_patch(
         .is_some_and(|value| !crate::domain::timezone::is_valid_identifier(value))
     {
         return Err(validation("timezone", "must be a valid IANA TZ identifier"));
-    }
-    if let Some(description) = input.description.take() {
-        input.description = Some(match description {
-            Some(value) => Some(bounded_text("description", value, 0, 5_000, true)?),
-            None => None,
-        });
     }
     if let Some(profile_photo) = input.profile_photo.take() {
         input.profile_photo = Some(match profile_photo {
@@ -532,7 +507,7 @@ async fn serializable(state: &ApiState) -> Result<Transaction<'_, Postgres>, App
 
 async fn set_principal_context(
     transaction: &mut Transaction<'_, Postgres>,
-    carbon_id: Uuid,
+    carbon_id: Id,
 ) -> Result<(), AppError> {
     sqlx::query("SELECT set_config('iam.principal_id', $1, true)")
         .bind(carbon_id.to_string())
@@ -608,7 +583,7 @@ async fn record_mutation(
     version: i64,
     before: Option<serde_json::Value>,
     after: Option<serde_json::Value>,
-) -> Result<Uuid, AppError> {
+) -> Result<Id, AppError> {
     let aggregate = AggregateVersion {
         aggregate_type: "carbon",
         aggregate_id: authenticated.0.subject.id,
@@ -655,9 +630,9 @@ async fn record_mutation(
 
 async fn profile_webhook_authorizations(
     transaction: &mut Transaction<'_, Postgres>,
-    carbon_id: Uuid,
-) -> Result<BTreeMap<Uuid, BTreeSet<String>>, AppError> {
-    let rows = sqlx::query_as::<_, (Uuid, String)>(
+    carbon_id: Id,
+) -> Result<BTreeMap<Id, BTreeSet<String>>, AppError> {
+    let rows = sqlx::query_as::<_, (Id, String)>(
         r"
         SELECT application_id, scope
         FROM iam_private.list_profile_webhook_authorization_scopes($1)
@@ -667,7 +642,7 @@ async fn profile_webhook_authorizations(
     .fetch_all(&mut **transaction)
     .await
     .map_err(|_| internal("carbon_profile_webhook_authorizations"))?;
-    let mut authorizations = BTreeMap::<Uuid, BTreeSet<String>>::new();
+    let mut authorizations = BTreeMap::<Id, BTreeSet<String>>::new();
     for (application_id, scope) in rows {
         authorizations
             .entry(application_id)
@@ -684,11 +659,11 @@ async fn profile_webhook_authorizations(
 async fn capture_profile_webhook_projections(
     transaction: &mut Transaction<'_, Postgres>,
     crypto: &CryptoService,
-    outbox_event_id: Uuid,
+    outbox_event_id: Id,
     before: &CarbonProfileResponse,
     after: &CarbonProfileResponse,
-    authorizations_before: &BTreeMap<Uuid, BTreeSet<String>>,
-    authorizations_after: &BTreeMap<Uuid, BTreeSet<String>>,
+    authorizations_before: &BTreeMap<Id, BTreeSet<String>>,
+    authorizations_after: &BTreeMap<Id, BTreeSet<String>>,
 ) -> Result<(), AppError> {
     let recipient_application_ids =
         profile_webhook_recipient_application_ids(authorizations_before, authorizations_after);
@@ -700,7 +675,7 @@ async fn capture_profile_webhook_projections(
         let payload = profile_webhook_payload(before, after, &effective_scopes)?;
         let plaintext =
             serde_json::to_vec(&payload).map_err(|_| internal("carbon_profile_webhook_encode"))?;
-        let projection_id = Uuid::now_v7();
+        let projection_id = Id::now_v7();
         let encrypted = crypto
             .encrypt(
                 EncryptionContext::tenant(
@@ -733,9 +708,9 @@ async fn capture_profile_webhook_projections(
 }
 
 fn profile_webhook_recipient_application_ids(
-    authorizations_before: &BTreeMap<Uuid, BTreeSet<String>>,
-    authorizations_after: &BTreeMap<Uuid, BTreeSet<String>>,
-) -> BTreeSet<Uuid> {
+    authorizations_before: &BTreeMap<Id, BTreeSet<String>>,
+    authorizations_after: &BTreeMap<Id, BTreeSet<String>>,
+) -> BTreeSet<Id> {
     authorizations_before
         .keys()
         .chain(authorizations_after.keys())
@@ -768,7 +743,7 @@ fn profile_webhook_payload(
         current.insert("carbon_id".into(), json!(after.carbon_id));
     }
     if has_profile {
-        for field in ["display_name", "timezone", "description", "profile_photo"] {
+        for field in ["display_name", "timezone", "profile_photo"] {
             if let Some(value) = source.get(field) {
                 current.insert(field.to_owned(), value.clone());
             }
@@ -807,9 +782,6 @@ fn changed_profile_fields(
     }
     if before.timezone != after.timezone {
         changed_fields.push("timezone");
-    }
-    if before.description != after.description {
-        changed_fields.push("description");
     }
     if before.profile_photo != after.profile_photo {
         changed_fields.push("profile_photo");
@@ -869,15 +841,12 @@ const fn internal(category: &'static str) -> AppError {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
+    use crate::domain::id::Id;
     use anyhow::{Context as _, ensure};
     use axum::http::{HeaderMap, HeaderValue, header};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use secrecy::SecretString;
-    use sqlx::postgres::PgPoolOptions;
-    use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-    use testcontainers_modules::postgres::Postgres as TestPostgres;
     use time::OffsetDateTime;
-    use uuid::Uuid;
 
     use crate::{
         config::{KeyringSettings, SecuritySettings},
@@ -896,11 +865,10 @@ mod tests {
 
     fn profile(version: i64, display_name: &str, email: &str) -> CarbonProfileResponse {
         CarbonProfileResponse {
-            principal_id: Uuid::from_u128(1),
+            principal_id: Id::from_u128(1),
             carbon_id: "carbon-one".to_owned(),
             display_name: display_name.to_owned(),
             timezone: "UTC".to_owned(),
-            description: Some("Platform engineer".to_owned()),
             profile_photo: "https://iris.example/pfp/carbon?id=carbon-one".to_owned(),
             email: email.to_owned(),
             phone_number: "+15555550100".to_owned(),
@@ -969,7 +937,6 @@ mod tests {
             "carbon_id",
             "display_name",
             "timezone",
-            "description",
             "profile_photo",
             "email",
             "phone_number",
@@ -1011,8 +978,8 @@ mod tests {
         assert_eq!(payload["current"]["email"], "captured@example.test");
         assert_eq!(payload["current"]["version"], 8);
 
-        let before_only_application = Uuid::from_u128(2);
-        let after_only_application = Uuid::from_u128(3);
+        let before_only_application = Id::from_u128(2);
+        let after_only_application = Id::from_u128(3);
         let before_authorizations = BTreeMap::from([(
             before_only_application,
             BTreeSet::from(["self.profile.read".to_owned()]),
@@ -1031,45 +998,36 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL on isolated local PostgreSQL"]
     #[allow(
         clippy::too_many_lines,
         reason = "the isolated live fixture, transaction, ciphertext inspection, and assertions form one end-to-end invariant test"
     )]
     async fn live_profile_projection_freezes_scoped_state_and_before_only_recipient()
     -> anyhow::Result<()> {
-        let container = TestPostgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let database_url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect(&database_url)
-            .await?;
-        postgres::migrate(&pool).await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
+        crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let carbon_id = Uuid::from_u128(0x301);
-        let retained_application_id = Uuid::from_u128(0x302);
-        let before_only_application_id = Uuid::from_u128(0x303);
-        let session_id = Uuid::from_u128(0x304);
-        let retained_consent_id = Uuid::from_u128(0x305);
-        let before_only_consent_id = Uuid::from_u128(0x306);
-        let organization_id = Uuid::from_u128(0x320);
-        let carbon_membership_id = Uuid::from_u128(0x321);
-        let shared_tag_id = Uuid::from_u128(0x322);
-        let silicon_id = Uuid::from_u128(0x323);
-        let silicon_membership_id = Uuid::from_u128(0x324);
-        let silicon_endpoint_id = Uuid::from_u128(0x325);
-        let silicon_signing_key_id = Uuid::from_u128(0x326);
-        let silicon_subscription_id = Uuid::from_u128(0x327);
-        let full_silicon_id = Uuid::from_u128(0x328);
-        let full_silicon_membership_id = Uuid::from_u128(0x329);
-        let full_silicon_endpoint_id = Uuid::from_u128(0x32a);
-        let full_silicon_signing_key_id = Uuid::from_u128(0x32b);
-        let full_silicon_subscription_id = Uuid::from_u128(0x32c);
+        let carbon_id = Id::fixture("projection-carbon");
+        let retained_application_id = Id::fixture("projection-org>projection-retained");
+        let before_only_application_id = Id::fixture("projection-org>projection-before");
+        let session_id = Id::from_u128(0x304);
+        let retained_consent_id = Id::from_u128(0x305);
+        let before_only_consent_id = Id::from_u128(0x306);
+        let organization_id = Id::from_u128(0x320);
+        let carbon_membership_id = Id::from_u128(0x321);
+        let shared_tag_id = Id::from_u128(0x322);
+        let silicon_id = Id::fixture("subscriber:projection-org");
+        let silicon_membership_id = Id::from_u128(0x324);
+        let silicon_endpoint_id = Id::from_u128(0x325);
+        let silicon_signing_key_id = Id::from_u128(0x326);
+        let silicon_subscription_id = Id::from_u128(0x327);
+        let full_silicon_id = Id::fixture("full-subscriber:projection-org");
+        let full_silicon_membership_id = Id::from_u128(0x329);
+        let full_silicon_endpoint_id = Id::from_u128(0x32a);
+        let full_silicon_signing_key_id = Id::from_u128(0x32b);
+        let full_silicon_subscription_id = Id::from_u128(0x32c);
         sqlx::query(
             r"
             INSERT INTO iam.cryptographic_key_versions (purpose, key_version, status)
@@ -1221,7 +1179,7 @@ mod tests {
             "
         );
         // Every interpolated value above is a test-owned UUID rendered by
-        // `Uuid::Display`; no external input can enter this fixture statement.
+        // `Id::Display`; no external input can enter this fixture statement.
         sqlx::raw_sql(sqlx::AssertSqlSafe(seed_sql))
             .execute(&pool)
             .await
@@ -1230,7 +1188,7 @@ mod tests {
         let crypto = projection_crypto()?;
         let before = profile(1, "Before", "before@example.test");
         let after = profile(2, "Captured", "captured@example.test");
-        let outbox_event_id = Uuid::now_v7();
+        let outbox_event_id = Id::now_v7();
         let mut transaction = pool.begin().await?;
         sqlx::query("SELECT set_config('iam.principal_id', $1, true)")
             .bind(carbon_id.to_string())
@@ -1358,7 +1316,7 @@ mod tests {
             .bind(carbon_id)
             .execute(&pool)
             .await?;
-        let rows = sqlx::query_as::<_, (Uuid, Uuid, Vec<u8>, Vec<u8>, i16)>(
+        let rows = sqlx::query_as::<_, (Id, Id, Vec<u8>, Vec<u8>, i16)>(
             r"
             SELECT id, application_id, payload_ciphertext, payload_nonce,
                    encryption_key_version
@@ -1402,7 +1360,7 @@ mod tests {
         ensure!(before_only["current"].get("display_name").is_none());
         ensure!(before_only["changed_fields"] == serde_json::json!([]));
 
-        let (silicon_event_id, silicon_payload) = sqlx::query_as::<_, (Uuid, serde_json::Value)>(
+        let (silicon_event_id, silicon_payload) = sqlx::query_as::<_, (Id, serde_json::Value)>(
             r"
                 SELECT id, payload
                 FROM iam.outbox_events
@@ -1415,13 +1373,13 @@ mod tests {
                 ",
         )
         .bind(organization_id)
-        .bind(carbon_membership_id)
+        .bind(carbon_membership_id.to_string())
         .fetch_one(&pool)
         .await?;
         ensure!(silicon_payload["changed_fields"] == serde_json::json!(["display_name"]));
         ensure!(silicon_payload["before"]["profile"]["display_name"] == "Before");
         ensure!(silicon_payload["current"]["profile"]["display_name"] == "Captured");
-        ensure!(silicon_payload["current"]["membership"]["job_role"] == "Platform engineer");
+        ensure!(silicon_payload["current"]["membership"]["job_description"] == "Platform engineer");
         ensure!(silicon_payload["current"]["profile"].get("email").is_none());
         ensure!(
             silicon_payload["current"]["profile"]
@@ -1437,14 +1395,14 @@ mod tests {
         .fetch_one(&pool)
         .await?;
         ensure!(routed_topic == "member_updates");
-        let routed_tags = sqlx::query_scalar::<_, Uuid>(
+        let routed_tags = sqlx::query_scalar::<_, Id>(
             "SELECT tag_id FROM iam.outbox_event_affected_tags WHERE outbox_event_id = $1",
         )
         .bind(silicon_event_id)
         .fetch_all(&pool)
         .await?;
         ensure!(routed_tags == vec![shared_tag_id]);
-        let own_tag_snapshot = sqlx::query_scalar::<_, Uuid>(
+        let own_tag_snapshot = sqlx::query_scalar::<_, Id>(
             r"
             SELECT membership_id
             FROM iam.outbox_event_own_tag_memberships
@@ -1459,7 +1417,7 @@ mod tests {
             own_tag_snapshot == vec![silicon_membership_id],
             "profile routing did not freeze the exact event-time own-tag audience"
         );
-        let silicon_recipients = sqlx::query_as::<_, (Uuid, Uuid)>(
+        let silicon_recipients = sqlx::query_as::<_, (Id, Id)>(
             r"
             SELECT endpoint_id, signing_key_id
             FROM iam_private.list_worker_silicon_webhook_recipients($1)
@@ -1476,7 +1434,7 @@ mod tests {
                 ],
             "member_updates selected and Full subscribers did not receive the profile event"
         );
-        let full_only_recipients = sqlx::query_as::<_, (Uuid, Uuid)>(
+        let full_only_recipients = sqlx::query_as::<_, (Id, Id)>(
             r"
             SELECT endpoint_id, signing_key_id
             FROM iam_private.list_worker_silicon_webhook_recipients($1)
@@ -1489,7 +1447,7 @@ mod tests {
             full_only_recipients == vec![(full_silicon_endpoint_id, full_silicon_signing_key_id)],
             "selected member_updates subscriber received a Full-only event"
         );
-        let mixed_topic_recipients = sqlx::query_as::<_, (Uuid, Uuid)>(
+        let mixed_topic_recipients = sqlx::query_as::<_, (Id, Id)>(
             r"
             SELECT endpoint_id, signing_key_id
             FROM iam_private.list_worker_silicon_webhook_recipients($1)
@@ -1506,7 +1464,7 @@ mod tests {
                 ],
             "a subscriber matching multiple event topics was duplicated or omitted"
         );
-        let unrouted_recipients = sqlx::query_as::<_, (Uuid, Uuid)>(
+        let unrouted_recipients = sqlx::query_as::<_, (Id, Id)>(
             r"
             SELECT endpoint_id, signing_key_id
             FROM iam_private.list_worker_silicon_webhook_recipients($1)
@@ -1519,7 +1477,7 @@ mod tests {
             unrouted_recipients.is_empty(),
             "Full subscription received an event without a Silicon routing decision"
         );
-        let route_markers = sqlx::query_as::<_, (Uuid, bool)>(
+        let route_markers = sqlx::query_as::<_, (Id, bool)>(
             r"
             SELECT id, silicon_webhook_routable
             FROM iam.outbox_events
@@ -1581,7 +1539,7 @@ mod tests {
         .await?;
         tag_change.commit().await?;
 
-        let recipients_after_later_tag_change = sqlx::query_as::<_, (Uuid, Uuid)>(
+        let recipients_after_later_tag_change = sqlx::query_as::<_, (Id, Id)>(
             r"
             SELECT endpoint_id, signing_key_id
             FROM iam_private.list_worker_silicon_webhook_recipients($1)
@@ -1617,7 +1575,7 @@ mod tests {
         .execute(&pool)
         .await?;
         sqlx::raw_sql(
-            "CREATE ROLE silicon_iam_worker NOLOGIN; GRANT silicon_iam_worker TO postgres;",
+            "DO $$ BEGIN IF to_regrole('silicon_iam_worker') IS NULL THEN CREATE ROLE silicon_iam_worker NOLOGIN; END IF; END $$; GRANT silicon_iam_worker TO postgres;",
         )
         .execute(&pool)
         .await?;

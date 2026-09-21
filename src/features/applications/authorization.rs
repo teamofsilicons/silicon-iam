@@ -1,7 +1,7 @@
 //! Live, token-bound authorization for application bootstrap and delegated requests.
 
+use crate::domain::id::Id;
 use sqlx::{Postgres, Transaction, types::Json};
-use uuid::Uuid;
 
 use super::{error::ApiError, model::ApplicationAuthorization, security::ApplicationIdentity};
 
@@ -12,12 +12,12 @@ use super::{error::ApiError, model::ApplicationAuthorization, security::Applicat
 /// proof, not merely a parent's token ID. Missing roles/tags are undisclosed.
 pub(super) async fn load(
     transaction: &mut Transaction<'_, Postgres>,
-    token_id: Uuid,
-    subject_id: Uuid,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    token_id: Id,
+    subject_id: Id,
+    organization_id: Id,
+    membership_id: Id,
     audience: &ApplicationIdentity,
-    proof_id: Option<Uuid>,
+    proof_id: Option<Id>,
 ) -> Result<Option<ApplicationAuthorization>, ApiError> {
     sqlx::query_scalar::<_, Option<Json<ApplicationAuthorization>>>(
         "SELECT iam_private.get_current_application_authorization($1, $2, $3, $4, $5, $6, $7)",
@@ -51,8 +51,8 @@ pub(super) async fn load(
 /// holds no active membership anywhere, which is not the same thing.
 pub(super) async fn load_all(
     transaction: &mut Transaction<'_, Postgres>,
-    token_id: Uuid,
-    subject_id: Uuid,
+    token_id: Id,
+    subject_id: Id,
     audience: &ApplicationIdentity,
 ) -> Result<Option<Vec<ApplicationAuthorization>>, ApiError> {
     sqlx::query_scalar::<_, Option<Json<Vec<ApplicationAuthorization>>>>(

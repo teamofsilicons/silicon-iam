@@ -156,7 +156,7 @@ fn redirect_uri_value(field: &'static str, value: &str) -> Result<(), ApiError> 
     Ok(())
 }
 
-pub(super) fn delivery_ids(values: &[uuid::Uuid]) -> Result<(), ApiError> {
+pub(super) fn delivery_ids(values: &[crate::domain::id::Id]) -> Result<(), ApiError> {
     if !(1..=100).contains(&values.len()) {
         return Err(ApiError::validation(
             "delivery_ids",

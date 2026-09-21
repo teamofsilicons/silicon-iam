@@ -8,6 +8,7 @@ use super::{
     scopes,
     security::{Bearer, expected_version, require_carbon},
 };
+use crate::domain::id::Id;
 use crate::{
     api::ApiState,
     infrastructure::postgres::context::{self, DatabaseContext},
@@ -21,7 +22,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction, types::Json as SqlJson};
-use uuid::Uuid;
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Submit {
@@ -41,7 +41,7 @@ pub(super) struct Decision {
 }
 #[derive(Deserialize)]
 pub(super) struct RequestPath {
-    request_id: Uuid,
+    request_id: Id,
 }
 fn validate_message(message: &str) -> Result<(), ApiError> {
     if message.trim().is_empty() || message.chars().count() > 10000 {
@@ -52,7 +52,7 @@ fn validate_message(message: &str) -> Result<(), ApiError> {
     }
     Ok(())
 }
-async fn view(tx: &mut Transaction<'_, Postgres>, id: Uuid) -> Result<Value, ApiError> {
+async fn view(tx: &mut Transaction<'_, Postgres>, id: Id) -> Result<Value, ApiError> {
     sqlx::query_scalar::<_, Option<SqlJson<Value>>>(
         "SELECT iam_private.application_scope_request_view($1)",
     )
@@ -97,7 +97,7 @@ pub(super) async fn list(
     let mut tx = context::begin(state.db(), DatabaseContext::principal(actor))
         .await
         .map_err(|_| ApiError::internal("scope_review_context"))?;
-    let mut rows=sqlx::query_as::<_,(Uuid,time::OffsetDateTime,SqlJson<Value>)>("SELECT id,created_at,iam_private.application_scope_request_view(id) FROM iam.application_scope_requests WHERE ($1::text IS NULL OR status=$1) AND ($2::timestamptz IS NULL OR (created_at,id)<($2,$3)) ORDER BY created_at DESC,id DESC LIMIT $4")
+    let mut rows=sqlx::query_as::<_,(Id,time::OffsetDateTime,SqlJson<Value>)>("SELECT id,created_at,iam_private.application_scope_request_view(id) FROM iam.application_scope_requests WHERE ($1::text IS NULL OR status=$1) AND ($2::timestamptz IS NULL OR (created_at,id)<($2,$3)) ORDER BY created_at DESC,id DESC LIMIT $4")
         .bind(query.status).bind(at).bind(id).bind(limit+1).fetch_all(&mut *tx).await.map_err(|error|scopes::database_error(&error))?;
     let more = i64::try_from(rows.len()).unwrap_or(i64::MAX) > limit;
     if more {
@@ -162,7 +162,7 @@ pub(super) async fn submit(
         return Err(ApiError::precondition_failed());
     }
     scopes::configure(&mut tx, app.id, &input.app_scope, actor).await?;
-    let ids = sqlx::query_scalar::<_, Vec<Uuid>>(
+    let ids = sqlx::query_scalar::<_, Vec<Id>>(
         "SELECT iam_private.submit_application_scope_requests($1,$2,$3)",
     )
     .bind(app.id)
@@ -256,7 +256,7 @@ async fn mutate(
     state: &ApiState,
     access: &crate::infrastructure::postgres::tokens::AccessContext,
     headers: &HeaderMap,
-    id: Uuid,
+    id: Id,
     action: &str,
     message: &str,
     canonical: Vec<u8>,
@@ -307,7 +307,7 @@ async fn mutate(
     .await
     .map_err(|error| scopes::database_error(&error))?
     .0;
-    let (app, org) = sqlx::query_as::<_, (Uuid, Uuid)>(
+    let (app, org) = sqlx::query_as::<_, (Id, Id)>(
         "SELECT * FROM iam_private.application_scope_request_context($1)",
     )
     .bind(id)
@@ -343,11 +343,11 @@ fn version(value: &Value) -> Result<i64, ApiError> {
 #[allow(clippy::too_many_arguments)]
 async fn record(
     tx: &mut Transaction<'_, Postgres>,
-    actor: Uuid,
-    session: Uuid,
-    org: Uuid,
-    app: Uuid,
-    id: Uuid,
+    actor: Id,
+    session: Id,
+    org: Id,
+    app: Id,
+    id: Id,
     version: i64,
     action: &'static str,
     value: &Value,

@@ -1,6 +1,7 @@
 //! One presentation identity, with independent consent and credentials per member.
 use std::collections::BTreeSet;
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -10,7 +11,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction, types::Json as SqlJson};
-use uuid::Uuid;
 
 use super::{
     applications, batch_login, cursor,
@@ -118,7 +118,7 @@ pub(super) struct Patch {
 
 #[derive(sqlx::FromRow)]
 struct BundleRow {
-    organization_id: Uuid,
+    organization_id: Id,
     document: SqlJson<Value>,
 }
 
@@ -160,10 +160,10 @@ fn version(value: &Value) -> Result<i64, ApiError> {
         .as_i64()
         .ok_or_else(|| ApiError::internal("bundle_version"))
 }
-fn identity(value: &Value) -> Result<Uuid, ApiError> {
+fn identity(value: &Value) -> Result<Id, ApiError> {
     value["id"]
         .as_str()
-        .and_then(|id| Uuid::parse_str(id).ok())
+        .and_then(|id| Id::parse(id).ok())
         .ok_or_else(|| ApiError::internal("bundle_id"))
 }
 fn member_ids(value: &Value) -> Result<Vec<String>, ApiError> {
@@ -224,7 +224,7 @@ pub(super) async fn list(
         .await
         .map_err(|_| ApiError::internal("bundle_context"))?;
     let organization_id = organization_filter(&mut tx, query.org_id.as_deref()).await?;
-    let mut rows = sqlx::query_as::<_, (Uuid, time::OffsetDateTime, String)>(BUNDLE_LIST_QUERY)
+    let mut rows = sqlx::query_as::<_, (Id, time::OffsetDateTime, String)>(BUNDLE_LIST_QUERY)
         .bind(at)
         .bind(id)
         .bind(limit + 1)
@@ -447,10 +447,10 @@ async fn management_organization(
     id: &str,
     action: &str,
     input: &Value,
-    actor: Uuid,
-) -> Result<Uuid, ApiError> {
+    actor: Id,
+) -> Result<Id, ApiError> {
     if action == "create" {
-        sqlx::query_scalar::<_, Option<Uuid>>(
+        sqlx::query_scalar::<_, Option<Id>>(
             "SELECT iam_private.lock_application_creation_organization($1,$2)",
         )
         .bind(input["org_id"].as_str())
@@ -459,7 +459,7 @@ async fn management_organization(
         .await
         .map_err(|error| database_error(&error))?
     } else {
-        sqlx::query_scalar::<_, Option<Uuid>>(
+        sqlx::query_scalar::<_, Option<Id>>(
             "SELECT iam_private.application_bundle_management_organization($1)",
         )
         .bind(id)
@@ -473,7 +473,7 @@ async fn management_organization(
 async fn record(
     tx: &mut Transaction<'_, Postgres>,
     access: &AccessContext,
-    org: Uuid,
+    org: Id,
     value: &Value,
     before: Option<Value>,
     event: &'static str,
@@ -581,22 +581,10 @@ mod tests {
     use super::super::model::BatchLoginSelection;
     use super::*;
     #[tokio::test]
-    #[ignore = "requires Docker for an isolated PostgreSQL bundle contract"]
+    #[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL on isolated local PostgreSQL"]
     async fn bundle_database_contract() -> anyhow::Result<()> {
-        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-        let postgres = testcontainers_modules::postgres::Postgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await?;
-        let url = format!(
-            "postgres://postgres:postgres@{}:{}/postgres",
-            postgres.get_host().await?,
-            postgres.get_host_port_ipv4(5432).await?
-        );
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
         sqlx::raw_sql(include_str!("bundles_test.sql"))
             .execute(&pool)

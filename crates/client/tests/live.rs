@@ -111,7 +111,6 @@ async fn enrol(anonymous: &Client, handle: &str, fixed_code: Option<&str>) -> Cl
                 carbon_id: handle.to_owned(),
                 display_name: handle.to_owned(),
                 timezone: None,
-                description: None,
                 profile_photo: None,
             },
             &Mutation::new(),
@@ -179,7 +178,6 @@ async fn the_client_speaks_the_contract_end_to_end() {
             &models::CarbonProfilePatch {
                 display_name: Some("Renamed".to_owned()),
                 timezone: None,
-                description: None,
                 profile_photo: None,
             },
             &Mutation::new(),
@@ -197,7 +195,6 @@ async fn the_client_speaks_the_contract_end_to_end() {
             &models::CarbonProfilePatch {
                 display_name: Some("Again".to_owned()),
                 timezone: None,
-                description: None,
                 profile_photo: None,
             },
             &Mutation::new(),
@@ -1450,7 +1447,7 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
             &models::StepUpChallengeCreate {
                 channel: models::StepUpChallengeCreateChannel::Email,
                 action: models::StepUpAction::ApplicationClientSecretRotate,
-                resource_id: imported.application.id.to_string(),
+                resource_id: imported.application.id.clone(),
             },
             &Mutation::new(),
         )

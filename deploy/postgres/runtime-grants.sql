@@ -166,7 +166,6 @@ DECLARE
         'extra_silicon_access_grants',
         'idempotency_records',
         'invitation_verification_challenges',
-        'job_role_change_requests',
         'job_role_history',
         'login_challenge_channels',
         'login_challenges',
@@ -211,7 +210,6 @@ DECLARE
         'sso_setup_sessions',
         'step_up_assertions',
         'step_up_challenges',
-        'tag_change_requests',
         'testing_environments',
         'trust_rules'
     ];
@@ -513,6 +511,7 @@ DECLARE
     matched_function_count integer;
     function_record record;
     api_function_names text[] := ARRAY[
+        'application_encryption_contexts',
         'resolve_membership_identifiers',
         'authorize_scoped_testing_environment_creation',
         'create_testing_actor_login',
@@ -643,6 +642,15 @@ DECLARE
         'lock_application_creation_organization',
         'lock_application_webhook_reviewer',
         'lock_carbon_profile_silicon_routes',
+        'lock_silicon_self_profile',
+        'update_silicon_self_profile',
+        'action_execution_allowed',
+        'action_execution_capability',
+        'list_action_policies',
+        'configure_action_policy',
+        'authorize_sensitive_action',
+        'list_action_approvals',
+        'decide_action_approval',
         'lock_current_application_client',
         'lock_current_application_oauth_subject_authority',
         'lock_current_application_obo_exchange_authority',
@@ -891,6 +899,7 @@ DECLARE
     matched_function_count integer;
     function_record record;
     worker_function_names text[] := ARRAY[
+        'application_encryption_contexts',
         'resolve_membership_identifiers',
         'get_worker_testing_environment_webhook_key_v2',
         'claim_honeycomb_management_events',

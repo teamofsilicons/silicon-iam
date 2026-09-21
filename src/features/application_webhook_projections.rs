@@ -2,9 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::domain::id::Id;
 use serde_json::{Map, Value, json};
 use sqlx::{FromRow, Postgres, Transaction, types::Json};
-use uuid::Uuid;
 
 use crate::{
     api::ApiState,
@@ -18,10 +18,10 @@ use crate::{
 const MAX_PROJECTION_PLAINTEXT_BYTES: usize = 1_048_576;
 
 pub(crate) struct OrganizationProjectionEvent<'a> {
-    pub(crate) outbox_event_id: Uuid,
-    pub(crate) organization_id: Uuid,
+    pub(crate) outbox_event_id: Id,
+    pub(crate) organization_id: Id,
     pub(crate) aggregate_type: &'a str,
-    pub(crate) aggregate_id: Uuid,
+    pub(crate) aggregate_id: Id,
     pub(crate) aggregate_version: i64,
     pub(crate) event_type: &'a str,
     pub(crate) before_state: Option<&'a Value>,
@@ -31,8 +31,8 @@ pub(crate) struct OrganizationProjectionEvent<'a> {
 
 #[derive(Debug, FromRow)]
 struct AuthorizationRow {
-    application_id: Uuid,
-    membership_id: Uuid,
+    application_id: Id,
+    membership_id: Id,
     scope: String,
     authorized_after: bool,
 }
@@ -46,15 +46,15 @@ struct MemberAuthorization {
 
 #[derive(Debug, FromRow)]
 struct ProjectionSource {
-    membership_id: Uuid,
-    principal_id: Uuid,
+    membership_id: Id,
+    principal_id: Id,
     principal_kind: String,
     current_state: Json<Value>,
-    email_contact_id: Option<Uuid>,
+    email_contact_id: Option<Id>,
     email_ciphertext: Option<Vec<u8>>,
     email_nonce: Option<Vec<u8>>,
     email_encryption_key_version: Option<i16>,
-    phone_contact_id: Option<Uuid>,
+    phone_contact_id: Option<Id>,
     phone_ciphertext: Option<Vec<u8>>,
     phone_nonce: Option<Vec<u8>>,
     phone_encryption_key_version: Option<i16>,
@@ -185,12 +185,12 @@ async fn capture_with_dependencies(
     Ok(())
 }
 
-type ApplicationAuthorizations = BTreeMap<Uuid, BTreeMap<Uuid, MemberAuthorization>>;
+type ApplicationAuthorizations = BTreeMap<Id, BTreeMap<Id, MemberAuthorization>>;
 
 async fn load_event_authorizations(
     transaction: &mut Transaction<'_, Postgres>,
     event: &OrganizationProjectionEvent<'_>,
-) -> Result<(ApplicationAuthorizations, BTreeMap<Uuid, bool>), AppError> {
+) -> Result<(ApplicationAuthorizations, BTreeMap<Id, bool>), AppError> {
     let aggregate_authorizations = if aggregate_scope(event.event_type).starts_with("organization.")
     {
         load_aggregate_authorizations(
@@ -237,10 +237,10 @@ fn raw_organization_scope(event: &str) -> Option<&'static str> {
 }
 async fn load_aggregate_authorizations(
     transaction: &mut Transaction<'_, Postgres>,
-    organization: Uuid,
+    organization: Id,
     scope: &str,
-) -> Result<BTreeMap<Uuid, bool>, AppError> {
-    let rows = sqlx::query_as::<_, (Uuid, bool)>(
+) -> Result<BTreeMap<Id, bool>, AppError> {
+    let rows = sqlx::query_as::<_, (Id, bool)>(
         "SELECT application_id,authorized_after FROM iam_private.list_organization_webhook_scope_authorizations($1,$2,transaction_timestamp())",
     ).bind(organization).bind(scope).fetch_all(&mut **transaction).await
     .map_err(|_| internal("organization_webhook_scope_authorizations"))?;
@@ -312,7 +312,7 @@ struct AggregateAuthorization {
 }
 
 fn aggregate_authority(
-    members: &BTreeMap<Uuid, MemberAuthorization>,
+    members: &BTreeMap<Id, MemberAuthorization>,
     scope: &str,
     organization_grant: Option<bool>,
 ) -> AggregateAuthorization {
@@ -381,9 +381,9 @@ fn project_event_resource(
 
 async fn load_authorizations(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_ids: &[Uuid],
-) -> Result<BTreeMap<Uuid, BTreeMap<Uuid, MemberAuthorization>>, AppError> {
+    organization_id: Id,
+    membership_ids: &[Id],
+) -> Result<BTreeMap<Id, BTreeMap<Id, MemberAuthorization>>, AppError> {
     let rows = sqlx::query_as::<_, AuthorizationRow>(
         r"
         SELECT application_id, membership_id, scope, authorized_after
@@ -398,7 +398,7 @@ async fn load_authorizations(
     .await
     .map_err(|_| internal("organization_application_webhook_authorizations"))?;
 
-    let mut applications = BTreeMap::<Uuid, BTreeMap<Uuid, MemberAuthorization>>::new();
+    let mut applications = BTreeMap::<Id, BTreeMap<Id, MemberAuthorization>>::new();
     for row in rows {
         let authorization = applications
             .entry(row.application_id)
@@ -416,9 +416,9 @@ async fn load_authorizations(
 
 async fn load_sources(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_ids: &[Uuid],
-) -> Result<BTreeMap<Uuid, ProjectionSource>, AppError> {
+    organization_id: Id,
+    membership_ids: &[Id],
+) -> Result<BTreeMap<Id, ProjectionSource>, AppError> {
     let rows = sqlx::query_as::<_, ProjectionSource>(
         r"
         SELECT
@@ -442,9 +442,9 @@ async fn load_sources(
 
 async fn enrich_effective_self_trust(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    authorizations: &BTreeMap<Uuid, BTreeMap<Uuid, MemberAuthorization>>,
-    sources: &mut BTreeMap<Uuid, ProjectionSource>,
+    organization_id: Id,
+    authorizations: &BTreeMap<Id, BTreeMap<Id, MemberAuthorization>>,
+    sources: &mut BTreeMap<Id, ProjectionSource>,
 ) -> Result<(), AppError> {
     let ids = authorizations
         .values()
@@ -486,7 +486,7 @@ fn project_member(
     if resource
         .get("principal_id")
         .and_then(Value::as_str)
-        .and_then(|value| Uuid::parse_str(value).ok())
+        .and_then(|value| Id::parse(value).ok())
         != Some(source.principal_id)
     {
         return Err(internal(
@@ -571,9 +571,9 @@ fn project_member(
 async fn capture_organization_update(
     transaction: &mut Transaction<'_, Postgres>,
     crypto: &CryptoService,
-    outbox_event_id: Uuid,
-    authorizations: BTreeMap<Uuid, BTreeMap<Uuid, MemberAuthorization>>,
-    sources: &BTreeMap<Uuid, ProjectionSource>,
+    outbox_event_id: Id,
+    authorizations: BTreeMap<Id, BTreeMap<Id, MemberAuthorization>>,
+    sources: &BTreeMap<Id, ProjectionSource>,
     changed_fields: &BTreeSet<String>,
 ) -> Result<(), AppError> {
     for (application_id, members) in authorizations {
@@ -750,8 +750,8 @@ fn decrypt_contact(
 async fn persist_projection(
     transaction: &mut Transaction<'_, Postgres>,
     crypto: &CryptoService,
-    outbox_event_id: Uuid,
-    application_id: Uuid,
+    outbox_event_id: Id,
+    application_id: Id,
     payload: &Value,
 ) -> Result<(), AppError> {
     let plaintext = serde_json::to_vec(payload)
@@ -759,7 +759,7 @@ async fn persist_projection(
     if plaintext.len() > MAX_PROJECTION_PLAINTEXT_BYTES {
         return Err(internal("organization_application_webhook_projection_size"));
     }
-    let projection_id = Uuid::now_v7();
+    let projection_id = Id::now_v7();
     let encrypted = crypto
         .encrypt(
             EncryptionContext::tenant(
@@ -793,7 +793,7 @@ async fn persist_projection(
 async fn affected_membership_ids(
     transaction: &mut Transaction<'_, Postgres>,
     event: &OrganizationProjectionEvent<'_>,
-) -> Result<BTreeSet<Uuid>, AppError> {
+) -> Result<BTreeSet<Id>, AppError> {
     if matches!(
         event.event_type,
         "organization.updated.v1" | "organization.trust.default_updated.v1"
@@ -829,7 +829,7 @@ async fn affected_membership_ids(
 
 fn captured_trust_rule_membership_ids(
     event: &OrganizationProjectionEvent<'_>,
-) -> Option<BTreeSet<Uuid>> {
+) -> Option<BTreeSet<Id>> {
     if !matches!(
         event.event_type,
         "organization.trust.rule_created.v1"
@@ -845,9 +845,9 @@ fn captured_trust_rule_membership_ids(
 
 async fn active_memberships(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-) -> Result<BTreeSet<Uuid>, AppError> {
-    sqlx::query_scalar::<_, Uuid>(
+    organization_id: Id,
+) -> Result<BTreeSet<Id>, AppError> {
+    sqlx::query_scalar::<_, Id>(
         r"
         SELECT id
         FROM iam.organization_memberships
@@ -864,11 +864,11 @@ async fn active_memberships(
 
 async fn tag_memberships(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    tag_id: Uuid,
+    organization_id: Id,
+    tag_id: Id,
     silicon_only: bool,
-) -> Result<Vec<Uuid>, AppError> {
-    sqlx::query_scalar::<_, Uuid>(
+) -> Result<Vec<Id>, AppError> {
+    sqlx::query_scalar::<_, Id>(
         r"
         SELECT membership.id
         FROM iam.membership_tags AS assignment
@@ -890,7 +890,7 @@ async fn tag_memberships(
     .map_err(|_| internal("organization_application_webhook_tag_members"))
 }
 
-fn collect_named_membership_ids(value: &Value, membership_ids: &mut BTreeSet<Uuid>) {
+fn collect_named_membership_ids(value: &Value, membership_ids: &mut BTreeSet<Id>) {
     match value {
         Value::Object(object) => {
             for (key, child) in object {
@@ -901,7 +901,7 @@ fn collect_named_membership_ids(value: &Value, membership_ids: &mut BTreeSet<Uui
                 {
                     for value in values {
                         if let Some(value) = value.as_str()
-                            && let Ok(id) = Uuid::parse_str(value)
+                            && let Ok(id) = Id::parse(value)
                         {
                             membership_ids.insert(id);
                         }
@@ -914,7 +914,7 @@ fn collect_named_membership_ids(value: &Value, membership_ids: &mut BTreeSet<Uui
                         | "previous_owner_membership_id"
                         | "new_owner_membership_id"
                 ) && let Some(value) = child.as_str()
-                    && let Ok(id) = Uuid::parse_str(value)
+                    && let Ok(id) = Id::parse(value)
                 {
                     membership_ids.insert(id);
                 }
@@ -1090,7 +1090,6 @@ fn canonical_field(event_type: &str, field: &str) -> Option<&'static str> {
     match field {
         "display_name" => Some("principal.display_name"),
         "timezone" => Some("principal.timezone"),
-        "description" => Some("principal.description"),
         "profile_photo" => Some("principal.profile_photo"),
         "status" => Some("membership.status"),
         "tags" | "tag_ids" => Some("membership.tags"),
@@ -1104,7 +1103,7 @@ fn canonical_field(event_type: &str, field: &str) -> Option<&'static str> {
         "authorization_epoch" => Some("membership.authorization_epoch"),
         "credential_version" => Some("membership.access"),
         "org_role" => Some("roles.org_role"),
-        "job_role" => Some("roles.job_role"),
+        "job_description" => Some("roles.job_description"),
         "capabilities" => Some("roles.capabilities"),
         _ => None,
     }
@@ -1142,12 +1141,11 @@ fn field_is_authorized(field: &str, scopes: &BTreeSet<String>) -> bool {
         }
         "membership.trust" => scopes.contains("organization.trust.read"),
         "membership.effective_trust" => scopes.contains("self.trust.read"),
-        "roles.job_role" => any("self.job_role.read", "directory.job_roles.read"),
+        "roles.job_description" => any("self.job_role.read", "directory.job_roles.read"),
         "roles.capabilities" => any("self.capabilities.read", "directory.capabilities.read"),
         "principal"
         | "principal.display_name"
         | "principal.timezone"
-        | "principal.description"
         | "principal.profile_photo" => any("self.profile.read", "directory.profiles.read"),
         "principal.version" => true,
         "organization"
@@ -1164,11 +1162,11 @@ fn field_is_authorized(field: &str, scopes: &BTreeSet<String>) -> bool {
     }
 }
 
-fn value_uuid(value: &Value, key: &str) -> Option<Uuid> {
+fn value_uuid(value: &Value, key: &str) -> Option<Id> {
     value
         .get(key)
         .and_then(Value::as_str)
-        .and_then(|value| Uuid::parse_str(value).ok())
+        .and_then(|value| Id::parse(value).ok())
 }
 
 const fn internal(category: &'static str) -> AppError {
@@ -1183,9 +1181,6 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use secrecy::SecretString;
     use serde_json::json;
-    use sqlx::postgres::PgPoolOptions;
-    use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-    use testcontainers_modules::postgres::Postgres as TestPostgres;
 
     use super::{
         AggregateAuthorization, MemberAuthorization, OrganizationProjectionEvent,
@@ -1195,9 +1190,8 @@ mod tests {
     };
     use crate::{
         config::{KeyringSettings, SecuritySettings},
-        infrastructure::{
-            crypto::{CryptoService, EncryptedValue, EncryptionContext, ProtectedField},
-            postgres,
+        infrastructure::crypto::{
+            CryptoService, EncryptedValue, EncryptionContext, ProtectedField,
         },
     };
 
@@ -1222,12 +1216,12 @@ mod tests {
 
     #[test]
     fn affected_membership_collection_finds_exact_multi_subject_metadata() {
-        let first = uuid::Uuid::from_u128(1);
-        let second = uuid::Uuid::from_u128(2);
+        let first = crate::domain::id::Id::from_u128(1);
+        let second = crate::domain::id::Id::from_u128(2);
         let metadata = json!({
             "previous_owner_membership_id": first,
             "new_owner_membership_id": second,
-            "unrelated_id": uuid::Uuid::from_u128(3),
+            "unrelated_id": crate::domain::id::Id::from_u128(3),
         });
         let mut ids = BTreeSet::new();
         collect_named_membership_ids(&metadata, &mut ids);
@@ -1236,9 +1230,9 @@ mod tests {
 
     #[test]
     fn affected_membership_collection_keeps_bare_uuid_cascade_arrays() {
-        let removed = uuid::Uuid::from_u128(1);
-        let reassigned = uuid::Uuid::from_u128(2);
-        let access_changed = uuid::Uuid::from_u128(3);
+        let removed = crate::domain::id::Id::from_u128(1);
+        let reassigned = crate::domain::id::Id::from_u128(2);
+        let access_changed = crate::domain::id::Id::from_u128(3);
         let metadata = json!({
             "membership_id": removed,
             "affected_memberships": [removed, reassigned],
@@ -1251,18 +1245,18 @@ mod tests {
 
     #[test]
     fn trust_recipient_collection_uses_only_captured_metadata() {
-        let captured = uuid::Uuid::from_u128(1);
-        let stale_selector_member = uuid::Uuid::from_u128(2);
+        let captured = crate::domain::id::Id::from_u128(1);
+        let stale_selector_member = crate::domain::id::Id::from_u128(2);
         let metadata = json!({ "affected_membership_ids": [captured] });
         let before = json!({
             "subject": { "kind": "membership", "membership_id": stale_selector_member },
-            "target": { "kind": "tag", "tag_id": uuid::Uuid::from_u128(3) },
+            "target": { "kind": "tag", "tag_id": crate::domain::id::Id::from_u128(3) },
         });
         let event = OrganizationProjectionEvent {
-            outbox_event_id: uuid::Uuid::from_u128(4),
-            organization_id: uuid::Uuid::from_u128(5),
+            outbox_event_id: crate::domain::id::Id::from_u128(4),
+            organization_id: crate::domain::id::Id::from_u128(5),
             aggregate_type: "trust_rule",
-            aggregate_id: uuid::Uuid::from_u128(6),
+            aggregate_id: crate::domain::id::Id::from_u128(6),
             aggregate_version: 2,
             event_type: "organization.trust.rule_updated.v1",
             before_state: Some(&before),
@@ -1307,17 +1301,17 @@ mod tests {
 
     #[test]
     fn versioned_trust_resource_is_complete_or_an_authorization_tombstone() {
-        let rule_id = uuid::Uuid::from_u128(7);
-        let organization_id = uuid::Uuid::from_u128(8);
+        let rule_id = crate::domain::id::Id::from_u128(7);
+        let organization_id = crate::domain::id::Id::from_u128(8);
         let after = json!({
-            "subject": { "kind": "membership", "membership_id": uuid::Uuid::from_u128(9) },
-            "target": { "kind": "tag", "tag_id": uuid::Uuid::from_u128(10) },
+            "subject": { "kind": "membership", "membership_id": crate::domain::id::Id::from_u128(9) },
+            "target": { "kind": "tag", "tag_id": crate::domain::id::Id::from_u128(10) },
             "trust": { "boundary": "internal", "level": "trusted" },
             "specificity": 1,
         });
         let metadata = json!({});
         let event = OrganizationProjectionEvent {
-            outbox_event_id: uuid::Uuid::from_u128(6),
+            outbox_event_id: crate::domain::id::Id::from_u128(6),
             organization_id,
             aggregate_type: "trust_rule",
             aggregate_id: rule_id,
@@ -1377,24 +1371,26 @@ mod tests {
 
     #[test]
     fn changed_fields_are_canonical_and_scope_filtered() {
-        let before = json!({ "job_role": "Old", "tag_ids": [uuid::Uuid::from_u128(1)] });
-        let after = json!({ "job_role": "New", "tag_ids": [uuid::Uuid::from_u128(2)] });
-        let metadata = json!({ "membership_id": uuid::Uuid::from_u128(3) });
+        let before =
+            json!({ "job_description": "Old", "tag_ids": [crate::domain::id::Id::from_u128(1)] });
+        let after =
+            json!({ "job_description": "New", "tag_ids": [crate::domain::id::Id::from_u128(2)] });
+        let metadata = json!({ "membership_id": crate::domain::id::Id::from_u128(3) });
         let fields = changed_fields(&OrganizationProjectionEvent {
-            outbox_event_id: uuid::Uuid::from_u128(4),
-            organization_id: uuid::Uuid::from_u128(5),
+            outbox_event_id: crate::domain::id::Id::from_u128(4),
+            organization_id: crate::domain::id::Id::from_u128(5),
             aggregate_type: "organization_membership",
-            aggregate_id: uuid::Uuid::from_u128(3),
+            aggregate_id: crate::domain::id::Id::from_u128(3),
             aggregate_version: 2,
             event_type: "organization.membership.updated.v1",
             before_state: Some(&before),
             after_state: Some(&after),
             metadata: &metadata,
         });
-        assert!(fields.contains("roles.job_role"));
+        assert!(fields.contains("roles.job_description"));
         assert!(fields.contains("membership.tags"));
         assert!(field_is_authorized(
-            "roles.job_role",
+            "roles.job_description",
             &BTreeSet::from(["self.job_role.read".to_owned()])
         ));
         assert!(!field_is_authorized(
@@ -1409,10 +1405,10 @@ mod tests {
         let after = json!({ "description": "After", "name": "Same", "version": 2 });
         let metadata = json!({});
         let fields = changed_fields(&OrganizationProjectionEvent {
-            outbox_event_id: uuid::Uuid::from_u128(4),
-            organization_id: uuid::Uuid::from_u128(5),
+            outbox_event_id: crate::domain::id::Id::from_u128(4),
+            organization_id: crate::domain::id::Id::from_u128(5),
             aggregate_type: "organization",
-            aggregate_id: uuid::Uuid::from_u128(5),
+            aggregate_id: crate::domain::id::Id::from_u128(5),
             aggregate_version: 2,
             event_type: "organization.updated.v1",
             before_state: Some(&before),
@@ -1437,17 +1433,17 @@ mod tests {
 
     #[test]
     fn self_trust_projection_uses_effective_answers_and_never_raw_rules() -> anyhow::Result<()> {
-        let principal_id = uuid::Uuid::from_u128(1);
+        let principal_id = crate::domain::id::Id::from_u128(1);
         let source = super::ProjectionSource {
-            membership_id: uuid::Uuid::from_u128(2),
+            membership_id: crate::domain::id::Id::from_u128(2),
             principal_id,
             principal_kind: "silicon".into(),
             current_state: sqlx::types::Json(json!({
-                "resource":{"id":uuid::Uuid::from_u128(2),"principal_id":principal_id,"version":1},
+                "resource":{"id":crate::domain::id::Id::from_u128(2),"principal_id":principal_id,"version":1},
                 "principal":{"display_name":"Helper","profile_photo":"https://images.example/helper.png","status":"active","created_at":"private","version":1},
                 "organization":{"org_id":"acme","name":"Acme","join_method":"sso","trusted_org":true},
                 "membership":{"trust":{"organization_default":{"level":"trusted"},"applicable_rules":[{"id":"private"}]}},
-                "effective_trust":[{"target_silicon_membership_id":uuid::Uuid::from_u128(3),"trust":{"level":"trusted","boundary":"internal"},"advisory":true}]
+                "effective_trust":[{"target_silicon_membership_id":crate::domain::id::Id::from_u128(3),"trust":{"level":"trusted","boundary":"internal"}}]
             })),
             email_contact_id: None,
             email_ciphertext: None,
@@ -1486,48 +1482,39 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL on isolated local PostgreSQL"]
     #[allow(
         clippy::too_many_lines,
         reason = "the fresh database, authorization union, encrypted rows, and immutable payload assertions form one end-to-end contract test"
     )]
     async fn live_organization_member_projections_are_scoped_frozen_and_exact() -> anyhow::Result<()>
     {
-        let container = TestPostgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect(&format!(
-                "postgres://postgres:postgres@{host}:{port}/postgres"
-            ))
-            .await?;
-        postgres::migrate(&pool).await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
+        crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let actor_id = uuid::Uuid::from_u128(0xa01);
-        let silicon_id = uuid::Uuid::from_u128(0xa02);
-        let full_application_id = uuid::Uuid::from_u128(0xa03);
-        let profile_application_id = uuid::Uuid::from_u128(0xa04);
-        let actor_membership_id = uuid::Uuid::from_u128(0xa05);
-        let silicon_membership_id = uuid::Uuid::from_u128(0xa06);
-        let organization_id = uuid::Uuid::from_u128(0xa07);
-        let silicon_session_id = uuid::Uuid::from_u128(0xa08);
-        let full_consent_id = uuid::Uuid::from_u128(0xa09);
-        let profile_consent_id = uuid::Uuid::from_u128(0xa0a);
-        let full_endpoint_id = uuid::Uuid::from_u128(0xa0b);
-        let profile_endpoint_id = uuid::Uuid::from_u128(0xa0c);
-        let full_signing_key_id = uuid::Uuid::from_u128(0xa0d);
-        let profile_signing_key_id = uuid::Uuid::from_u128(0xa0e);
-        let removed_silicon_id = uuid::Uuid::from_u128(0xa20);
-        let removed_membership_id = uuid::Uuid::from_u128(0xa21);
-        let child_silicon_id = uuid::Uuid::from_u128(0xa22);
-        let child_membership_id = uuid::Uuid::from_u128(0xa23);
-        let grandchild_silicon_id = uuid::Uuid::from_u128(0xa24);
-        let grandchild_membership_id = uuid::Uuid::from_u128(0xa25);
-        let removed_session_id = uuid::Uuid::from_u128(0xa26);
+        let actor_id = crate::domain::id::Id::fixture("projection-owner");
+        let silicon_id = crate::domain::id::Id::fixture("helper:projection-org");
+        let full_application_id = crate::domain::id::Id::fixture("projection-org>projection-full");
+        let profile_application_id =
+            crate::domain::id::Id::fixture("projection-org>projection-profile");
+        let actor_membership_id = crate::domain::id::Id::from_u128(0xa05);
+        let silicon_membership_id = crate::domain::id::Id::from_u128(0xa06);
+        let organization_id = crate::domain::id::Id::from_u128(0xa07);
+        let silicon_session_id = crate::domain::id::Id::from_u128(0xa08);
+        let full_consent_id = crate::domain::id::Id::from_u128(0xa09);
+        let profile_consent_id = crate::domain::id::Id::from_u128(0xa0a);
+        let full_endpoint_id = crate::domain::id::Id::from_u128(0xa0b);
+        let profile_endpoint_id = crate::domain::id::Id::from_u128(0xa0c);
+        let full_signing_key_id = crate::domain::id::Id::from_u128(0xa0d);
+        let profile_signing_key_id = crate::domain::id::Id::from_u128(0xa0e);
+        let removed_silicon_id = crate::domain::id::Id::fixture("removed:projection-org");
+        let removed_membership_id = crate::domain::id::Id::from_u128(0xa21);
+        let child_silicon_id = crate::domain::id::Id::fixture("child:projection-org");
+        let child_membership_id = crate::domain::id::Id::from_u128(0xa23);
+        let grandchild_silicon_id = crate::domain::id::Id::fixture("grandchild:projection-org");
+        let grandchild_membership_id = crate::domain::id::Id::from_u128(0xa25);
+        let removed_session_id = crate::domain::id::Id::from_u128(0xa26);
         let seed = format!(
             r"
             BEGIN;
@@ -1560,10 +1547,10 @@ mod tests {
             VALUES ('{organization_id}', '{actor_membership_id}', '{actor_id}');
             INSERT INTO iam.silicons (
                 id, organization_id, membership_id, organization_handle,
-                silicon_handle, display_name, description, provisioning_status
+                silicon_handle, display_name, provisioning_status
             ) VALUES (
                 '{silicon_id}', '{organization_id}', '{silicon_membership_id}',
-                'projection-org', 'helper', 'Before', 'Before', 'active'
+                'projection-org', 'helper', 'Before', 'active'
             );
             INSERT INTO iam.authentication_sessions (
                 id, subject_principal_id, subject_kind, authentication_method,
@@ -1645,12 +1632,12 @@ mod tests {
 
         let crypto = projection_crypto()?;
         let iris_base_url = url::Url::parse("https://iris.teamofsilicons.com")?;
-        let member_event_id = uuid::Uuid::now_v7();
-        let organization_event_id = uuid::Uuid::now_v7();
-        let organization_before_only_event_id = uuid::Uuid::now_v7();
-        let before_only_event_id = uuid::Uuid::now_v7();
-        let empty_tag_event_id = uuid::Uuid::now_v7();
-        let empty_tag_id = uuid::Uuid::now_v7();
+        let member_event_id = crate::domain::id::Id::now_v7();
+        let organization_event_id = crate::domain::id::Id::now_v7();
+        let organization_before_only_event_id = crate::domain::id::Id::now_v7();
+        let before_only_event_id = crate::domain::id::Id::now_v7();
+        let empty_tag_event_id = crate::domain::id::Id::now_v7();
+        let empty_tag_id = crate::domain::id::Id::now_v7();
         let mut transaction = pool.begin().await?;
         sqlx::query("SELECT set_config('iam.principal_id', $1, true)")
             .bind(actor_id.to_string())
@@ -1681,7 +1668,7 @@ mod tests {
         .await?;
 
         let silicon_version = sqlx::query_scalar::<_, i64>(
-            "UPDATE iam.silicons SET display_name = 'Captured', description = 'Captured' WHERE id = $1 RETURNING version",
+            "UPDATE iam.silicons SET display_name = 'Captured' WHERE id = $1 RETURNING version",
         )
         .bind(silicon_id)
         .fetch_one(&mut *transaction)
@@ -1836,25 +1823,34 @@ mod tests {
             .bind(silicon_id)
             .execute(&pool)
             .await?;
-        let rows =
-            sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid, uuid::Uuid, Vec<u8>, Vec<u8>, i16)>(
-                r"
+        let rows = sqlx::query_as::<
+            _,
+            (
+                crate::domain::id::Id,
+                crate::domain::id::Id,
+                crate::domain::id::Id,
+                Vec<u8>,
+                Vec<u8>,
+                i16,
+            ),
+        >(
+            r"
             SELECT outbox_event_id, id, application_id, payload_ciphertext,
                    payload_nonce, encryption_key_version
             FROM iam.application_webhook_event_projections
             WHERE outbox_event_id = ANY($1)
             ORDER BY outbox_event_id, application_id
             ",
-            )
-            .bind(vec![
-                member_event_id,
-                empty_tag_event_id,
-                organization_event_id,
-                organization_before_only_event_id,
-                before_only_event_id,
-            ])
-            .fetch_all(&pool)
-            .await?;
+        )
+        .bind(vec![
+            member_event_id,
+            empty_tag_event_id,
+            organization_event_id,
+            organization_before_only_event_id,
+            before_only_event_id,
+        ])
+        .fetch_all(&pool)
+        .await?;
         let mut payloads = BTreeMap::new();
         for (event_id, projection_id, application_id, ciphertext, nonce, key_version) in rows {
             let nonce: [u8; 12] = nonce
@@ -1973,7 +1969,7 @@ mod tests {
                 })
         );
 
-        let recipients = sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid)>(
+        let recipients = sqlx::query_as::<_, (crate::domain::id::Id, crate::domain::id::Id)>(
             r"
             SELECT endpoint_id, signing_key_id
             FROM iam_private.list_worker_captured_application_webhook_recipients($1)
@@ -2062,7 +2058,7 @@ mod tests {
             .bind(organization_id.to_string())
             .execute(&mut *removal)
             .await?;
-        let affected = sqlx::query_scalar::<_, Vec<uuid::Uuid>>(
+        let affected = sqlx::query_scalar::<_, Vec<crate::domain::id::Id>>(
             "SELECT iam_private.lock_membership_removal_event_scope($1, $2, $3)",
         )
         .bind(organization_id)
@@ -2093,7 +2089,7 @@ mod tests {
         ensure!(removed_versions == (2, Some(2)));
         removal.commit().await?;
 
-        let membership_versions = sqlx::query_as::<_, (uuid::Uuid, String, i64, i64)>(
+        let membership_versions = sqlx::query_as::<_, (crate::domain::id::Id, String, i64, i64)>(
             r"
             SELECT id, status, version, authz_epoch
             FROM iam.organization_memberships
@@ -2121,7 +2117,7 @@ mod tests {
         ensure!(membership_versions[&child_membership_id] == ("active".to_owned(), 2, 1));
         ensure!(membership_versions[&grandchild_membership_id] == ("active".to_owned(), 2, 1));
 
-        let child_state = sqlx::query_as::<_, (Option<uuid::Uuid>, i64)>(
+        let child_state = sqlx::query_as::<_, (Option<crate::domain::id::Id>, i64)>(
             "SELECT reports_to_membership_id, version FROM iam.silicons WHERE organization_id = $1 AND membership_id = $2",
         )
         .bind(organization_id)

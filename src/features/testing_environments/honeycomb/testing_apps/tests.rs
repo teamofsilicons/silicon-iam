@@ -16,7 +16,7 @@ pub(crate) async fn exercise(
     credential: &str,
     actor: &str,
 ) -> anyhow::Result<()> {
-    let production = json!({"operation_id":Uuid::now_v7(),"expected_iam_revision":0,"configuration_revision":1,
+    let production = json!({"operation_id":Id::now_v7(),"expected_iam_revision":0,"configuration_revision":1,
         "app_id":"test_org>testing-driver","org_id":"test_org","name":"Testing driver","logo_url":null,"base_url":null,
         "visibility":"private","availability":"active","webhook":{"url":"https://testing-driver.example.test/webhook","secret":"d".repeat(48),"scope":["membership"]},
         "app_scope":{"iam":["self.identity.read"],"external":[]},"obo_endpoints":[],"obo_review_message":null});
@@ -30,7 +30,7 @@ pub(crate) async fn exercise(
         &production,
     )
     .await?;
-    let production_app: Uuid = serde_json::from_value(production["application_id"].clone())?;
+    let production_app: Id = serde_json::from_value(production["application_id"].clone())?;
     let authorization = format!(
         "Basic {}",
         STANDARD.encode(format!(
@@ -60,8 +60,8 @@ pub(crate) async fn exercise(
             && identity.get("app_secret").is_none(),
         "standalone application verification failed: {status} {identity}"
     );
-    let environment = Uuid::now_v7();
-    let operation = Uuid::now_v7();
+    let environment = Id::now_v7();
+    let operation = Id::now_v7();
     let create = json!({"operation_id":operation,"environment_id":environment,"expected_iam_revision":0,"generation":1,"operation":"prepare","org_id":"test_org","name":"App-owned shared test","testing_key":"X".repeat(32),"key_version":1});
     let endpoint = format!("/api/v1/honeycomb/testing-environments/{environment}/operations");
     let result = send(
@@ -74,7 +74,7 @@ pub(crate) async fn exercise(
         &create,
     )
     .await?;
-    let owner: Option<Uuid> = sqlx::query_scalar(
+    let owner: Option<Id> = sqlx::query_scalar(
         "SELECT created_by_application_id FROM iam.testing_environments WHERE id=$1",
     )
     .bind(environment)
@@ -91,7 +91,7 @@ pub(crate) async fn exercise(
         "/api/v1/honeycomb/testing-environments/{environment}/applications/{app_path}/configuration"
     );
     let configuration = json!({"org_id":"test_org","name":"Test only","logo_url":null,"base_url":null,"visibility":"private","availability":"active","webhook":{"url":"https://test-only.example.test/webhook","secret":"s".repeat(48),"scope":["membership"]},"app_scope":{"iam":["self.identity.read"],"external":[]},"obo_endpoints":[],"obo_review_message":null});
-    let operation = Uuid::now_v7();
+    let operation = Id::now_v7();
     let mut configure = json!({"operation_id":operation,"environment_id":environment,"generation":1,"key_version":1,"expected_environment_revision":revision,"expected_iam_revision":0,"configuration_revision":1,"configuration":configuration});
     let denied = app
         .clone()
@@ -101,7 +101,7 @@ pub(crate) async fn exercise(
                 .uri(&config_endpoint)
                 .header("authorization", format!("Bearer {credential}"))
                 .header("x-honeycomb-application-authorization", &authorization)
-                .header("idempotency-key", Uuid::now_v7().to_string())
+                .header("idempotency-key", Id::now_v7().to_string())
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&configure)?))?,
         )
@@ -153,7 +153,7 @@ pub(crate) async fn exercise(
         "test application missing or wrong provenance"
     );
     // Config edits preserve credentials; rotation is explicit and replay safe.
-    configure["operation_id"] = json!(Uuid::now_v7());
+    configure["operation_id"] = json!(Id::now_v7());
     configure["configuration_revision"] = json!(2);
     configure["expected_iam_revision"] = first["iam_revision"].clone();
     configure["configuration"]["name"] = json!("Updated test app");
@@ -171,7 +171,7 @@ pub(crate) async fn exercise(
         updated.get("app_secret").is_none(),
         "ordinary test config must not rotate credentials"
     );
-    let rotate = json!({"operation_id":Uuid::now_v7(),"environment_id":environment,"generation":1,"key_version":1,"expected_environment_revision":revision,"expected_iam_revision":updated["iam_revision"],"configuration_revision":2});
+    let rotate = json!({"operation_id":Id::now_v7(),"environment_id":environment,"generation":1,"key_version":1,"expected_environment_revision":revision,"expected_iam_revision":updated["iam_revision"],"configuration_revision":2});
     let rotate_endpoint = format!(
         "/api/v1/honeycomb/testing-environments/{environment}/applications/{app_path}/secret-rotations"
     );
@@ -203,7 +203,7 @@ pub(crate) async fn exercise(
             == rotated,
         "rotation repeated on retry"
     );
-    let activation = json!({"operation_id":Uuid::now_v7(),"environment_id":environment,"expected_iam_revision":revision,"generation":1,"operation":"activate"});
+    let activation = json!({"operation_id":Id::now_v7(),"environment_id":environment,"expected_iam_revision":revision,"generation":1,"operation":"activate"});
     let activated = send(
         app,
         credential,
@@ -250,16 +250,16 @@ pub(crate) async fn exercise(
         read.get("app_secret").is_none() && read["webhook_url"] == configuration["webhook"]["url"],
         "read omitted accepted destination or leaked secret"
     );
-    let foreign_org = Uuid::now_v7();
-    let foreign_member = Uuid::now_v7();
+    let foreign_org = Id::now_v7();
+    let foreign_member = Id::now_v7();
     let mut setup = admin.begin().await?;
-    sqlx::query("INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES($1,'foreign_testing_org',$2,'Foreign testing organization')").bind(foreign_org).bind(Uuid::from_u128(1)).execute(&mut *setup).await?;
-    sqlx::query("INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES($1,$2,$3,'carbon','owner')").bind(foreign_member).bind(foreign_org).bind(Uuid::from_u128(1)).execute(&mut *setup).await?;
-    sqlx::query("UPDATE iam.oauth_consent_grants SET selected_membership_ids=array_append(selected_membership_ids,$1) WHERE id=$2").bind(foreign_member).bind(Uuid::from_u128(0x71)).execute(&mut *setup).await?;
+    sqlx::query("INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES($1,'foreign_testing_org',$2,'Foreign testing organization')").bind(foreign_org).bind(Id::fixture("test_carbon")).execute(&mut *setup).await?;
+    sqlx::query("INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES($1,$2,$3,'carbon','owner')").bind(foreign_member).bind(foreign_org).bind(Id::fixture("test_carbon")).execute(&mut *setup).await?;
+    sqlx::query("UPDATE iam.oauth_consent_grants SET selected_membership_ids=array_append(selected_membership_ids,$1) WHERE id=$2").bind(foreign_member).bind(Id::from_u128(0x71)).execute(&mut *setup).await?;
     setup.commit().await?;
     // A real user-owned environment plus its key does not make an attached app owner.
-    let other = Uuid::now_v7();
-    let create = json!({"operation_id":Uuid::now_v7(),"environment_id":other,"expected_iam_revision":0,"generation":1,"operation":"prepare","org_id":"foreign_testing_org","name":"User-owned shared test","testing_key":"Y".repeat(32),"key_version":1});
+    let other = Id::now_v7();
+    let create = json!({"operation_id":Id::now_v7(),"environment_id":other,"expected_iam_revision":0,"generation":1,"operation":"prepare","org_id":"foreign_testing_org","name":"User-owned shared test","testing_key":"Y".repeat(32),"key_version":1});
     let other_endpoint = format!("/api/v1/honeycomb/testing-environments/{other}/operations");
     let other_record = send(
         app,
@@ -271,7 +271,7 @@ pub(crate) async fn exercise(
         &create,
     )
     .await?;
-    let attach = json!({"operation_id":Uuid::now_v7(),"environment_id":other,"expected_iam_revision":other_record["iam_revision"],"generation":1,"operation":"import","app_id":"test_org>testing-driver","source_revisions":{"test_org>testing-driver":production["iam_revision"]}});
+    let attach = json!({"operation_id":Id::now_v7(),"environment_id":other,"expected_iam_revision":other_record["iam_revision"],"generation":1,"operation":"import","app_id":"test_org>testing-driver","source_revisions":{"test_org>testing-driver":production["iam_revision"]}});
     let attached = app
         .clone()
         .oneshot(
@@ -300,7 +300,7 @@ pub(crate) async fn exercise(
         attached["app_id"] == "test_org>testing-driver" && attached["app_secret"].is_string(),
         "attachment must return only caller's test credential"
     );
-    let recovery = json!({"operation_id":Uuid::now_v7(),"environment_id":other,"generation":1,"key_version":1,"expected_environment_revision":attached["iam_revision"]});
+    let recovery = json!({"operation_id":Id::now_v7(),"environment_id":other,"generation":1,"key_version":1,"expected_environment_revision":attached["iam_revision"]});
     let recovery_path = format!(
         "/api/v1/honeycomb/testing-environments/{other}/applications/test_org%3Etesting-driver/credential-recovery"
     );
@@ -329,16 +329,16 @@ pub(crate) async fn exercise(
     let replay = app.clone().oneshot(recover_request(&recovery)?).await?;
     let replay: Value = serde_json::from_slice(&to_bytes(replay.into_body(), 1024 * 1024).await?)?;
     ensure!(replay == recovered, "recovery replay changed credential");
-    sqlx::query("UPDATE iam.testing_application_imports SET source_application_id=$1 WHERE testing_environment_id=$2 AND application_id=$3").bind(Uuid::now_v7()).bind(other).bind(serde_json::from_value::<Uuid>(recovered["application_id"].clone())?).execute(test_admin).await?;
+    sqlx::query("UPDATE iam.testing_application_imports SET source_application_id=$1 WHERE testing_environment_id=$2 AND application_id=$3").bind(Id::now_v7()).bind(other).bind(serde_json::from_value::<Id>(recovered["application_id"].clone())?).execute(test_admin).await?;
     let mut wrong_source = recovery.clone();
-    wrong_source["operation_id"] = json!(Uuid::now_v7());
+    wrong_source["operation_id"] = json!(Id::now_v7());
     let denied = app.clone().oneshot(recover_request(&wrong_source)?).await?;
     ensure!(
         denied.status() == StatusCode::FORBIDDEN,
         "same public handle inherited a predecessor's test credential"
     );
-    sqlx::query("UPDATE iam.testing_application_imports SET source_application_id=$1 WHERE testing_environment_id=$2 AND application_id=$3").bind(production_app).bind(other).bind(serde_json::from_value::<Uuid>(recovered["application_id"].clone())?).execute(test_admin).await?;
-    let other_owner: Option<Uuid> = sqlx::query_scalar(
+    sqlx::query("UPDATE iam.testing_application_imports SET source_application_id=$1 WHERE testing_environment_id=$2 AND application_id=$3").bind(production_app).bind(other).bind(serde_json::from_value::<Id>(recovered["application_id"].clone())?).execute(test_admin).await?;
+    let other_owner: Option<Id> = sqlx::query_scalar(
         "SELECT created_by_application_id FROM iam.testing_environments WHERE id=$1",
     )
     .bind(other)
@@ -382,7 +382,7 @@ pub(crate) async fn exercise(
             .all(|item| item.get("key").is_none() && item.get("app_secret").is_none()),
         "list leaked reusable credentials"
     );
-    let clean = json!({"operation_id":Uuid::now_v7(),"environment_id":other,"expected_iam_revision":attached["iam_revision"],"generation":1,"operation":"clean"});
+    let clean = json!({"operation_id":Id::now_v7(),"environment_id":other,"expected_iam_revision":attached["iam_revision"],"generation":1,"operation":"clean"});
     let denied = app
         .clone()
         .oneshot(
@@ -424,9 +424,9 @@ async fn exercise_root(
     actor: &str,
     source_revision: Value,
 ) -> anyhow::Result<()> {
-    let environment = Uuid::now_v7();
+    let environment = Id::now_v7();
     let endpoint = format!("/api/v1/honeycomb/testing-environments/{environment}/operations");
-    let create = json!({"operation_id":Uuid::now_v7(),"environment_id":environment,
+    let create = json!({"operation_id":Id::now_v7(),"environment_id":environment,
         "expected_iam_revision":0,"generation":1,"operation":"prepare","org_id":"test_org",
         "name":"Root-key authority","testing_key":"J".repeat(32),"key_version":1});
     let prepared = send(
@@ -439,7 +439,7 @@ async fn exercise_root(
         &create,
     )
     .await?;
-    let mut import = json!({"operation_id":Uuid::now_v7(),"environment_id":environment,
+    let mut import = json!({"operation_id":Id::now_v7(),"environment_id":environment,
         "expected_iam_revision":prepared["iam_revision"],"generation":1,"expected_key_version":1,
         "operation":"import","app_id":"test_org>testing-driver",
         "source_revisions":{"test_org>testing-driver":source_revision}});
@@ -501,7 +501,7 @@ async fn exercise_root(
     );
     let (_, replay) = root_send(app, credential, Some(&"J".repeat(32)), &endpoint, &import).await?;
     ensure!(replay == imported, "root import replay changed result");
-    let owner: Option<Uuid> = sqlx::query_scalar(
+    let owner: Option<Id> = sqlx::query_scalar(
         "SELECT created_by_application_id FROM iam.testing_environments WHERE id=$1",
     )
     .bind(environment)
@@ -511,7 +511,7 @@ async fn exercise_root(
         owner.is_none(),
         "root authority fabricated application ownership"
     );
-    let activate = json!({"operation_id":Uuid::now_v7(),"environment_id":environment,
+    let activate = json!({"operation_id":Id::now_v7(),"environment_id":environment,
         "expected_iam_revision":imported["iam_revision"],"generation":1,"operation":"activate"});
     let activated = send(
         app,
@@ -523,7 +523,7 @@ async fn exercise_root(
         &activate,
     )
     .await?;
-    let rotate = json!({"operation_id":Uuid::now_v7(),"environment_id":environment,
+    let rotate = json!({"operation_id":Id::now_v7(),"environment_id":environment,
         "expected_iam_revision":activated["iam_revision"],"generation":1,"expected_key_version":1,
         "operation":"rotate-key","testing_key":"K".repeat(32),"key_version":2});
     let (status, rotated) =
@@ -550,7 +550,7 @@ async fn exercise_root(
         "root rotation left IAM runtime active before coordinator readiness"
     );
     let mut retry_import = import.clone();
-    retry_import["operation_id"] = json!(Uuid::now_v7());
+    retry_import["operation_id"] = json!(Id::now_v7());
     retry_import["expected_iam_revision"] = rotated["iam_revision"].clone();
     retry_import["expected_key_version"] = json!(2);
     let (status, _) = root_send(
@@ -585,7 +585,7 @@ async fn exercise_root(
         &reimported["iam_revision"],
     )
     .await?;
-    let clean = json!({"operation":"clean","operation_id":Uuid::now_v7(),
+    let clean = json!({"operation":"clean","operation_id":Id::now_v7(),
         "environment_id":environment,"generation":1,"expected_key_version":2,
         "expected_iam_revision":reimported["iam_revision"]});
     for (field, value) in [
@@ -642,7 +642,7 @@ async fn exercise_root(
     );
     let mut activate = clean.clone();
     activate["operation"] = json!("activate");
-    activate["operation_id"] = json!(Uuid::now_v7());
+    activate["operation_id"] = json!(Id::now_v7());
     activate["generation"] = json!(2);
     activate["expected_iam_revision"] = cleaned["iam_revision"].clone();
     let (status, _) =
@@ -663,14 +663,14 @@ async fn exercise_root_app_management(
     app: &axum::Router,
     admin: &sqlx::PgPool,
     credential: &str,
-    environment: Uuid,
+    environment: Id,
     revision: &Value,
 ) -> anyhow::Result<()> {
     let endpoint = format!(
         "/api/v1/honeycomb/testing-environments/{environment}/applications/test_org%3Eroot-only/configuration"
     );
     let config = json!({"org_id":"test_org","name":"Root test app","logo_url":null,"base_url":null,"visibility":"private","availability":"active","webhook":{"url":"https://root-test.example.test/webhook","secret":"z".repeat(48),"scope":["membership"]},"app_scope":{"iam":["self.identity.read"],"external":[]},"obo_endpoints":[]});
-    let mut body = json!({"operation_id":Uuid::now_v7(),"environment_id":environment,"generation":1,"key_version":2,"expected_environment_revision":revision,"expected_iam_revision":0,"configuration_revision":1,"configuration":config});
+    let mut body = json!({"operation_id":Id::now_v7(),"environment_id":environment,"generation":1,"key_version":2,"expected_environment_revision":revision,"expected_iam_revision":0,"configuration_revision":1,"configuration":config});
     for key in [None, Some("J".repeat(32)), Some("Z".repeat(32))] {
         let (status, _) =
             root_method(app, credential, key.as_deref(), "PUT", &endpoint, &body).await?;
@@ -743,7 +743,7 @@ async fn exercise_root_app_management(
     .fetch_one(admin)
     .await?;
     ensure!(count == 0, "root test app leaked to production");
-    body["operation_id"] = json!(Uuid::now_v7());
+    body["operation_id"] = json!(Id::now_v7());
     body["expected_iam_revision"] = created["iam_revision"].clone();
     body["configuration_revision"] = json!(2);
     body["configuration"]["name"] = json!("Root app edited");
@@ -760,7 +760,7 @@ async fn exercise_root_app_management(
         status == StatusCode::OK,
         "root update failed: {status} {updated}"
     );
-    body["operation_id"] = json!(Uuid::now_v7());
+    body["operation_id"] = json!(Id::now_v7());
     body["expected_iam_revision"] = updated["iam_revision"].clone();
     body.as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("mutation"))?

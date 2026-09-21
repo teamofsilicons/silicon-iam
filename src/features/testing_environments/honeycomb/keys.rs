@@ -1,5 +1,5 @@
 //! Shared root material is encrypted locally and fenced against reuse.
-use super::{ApiError, ApiState, Instruction, Service, Uuid, Value, database, json, support};
+use super::{ApiError, ApiState, Id, Instruction, Service, Value, database, json, support};
 use secrecy::ExposeSecret as _;
 use sha2::{Digest as _, Sha256};
 use sqlx::{Postgres, Transaction};
@@ -10,7 +10,7 @@ pub(super) async fn prepare(
     service: &Service,
     input: &Instruction,
 ) -> Result<Value, ApiError> {
-    let org: Uuid = sqlx::query_scalar("SELECT iam_private.honeycomb_testing_organization($1,$2)")
+    let org: Id = sqlx::query_scalar("SELECT iam_private.honeycomb_testing_organization($1,$2)")
         .bind(input.environment_id)
         .bind(&input.org_id)
         .fetch_one(&mut **tx)
@@ -25,7 +25,7 @@ pub(super) async fn prepare(
     };
     let stored = support::store_key(state, org, input.environment_id, &secret)
         .map_err(|_| ApiError::internal("honeycomb_testing_key_encrypt"))?;
-    let prior: Option<(Uuid, Vec<u8>, i16, Vec<u8>, Vec<u8>, i16)> =
+    let prior: Option<(Id, Vec<u8>, i16, Vec<u8>, Vec<u8>, i16)> =
         sqlx::query_as("SELECT * FROM iam_private.honeycomb_testing_key($1,$2)")
             .bind(service.application_id)
             .bind(input.environment_id)
@@ -72,8 +72,8 @@ pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
 pub(super) async fn remember(
     tx: &mut Transaction<'_, Postgres>,
     service: &Service,
-    environment: Uuid,
-    operation: Uuid,
+    environment: Id,
+    operation: Id,
     key: &str,
 ) -> Result<(), ApiError> {
     sqlx::query("SELECT iam_private.honeycomb_remember_testing_key($1,$2,$3,$4)")

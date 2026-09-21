@@ -247,11 +247,12 @@ async fn service_identity(
     } else {
         "SELECT application_id, app_id, organization_id, auth_epoch FROM iam_private.resolve_scoped_iam_application()"
     };
-    let identity = sqlx::query_as::<_, (uuid::Uuid, String, uuid::Uuid, i64)>(query)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|_| ApiError::internal("scoped_auth_registration"))?
-        .ok_or_else(|| ApiError::forbidden("scoped_auth_application_unavailable"))?;
+    let identity =
+        sqlx::query_as::<_, (crate::domain::id::Id, String, crate::domain::id::Id, i64)>(query)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal("scoped_auth_registration"))?
+            .ok_or_else(|| ApiError::forbidden("scoped_auth_application_unavailable"))?;
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("scoped_auth_context_commit"))?;

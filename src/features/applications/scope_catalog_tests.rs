@@ -2,34 +2,21 @@
 
 use std::time::Duration;
 
+use crate::domain::id::Id;
 use anyhow::{Context as _, ensure};
 use axum::{http::StatusCode, response::IntoResponse as _};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgPoolOptions};
-use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-use testcontainers_modules::postgres::Postgres as PostgresImage;
-use uuid::Uuid;
 
 use super::scopes::catalog_items;
 
 #[tokio::test]
-#[ignore = "requires Docker; checks production and testing runtime permissions"]
+#[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL; checks production and testing runtime permissions"]
 async fn scope_catalog_validates_applications_without_disclosing_other_environments()
 -> anyhow::Result<()> {
-    let container = PostgresImage::default()
-        .with_tag("16-alpine")
-        .start()
-        .await?;
-    let base_url = format!(
-        "postgres://postgres:postgres@{}:{}",
-        container.get_host().await?,
-        container.get_host_port_ipv4(5432).await?
-    );
-    let production = PgPoolOptions::new()
-        .max_connections(3)
-        .connect(&format!("{base_url}/postgres"))
-        .await?;
-    sqlx::raw_sql("CREATE ROLE silicon_iam_api NOLOGIN; CREATE ROLE silicon_iam_worker NOLOGIN; CREATE ROLE silicon_iam_key_operator NOLOGIN;")
+    let production_database = crate::test_database::TestDatabase::start().await?;
+    let production = production_database.pool.clone();
+    sqlx::raw_sql("DO $$ BEGIN CREATE ROLE silicon_iam_api NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$; DO $$ BEGIN CREATE ROLE silicon_iam_worker NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$; DO $$ BEGIN CREATE ROLE silicon_iam_key_operator NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$;")
         .execute(&production).await?;
     crate::infrastructure::postgres::migrate(&production).await?;
     seed_catalog(&production).await?;
@@ -44,9 +31,7 @@ async fn scope_catalog_validates_applications_without_disclosing_other_environme
         .await
         .context("production IAM policy concurrency")?;
 
-    sqlx::query("CREATE DATABASE testing")
-        .execute(&production)
-        .await?;
+    let testing_database = crate::test_database::TestDatabase::start().await?;
     let testing = PgPoolOptions::new()
         .max_connections(3)
         .after_connect(|connection, _| {
@@ -56,7 +41,7 @@ async fn scope_catalog_validates_applications_without_disclosing_other_environme
                 Ok(())
             })
         })
-        .connect(&format!("{base_url}/testing"))
+        .connect(&testing_database.url)
         .await?;
     crate::infrastructure::postgres::migrate_testing(&testing).await?;
     seed_catalog(&testing).await?;
@@ -85,13 +70,13 @@ async fn scope_catalog_validates_applications_without_disclosing_other_environme
         );
     }
     tx.rollback().await?;
-    assert_catalog_upgrade(&production, &base_url).await?;
+    assert_catalog_upgrade().await?;
     testing.close().await;
     production.close().await;
     Ok(())
 }
 
-async fn assert_catalog_upgrade(admin: &PgPool, base_url: &str) -> anyhow::Result<()> {
+async fn assert_catalog_upgrade() -> anyhow::Result<()> {
     let base = sqlx::migrate::Migrator::with_migrations(
         sqlx::migrate!("./migrations")
             .iter()
@@ -100,15 +85,7 @@ async fn assert_catalog_upgrade(admin: &PgPool, base_url: &str) -> anyhow::Resul
             .collect(),
     );
     for testing in [false, true] {
-        let database = if testing {
-            "testing_upgrade"
-        } else {
-            "production_upgrade"
-        };
-        // Both names are closed literals, never request input.
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE DATABASE {database}")))
-            .execute(admin)
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
         let pool = PgPoolOptions::new()
             .max_connections(3)
             .after_connect(move |connection, _| {
@@ -120,7 +97,7 @@ async fn assert_catalog_upgrade(admin: &PgPool, base_url: &str) -> anyhow::Resul
                     Ok(())
                 })
             })
-            .connect(&format!("{base_url}/{database}")).await?;
+            .connect(&database.url).await?;
         base.run(&pool).await?;
         if testing {
             // Freeze the overlay alongside the historical base schema.
@@ -158,9 +135,9 @@ async fn seed_catalog_endpoints_and_grants(pool: &PgPool) -> anyhow::Result<()> 
             organization_id, application_id, endpoint_id, path, critical, status, retired_at
         ) VALUES
           ('00000000-0000-0000-0000-000000000021',
-           '00000000-0000-0000-0000-000000000012', 'files.delete', '/files/delete', true, 'active', NULL),
+           'test_org>app-beta', 'files.delete', '/files/delete', true, 'active', NULL),
           ('00000000-0000-0000-0000-000000000021',
-           '00000000-0000-0000-0000-000000000012', 'files.legacy', '/files/legacy', false, 'retired', transaction_timestamp());
+           'test_org>app-beta', 'files.legacy', '/files/legacy', false, 'retired', transaction_timestamp());
         ",
     )
     .execute(pool)
@@ -227,7 +204,7 @@ async fn assert_catalog_choices(pool: &PgPool) -> anyhow::Result<()> {
         tx.rollback().await?;
     }
     let mut tx = pool.begin().await?;
-    sqlx::query("UPDATE iam.principals SET status='suspended', suspended_at=transaction_timestamp() WHERE id='00000000-0000-0000-0000-000000000012'")
+    sqlx::query("UPDATE iam.principals SET status='suspended', suspended_at=transaction_timestamp() WHERE id='test_org>app-beta'")
         .execute(&mut *tx).await?;
     select_runtime_actor(&mut tx).await?;
     assert_not_found(&mut tx, "test_org>app-beta").await?;
@@ -239,7 +216,7 @@ async fn select_runtime_actor(tx: &mut Transaction<'_, Postgres>) -> anyhow::Res
     sqlx::query("SET LOCAL ROLE silicon_iam_api")
         .execute(&mut **tx)
         .await?;
-    sqlx::query("SELECT set_config('iam.principal_id','00000000-0000-0000-0000-000000000001',true),set_config('iam.organization_id','',true)")
+    sqlx::query("SELECT set_config('iam.principal_id','test_carbon',true),set_config('iam.organization_id','',true)")
         .execute(&mut **tx).await?;
     Ok(())
 }
@@ -256,14 +233,14 @@ fn catalog_error(error: super::error::ApiError) -> anyhow::Error {
     anyhow::anyhow!("scope catalog failed: {}", error.into_response().status())
 }
 
-const POLICY_ORG: Uuid = Uuid::from_u128(0x21);
-const POLICY_APP: Uuid = Uuid::from_u128(0x11);
-const POLICY_ACTOR: Uuid = Uuid::from_u128(1);
+const POLICY_ORG: Id = Id::from_u128(0x21);
+const POLICY_APP: Id = Id::fixture("test_org>app-alpha");
+const POLICY_ACTOR: Id = Id::fixture("test_carbon");
 const RESTRICTED_SCOPE: &str = "organization.invitations.create";
 
 async fn assert_policy_concurrency(pool: &PgPool) -> anyhow::Result<()> {
     sqlx::query("INSERT INTO iam.platform_role_grants(id,carbon_id,role,grant_source) VALUES($1,$2,'application_reviewer','bootstrap')")
-        .bind(Uuid::from_u128(0x171)).bind(POLICY_ACTOR).execute(pool).await?;
+        .bind(Id::from_u128(0x171)).bind(POLICY_ACTOR).execute(pool).await?;
     existing_review_cannot_commit_past_policy_revocation(pool).await?;
     uncommitted_application_grant_holds_organization_policy(pool).await?;
     new_application_grant_rechecks_policy_after_wait(pool).await?;
@@ -285,7 +262,7 @@ async fn begin_policy_transaction(
 
 async fn configure_restricted_scope(
     tx: &mut Transaction<'_, Postgres>,
-    application: Uuid,
+    application: Id,
 ) -> Result<(), sqlx::Error> {
     sqlx::query("SELECT iam_private.configure_application_scopes($1,$2,$3)")
         .bind(application)
@@ -354,7 +331,7 @@ fn is_deadlock(result: &Result<(), sqlx::Error>) -> bool {
     matches!(result, Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("40P01"))
 }
 
-async fn assert_no_policy_authority(pool: &PgPool, application: Uuid) -> anyhow::Result<()> {
+async fn assert_no_policy_authority(pool: &PgPool, application: Id) -> anyhow::Result<()> {
     let active = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM iam.application_approved_scopes WHERE application_id=$1 AND scope=$2 AND revoked_at IS NULL)")
         .bind(application).bind(RESTRICTED_SCOPE).fetch_one(pool).await?;
     ensure!(
@@ -375,7 +352,7 @@ async fn existing_review_cannot_commit_past_policy_revocation(pool: &PgPool) -> 
     let mut setup = begin_policy_transaction(pool).await?;
     select_runtime_actor(&mut setup).await?;
     configure_restricted_scope(&mut setup, POLICY_APP).await?;
-    let requests = sqlx::query_scalar::<_, Vec<Uuid>>(
+    let requests = sqlx::query_scalar::<_, Vec<Id>>(
         "SELECT iam_private.submit_application_scope_requests($1,$2,'Concurrency regression')",
     )
     .bind(POLICY_APP)
@@ -388,7 +365,7 @@ async fn existing_review_cannot_commit_past_policy_revocation(pool: &PgPool) -> 
     );
     setup.commit().await?;
     sqlx::query("INSERT INTO iam.access_token_scopes(access_token_id,scope) VALUES($1,$2)")
-        .bind(Uuid::from_u128(0x101))
+        .bind(Id::from_u128(0x101))
         .bind(RESTRICTED_SCOPE)
         .execute(pool)
         .await?;
@@ -439,7 +416,7 @@ async fn existing_review_cannot_commit_past_policy_revocation(pool: &PgPool) -> 
 
 async fn insert_uncommitted_application(
     tx: &mut Transaction<'_, Postgres>,
-    application: Uuid,
+    application: Id,
     name: &str,
 ) -> Result<(), sqlx::Error> {
     // Exercise the DB guard even for imports/privileged writers that have not
@@ -455,7 +432,7 @@ async fn uncommitted_application_grant_holds_organization_policy(
     pool: &PgPool,
 ) -> anyhow::Result<()> {
     restore_policy(pool).await?;
-    let application = Uuid::from_u128(0x172);
+    let application = Id::fixture("test_org>policy-race-new");
     let mut creation = begin_policy_transaction(pool).await?;
     let creation_pid = backend_pid(&mut creation).await?;
     insert_uncommitted_application(&mut creation, application, "test_org>policy-race-new").await?;
@@ -487,13 +464,15 @@ async fn new_application_grant_rechecks_policy_after_wait(pool: &PgPool) -> anyh
     let creation_pid = backend_pid(&mut creation).await?;
     insert_uncommitted_application(
         &mut creation,
-        Uuid::from_u128(0x173),
+        Id::fixture("test_org>policy-race-blocked"),
         "test_org>policy-race-blocked",
     )
     .await?;
     select_runtime_actor(&mut creation).await?;
     let creation = tokio::spawn(async move {
-        let result = configure_restricted_scope(&mut creation, Uuid::from_u128(0x173)).await;
+        let result =
+            configure_restricted_scope(&mut creation, Id::fixture("test_org>policy-race-blocked"))
+                .await;
         finish_transaction(creation, result).await
     });
     wait_for_blocker(pool, creation_pid, revocation_pid).await?;
@@ -503,6 +482,6 @@ async fn new_application_grant_rechecks_policy_after_wait(pool: &PgPool) -> anyh
         matches!(result, Err(sqlx::Error::Database(ref error)) if error.code().as_deref() == Some("42501")),
         "a grant waiting on policy revocation must recheck the committed policy: {result:?}"
     );
-    assert_no_policy_authority(pool, Uuid::from_u128(0x173)).await?;
+    assert_no_policy_authority(pool, Id::fixture("test_org>policy-race-blocked")).await?;
     Ok(())
 }

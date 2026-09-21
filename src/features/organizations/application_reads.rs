@@ -3,10 +3,10 @@
 //! Direct IAM reads retain their full resource shape. Application reads expose
 //! only fields authorized by their current token scopes; absent data is omitted.
 
+use crate::domain::id::Id;
 use axum::{http::StatusCode, response::Response};
 use serde::Serialize;
 use serde_json::Value;
-use uuid::Uuid;
 
 use crate::{api::authentication::Authenticated, error::AppError};
 
@@ -94,7 +94,7 @@ impl<'a> ReadScopes<'a> {
         });
         retain(&mut value, |key| match key {
             "principal_id" | "carbon_id" | "silicon_id" | "type" => identity,
-            "display_name" | "timezone" | "description" | "profile_photo" => profile,
+            "display_name" | "timezone" | "profile_photo" => profile,
             "email" => is_self && self.has("self.email.read"),
             "phone_number" => is_self && self.has("self.phone.read"),
             "version" => true,
@@ -155,7 +155,7 @@ impl<'a> ReadScopes<'a> {
             "principal" => identity,
             "org_id" => self.has("self.organizations.read"),
             "org_role" | "status" | "removed_at" | "authorization_epoch" => membership,
-            "job_role" => job,
+            "job_description" => job,
             "profile" | "display_name" => self.has(if is_self {
                 "self.profile.read"
             } else {
@@ -230,7 +230,7 @@ impl<'a> ReadScopes<'a> {
         if let Some(role) = value.get_mut("role") {
             retain(role, |key| match key {
                 "org_role" => membership,
-                "job_role" => job,
+                "job_description" => job,
                 "profile" | "display_name" => self.has(if is_self {
                     "self.profile.read"
                 } else {
@@ -243,7 +243,7 @@ impl<'a> ReadScopes<'a> {
         if !self.has("organization.trust.read")
             && let Some(trust) = value.get_mut("trust")
         {
-            retain(trust, |key| matches!(key, "trust" | "advisory"));
+            retain(trust, |key| key == "trust");
         }
         value
     }
@@ -264,8 +264,8 @@ pub(crate) fn value<T: Serialize>(resource: &T) -> Result<Value, AppError> {
 pub(crate) fn member_json<T: Serialize>(
     actor: &Authenticated,
     resource: &T,
-    membership_id: Uuid,
-    own_membership_id: Uuid,
+    membership_id: Id,
+    own_membership_id: Id,
     version: Option<i64>,
 ) -> Result<Response, AppError> {
     let projected =
@@ -290,7 +290,7 @@ pub(crate) fn page_json<T: Serialize>(
 pub(super) async fn enrich_members(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     actor: &Authenticated,
-    organization_id: Uuid,
+    organization_id: Id,
     members: &[super::model::MembershipResponse],
     is_self: bool,
 ) -> Result<Vec<Value>, AppError> {
@@ -313,7 +313,7 @@ pub(super) async fn enrich_members(
     });
     if profiles || capabilities || access {
         let ids = members.iter().map(|member| member.id).collect::<Vec<_>>();
-        let rows = sqlx::query_as::<_, (Uuid, sqlx::types::Json<Value>)>(MEMBER_EXTRAS_SQL)
+        let rows = sqlx::query_as::<_, (Id, sqlx::types::Json<Value>)>(MEMBER_EXTRAS_SQL)
             .bind(organization_id)
             .bind(&ids)
             .bind(profiles)
@@ -363,7 +363,6 @@ const MEMBER_EXTRAS_SQL: &str = r"
     SELECT membership.id, jsonb_strip_nulls(jsonb_build_object(
       'profile', CASE WHEN $3 THEN jsonb_build_object(
         'display_name', COALESCE(carbon.display_name, silicon.display_name),
-        'description', COALESCE(carbon.description, silicon.description),
         'timezone', COALESCE(carbon.timezone_id, silicon.timezone_id),
         'profile_photo', CASE WHEN membership.principal_kind = 'carbon'
           THEN COALESCE(carbon.profile_photo_uri, 'https://iris.teamofsilicons.com/pfp/carbon?id=' || carbon.carbon_id)
@@ -410,9 +409,9 @@ pub(crate) async fn self_silicon(
 /// Effective trust snapshots without raw defaults or rule identifiers.
 pub(crate) async fn effective_self_trust(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    organization_id: Uuid,
-    subjects: &[Uuid],
-) -> Result<std::collections::BTreeMap<Uuid, Value>, AppError> {
+    organization_id: Id,
+    subjects: &[Id],
+) -> Result<std::collections::BTreeMap<Id, Value>, AppError> {
     super::directory_views::effective_trust_for_subjects(transaction, organization_id, subjects)
         .await
 }
@@ -437,10 +436,10 @@ mod tests {
             "directory.job_roles.read".to_owned(),
         ];
         let scopes = ReadScopes(Some(&granted));
-        let projected = scopes.directory(json!({"id":"ada","name":"Ada","role":{"org_role":"owner","job_role":"Engineer"},"tags":[{"name":"private"}]}), false);
+        let projected = scopes.directory(json!({"id":"ada","name":"Ada","role":{"org_role":"owner","job_description":"Engineer"},"tags":[{"name":"private"}]}), false);
         assert_eq!(
             projected,
-            json!({"id":"ada","role":{"job_role":"Engineer"}})
+            json!({"id":"ada","role":{"job_description":"Engineer"}})
         );
         assert_eq!(scopes.actor_filter(None).ok(), Some(Some("carbon")));
         assert!(scopes.actor_filter(Some("silicon")).is_err());
@@ -483,11 +482,11 @@ mod tests {
     fn effective_self_trust_does_not_reveal_matching_rules() {
         let granted = vec!["self.trust.read".to_owned()];
         let projected = ReadScopes(Some(&granted)).directory(json!({
-            "trust":{"trust":{"level":"high","boundary":"internal"},"source":"tag_rule","matching_rule_ids":["private-rule"],"advisory":true}
+            "trust":{"trust":{"level":"high","boundary":"internal"},"source":"tag_rule","matching_rule_ids":["private-rule"]}
         }), true);
         assert_eq!(
             projected,
-            json!({"trust":{"trust":{"level":"high","boundary":"internal"},"advisory":true}})
+            json!({"trust":{"trust":{"level":"high","boundary":"internal"}}})
         );
     }
 }

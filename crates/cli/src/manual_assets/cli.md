@@ -305,7 +305,7 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | `iam member directory-member` | `<membership-id>` | One sparse entry; accepts the same field selector. |
 | `iam invite` | `<subcommand>` | Selected-organization invitation namespace. |
 | `iam invite list` | None | Issued invitations; optional status and paging filters. |
-| `iam invite create` | `--job-role <role>` and exactly one of `--carbon-id` or `--email` | Requires invitation authority; optional starting trust boundary and level default to `internal/not_trusted`. |
+| `iam invite create` | `--job-description <role>` and exactly one of `--carbon-id` or `--email` | Requires invitation authority; optional starting trust boundary and level default to `internal/not_trusted`. |
 | `iam invite show` | `<invite-uuid>` | Issuer-side invitation read. |
 | `iam invite revoke` | `<invite-uuid>` | Revokes a pending invitation. |
 | `iam invite code` | `<invited-email>` | Sends the accepting Carbon its email verification code. |
@@ -340,8 +340,8 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | `iam approval list` | None | Optional status/kind filters; `--mine` limits to requests the caller can decide now. |
 | `iam approval show` | `<request-uuid>` | Reads one request and its decision state. |
 | `iam approval decide` | `<request-uuid> --decision <decision>` | Decision is `approve` or `reject`. Requires applicable approval authority. A Silicon-token rotation additionally needs step-up action `silicon.rotate_token` on the Silicon principal UUID. |
-| `iam approval request-role` | `--membership-id <membership-id> --job-role <role>` | Silicon-only; Carbon callers are forbidden. |
-| `iam approval request-tags` | `--membership-id <membership-id>` and at least one `--add` or `--remove` tag UUID | Silicon-only; Carbon callers are forbidden. |
+| `iam approval request-role` | `--membership-id <membership-id> --job-description <role>` | Uses the configured sensitive-action policy. |
+| `iam approval request-tags` | `--membership-id <membership-id>` and at least one `--add` or `--remove` tag UUID | Uses the configured sensitive-action policy. |
 | `iam approval set-role` | `<membership-id> <job-role>` | Direct Carbon owner/admin operation requiring `roles.approve`. |
 | `iam approval set-tags` | `<membership-id>` | Direct Carbon owner/admin operation requiring `tags.manage`. Repeat `--tag`; no tags means clear the complete set. |
 | `iam approval role-history` | `<membership-id>` | Paginated immutable role-change history. |
@@ -353,7 +353,7 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | --- | --- | --- |
 | `iam silicon` | `<subcommand>` | Selected-organization Silicon namespace. Local IDs use `--org`; canonical IDs use `handle:org`. |
 | `iam silicon list` | None | Optional tag and paging filters. |
-| `iam silicon create` | `<handle> --job-role <role>` | Requires `silicons.create`; returns the STK exactly once. A canonical ID supplies its org when none is selected and must match a selected org. |
+| `iam silicon create` | `<handle> --job-description <role>` | Requires `silicons.create`; returns the STK exactly once. A canonical ID supplies its org when none is selected and must match a selected org. |
 | `iam silicon show` | `<silicon-id>` | Accepts a local or canonical ID. |
 | `iam silicon update` | `<silicon-id>` plus at least one update or `--clear-*` flag | Requires the corresponding directory/hierarchy authority. |
 | `iam silicon remove` | `<silicon-id>` | Step-up action `organization.authorization_change` on its membership ID; hierarchy reassignment may be required. |
@@ -481,7 +481,7 @@ iam approval decide <request-id> --decision approve
 iam approval set-tags <membership-id> --tag <tag-id> --tag <tag-id>
 
 # Silicons
-iam silicon create builder --job-role "Build agent"
+iam silicon create builder --job-description "Build agent"
 iam silicon set-webhook builder --webhook-url https://example.com/hooks
 iam silicon set-subscription builder --mode selected \
     --topic member_updates --own-tags-only
@@ -568,11 +568,11 @@ explicit `--clear-*` flag; sending no related flag means â€œleave it unchanged.â
 The set and clear forms for one field conflict, so the CLI cannot send both:
 
 ```sh
-iam carbon update --clear-description --clear-profile-photo
+iam carbon update --clear-profile-photo
 iam org update --clear-logo --clear-description
 iam member update <membership-id> --clear-first-silicon \
     --clear-reports-to --clear-profile-photo
-iam silicon update builder --clear-description \
+iam silicon update builder \
     --clear-profile-photo --clear-reports-to
 iam app update billing --clear-name --clear-logo
 iam env update <environment-id> --clear-description
@@ -937,15 +937,15 @@ one resource identifier (a canonical membership ID for a membership, otherwise t
 | `org transfer` | `organization.transfer_ownership` | organization `id` |
 | `member remove`, `promote`, `demote`, `capabilities` | `organization.authorization_change` | target membership ID |
 | `silicon remove` | `organization.authorization_change` | target Silicon `membership_id` |
-| `silicon rotate-request`, `rotate-complete` | `silicon.rotate_token` | target Silicon `principal_id` |
+| `silicon rotate-request`, `rotate-complete` | `silicon.rotate_token` | target full `silicon_id` |
 | `silicon set-webhook`, `delete-webhook`, `set-subscription`, `delete-subscription` | `organization.silicon_webhook.redirect` | target Silicon `membership_id` |
 | `app rotate-secret` | `application.client_secret.rotate` | Application `id` |
 | `app rotate-webhook-secret` | `application.webhook_secret.rotate` | Application `id` |
 | `app approve-webhook` | `application.webhook.approve` | Application `id` |
 | `sso disable` | `organization.sso_change` | organization `id` |
 | `session revoke` | `account.session_revoke` | session ID |
-| `logout --all` when other sessions are active | `account.sessions_revoke_all` | signed-in Carbon `principal_id` |
-| `approval decide` for a `silicon_token_rotation` request | `silicon.rotate_token` | target Silicon `principal_id` |
+| `logout --all` when other sessions are active | `account.sessions_revoke_all` | signed-in `carbon_id` |
+| `approval decide` for a `silicon_token_rotation` request | `silicon.rotate_token` | target full `silicon_id` |
 
 The public handles accepted by most commands are not the step-up resource.
 Read the internal UUID first, mint the assertion, then pass it to the matching
@@ -963,10 +963,10 @@ iam silicon set-webhook builder \
 
 Useful UUID sources are `iam -o json org show | jq -r .id`,
 `iam -o json member list`, `iam -o json silicon show <silicon>` (both
-`membership_id` and `principal_id`), `iam -o json app show <app> | jq -r .id`,
+`membership_id` and `silicon_id`), `iam -o json app show <app> | jq -r .id`,
 `iam -o json app webhook <app> | jq -r .application_id` (also available to
 platform webhook reviewers),
-`iam -o json session list`, and `iam -o json carbon show | jq -r .principal_id`.
+`iam -o json session list`, and `iam -o json carbon show | jq -r .carbon_id`.
 
 If the code is not supplied, `iam step-up` prompts after sending it to the
 selected verified channel (`--channel email` by default, or `phone`). The
@@ -1098,7 +1098,7 @@ signed outer bytes and the selected environment key before applying the event.
 An application's user access token carries only approved scopes. Organization lists include
 only explicitly selected active memberships. Directory lists require the corresponding
 `directory.carbons.read` or `directory.silicons.read`; field scopes independently control
-profiles, roles, job roles, tags, hierarchy, capabilities, and accessible Silicons.
+profiles, roles, job descriptions, tags, hierarchy, capabilities, and accessible Silicons.
 Self permissions never reveal those fields for other members. Email and phone are self-only.
 Absent fields mean undisclosed and must not be replaced with cached wider permissions.
 
@@ -1193,3 +1193,7 @@ The details command returns every visible active member in one dictionary. Each
 entry includes `display_name`, profile, roles, tags, hierarchy, capabilities and
 Silicon access where permitted. Trust is evaluated for the requesting user;
 Carbon-to-Carbon trust is null. Unapproved fields and credentials are omitted.
+
+## Sensitive action policies
+
+Use `iam approval policies` to see rules and defaults, `iam approval configure-policy` to configure them, and `iam approval actions` / `decide-action` for manual review. Job updates use the single `job_description` field (`--job-description` on creation/invitations). A pending change returns a request key; repeat the identical command with `--request-key` after approval. See [Sensitive actions](../SENSITIVE_ACTIONS.md) for defaults and selector semantics.

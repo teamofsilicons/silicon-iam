@@ -164,6 +164,23 @@ impl CliError {
             );
         }
         match api.code.as_str() {
+            "approval_required" => {
+                let request = api
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.get("approval_request_id"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("(see response)");
+                let key = api
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.get("idempotency_key"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("<original-key>");
+                return Some(format!(
+                    "Request {request} is waiting for approval. Review it in the organization Approvals page or `iam approval actions`. After approval, repeat this exact command with --request-key {key}."
+                ));
+            }
             "obo_organization_required" => {
                 return Some(
                     "Mint an organization-bound subject token with `iam --org <handle> login --app-id <requester-app>`, then exchange that SLT."

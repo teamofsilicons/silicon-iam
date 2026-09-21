@@ -1,9 +1,9 @@
+use crate::domain::id::Id;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{FromRow, Postgres, Transaction};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::ApiState,
@@ -130,8 +130,8 @@ struct LogoutRequestBinding {
 }
 
 pub(super) struct LogoutCommand<'a> {
-    pub(super) principal_id: Uuid,
-    pub(super) authentication_session_id: Uuid,
+    pub(super) principal_id: Id,
+    pub(super) authentication_session_id: Id,
     pub(super) trigger: LogoutTrigger,
     pub(super) credential_state: LogoutCredentialState,
     pub(super) key: &'a IdempotencyKey,
@@ -140,8 +140,8 @@ pub(super) struct LogoutCommand<'a> {
 }
 
 struct LogoutExecution<'a> {
-    principal_id: Uuid,
-    authentication_session_id: Uuid,
+    principal_id: Id,
+    authentication_session_id: Id,
     trigger: LogoutTrigger,
     step_up_token: Option<&'a StepUpToken>,
     mode: LogoutMode,
@@ -151,12 +151,12 @@ struct LogoutExecution<'a> {
 struct PageCursor {
     #[serde(with = "time::serde::rfc3339")]
     occurred_at: OffsetDateTime,
-    id: Uuid,
+    id: Id,
 }
 
 #[derive(FromRow)]
 struct SessionRow {
-    session_id: Uuid,
+    session_id: Id,
     status: String,
     revocation_reason: Option<String>,
     created_at: OffsetDateTime,
@@ -168,23 +168,23 @@ struct SessionRow {
 
 #[derive(FromRow)]
 struct LoginEventRow {
-    id: Uuid,
+    id: Id,
     event_type: String,
     outcome: String,
     app_id: Option<String>,
     org_id: Option<String>,
-    request_id: Uuid,
+    request_id: Id,
     occurred_at: OffsetDateTime,
 }
 
 #[derive(FromRow)]
 struct RevokedSessionRow {
-    session_id: Uuid,
+    session_id: Id,
     version: i64,
     revocation_reason: String,
 }
 
-pub(super) fn carbon_context(context: &AccessContext) -> Result<Uuid, AppError> {
+pub(super) fn carbon_context(context: &AccessContext) -> Result<Id, AppError> {
     if context.subject.actor_type != ActorType::Carbon
         || context.audience != IAM_AUDIENCE
         || context.client_application_id.is_some()
@@ -378,7 +378,7 @@ pub(super) async fn revoke_session(
     context: &AccessContext,
     key: &IdempotencyKey,
     step_up_token: Option<&StepUpToken>,
-    session_id: Uuid,
+    session_id: Id,
 ) -> Result<Outcome<()>, AppError> {
     let principal_id = carbon_context(context)?;
     let request_digest = idempotency::digest_parts(
@@ -418,7 +418,7 @@ pub(super) async fn revoke_session(
         session_id,
     )
     .await?;
-    let owned_session_id = sqlx::query_scalar::<_, Uuid>(
+    let owned_session_id = sqlx::query_scalar::<_, Id>(
         r"
         SELECT id
         FROM iam.authentication_sessions
@@ -538,9 +538,13 @@ pub(super) async fn logout(
     Ok(Outcome::fresh(204, ()))
 }
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 fn logout_request_binding(
-    principal_id: Uuid,
-    authentication_session_id: Uuid,
+    principal_id: Id,
+    authentication_session_id: Id,
     trigger: LogoutTrigger,
     mode: LogoutMode,
 ) -> LogoutRequestBinding {
@@ -673,8 +677,8 @@ async fn execute_logout(
 async fn authorize_logout_scope(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    principal_id: Uuid,
-    authentication_session_id: Uuid,
+    principal_id: Id,
+    authentication_session_id: Id,
     step_up_token: Option<&StepUpToken>,
     mode: LogoutMode,
 ) -> Result<bool, AppError> {
@@ -702,6 +706,10 @@ async fn authorize_logout_scope(
     Ok(true)
 }
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 fn validate_logout_trigger_mode(trigger: LogoutTrigger, mode: LogoutMode) -> Result<(), AppError> {
     if matches!(trigger, LogoutTrigger::Application { .. })
         && matches!(mode, LogoutMode::AllSessions)
@@ -714,12 +722,12 @@ fn validate_logout_trigger_mode(trigger: LogoutTrigger, mode: LogoutMode) -> Res
 
 async fn lock_application_logout_authority(
     transaction: &mut Transaction<'_, Postgres>,
-    access_token_id: Uuid,
-    authentication_session_id: Uuid,
-    principal_id: Uuid,
-    application_id: Uuid,
+    access_token_id: Id,
+    authentication_session_id: Id,
+    principal_id: Id,
+    application_id: Id,
 ) -> Result<(), AppError> {
-    sqlx::query_scalar::<_, Uuid>(APPLICATION_LOGOUT_AUTHORITY_QUERY)
+    sqlx::query_scalar::<_, Id>(APPLICATION_LOGOUT_AUTHORITY_QUERY)
         .bind(access_token_id)
         .bind(authentication_session_id)
         .bind(principal_id)
@@ -733,9 +741,9 @@ async fn lock_application_logout_authority(
 
 pub(super) async fn authorize_session_revocation(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
-    current_session_id: Uuid,
-    target_session_id: Uuid,
+    principal_id: Id,
+    current_session_id: Id,
+    target_session_id: Id,
 ) -> Result<(), AppError> {
     require_mature_target_session(transaction, principal_id, target_session_id).await?;
     if revocation_targets_another_session(current_session_id, target_session_id) {
@@ -746,8 +754,8 @@ pub(super) async fn authorize_session_revocation(
 
 async fn require_mature_target_session(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
-    target_session_id: Uuid,
+    principal_id: Id,
+    target_session_id: Id,
 ) -> Result<(), AppError> {
     let mature = sqlx::query_scalar::<_, bool>(MATURE_TARGET_SESSION_QUERY)
         .bind(target_session_id)
@@ -770,8 +778,8 @@ async fn require_mature_target_session(
 
 async fn require_mature_current_session(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
-    current_session_id: Uuid,
+    principal_id: Id,
+    current_session_id: Id,
 ) -> Result<(), AppError> {
     let mature = sqlx::query_scalar::<_, bool>(MATURE_CURRENT_SESSION_QUERY)
         .bind(current_session_id)
@@ -794,8 +802,8 @@ async fn require_mature_current_session(
 
 async fn authorize_all_sessions_logout(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
-    current_session_id: Uuid,
+    principal_id: Id,
+    current_session_id: Id,
 ) -> Result<bool, AppError> {
     let all_other_sessions_mature =
         sqlx::query_scalar::<_, Option<bool>>(OTHER_ACTIVE_SESSIONS_MATURITY_QUERY)
@@ -822,11 +830,11 @@ async fn authorize_all_sessions_logout(
 async fn consume_verified_channel_step_up(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    principal_id: Uuid,
-    authentication_session_id: Uuid,
+    principal_id: Id,
+    authentication_session_id: Id,
     token: &StepUpToken,
     action: &'static str,
-    resource_id: Uuid,
+    resource_id: Id,
 ) -> Result<(), AppError> {
     step_up::consume(
         transaction,
@@ -844,14 +852,14 @@ async fn consume_verified_channel_step_up(
     .map(|_| ())
 }
 
-fn revocation_targets_another_session(current_session_id: Uuid, target_session_id: Uuid) -> bool {
+fn revocation_targets_another_session(current_session_id: Id, target_session_id: Id) -> bool {
     current_session_id != target_session_id
 }
 
 async fn revoke_one(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
-    session_id: Uuid,
+    principal_id: Id,
+    session_id: Id,
     reason: &'static str,
 ) -> Result<Option<RevokedSessionRow>, AppError> {
     let row = sqlx::query_as::<_, RevokedSessionRow>(
@@ -886,7 +894,7 @@ async fn revoke_one(
 
 async fn revoke_all(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
+    principal_id: Id,
 ) -> Result<Vec<RevokedSessionRow>, AppError> {
     let rows = sqlx::query_as::<_, RevokedSessionRow>(
         r"
@@ -917,7 +925,7 @@ async fn revoke_all(
 
 async fn revoke_session_authority(
     transaction: &mut Transaction<'_, Postgres>,
-    session_id: Uuid,
+    session_id: Id,
     reason: &'static str,
 ) -> Result<(), AppError> {
     revoke_session_token_authority(transaction, session_id, reason).await?;
@@ -927,7 +935,7 @@ async fn revoke_session_authority(
 
 async fn revoke_session_token_authority(
     transaction: &mut Transaction<'_, Postgres>,
-    session_id: Uuid,
+    session_id: Id,
     reason: &'static str,
 ) -> Result<(), AppError> {
     sqlx::query(
@@ -981,7 +989,7 @@ async fn revoke_session_token_authority(
 
 async fn revoke_session_oauth_authority(
     transaction: &mut Transaction<'_, Postgres>,
-    session_id: Uuid,
+    session_id: Id,
 ) -> Result<(), AppError> {
     sqlx::query(
         r"
@@ -1034,7 +1042,7 @@ async fn revoke_session_oauth_authority(
 
 async fn revoke_session_obo_authority(
     transaction: &mut Transaction<'_, Postgres>,
-    session_id: Uuid,
+    session_id: Id,
 ) -> Result<(), AppError> {
     sqlx::query(
         r"
@@ -1058,10 +1066,10 @@ async fn revoke_session_obo_authority(
 
 async fn record_revocation(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
-    actor_authentication_session_id: Uuid,
+    principal_id: Id,
+    actor_authentication_session_id: Id,
     session: RevokedSessionRow,
-    application_id: Option<Uuid>,
+    application_id: Option<Id>,
     outbox_event: &'static str,
 ) -> Result<(), AppError> {
     let metadata = revocation_event_payload(
@@ -1093,9 +1101,9 @@ async fn record_revocation(
 }
 
 fn revocation_event_payload(
-    principal_id: Uuid,
-    actor_authentication_session_id: Uuid,
-    application_id: Option<Uuid>,
+    principal_id: Id,
+    actor_authentication_session_id: Id,
+    application_id: Option<Id>,
     session: &RevokedSessionRow,
 ) -> serde_json::Value {
     json!({
@@ -1126,7 +1134,7 @@ fn revocation_event_payload(
 
 async fn carbon_handle(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
+    principal_id: Id,
 ) -> Result<String, AppError> {
     sqlx::query_scalar::<_, String>(
         "SELECT carbon_id FROM iam.carbons WHERE id = $1 AND deleted_at IS NULL",
@@ -1140,7 +1148,7 @@ async fn carbon_handle(
     .ok_or(AppError::Unauthenticated)
 }
 
-fn session_response(row: &SessionRow, principal_id: Uuid, carbon_id: &str) -> SessionResponse {
+fn session_response(row: &SessionRow, principal_id: Id, carbon_id: &str) -> SessionResponse {
     let status = if row.revocation_reason.as_deref() == Some("refresh_replay") {
         "replay_revoked"
     } else if row.status == "active"
@@ -1166,7 +1174,7 @@ fn session_response(row: &SessionRow, principal_id: Uuid, carbon_id: &str) -> Se
 
 fn login_event_response(
     row: &LoginEventRow,
-    principal_id: Uuid,
+    principal_id: Id,
     carbon_id: &str,
 ) -> Result<LoginEventResponse, AppError> {
     let event_type = match row.event_type.as_str() {
@@ -1197,7 +1205,7 @@ fn login_event_response(
     })
 }
 
-fn actor_response(principal_id: Uuid, carbon_id: &str) -> ActorResponse {
+fn actor_response(principal_id: Id, carbon_id: &str) -> ActorResponse {
     ActorResponse {
         principal_id,
         actor_type: "carbon".to_owned(),
@@ -1205,7 +1213,7 @@ fn actor_response(principal_id: Uuid, carbon_id: &str) -> ActorResponse {
     }
 }
 
-fn encode_cursor(occurred_at: OffsetDateTime, id: Uuid) -> Result<String, AppError> {
+fn encode_cursor(occurred_at: OffsetDateTime, id: Id) -> Result<String, AppError> {
     let serialized =
         serde_json::to_vec(&PageCursor { occurred_at, id }).map_err(|_| AppError::Internal {
             category: "page_cursor_encode",
@@ -1225,15 +1233,12 @@ fn decode_cursor(value: &str) -> Result<PageCursor, AppError> {
 mod tests {
     use std::{collections::BTreeMap, time::Duration};
 
+    use crate::domain::id::Id;
     use anyhow::ensure;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use http::{HeaderMap, HeaderValue};
     use secrecy::SecretString;
-    use sqlx::postgres::PgPoolOptions;
-    use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-    use testcontainers_modules::postgres::Postgres;
     use time::macros::datetime;
-    use uuid::Uuid;
 
     use crate::{
         config::{KeyringSettings, SecuritySettings},
@@ -1280,7 +1285,7 @@ mod tests {
 
     #[test]
     fn pagination_cursor_round_trips_and_rejects_malformed_input() {
-        let id = Uuid::from_u128(7);
+        let id = Id::from_u128(7);
         let timestamp = datetime!(2026-01-02 03:04:05 UTC);
         let encoded = encode_cursor(timestamp, id);
         assert!(matches!(
@@ -1292,10 +1297,10 @@ mod tests {
 
     #[test]
     fn self_service_rejects_delegated_application_tokens() {
-        let principal_id = Uuid::from_u128(7);
+        let principal_id = Id::from_u128(7);
         let mut context = AccessContext {
-            token_id: Uuid::from_u128(1),
-            authentication_session_id: Uuid::from_u128(2),
+            token_id: Id::from_u128(1),
+            authentication_session_id: Id::from_u128(2),
             subject: ActorRef {
                 actor_type: ActorType::Carbon,
                 id: principal_id,
@@ -1310,13 +1315,13 @@ mod tests {
         };
         assert!(matches!(carbon_context(&context), Ok(id) if id == principal_id));
 
-        context.client_application_id = Some(Uuid::from_u128(3));
+        context.client_application_id = Some(Id::from_u128(3));
         assert!(carbon_context(&context).is_err());
     }
 
     #[test]
     fn session_revocation_requires_mature_targets_and_cross_session_authority() {
-        let current_session_id = Uuid::from_u128(1);
+        let current_session_id = Id::from_u128(1);
 
         assert_eq!(SESSION_REVOCATION_MIN_AGE_SECONDS, 12 * 60 * 60);
         assert_eq!(SESSION_REVOKE_ACTION, "account.session_revoke");
@@ -1327,7 +1332,7 @@ mod tests {
         ));
         assert!(revocation_targets_another_session(
             current_session_id,
-            Uuid::from_u128(2),
+            Id::from_u128(2),
         ));
         assert!(MATURE_TARGET_SESSION_QUERY.contains("session.created_at <="));
         assert!(MATURE_CURRENT_SESSION_QUERY.contains("session.status = 'active'"));
@@ -1345,14 +1350,14 @@ mod tests {
 
     #[test]
     fn revocation_event_is_routable_and_contains_only_secret_free_state() {
-        let principal_id = Uuid::from_u128(7);
-        let actor_session_id = Uuid::from_u128(8);
+        let principal_id = Id::from_u128(7);
+        let actor_session_id = Id::from_u128(8);
         let revoked = super::RevokedSessionRow {
-            session_id: Uuid::from_u128(9),
+            session_id: Id::from_u128(9),
             version: 2,
             revocation_reason: "user_logout".to_owned(),
         };
-        let application_id = Uuid::from_u128(10);
+        let application_id = Id::from_u128(10);
         let payload = revocation_event_payload(
             principal_id,
             actor_session_id,
@@ -1364,7 +1369,7 @@ mod tests {
             payload
                 .get("subject_principal_id")
                 .and_then(serde_json::Value::as_str)
-                .and_then(|value| Uuid::parse_str(value).ok()),
+                .and_then(|value| Id::parse_str(value).ok()),
             Some(principal_id)
         );
         assert_eq!(
@@ -1374,7 +1379,7 @@ mod tests {
         assert_eq!(
             payload["actor"]["application_id"]
                 .as_str()
-                .and_then(|value| Uuid::parse_str(value).ok()),
+                .and_then(|value| Id::parse_str(value).ok()),
             Some(application_id)
         );
         for forbidden in [
@@ -1416,8 +1421,8 @@ mod tests {
     #[test]
     fn application_logout_is_global_for_its_bound_session_not_the_whole_account() {
         let trigger = LogoutTrigger::Application {
-            application_id: Uuid::from_u128(1),
-            access_token_id: Uuid::from_u128(2),
+            application_id: Id::from_u128(1),
+            access_token_id: Id::from_u128(2),
         };
         assert!(validate_logout_trigger_mode(trigger, super::LogoutMode::CurrentSession).is_ok());
         assert!(matches!(
@@ -1435,10 +1440,10 @@ mod tests {
 
     #[test]
     fn logout_replay_binding_is_exact_to_actor_session_and_mode() {
-        let carbon_id = Uuid::from_u128(1);
-        let session_id = Uuid::from_u128(2);
-        let application_id = Uuid::from_u128(3);
-        let token_id = Uuid::from_u128(4);
+        let carbon_id = Id::from_u128(1);
+        let session_id = Id::from_u128(2);
+        let application_id = Id::from_u128(3);
+        let token_id = Id::from_u128(4);
         let application_trigger = LogoutTrigger::Application {
             application_id,
             access_token_id: token_id,
@@ -1454,7 +1459,7 @@ mod tests {
             session_id,
             LogoutTrigger::Application {
                 application_id,
-                access_token_id: Uuid::from_u128(5),
+                access_token_id: Id::from_u128(5),
             },
             super::LogoutMode::CurrentSession,
         );
@@ -1469,7 +1474,7 @@ mod tests {
 
         let other_session = logout_request_binding(
             carbon_id,
-            Uuid::from_u128(6),
+            Id::from_u128(6),
             application_trigger,
             super::LogoutMode::CurrentSession,
         );
@@ -1477,7 +1482,7 @@ mod tests {
             carbon_id,
             session_id,
             LogoutTrigger::Application {
-                application_id: Uuid::from_u128(7),
+                application_id: Id::from_u128(7),
                 access_token_id: token_id,
             },
             super::LogoutMode::CurrentSession,
@@ -1494,21 +1499,15 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL on isolated local PostgreSQL"]
     #[allow(
         clippy::too_many_lines,
         reason = "one fresh-database test proves complete session-wide Application authority revocation"
     )]
     async fn application_logout_revokes_every_authority_bound_to_the_parent_session()
     -> anyhow::Result<()> {
-        let container = Postgres::default().with_tag("16-alpine").start().await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let database_url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect(&database_url)
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
         let crypto = logout_test_crypto()?;
         let raw_app_a_token = SecretString::from(format!("oat_{}", "A".repeat(43)));
@@ -1516,24 +1515,24 @@ mod tests {
             .digest_secret(DigestPurpose::ApplicationAccessToken, &raw_app_a_token)
             .map_err(|error| anyhow::anyhow!("logout test token digest failed: {error}"))?;
 
-        let carbon_id = Uuid::from_u128(0x36_01);
-        let session_id = Uuid::from_u128(0x36_02);
-        let app_a = Uuid::from_u128(0x36_03);
-        let app_b = Uuid::from_u128(0x36_04);
-        let token_a = Uuid::from_u128(0x36_05);
-        let token_b = Uuid::from_u128(0x36_06);
-        let grant_a = Uuid::from_u128(0x36_07);
-        let grant_b = Uuid::from_u128(0x36_08);
-        let family_a = Uuid::from_u128(0x36_09);
-        let family_b = Uuid::from_u128(0x36_0a);
-        let refresh_a = Uuid::from_u128(0x36_0b);
-        let refresh_b = Uuid::from_u128(0x36_0c);
-        let request_b = Uuid::from_u128(0x36_0e);
-        let code_b = Uuid::from_u128(0x36_0f);
-        let endpoint_b = Uuid::from_u128(0x36_10);
-        let signing_key_b = Uuid::from_u128(0x36_11);
-        let organization_id = Uuid::from_u128(0x36_14);
-        let owner_membership_id = Uuid::from_u128(0x36_15);
+        let carbon_id = Id::fixture("logout-carbon");
+        let session_id = Id::from_u128(0x36_02);
+        let app_a = Id::fixture("logout-org>logout-app-a");
+        let app_b = Id::fixture("logout-org>logout-app-b");
+        let token_a = Id::from_u128(0x36_05);
+        let token_b = Id::from_u128(0x36_06);
+        let grant_a = Id::from_u128(0x36_07);
+        let grant_b = Id::from_u128(0x36_08);
+        let family_a = Id::from_u128(0x36_09);
+        let family_b = Id::from_u128(0x36_0a);
+        let refresh_a = Id::from_u128(0x36_0b);
+        let refresh_b = Id::from_u128(0x36_0c);
+        let request_b = Id::from_u128(0x36_0e);
+        let code_b = Id::from_u128(0x36_0f);
+        let endpoint_b = Id::from_u128(0x36_10);
+        let signing_key_b = Id::from_u128(0x36_11);
+        let organization_id = Id::from_u128(0x36_14);
+        let owner_membership_id = Id::from_u128(0x36_15);
 
         sqlx::query(
             r"
@@ -1575,8 +1574,8 @@ mod tests {
                     decode(repeat('f2', 12), 'hex'), 1, transaction_timestamp())
             ",
         )
-        .bind(Uuid::from_u128(0x36_12))
-        .bind(Uuid::from_u128(0x36_13))
+        .bind(Id::from_u128(0x36_12))
+        .bind(Id::from_u128(0x36_13))
         .bind(carbon_id)
         .execute(&pool)
         .await?;
@@ -1962,7 +1961,7 @@ mod tests {
                 AND (SELECT application_id = $4 FROM iam.authentication_events
                      WHERE authentication_session_id = $1 AND event_type = 'logout.success')
                 AND (SELECT event_type = 'session.logout' FROM iam.outbox_events
-                     WHERE aggregate_type = 'authentication_session' AND aggregate_id = $1)
+                     WHERE aggregate_type = 'authentication_session' AND aggregate_id = $1::text)
             ",
         )
         .bind(session_id)
@@ -1984,10 +1983,10 @@ mod tests {
               AND event_type = 'session.logout'
             ",
         )
-        .bind(session_id)
+        .bind(session_id.to_string())
         .fetch_one(&pool)
         .await?;
-        let recipient_endpoint_ids = sqlx::query_scalar::<_, Uuid>(
+        let recipient_endpoint_ids = sqlx::query_scalar::<_, Id>(
             r"
             SELECT endpoint_id
             FROM iam_private.list_worker_application_webhook_recipients(
@@ -2015,24 +2014,17 @@ mod tests {
     /// empty database is enough: ambiguity is resolved during analysis, long
     /// before a row is read.
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL on isolated local PostgreSQL"]
     async fn the_login_history_statement_is_accepted_by_postgres() -> anyhow::Result<()> {
-        let container = Postgres::default().with_tag("16-alpine").start().await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&format!(
-                "postgres://postgres:postgres@{host}:{port}/postgres"
-            ))
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
         let rows = sqlx::query(super::LOGIN_HISTORY_QUERY)
-            .bind(Uuid::from_u128(0x5e_01))
+            .bind(Id::fixture("history-carbon"))
             .bind(["login.success".to_owned(), "login.failure".to_owned()])
             .bind(None::<time::OffsetDateTime>)
-            .bind(None::<Uuid>)
+            .bind(None::<Id>)
             .bind(51_i64)
             .fetch_all(&pool)
             .await?;
@@ -2041,10 +2033,10 @@ mod tests {
 
         // The cursor branch plans a different comparison, so it is exercised too.
         let paged = sqlx::query(super::LOGIN_HISTORY_QUERY)
-            .bind(Uuid::from_u128(0x5e_01))
+            .bind(Id::fixture("history-carbon"))
             .bind(["login.success".to_owned()])
             .bind(Some(datetime!(2026-09-02 12:00 UTC)))
-            .bind(Some(Uuid::from_u128(0x5e_02)))
+            .bind(Some(Id::from_u128(0x5e_02)))
             .bind(51_i64)
             .fetch_all(&pool)
             .await?;

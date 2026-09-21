@@ -1,11 +1,11 @@
 //! One-shot bootstrap for the first Silicon IAM platform administrator.
 
 use clap::Parser;
+use silicon_iam::domain::id::Id;
 use silicon_iam::{
     config::MigrationSettings, domain::auth::CarbonId, infrastructure::postgres, telemetry,
 };
 use sqlx::PgPool;
-use uuid::Uuid;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -20,7 +20,7 @@ struct Arguments {
 
 #[derive(Debug, sqlx::FromRow)]
 struct CarbonRow {
-    id: Uuid,
+    id: Id,
     carbon_id: String,
 }
 
@@ -93,8 +93,8 @@ async fn bootstrap(pool: &PgPool, carbon_id: &CarbonId) -> anyhow::Result<Carbon
     .await?
     .ok_or_else(|| anyhow::anyhow!("the requested active Carbon does not exist"))?;
 
-    let grant_id = Uuid::now_v7();
-    let request_id = Uuid::now_v7();
+    let grant_id = Id::now_v7();
+    let request_id = Id::now_v7();
     sqlx::query(
         r"
         INSERT INTO iam.platform_role_grants (
@@ -146,7 +146,7 @@ async fn bootstrap(pool: &PgPool, carbon_id: &CarbonId) -> anyhow::Result<Carbon
         )
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(request_id)
     .bind(carbon.id)
     .bind(grant_id)
@@ -173,13 +173,13 @@ async fn bootstrap(pool: &PgPool, carbon_id: &CarbonId) -> anyhow::Result<Carbon
             'platform_administrator.granted.v1',
             1,
             pg_catalog.jsonb_build_object(
-                'platform_principal_id', $3::uuid,
+                'platform_id', $3::text,
                 'role', 'platform_administrator'
             )
         )
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(grant_id)
     .bind(carbon.id)
     .execute(&mut *transaction)

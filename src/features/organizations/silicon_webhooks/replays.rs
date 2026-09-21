@@ -1,3 +1,4 @@
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -6,7 +7,6 @@ use axum::{
 };
 use serde_json::json;
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -157,11 +157,11 @@ pub(in crate::features::organizations) async fn replay_dead_letters(
 
     // One batch-specific ordering lane serializes the selected historical
     // events without reducing concurrency for unrelated webhook work.
-    let replay_batch_id = Uuid::now_v7();
+    let replay_batch_id = Id::now_v7();
     let mut replayed = Vec::with_capacity(deliveries.len());
     let mut locked_endpoint_id = None;
     for delivery in deliveries {
-        let replay_target = sqlx::query_as::<_, (Uuid, Uuid)>(
+        let replay_target = sqlx::query_as::<_, (Id, Id)>(
             r"
             SELECT endpoint_id, signing_key_id
             FROM iam_private.resolve_silicon_webhook_replay_target($1, $2, $3)
@@ -218,9 +218,9 @@ pub(in crate::features::organizations) async fn replay_dead_letters(
 
 async fn load_cursor_timestamp(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    organization_id: Uuid,
-    silicon_id: Uuid,
-    delivery_id: Uuid,
+    organization_id: Id,
+    silicon_id: Id,
+    delivery_id: Id,
 ) -> Result<OffsetDateTime, AppError> {
     sqlx::query_scalar::<_, OffsetDateTime>(
         r"
@@ -248,7 +248,7 @@ async fn load_cursor_timestamp(
 async fn record_replay_audit(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     authenticated: &Authenticated,
-    organization_id: Uuid,
+    organization_id: Id,
     delivery: &DeadLetterRecord,
 ) -> Result<(), AppError> {
     events::record_audit(

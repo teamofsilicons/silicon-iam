@@ -1,6 +1,7 @@
 //! Exercise management through HTTP and the restricted database runtime role.
 #![allow(clippy::too_many_lines)]
 
+use crate::domain::id::Id;
 use crate::{
     api::ApiState,
     config::{HoneycombSettings, Settings},
@@ -20,29 +21,19 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
-use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-use testcontainers_modules::postgres::Postgres;
 use tower::ServiceExt as _;
-use uuid::Uuid;
 
 #[tokio::test]
-#[ignore = "requires Docker and synthetic development IAM settings"]
+#[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL and synthetic IAM settings"]
 async fn management_is_authenticated_revision_bound_and_durably_replayable() -> anyhow::Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::ERROR)
         .with_test_writer()
         .try_init();
-    let container = Postgres::default().with_tag("16-alpine").start().await?;
-    let url = format!(
-        "postgres://postgres:postgres@{}:{}/postgres",
-        container.get_host().await?,
-        container.get_host_port_ipv4(5432).await?
-    );
-    let admin = PgPoolOptions::new()
-        .max_connections(4)
-        .connect(&url)
-        .await?;
-    sqlx::raw_sql("CREATE ROLE silicon_iam_api NOLOGIN; CREATE ROLE silicon_iam_worker NOLOGIN; CREATE ROLE silicon_iam_key_operator NOLOGIN;").execute(&admin).await?;
+    let database = crate::test_database::TestDatabase::start().await?;
+    let url = database.url.clone();
+    let admin = database.pool.clone();
+    sqlx::raw_sql("DO $$ BEGIN CREATE ROLE silicon_iam_api NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$; DO $$ BEGIN CREATE ROLE silicon_iam_worker NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$; DO $$ BEGIN CREATE ROLE silicon_iam_key_operator NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$;").execute(&admin).await?;
     postgres::migrate(&admin).await?;
     super::super::live_tests::seed_protocol_rows(&admin).await?;
     let grants = include_str!("../../../../deploy/postgres/runtime-grants.sql")
@@ -80,21 +71,12 @@ async fn management_is_authenticated_revision_bound_and_durably_replayable() -> 
     sqlx::query("UPDATE iam.access_tokens SET token_digest=$1,digest_key_version=$2 WHERE id=$3")
         .bind(digest.as_bytes().as_slice())
         .bind(digest.key_version())
-        .bind(Uuid::from_u128(0x101))
+        .bind(Id::from_u128(0x101))
         .execute(&admin)
         .await?;
-    sqlx::query("CREATE DATABASE testing")
-        .execute(&admin)
-        .await?;
-    let testing_url = url
-        .strip_suffix("/postgres")
-        .ok_or_else(|| anyhow::anyhow!("test URL"))?
-        .to_owned()
-        + "/testing";
-    let test_admin = PgPoolOptions::new()
-        .max_connections(4)
-        .connect(&testing_url)
-        .await?;
+    let testing_database = crate::test_database::TestDatabase::start().await?;
+    let testing_url = testing_database.url.clone();
+    let test_admin = testing_database.pool.clone();
     postgres::migrate_testing(&test_admin).await?;
     postgres::register_runtime_key_versions(&test_admin, &settings.security).await?;
     sqlx::raw_sql(sqlx::AssertSqlSafe(grants.clone()))
@@ -164,7 +146,7 @@ async fn management_is_authenticated_revision_bound_and_durably_replayable() -> 
         );
     }
     let app = super::router().with_state(state.clone());
-    let id = Uuid::now_v7();
+    let id = Id::now_v7();
     let configuration = json!({"operation_id":id,"expected_iam_revision":0,"configuration_revision":1,"environment_id":null,
         "app_id":"test_org>managed-app","org_id":"test_org","name":"Managed","logo_url":null,"base_url":null,
         "visibility":"private","availability":"active","webhook":{"url":"https://managed.example.test/webhook","secret":"a".repeat(48),"scope":["membership"]},
@@ -340,7 +322,7 @@ async fn lifecycle(
     credential: &str,
     actor: &str,
 ) -> anyhow::Result<()> {
-    let environment = Uuid::now_v7();
+    let environment = Id::now_v7();
     let mut revision = 0;
     let mut generation = 1;
     let mut key_version = 1;
@@ -367,7 +349,7 @@ async fn lifecycle(
         "disable",
         "purge",
     ] {
-        let id = Uuid::now_v7();
+        let id = Id::now_v7();
         let mut input = json!({"operation_id":id,"environment_id":environment,"expected_iam_revision":revision,"generation":generation,"operation":operation,"org_id":"test_org","name":"Managed test","description":null});
         if operation == "prepare" || operation == "rotate-key" {
             input["testing_key"] = json!(if operation == "prepare" {
@@ -442,7 +424,7 @@ async fn lifecycle(
             .unwrap_or_default();
         if operation == "rotate-key" {
             for retired in ["H".repeat(32), "R".repeat(32)] {
-                let operation_id = Uuid::now_v7();
+                let operation_id = Id::now_v7();
                 let invalid = json!({"operation_id":operation_id,"environment_id":environment,
                     "expected_iam_revision":revision,"generation":generation,"operation":"rotate-key",
                     "testing_key":retired,"key_version":key_version+1,"expected_key_version":key_version});
@@ -485,14 +467,14 @@ async fn lifecycle(
         }
         if operation == "import" {
             let current = result["app_secret"].as_str().unwrap_or_default();
-            let row: (Uuid,String,i64) = sqlx::query_as("SELECT app.id,app.app_name,import.source_revision FROM iam.applications app JOIN iam.testing_application_imports import ON import.application_id=app.id WHERE app.app_id='test_org>managed-app' AND app.testing_environment_id=$1").bind(environment).fetch_one(test_admin).await?;
+            let row: (Id,String,i64) = sqlx::query_as("SELECT app.id,app.app_name,import.source_revision FROM iam.applications app JOIN iam.testing_application_imports import ON import.application_id=app.id WHERE app.app_id='test_org>managed-app' AND app.testing_environment_id=$1").bind(environment).fetch_one(test_admin).await?;
             if import_count == 0 {
-                // A canonical handle is not an immutable source identity. Keep
-                // both source UUIDs valid so policy lookup alone cannot hide a
-                // credential-reuse bug, then exercise interrupted-phase retry.
-                let actual_source:Uuid=sqlx::query_scalar("SELECT source_application_id FROM iam.testing_application_imports WHERE application_id=$1").bind(row.0).fetch_one(test_admin).await?;
-                sqlx::query("UPDATE iam.testing_application_imports SET source_application_id=$2 WHERE application_id=$1").bind(row.0).bind(Uuid::from_u128(0x11)).execute(test_admin).await?;
-                let mismatch_id = Uuid::now_v7();
+                // Point at a different valid canonical source identity so policy
+                // lookup alone cannot hide a credential-reuse bug, then
+                // exercise interrupted-phase retry.
+                let actual_source:Id=sqlx::query_scalar("SELECT source_application_id FROM iam.testing_application_imports WHERE application_id=$1").bind(row.0).fetch_one(test_admin).await?;
+                sqlx::query("UPDATE iam.testing_application_imports SET source_application_id=$2 WHERE application_id=$1").bind(row.0).bind(Id::fixture("test_org>app-alpha")).execute(test_admin).await?;
+                let mismatch_id = Id::now_v7();
                 let mismatch = json!({"operation_id":mismatch_id,"environment_id":environment,"expected_iam_revision":revision,"generation":generation,"operation":"import","app_id":"test_org>managed-app","source_revisions":input["source_revisions"]});
                 let mismatch_request = || -> anyhow::Result<Request<Body>> {
                     Ok(Request::builder()
@@ -571,7 +553,7 @@ async fn lifecycle(
             }
         }
         if operation == "prepare" {
-            let unavailable_id = Uuid::now_v7();
+            let unavailable_id = Id::now_v7();
             let unavailable = json!({"operation_id":unavailable_id,"environment_id":environment,"expected_iam_revision":revision,"generation":generation,"operation":"import","app_id":"test_org>missing-source","source_revisions":{"test_org>missing-source":1}});
             let response = app
                 .clone()
@@ -676,8 +658,8 @@ async fn lifecycle(
             );
         }
     }
-    let another = Uuid::now_v7();
-    let operation = Uuid::now_v7();
+    let another = Id::now_v7();
+    let operation = Id::now_v7();
     let reused = json!({"operation_id":operation,"environment_id":another,"expected_iam_revision":0,"generation":1,"operation":"prepare","org_id":"test_org","name":"Must not reuse retired root","testing_key":"H".repeat(32),"key_version":1});
     let response = app
         .clone()
@@ -739,15 +721,15 @@ async fn sensitive_operations(
             "application.webhook_secret.rotate",
         ),
     ] {
-        let (resource, revision): (Uuid, i64) = sqlx::query_as(
+        let (resource, revision): (Id, i64) = sqlx::query_as(
             "SELECT id,version FROM iam.applications WHERE app_id='test_org>managed-app'",
         )
         .fetch_one(admin)
         .await?;
-        let id = Uuid::now_v7();
+        let id = Id::now_v7();
         let mut input = json!({"operation_id":id,"expected_iam_revision":revision});
         if suffix == "webhook-approvals" {
-            let pending:Uuid=sqlx::query_scalar("SELECT id FROM iam.application_webhook_endpoints WHERE application_id=$1 AND status='pending_review'").bind(resource).fetch_one(admin).await?;
+            let pending:Id=sqlx::query_scalar("SELECT id FROM iam.application_webhook_endpoints WHERE application_id=$1 AND status='pending_review'").bind(resource).fetch_one(admin).await?;
             input["pending_endpoint_id"] = json!(pending);
         }
         if suffix == "webhook-secret-rotations" {
@@ -778,10 +760,10 @@ async fn sensitive_operations(
         let digest = state
             .crypto
             .digest_secret(DigestPurpose::StepUpAssertion, &secret)?;
-        let challenge = Uuid::now_v7();
-        sqlx::query("INSERT INTO iam.step_up_challenges(id,authentication_session_id,carbon_id,purpose,resource_id,channel,challenge_digest,digest_key_version,status,expires_at,consumed_at) VALUES($1,$2,$3,$4,$5,'email',$6,1,'completed',transaction_timestamp()+interval '5 minutes',transaction_timestamp())").bind(challenge).bind(Uuid::from_u128(0x41)).bind(Uuid::from_u128(1)).bind(action).bind(resource).bind(vec![3u8;32]).execute(admin).await?;
-        let assertion = Uuid::now_v7();
-        sqlx::query("INSERT INTO iam.step_up_assertions(id,step_up_challenge_id,authentication_session_id,carbon_id,purpose,token_prefix,token_digest,digest_key_version,assurance_level,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,2,transaction_timestamp()+interval '5 minutes')").bind(assertion).bind(challenge).bind(Uuid::from_u128(0x41)).bind(Uuid::from_u128(1)).bind(action).bind(secret.expose_secret().chars().take(12).collect::<String>()).bind(digest.as_bytes().as_slice()).bind(digest.key_version()).execute(admin).await?;
+        let challenge = Id::now_v7();
+        sqlx::query("INSERT INTO iam.step_up_challenges(id,authentication_session_id,carbon_id,purpose,resource_id,channel,challenge_digest,digest_key_version,status,expires_at,consumed_at) VALUES($1,$2,$3,$4,$5,'email',$6,1,'completed',transaction_timestamp()+interval '5 minutes',transaction_timestamp())").bind(challenge).bind(Id::from_u128(0x41)).bind(Id::fixture("test_carbon")).bind(action).bind(resource.to_string()).bind(vec![3u8;32]).execute(admin).await?;
+        let assertion = Id::now_v7();
+        sqlx::query("INSERT INTO iam.step_up_assertions(id,step_up_challenge_id,authentication_session_id,carbon_id,purpose,token_prefix,token_digest,digest_key_version,assurance_level,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,2,transaction_timestamp()+interval '5 minutes')").bind(assertion).bind(challenge).bind(Id::from_u128(0x41)).bind(Id::fixture("test_carbon")).bind(action).bind(secret.expose_secret().chars().take(12).collect::<String>()).bind(digest.as_bytes().as_slice()).bind(digest.key_version()).execute(admin).await?;
         let result = app
             .clone()
             .oneshot(request(Some(secret.expose_secret()))?)
@@ -815,7 +797,7 @@ async fn bundles_and_reconciliation(
     actor: &str,
 ) -> anyhow::Result<()> {
     sqlx::query("UPDATE iam.organizations SET trusted_org=true,allow_bundled_applications=true WHERE org_id='test_org'").execute(admin).await?;
-    let id = Uuid::now_v7();
+    let id = Id::now_v7();
     let body = json!({"operation_id":id,"expected_iam_revision":0,"configuration_revision":1,"app_name":"Bundle","app_ids":["test_org>managed-app"]});
     let request = || -> anyhow::Result<Request<Body>> {
         Ok(Request::builder()
@@ -864,7 +846,7 @@ async fn bundles_and_reconciliation(
     sqlx::query("SET LOCAL ROLE silicon_iam_worker")
         .execute(&mut *tx)
         .await?;
-    let events: Vec<(Uuid, i32, sqlx::types::Json<Value>)> = sqlx::query_as(
+    let events: Vec<(Id, i32, sqlx::types::Json<Value>)> = sqlx::query_as(
         "SELECT * FROM iam_private.claim_honeycomb_management_events('test_org>app-alpha')",
     )
     .fetch_all(&mut *tx)
@@ -916,8 +898,8 @@ async fn legacy_key_transfer(
 ) -> anyhow::Result<()> {
     use crate::infrastructure::crypto::{EncryptionContext, ProtectedField};
     for export_first in [true, false] {
-        let environment = Uuid::now_v7();
-        let org = Uuid::from_u128(0x21);
+        let environment = Id::now_v7();
+        let org = Id::from_u128(0x21);
         let root = if export_first {
             "L".repeat(32)
         } else {
@@ -932,7 +914,7 @@ async fn legacy_key_transfer(
             root.as_bytes(),
         )?;
         sqlx::query("INSERT INTO iam.testing_environments(id,organization_id,created_by_membership_id,name,key_digest,key_digest_key_version,key_ciphertext,key_nonce,key_encryption_key_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)")
-            .bind(environment).bind(org).bind(Uuid::from_u128(0x31)).bind(environment.to_string()).bind(digest.as_bytes().as_slice()).bind(digest.key_version())
+            .bind(environment).bind(org).bind(Id::from_u128(0x31)).bind(environment.to_string()).bind(digest.as_bytes().as_slice()).bind(digest.key_version())
             .bind(encrypted.ciphertext).bind(encrypted.nonce.as_slice()).bind(encrypted.key_version).execute(admin).await?;
         let mut revision: i64 =
             sqlx::query_scalar("SELECT version FROM iam.testing_environments WHERE id=$1")
@@ -955,7 +937,7 @@ async fn legacy_key_transfer(
             Ok(request.body(Body::from(serde_json::to_vec(body)?))?)
         };
         if export_first {
-            let body = json!({"operation_id":Uuid::now_v7(),"expected_iam_revision":revision});
+            let body = json!({"operation_id":Id::now_v7(),"expected_iam_revision":revision});
             let exported = app
                 .clone()
                 .oneshot(send(
@@ -975,7 +957,7 @@ async fn legacy_key_transfer(
             ensure!(remembered, "legacy exported root not remembered");
         }
         for kind in ["prepare", "disable", "purge"] {
-            let body = json!({"operation_id":Uuid::now_v7(),"environment_id":environment,"expected_iam_revision":revision,"generation":1,"operation":kind});
+            let body = json!({"operation_id":Id::now_v7(),"environment_id":environment,"expected_iam_revision":revision,"generation":1,"operation":kind});
             let response = app
                 .clone()
                 .oneshot(send(
@@ -993,8 +975,8 @@ async fn legacy_key_transfer(
             }
             revision = value["iam_revision"].as_i64().unwrap_or_default();
         }
-        let replacement = Uuid::now_v7();
-        let body = json!({"operation_id":Uuid::now_v7(),"environment_id":replacement,"expected_iam_revision":0,"generation":1,"operation":"prepare","org_id":"test_org","name":"Legacy root reuse forbidden","testing_key":root,"key_version":1});
+        let replacement = Id::now_v7();
+        let body = json!({"operation_id":Id::now_v7(),"environment_id":replacement,"expected_iam_revision":0,"generation":1,"operation":"prepare","org_id":"test_org","name":"Legacy root reuse forbidden","testing_key":root,"key_version":1});
         let response = app
             .clone()
             .oneshot(send(

@@ -4,6 +4,7 @@
 )]
 
 use super::*;
+use crate::domain::id::Id;
 use anyhow::ensure;
 use axum::{
     body::{Body, to_bytes},
@@ -11,7 +12,6 @@ use axum::{
 };
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
-use uuid::Uuid;
 
 #[test]
 fn credentials_are_typed_and_never_accept_an_app_selector() -> anyhow::Result<()> {
@@ -43,17 +43,17 @@ fn credentials_are_typed_and_never_accept_an_app_selector() -> anyhow::Result<()
 #[test]
 fn introspection_requires_the_same_ordinary_application_and_actor() {
     let client = ApplicationIdentity {
-        application_id: Uuid::from_u128(1),
+        application_id: Id::fixture("tos>iam"),
         app_id: APP_ID.into(),
-        organization_id: Uuid::from_u128(2),
+        organization_id: Id::from_u128(2),
         auth_epoch: 1,
     };
     let mut access = AccessContext {
-        token_id: Uuid::from_u128(3),
-        authentication_session_id: Uuid::from_u128(4),
+        token_id: Id::from_u128(3),
+        authentication_session_id: Id::from_u128(4),
         subject: crate::domain::actor::ActorRef {
             actor_type: ActorType::Carbon,
-            id: Uuid::from_u128(5),
+            id: Id::from_u128(5),
         },
         client_application_id: Some(client.application_id),
         audience_application_id: Some(client.application_id),
@@ -71,7 +71,7 @@ fn introspection_requires_the_same_ordinary_application_and_actor() {
         assert!(!is_service_session(&access, &client));
     }
     access.subject.actor_type = ActorType::Carbon;
-    access.audience_application_id = Some(Uuid::from_u128(9));
+    access.audience_application_id = Some(Id::from_u128(9));
     assert!(!is_service_session(&access, &client));
     access.audience_application_id = Some(client.application_id);
     access.client_application_id = None;
@@ -107,8 +107,8 @@ async fn boundary_rejects_queries_duplicates_and_basic_auth() -> anyhow::Result<
         );
     }
     let selected = testing_plane::SelectedEnvironment {
-        id: Uuid::from_u128(1),
-        organization_id: Uuid::from_u128(2),
+        id: Id::from_u128(1),
+        organization_id: Id::from_u128(2),
     };
     let response = testing_plane::scope(
         selected,
@@ -129,36 +129,20 @@ async fn scoped_slt_lifecycle_preserves_issuer_and_authorization_boundaries() ->
     };
     use sqlx::postgres::PgPoolOptions;
     use std::sync::Arc;
-    use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-    use testcontainers_modules::postgres::Postgres as PostgresImage;
     let native_url = std::env::var("IAM_TEST_DATABASE_URL").ok();
-    let container = if native_url.is_none() {
-        Some(
-            PostgresImage::default()
-                .with_tag("16-alpine")
-                .start()
-                .await?,
-        )
+    let database = if native_url.is_none() {
+        Some(crate::test_database::TestDatabase::start().await?)
     } else {
         None
     };
-    let url = if let Some(url) = native_url {
-        url
-    } else {
-        let container = container
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("missing disposable database"))?;
-        format!(
-            "postgres://postgres:postgres@{}:{}/postgres",
-            container.get_host().await?,
-            container.get_host_port_ipv4(5432).await?
-        )
-    };
+    let url = native_url
+        .or_else(|| database.as_ref().map(|value| value.url.clone()))
+        .ok_or_else(|| anyhow::anyhow!("missing disposable database"))?;
     let admin = PgPoolOptions::new()
         .max_connections(4)
         .connect(&url)
         .await?;
-    sqlx::raw_sql("CREATE ROLE silicon_iam_api NOLOGIN; CREATE ROLE silicon_iam_worker NOLOGIN; CREATE ROLE silicon_iam_key_operator NOLOGIN; CREATE ROLE scoped_untrusted NOLOGIN;").execute(&admin).await?;
+    sqlx::raw_sql("DO $$ BEGIN CREATE ROLE silicon_iam_api NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$; DO $$ BEGIN CREATE ROLE silicon_iam_worker NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$; DO $$ BEGIN CREATE ROLE silicon_iam_key_operator NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$; DO $$ BEGIN CREATE ROLE scoped_untrusted NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$;").execute(&admin).await?;
     crate::infrastructure::postgres::migrate(&admin).await?;
     sqlx::raw_sql(include_str!(
         "../../../deploy/scoped/application-identity.sql"
@@ -235,7 +219,7 @@ async fn scoped_slt_lifecycle_preserves_issuer_and_authorization_boundaries() ->
     let identity = service_identity(&state, "test", "synthetic-resolver-probe")
         .await
         .map_err(|error| anyhow::anyhow!("{error:?}"))?;
-    assert_eq!(identity.application_id, Uuid::from_u128(0x13));
+    assert_eq!(identity.application_id, Id::fixture("tos>iam"));
     assert_eq!(identity.app_id, APP_ID);
     let restricted_can_choose: bool = sqlx::query_scalar("SELECT has_function_privilege('scoped_untrusted','iam_private.resolve_scoped_iam_application()','execute')").fetch_one(&admin).await?;
     assert!(!restricted_can_choose);
@@ -357,9 +341,9 @@ async fn scoped_slt_lifecycle_preserves_issuer_and_authorization_boundaries() ->
     // The same wrong-app SLT remains redeemable by the proper main-IAM client.
     let other_client = super::super::security::ApplicationClient {
         identity: ApplicationIdentity {
-            application_id: Uuid::from_u128(0x11),
+            application_id: Id::fixture("test_org>app-alpha"),
             app_id: "test_org>app-alpha".into(),
-            organization_id: Uuid::from_u128(0x21),
+            organization_id: Id::from_u128(0x21),
             auth_epoch: 1,
         },
         authenticated_secret: SecretString::from("synthetic-not-an-external-credential"),
@@ -561,30 +545,29 @@ async fn call(
 
 async fn seed_scoped_registration(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     sqlx::raw_sql(r"
-        INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES ('00000000-0000-0000-0000-000000000022','tos','00000000-0000-0000-0000-000000000001','Scoped test organization');
-        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role,job_role) VALUES ('00000000-0000-0000-0000-000000000033','00000000-0000-0000-0000-000000000022','00000000-0000-0000-0000-000000000001','carbon','owner','');
-        INSERT INTO iam.principals(id,kind,status,activated_at) VALUES ('00000000-0000-0000-0000-000000000013','application','active',transaction_timestamp());
-        INSERT INTO iam.applications(id,app_id,organization_id,created_by_carbon_id,review_status,base_url) VALUES ('00000000-0000-0000-0000-000000000013','tos>iam','00000000-0000-0000-0000-000000000022','00000000-0000-0000-0000-000000000001','verified','https://scoped.backend.iam.teamofsilicons.com');
-        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES ('00000000-0000-0000-0000-000000000013','self.organizations.read');
-        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES ('00000000-0000-0000-0000-000000000013','self.organizations.read','00000000-0000-0000-0000-000000000001');
+        INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES ('00000000-0000-0000-0000-000000000022','tos','test_carbon','Scoped test organization');
+        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role,job_role) VALUES ('00000000-0000-0000-0000-000000000033','00000000-0000-0000-0000-000000000022','test_carbon','carbon','owner','');
+        INSERT INTO iam.principals(id,kind,status,activated_at) VALUES ('tos>iam','application','active',transaction_timestamp());
+        INSERT INTO iam.applications(id,app_id,organization_id,created_by_carbon_id,review_status,base_url) VALUES ('tos>iam','tos>iam','00000000-0000-0000-0000-000000000022','test_carbon','verified','https://scoped.backend.iam.teamofsilicons.com');
+        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES ('tos>iam','self.organizations.read');
+        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES ('tos>iam','self.organizations.read','test_carbon');
     ").execute(pool).await?;
     Ok(())
 }
 
 async fn issued_slt(state: &ApiState, app_id: &str) -> anyhow::Result<String> {
-    let carbon = Uuid::from_u128(1);
+    let carbon = Id::fixture("test_carbon");
     let mut tx = context::begin(state.db(), DatabaseContext::principal(carbon)).await?;
-    let application_id: Uuid =
-        sqlx::query_scalar("SELECT id FROM iam.applications WHERE app_id=$1")
-            .bind(app_id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let application_id: Id = sqlx::query_scalar("SELECT id FROM iam.applications WHERE app_id=$1")
+        .bind(app_id)
+        .fetch_one(&mut *tx)
+        .await?;
     let policy = super::super::scopes::policy(&mut tx, application_id)
         .await
         .map_err(|error| anyhow::anyhow!("{error:?}"))?;
     let access = AccessContext {
-        token_id: Uuid::from_u128(0x101),
-        authentication_session_id: Uuid::from_u128(0x41),
+        token_id: Id::from_u128(0x101),
+        authentication_session_id: Id::from_u128(0x41),
         subject: crate::domain::actor::ActorRef {
             actor_type: ActorType::Carbon,
             id: carbon,

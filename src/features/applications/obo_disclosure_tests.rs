@@ -1,21 +1,19 @@
 //! Real restricted-role disclosure and consent-lock regression coverage.
 use std::time::Duration;
 
+use crate::domain::id::Id;
 use anyhow::{Context as _, ensure};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgPoolOptions};
-use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-use testcontainers_modules::postgres::Postgres as PostgresImage;
-use uuid::Uuid;
 
-const SUBJECT: Uuid = Uuid::from_u128(1);
-const ISSUER: Uuid = Uuid::from_u128(0x11);
-const RECIPIENT: Uuid = Uuid::from_u128(0x13);
-const ORG: Uuid = Uuid::from_u128(0x21);
-const MEMBER: Uuid = Uuid::from_u128(0x31);
-const TOKEN: Uuid = Uuid::from_u128(0x101);
-const PROOF: Uuid = Uuid::from_u128(0x123);
-const WORLD: Uuid = Uuid::from_u128(0x801);
+const SUBJECT: Id = Id::fixture("test_carbon");
+const ISSUER: Id = Id::fixture("test_org>app-alpha");
+const RECIPIENT: Id = Id::fixture("other_org>target");
+const ORG: Id = Id::from_u128(0x21);
+const MEMBER: Id = Id::from_u128(0x31);
+const TOKEN: Id = Id::from_u128(0x101);
+const PROOF: Id = Id::from_u128(0x123);
+const WORLD: Id = Id::from_u128(0x801);
 const DISCLOSURES: [&str; 3] = [
     "self.identity.read",
     "self.membership.read",
@@ -25,11 +23,11 @@ const ENDPOINT: &str = "obo:other_org>target:files.read";
 
 #[derive(Clone, Copy)]
 struct Snapshot {
-    token: Uuid,
-    org: Uuid,
-    member: Uuid,
-    recipient: Uuid,
-    proof: Option<Uuid>,
+    token: Id,
+    org: Id,
+    member: Id,
+    recipient: Id,
+    proof: Option<Id>,
 }
 impl Default for Snapshot {
     fn default() -> Self {
@@ -43,9 +41,13 @@ impl Default for Snapshot {
     }
 }
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "test fixtures intentionally copy bounded canonical authority snapshots"
+)]
 async fn snapshot(
     tx: &mut Transaction<'_, Postgres>,
-    world: Option<Uuid>,
+    world: Option<Id>,
     input: Snapshot,
 ) -> anyhow::Result<Option<Value>> {
     sqlx::query("SET LOCAL ROLE silicon_iam_api")
@@ -67,11 +69,11 @@ async fn snapshot(
     .await?)
 }
 
-async fn read(
-    pool: &PgPool,
-    world: Option<Uuid>,
-    input: Snapshot,
-) -> anyhow::Result<Option<Value>> {
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "test fixtures intentionally copy bounded canonical authority snapshots"
+)]
+async fn read(pool: &PgPool, world: Option<Id>, input: Snapshot) -> anyhow::Result<Option<Value>> {
     let mut tx = pool.begin().await?;
     let result = snapshot(&mut tx, world, input).await;
     tx.rollback().await?;
@@ -104,33 +106,20 @@ fn assert_disclosures(value: &Value, omitted: Option<&str>) -> anyhow::Result<()
     if omitted == Some("self.tags.read") {
         ensure!(value["tags"].is_null());
     } else {
-        ensure!(value["tags"] == json!([{"id":Uuid::from_u128(0x151),"name":"Design"}]));
+        ensure!(value["tags"] == json!([{"id":Id::from_u128(0x151),"name":"Design"}]));
     }
     Ok(())
 }
 
 #[tokio::test]
-#[ignore = "requires Docker; uses disposable production and testing PostgreSQL databases"]
+#[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL; uses isolated PostgreSQL planes"]
 async fn obo_disclosures_require_exact_current_consent_and_both_application_ceilings()
 -> anyhow::Result<()> {
-    let container = PostgresImage::default()
-        .with_tag("16-alpine")
-        .start()
-        .await?;
-    let base = format!(
-        "postgres://postgres:postgres@{}:{}",
-        container.get_host().await?,
-        container.get_host_port_ipv4(5432).await?
-    );
-    let production = PgPoolOptions::new()
-        .max_connections(4)
-        .connect(&format!("{base}/postgres"))
-        .await?;
-    sqlx::raw_sql("CREATE ROLE silicon_iam_api NOLOGIN; CREATE ROLE silicon_iam_worker NOLOGIN; CREATE ROLE silicon_iam_key_operator NOLOGIN;").execute(&production).await?;
+    let production_database = crate::test_database::TestDatabase::start().await?;
+    let production = production_database.pool.clone();
+    sqlx::raw_sql("DO $$ BEGIN IF to_regrole('silicon_iam_api') IS NULL THEN CREATE ROLE silicon_iam_api NOLOGIN; END IF; IF to_regrole('silicon_iam_worker') IS NULL THEN CREATE ROLE silicon_iam_worker NOLOGIN; END IF; IF to_regrole('silicon_iam_key_operator') IS NULL THEN CREATE ROLE silicon_iam_key_operator NOLOGIN; END IF; END $$;").execute(&production).await?;
     crate::infrastructure::postgres::migrate(&production).await?;
-    sqlx::query("CREATE DATABASE testing")
-        .execute(&production)
-        .await?;
+    let testing_database = crate::test_database::TestDatabase::start().await?;
     let testing = PgPoolOptions::new()
         .max_connections(4)
         .after_connect(|connection, _| {
@@ -142,7 +131,7 @@ async fn obo_disclosures_require_exact_current_consent_and_both_application_ceil
                 Ok(())
             })
         })
-        .connect(&format!("{base}/testing"))
+        .connect(&testing_database.url)
         .await?;
     crate::infrastructure::postgres::migrate_testing(&testing).await?;
     let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
@@ -162,7 +151,7 @@ async fn obo_disclosures_require_exact_current_consent_and_both_application_ceil
         retained_boundaries(pool, world).await?;
     }
     ensure!(
-        read(&testing, Some(Uuid::from_u128(0x802)), Snapshot::default())
+        read(&testing, Some(Id::from_u128(0x802)), Snapshot::default())
             .await?
             .is_none(),
         "proof crossed worlds"
@@ -171,7 +160,7 @@ async fn obo_disclosures_require_exact_current_consent_and_both_application_ceil
     Ok(())
 }
 
-async fn disclosure_matrix(pool: &PgPool, world: Option<Uuid>) -> anyhow::Result<()> {
+async fn disclosure_matrix(pool: &PgPool, world: Option<Id>) -> anyhow::Result<()> {
     let value = read(pool, world, Snapshot::default())
         .await?
         .context("positive proof missing")?;
@@ -206,16 +195,16 @@ async fn disclosure_matrix(pool: &PgPool, world: Option<Uuid>) -> anyhow::Result
             (
                 "exact consent",
                 "DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id=$1 AND scope=$2",
-                Uuid::from_u128(0x71),
+                Id::from_u128(0x71),
             ),
             (
                 "issuer approval",
-                "UPDATE iam.application_approved_scopes SET revoked_at=now(),revoked_by_carbon_id='00000000-0000-0000-0000-000000000001' WHERE application_id=$1 AND scope=$2",
+                "UPDATE iam.application_approved_scopes SET revoked_at=now(),revoked_by_carbon_id='test_carbon' WHERE application_id=$1 AND scope=$2",
                 ISSUER,
             ),
             (
                 "recipient approval",
-                "UPDATE iam.application_approved_scopes SET revoked_at=now(),revoked_by_carbon_id='00000000-0000-0000-0000-000000000001' WHERE application_id=$1 AND scope=$2",
+                "UPDATE iam.application_approved_scopes SET revoked_at=now(),revoked_by_carbon_id='test_carbon' WHERE application_id=$1 AND scope=$2",
                 RECIPIENT,
             ),
         ] {
@@ -250,7 +239,7 @@ async fn disclosure_matrix(pool: &PgPool, world: Option<Uuid>) -> anyhow::Result
     sqlx::query(
         "DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id=$1 AND scope = ANY($2)",
     )
-    .bind(Uuid::from_u128(0x71))
+    .bind(Id::from_u128(0x71))
     .bind(DISCLOSURES.as_slice())
     .execute(&mut *tx)
     .await?;
@@ -267,19 +256,19 @@ async fn disclosure_matrix(pool: &PgPool, world: Option<Uuid>) -> anyhow::Result
     Ok(())
 }
 
-async fn retained_boundaries(pool: &PgPool, world: Option<Uuid>) -> anyhow::Result<()> {
+async fn retained_boundaries(pool: &PgPool, world: Option<Id>) -> anyhow::Result<()> {
     for input in [
         Snapshot {
-            recipient: Uuid::from_u128(0x12),
+            recipient: Id::fixture("test_org>app-beta"),
             ..Snapshot::default()
         },
         Snapshot {
-            org: Uuid::from_u128(0x23),
-            member: Uuid::from_u128(0x33),
+            org: Id::from_u128(0x23),
+            member: Id::from_u128(0x33),
             ..Snapshot::default()
         },
         Snapshot {
-            token: Uuid::from_u128(0x103),
+            token: Id::from_u128(0x103),
             ..Snapshot::default()
         },
         Snapshot {
@@ -298,10 +287,10 @@ async fn retained_boundaries(pool: &PgPool, world: Option<Uuid>) -> anyhow::Resu
         "UPDATE iam.oauth_consent_grants SET status='revoked',revoked_at=now() WHERE id='00000000-0000-0000-0000-000000000071'",
         "DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id='00000000-0000-0000-0000-000000000071' AND scope='obo:other_org>target:files.read'",
         "UPDATE iam.organization_memberships SET authz_epoch=authz_epoch+1 WHERE id='00000000-0000-0000-0000-000000000031'",
-        "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='00000000-0000-0000-0000-000000000001'",
-        "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='00000000-0000-0000-0000-000000000011'",
-        "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='00000000-0000-0000-0000-000000000013'",
-        "UPDATE iam.application_obo_endpoints SET version=version+1 WHERE application_id='00000000-0000-0000-0000-000000000013'",
+        "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='test_carbon'",
+        "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='test_org>app-alpha'",
+        "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='other_org>target'",
+        "UPDATE iam.application_obo_endpoints SET version=version+1 WHERE application_id='other_org>target'",
     ] {
         let mut tx = pool.begin().await?;
         sqlx::raw_sql(sqlx::AssertSqlSafe(query))
@@ -342,7 +331,7 @@ async fn consent_serialization(pool: &PgPool) -> anyhow::Result<()> {
     let writer_pool = pool.clone();
     let mut writer = tokio::spawn(async move {
         sqlx::query("UPDATE iam.oauth_consent_grants SET version=version+1 WHERE id=$1")
-            .bind(Uuid::from_u128(0x71))
+            .bind(Id::from_u128(0x71))
             .execute(&writer_pool)
             .await
     });
@@ -358,10 +347,10 @@ async fn consent_serialization(pool: &PgPool) -> anyhow::Result<()> {
     // the committed reduced scope set rather than its older statement snapshot.
     let mut writer = pool.begin().await?;
     sqlx::query("UPDATE iam.oauth_consent_grants SET version=version+1 WHERE id=$1")
-        .bind(Uuid::from_u128(0x71))
+        .bind(Id::from_u128(0x71))
         .execute(&mut *writer)
         .await?;
-    sqlx::query("DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id=$1 AND scope='self.tags.read'").bind(Uuid::from_u128(0x71)).execute(&mut *writer).await?;
+    sqlx::query("DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id=$1 AND scope='self.tags.read'").bind(Id::from_u128(0x71)).execute(&mut *writer).await?;
     let reader_pool = pool.clone();
     let mut reader =
         tokio::spawn(async move { read(&reader_pool, None, Snapshot::default()).await });

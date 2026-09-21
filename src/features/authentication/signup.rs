@@ -1,8 +1,8 @@
+use crate::domain::id::Id;
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::json;
 use sqlx::{FromRow, Postgres, Transaction};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::ApiState,
@@ -71,8 +71,8 @@ struct SignupSessionRow {
 
 #[derive(FromRow)]
 struct SignupChallengeRow {
-    challenge_id: Uuid,
-    candidate_id: Uuid,
+    challenge_id: Id,
+    candidate_id: Id,
     code_digest: Option<Vec<u8>>,
     digest_key_version: Option<i16>,
     provider_verification_sid: Option<String>,
@@ -85,7 +85,7 @@ struct SignupChallengeRow {
 
 #[derive(FromRow)]
 struct CandidateRow {
-    id: Uuid,
+    id: Id,
     kind: String,
     ciphertext: Vec<u8>,
     nonce: Vec<u8>,
@@ -94,7 +94,7 @@ struct CandidateRow {
 
 #[derive(FromRow)]
 struct CompletionRow {
-    principal_id: Uuid,
+    principal_id: Id,
     carbon_handle: String,
     aggregate_version: i64,
     created_at: OffsetDateTime,
@@ -124,7 +124,7 @@ pub(super) async fn create_session(
             Ok(Outcome::replay(status, response))
         }
         Claim::Acquired { record_id } => {
-            let session_id = Uuid::now_v7();
+            let session_id = Id::now_v7();
             let expires_at = sqlx::query_scalar::<_, OffsetDateTime>(
                 r"
                 INSERT INTO iam.signup_sessions (id, expires_at)
@@ -191,7 +191,7 @@ pub(super) async fn create_session(
 pub(super) async fn start_contact(
     state: &ApiState,
     key: &IdempotencyKey,
-    signup_session_id: Uuid,
+    signup_session_id: Id,
     contact: ValidatedContact,
 ) -> Result<Outcome<CodeDispatchResponse>, AppError> {
     let channel = contact.channel;
@@ -280,8 +280,8 @@ pub(super) async fn start_contact(
         return Ok(Outcome::fresh(202, response));
     }
 
-    let candidate_id = Uuid::now_v7();
-    let challenge_id = Uuid::now_v7();
+    let candidate_id = Id::now_v7();
+    let challenge_id = Id::now_v7();
     let encrypted = contacts::encrypt_contact(&state.crypto, &contact, candidate_id)?;
     let indexes = contacts::blind_indexes(&state.crypto, &contact)?;
     let otp = state
@@ -421,9 +421,9 @@ pub(super) async fn start_contact(
 async fn confirm_signup_delivery(
     state: &ApiState,
     record_id: idempotency::Lease,
-    signup_session_id: Uuid,
-    candidate_id: Uuid,
-    challenge_id: Uuid,
+    signup_session_id: Id,
+    candidate_id: Id,
+    challenge_id: Id,
     channel: ContactChannel,
     provider_message_id: &str,
     response: &CodeDispatchResponse,
@@ -525,8 +525,8 @@ async fn confirm_signup_delivery(
 async fn fail_signup_delivery(
     state: &ApiState,
     record_id: idempotency::Lease,
-    candidate_id: Uuid,
-    challenge_id: Uuid,
+    candidate_id: Id,
+    challenge_id: Id,
 ) -> Result<(), AppError> {
     let mut transaction = serializable(state.db(), "signup_delivery_failure_transaction").await?;
     sqlx::query(
@@ -576,7 +576,7 @@ async fn fail_signup_delivery(
 pub(super) async fn verify_contact(
     state: &ApiState,
     key: &IdempotencyKey,
-    signup_session_id: Uuid,
+    signup_session_id: Id,
     channel: ContactChannel,
     supplied_code: SecretString,
 ) -> Result<Outcome<VerificationOutcome>, AppError> {
@@ -795,15 +795,13 @@ pub(super) async fn verify_contact(
 pub(super) async fn complete_signup(
     state: &ApiState,
     key: &IdempotencyKey,
-    signup_session_id: Uuid,
+    signup_session_id: Id,
     input: ValidatedSignupCompletion,
 ) -> Result<Outcome<CarbonSelfResponse>, AppError> {
     let profile_photo = match input.profile_photo {
         Some(url) => url,
         None => default_profile_photo(state, input.carbon_id.as_str())?,
     };
-    let description = input.description.as_deref().unwrap_or_default();
-    let description_presence = [u8::from(input.description.is_some())];
     let request_digest = idempotency::digest_parts(
         b"signup-complete",
         &[
@@ -811,8 +809,6 @@ pub(super) async fn complete_signup(
             input.carbon_id.as_str().as_bytes(),
             input.display_name.as_bytes(),
             input.timezone.as_bytes(),
-            &description_presence,
-            description.as_bytes(),
             profile_photo.as_str().as_bytes(),
         ],
     );
@@ -851,7 +847,9 @@ pub(super) async fn complete_signup(
     let phone = candidate_plaintext(&state.crypto, &candidates, ContactChannel::Phone)?;
     let email_id = candidate_id(&candidates, ContactChannel::Email)?;
     let phone_id = candidate_id(&candidates, ContactChannel::Phone)?;
-    let principal_id = Uuid::now_v7();
+    let principal_id = Id::identity(input.carbon_id.as_str()).map_err(|_| AppError::Internal {
+        category: "canonical_carbon_identity",
+    })?;
     let completion = sqlx::query_as::<_, CompletionRow>(
         r"
         SELECT principal_id, carbon_handle, aggregate_version, created_at
@@ -862,7 +860,7 @@ pub(super) async fn complete_signup(
     .bind(principal_id)
     .bind(input.carbon_id.as_str())
     .bind(&input.display_name)
-    .bind(input.description.as_deref())
+    .bind(None::<&str>)
     .bind(profile_photo.as_str())
     .bind(&input.timezone)
     .bind(email_id)
@@ -875,7 +873,6 @@ pub(super) async fn complete_signup(
         carbon_id: completion.carbon_handle,
         display_name: input.display_name,
         timezone: input.timezone,
-        description: input.description,
         profile_photo: profile_photo.to_string(),
         email: email.expose_secret().to_owned(),
         phone_number: phone.expose_secret().to_owned(),
@@ -922,7 +919,7 @@ pub(super) async fn complete_signup(
 
 async fn lock_signup_session(
     transaction: &mut Transaction<'_, Postgres>,
-    signup_session_id: Uuid,
+    signup_session_id: Id,
 ) -> Result<SignupSessionRow, AppError> {
     sqlx::query_as::<_, SignupSessionRow>(
         r"
@@ -953,7 +950,7 @@ fn ensure_pending_session(session: &SignupSessionRow) -> Result<(), AppError> {
 
 async fn supersede_signup_contact(
     transaction: &mut Transaction<'_, Postgres>,
-    signup_session_id: Uuid,
+    signup_session_id: Id,
     channel: ContactChannel,
 ) -> Result<otp::AttemptState, AppError> {
     let attempt_rows = sqlx::query_as::<_, otp::AttemptState>(
@@ -1037,8 +1034,8 @@ async fn supersede_signup_contact(
 
 async fn insert_candidate(
     transaction: &mut Transaction<'_, Postgres>,
-    signup_session_id: Uuid,
-    candidate_id: Uuid,
+    signup_session_id: Id,
+    candidate_id: Id,
     channel: ContactChannel,
     encrypted: EncryptedValue,
     indexes: &[SecretDigest],
@@ -1094,7 +1091,7 @@ async fn insert_candidate(
 
 async fn lock_signup_challenge(
     transaction: &mut Transaction<'_, Postgres>,
-    signup_session_id: Uuid,
+    signup_session_id: Id,
     channel: ContactChannel,
 ) -> Result<SignupChallengeRow, AppError> {
     sqlx::query_as::<_, SignupChallengeRow>(SIGNUP_CHALLENGE_LOCK_QUERY)
@@ -1110,7 +1107,7 @@ async fn lock_signup_challenge(
 
 async fn bump_signup_session(
     transaction: &mut Transaction<'_, Postgres>,
-    signup_session_id: Uuid,
+    signup_session_id: Id,
 ) -> Result<i64, AppError> {
     sqlx::query_scalar::<_, i64>(
         r"
@@ -1130,7 +1127,7 @@ async fn bump_signup_session(
 
 async fn verified_candidates(
     transaction: &mut Transaction<'_, Postgres>,
-    signup_session_id: Uuid,
+    signup_session_id: Id,
 ) -> Result<Vec<CandidateRow>, AppError> {
     let candidates = sqlx::query_as::<_, CandidateRow>(
         r"
@@ -1183,7 +1180,7 @@ fn candidate_plaintext(
     )
 }
 
-fn candidate_id(candidates: &[CandidateRow], channel: ContactChannel) -> Result<Uuid, AppError> {
+fn candidate_id(candidates: &[CandidateRow], channel: ContactChannel) -> Result<Id, AppError> {
     candidates
         .iter()
         .find(|candidate| candidate.kind == channel.database_value())
@@ -1207,7 +1204,7 @@ fn profile_photo_url(iris_base_url: &url::Url, carbon_id: &str) -> Result<url::U
     Ok(url)
 }
 
-fn start_contact_request_digest(signup_session_id: Uuid, contact: &ValidatedContact) -> [u8; 32] {
+fn start_contact_request_digest(signup_session_id: Id, contact: &ValidatedContact) -> [u8; 32] {
     idempotency::digest_parts(
         b"signup-contact-start",
         &[
@@ -1219,7 +1216,7 @@ fn start_contact_request_digest(signup_session_id: Uuid, contact: &ValidatedCont
 }
 
 fn verify_contact_request_digest(
-    signup_session_id: Uuid,
+    signup_session_id: Id,
     channel: ContactChannel,
     supplied_code: &SecretString,
 ) -> [u8; 32] {
@@ -1278,7 +1275,7 @@ mod tests {
     /// completion failed in production for exactly that reason, so this test
     /// provisions the roles and completes a signup as the API role.
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL on isolated local PostgreSQL"]
     #[allow(
         clippy::too_many_lines,
         reason = "the roles, grants, and verified-candidate fixture form one end-to-end contract"
@@ -1286,16 +1283,22 @@ mod tests {
     async fn a_signup_completes_for_the_restricted_api_role_under_row_level_security()
     -> anyhow::Result<()> {
         use anyhow::ensure;
-        use sqlx::postgres::PgPoolOptions;
-        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-        use testcontainers_modules::postgres::Postgres as TestPostgres;
 
         const RUNTIME_ROLES: &str = "
-            CREATE ROLE silicon_iam_api NOLOGIN NOSUPERUSER NOBYPASSRLS;
-            CREATE ROLE silicon_iam_worker NOLOGIN NOSUPERUSER NOBYPASSRLS;
-            CREATE ROLE silicon_iam_key_operator NOLOGIN NOSUPERUSER NOBYPASSRLS;
-            CREATE ROLE silicon_iam_api_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS
-                IN ROLE silicon_iam_api;
+            DO $$ BEGIN
+              IF to_regrole('silicon_iam_api') IS NULL THEN
+                CREATE ROLE silicon_iam_api NOLOGIN NOSUPERUSER NOBYPASSRLS;
+              END IF;
+              IF to_regrole('silicon_iam_worker') IS NULL THEN
+                CREATE ROLE silicon_iam_worker NOLOGIN NOSUPERUSER NOBYPASSRLS;
+              END IF;
+              IF to_regrole('silicon_iam_key_operator') IS NULL THEN
+                CREATE ROLE silicon_iam_key_operator NOLOGIN NOSUPERUSER NOBYPASSRLS;
+              END IF;
+              IF to_regrole('silicon_iam_api_runtime') IS NULL THEN
+                CREATE ROLE silicon_iam_api_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS IN ROLE silicon_iam_api;
+              END IF;
+            END $$;
         ";
         let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
             .lines()
@@ -1303,18 +1306,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let container = TestPostgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&format!(
-                "postgres://postgres:postgres@{host}:{port}/postgres"
-            ))
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
         sqlx::raw_sql(sqlx::AssertSqlSafe(RUNTIME_ROLES))
             .execute(&pool)
@@ -1323,12 +1316,12 @@ mod tests {
             .execute(&pool)
             .await?;
 
-        let session_id = Uuid::from_u128(0x49_01);
-        let email_candidate = Uuid::from_u128(0x49_02);
-        let phone_candidate = Uuid::from_u128(0x49_03);
-        let principal_id = Uuid::from_u128(0x49_04);
-        let email_contact_id = Uuid::from_u128(0x49_05);
-        let phone_contact_id = Uuid::from_u128(0x49_06);
+        let session_id = Id::from_u128(0x49_01);
+        let email_candidate = Id::from_u128(0x49_02);
+        let phone_candidate = Id::from_u128(0x49_03);
+        let principal_id = Id::fixture("rls-signup-test");
+        let email_contact_id = Id::from_u128(0x49_05);
+        let phone_contact_id = Id::from_u128(0x49_06);
 
         let mut fixture = pool.begin().await?;
         sqlx::query(
@@ -1425,7 +1418,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL on isolated local PostgreSQL"]
     #[allow(
         clippy::too_many_lines,
         reason = "one fresh-database fixture pins every arm of the local-digest constraint"
@@ -1433,27 +1426,14 @@ mod tests {
     async fn a_local_digest_is_absent_only_for_a_provider_managed_phone_challenge()
     -> anyhow::Result<()> {
         use anyhow::ensure;
-        use sqlx::postgres::PgPoolOptions;
-        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-        use testcontainers_modules::postgres::Postgres as TestPostgres;
 
-        let container = TestPostgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&format!(
-                "postgres://postgres:postgres@{host}:{port}/postgres"
-            ))
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let session_id = Uuid::from_u128(0x48_01);
-        let email_candidate = Uuid::from_u128(0x48_02);
-        let phone_candidate = Uuid::from_u128(0x48_03);
+        let session_id = Id::from_u128(0x48_01);
+        let email_candidate = Id::from_u128(0x48_02);
+        let phone_candidate = Id::from_u128(0x48_03);
         let mut fixture = pool.begin().await?;
         sqlx::query(
             r"
@@ -1548,7 +1528,7 @@ mod tests {
         ] {
             let mut attempt = pool.begin().await?;
             let outcome = sqlx::query(insert)
-                .bind(Uuid::now_v7())
+                .bind(Id::now_v7())
                 .bind(session_id)
                 .bind(candidate)
                 .bind(kind)
@@ -1599,7 +1579,7 @@ mod tests {
 
     #[test]
     fn contact_and_otp_idempotency_material_is_key_version_independent() {
-        let session_id = Uuid::from_u128(1);
+        let session_id = Id::from_u128(1);
         let contact = ValidatedContact {
             channel: ContactChannel::Email,
             normalized: "person@example.com".to_owned(),

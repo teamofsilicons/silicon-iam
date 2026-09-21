@@ -8,6 +8,7 @@ mod publication;
 pub(super) mod publication_tests;
 mod webhook_secret;
 
+use crate::domain::id::Id;
 use axum::{
     Json, Router,
     body::Bytes,
@@ -23,7 +24,6 @@ use sha2::{Digest as _, Sha256};
 use sqlx::{Postgres, Transaction};
 use subtle::ConstantTimeEq as _;
 use time::{Duration, OffsetDateTime};
-use uuid::Uuid;
 
 use super::{
     super::{
@@ -49,11 +49,11 @@ use crate::{
 #[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct AcceptedConfiguration {
-    operation_id: Uuid,
+    operation_id: Id,
     expected_iam_revision: i64,
     configuration_revision: i64,
     /// Production is explicit. Test configuration uses the lifecycle API.
-    environment_id: Option<Uuid>,
+    environment_id: Option<Id>,
     app_id: String,
     org_id: String,
     name: Option<String>,
@@ -87,15 +87,15 @@ struct Webhook {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Rotation {
-    operation_id: Uuid,
+    operation_id: Id,
     expected_iam_revision: i64,
-    environment_id: Option<Uuid>,
+    environment_id: Option<Id>,
 }
 
 #[derive(sqlx::FromRow)]
 struct StoredOperation {
-    operation_id: Uuid,
-    actor_principal_id: Uuid,
+    operation_id: Id,
+    actor_principal_id: Id,
     operation_kind: String,
     resource_id: String,
     request_digest: Vec<u8>,
@@ -155,7 +155,7 @@ async fn manager(
     tx: &mut Transaction<'_, Postgres>,
     actor: &AccessContext,
     org_id: &str,
-) -> Result<Uuid, ApiError> {
+) -> Result<Id, ApiError> {
     let organization =
         applications::resolve_creation_organization(tx, actor.subject.id, org_id).await?;
     context::select_organization(tx, organization)
@@ -179,7 +179,7 @@ pub(crate) async fn claim(
     service: &Service,
     actor: &crate::domain::actor::ActorRef,
     headers: &HeaderMap,
-    operation: Uuid,
+    operation: Id,
     kind: &str,
     resource: &str,
     body: &[u8],
@@ -261,7 +261,7 @@ pub(crate) async fn complete(
     tx: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     service: &Service,
-    operation: Uuid,
+    operation: Id,
     resource: &str,
     revision: i64,
     response: &Value,
@@ -298,7 +298,7 @@ pub(crate) async fn complete(
         .bind(operation).bind(status).bind(revision).bind(sqlx::types::Json(&public))
         .bind(encrypted.as_ref().map(|value| &value.ciphertext)).bind(encrypted.as_ref().map(|value| value.nonce.as_slice()))
         .bind(encrypted.as_ref().map(|value| value.key_version)).bind(expiry).execute(&mut **tx).await.map_err(|_| ApiError::internal("honeycomb_operation_complete"))?;
-    let (kind, actor, actor_kind):(String,Uuid,String)=sqlx::query_as("SELECT operation_kind,actor_principal_id,principal.kind::text FROM iam.honeycomb_operations operation JOIN iam.principals principal ON principal.id=operation.actor_principal_id WHERE operation_id=$1").bind(operation).fetch_one(&mut **tx).await.map_err(|_|ApiError::internal("honeycomb_operation_audit"))?;
+    let (kind, actor, actor_kind):(String,Id,String)=sqlx::query_as("SELECT operation_kind,actor_principal_id,principal.kind::text FROM iam.honeycomb_operations operation JOIN iam.principals principal ON principal.id=operation.actor_principal_id WHERE operation_id=$1").bind(operation).fetch_one(&mut **tx).await.map_err(|_|ApiError::internal("honeycomb_operation_audit"))?;
     let event_type = match kind.as_str() {
         "configure" if status == "pending" => "application.configuration.pending",
         "configure" => "application.configuration.accepted",
@@ -317,7 +317,7 @@ pub(crate) async fn complete(
         metadata:json!({"operation_id":operation,"operation_kind":kind,"resource_id":resource,"iam_revision":revision,"state":status})
     }).await.map_err(|_|ApiError::internal("honeycomb_audit"))?;
     sqlx::query("INSERT INTO iam.honeycomb_management_events(event_id,operation_id,service_application_id,resource_id,revision,event_type,payload,environment_id) VALUES($1,$2,$3,$4,$5,$6,$7,(SELECT environment_id FROM iam.honeycomb_operations WHERE operation_id=$2)) ON CONFLICT DO NOTHING")
-        .bind(Uuid::now_v7()).bind(operation).bind(service.application_id).bind(resource).bind(revision).bind(event_type).bind(sqlx::types::Json(public))
+        .bind(Id::now_v7()).bind(operation).bind(service.application_id).bind(resource).bind(revision).bind(event_type).bind(sqlx::types::Json(public))
         .execute(&mut **tx).await.map_err(|_| ApiError::internal("honeycomb_management_event"))?;
 
     Ok(())
@@ -411,7 +411,7 @@ async fn configure(
             .map_err(|_| ApiError::internal("honeycomb_replay_commit"))?;
         return Ok(management_response(response, true));
     }
-    let existing=sqlx::query_as::<_,(Uuid,i64,String)>("SELECT id,version,visibility FROM iam.applications WHERE app_id=$1 AND organization_id=$2 AND deleted_at IS NULL FOR UPDATE")
+    let existing=sqlx::query_as::<_,(Id,i64,String)>("SELECT id,version,visibility FROM iam.applications WHERE app_id=$1 AND organization_id=$2 AND deleted_at IS NULL FOR UPDATE")
         .bind(&path).bind(organization).fetch_optional(&mut *tx).await.map_err(|_|ApiError::internal("honeycomb_configuration_read"))?;
     if let Some((id, _, _)) = &existing {
         let previous: i64 = sqlx::query_scalar(
@@ -505,17 +505,18 @@ async fn apply_configuration(
     tx: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     actor: &AccessContext,
-    organization: Uuid,
+    organization: Id,
     input: &AcceptedConfiguration,
-    existing: Option<(Uuid, i64, String)>,
-) -> Result<(Uuid, Option<SecretString>), ApiError> {
+    existing: Option<(Id, i64, String)>,
+) -> Result<(Id, Option<SecretString>), ApiError> {
     let fresh = existing.is_none();
     let previously_public = if let Some((id, _, _)) = &existing {
         sqlx::query_scalar::<_,bool>("SELECT visibility='public' AND review_status='verified' FROM iam.applications WHERE id=$1").bind(id).fetch_one(&mut **tx).await.map_err(|_|ApiError::internal("honeycomb_previous_activation"))?
     } else {
         false
     };
-    let app = existing.as_ref().map_or_else(Uuid::now_v7, |row| row.0);
+    let app = Id::identity(&input.app_id)
+        .map_err(|_| ApiError::internal("canonical_application_identity"))?;
     if !fresh
         && input.visibility == "public"
         && existing.as_ref().is_some_and(|row| row.2 == "private")
@@ -587,7 +588,7 @@ async fn apply_configuration(
 async fn configure_webhook(
     tx: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    app: Uuid,
+    app: Id,
     webhook: &Webhook,
 ) -> Result<(), ApiError> {
     let digest = Sha256::digest(webhook.url.as_bytes()).to_vec();
@@ -595,7 +596,7 @@ async fn configure_webhook(
         .bind(app).bind(&digest).fetch_one(&mut **tx).await.map_err(|_|ApiError::internal("honeycomb_webhook_read"))?;
     if unchanged {
         if let Some(presented) = &webhook.secret {
-            let (key_id,ciphertext,nonce,version):(Uuid,Vec<u8>,Vec<u8>,i16)=sqlx::query_as("SELECT key.id,key.secret_ciphertext,key.secret_nonce,key.encryption_key_version FROM iam.application_webhook_signing_keys key JOIN iam.application_webhook_endpoints endpoint ON endpoint.id=key.endpoint_id WHERE endpoint.application_id=$1 AND endpoint.url_digest=$2 AND endpoint.status IN ('active','pending_review') AND key.status='active'").bind(app).bind(&digest).fetch_one(&mut **tx).await.map_err(|_|ApiError::internal("honeycomb_webhook_existing_key"))?;
+            let (key_id,ciphertext,nonce,version):(Id,Vec<u8>,Vec<u8>,i16)=sqlx::query_as("SELECT key.id,key.secret_ciphertext,key.secret_nonce,key.encryption_key_version FROM iam.application_webhook_signing_keys key JOIN iam.application_webhook_endpoints endpoint ON endpoint.id=key.endpoint_id WHERE endpoint.application_id=$1 AND endpoint.url_digest=$2 AND endpoint.status IN ('active','pending_review') AND key.status='active'").bind(app).bind(&digest).fetch_one(&mut **tx).await.map_err(|_|ApiError::internal("honeycomb_webhook_existing_key"))?;
             let encrypted = EncryptedValue {
                 key_version: version,
                 ciphertext,
@@ -626,8 +627,8 @@ async fn configure_webhook(
             "a signing secret is required for a new destination",
         )
     })?;
-    let endpoint = sqlx::query_scalar::<_,Uuid>("SELECT id FROM iam.application_webhook_endpoints WHERE application_id=$1 AND url_digest=$2 FOR UPDATE").bind(app).bind(&digest).fetch_optional(&mut **tx).await.map_err(|_|ApiError::internal("honeycomb_webhook_destination"))?.unwrap_or_else(Uuid::now_v7);
-    let signing = Uuid::now_v7();
+    let endpoint = sqlx::query_scalar::<_,Id>("SELECT id FROM iam.application_webhook_endpoints WHERE application_id=$1 AND url_digest=$2 FOR UPDATE").bind(app).bind(&digest).fetch_optional(&mut **tx).await.map_err(|_|ApiError::internal("honeycomb_webhook_destination"))?.unwrap_or_else(Id::now_v7);
+    let signing = Id::now_v7();
     let url = state
         .crypto
         .encrypt(
@@ -663,8 +664,8 @@ async fn configure_webhook(
 async fn replace_secret(
     tx: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    app: Uuid,
-    actor: Uuid,
+    app: Id,
+    actor: Id,
 ) -> Result<SecretString, ApiError> {
     let secret = state
         .crypto
@@ -678,7 +679,7 @@ async fn replace_secret(
     sqlx::query("UPDATE iam.application_secrets SET status='retired',retired_at=transaction_timestamp(),retires_at=NULL WHERE application_id=$1 AND status IN ('active','retiring')")
         .bind(app).execute(&mut **tx).await.map_err(|_|ApiError::internal("honeycomb_secret_revoke"))?;
     sqlx::query("INSERT INTO iam.application_secrets(id,application_id,secret_version,secret_prefix,secret_digest,pepper_key_version,created_by_carbon_id) VALUES($1,$2,$3,$4,$5,$6,$7)")
-        .bind(Uuid::now_v7()).bind(app).bind(version).bind(applications::secret_prefix(secret.expose_secret())).bind(digest.as_bytes().as_slice()).bind(digest.key_version()).bind(actor)
+        .bind(Id::now_v7()).bind(app).bind(version).bind(applications::secret_prefix(secret.expose_secret())).bind(digest.as_bytes().as_slice()).bind(digest.key_version()).bind(actor)
         .execute(&mut **tx).await.map_err(|_|ApiError::internal("honeycomb_secret_insert"))?;
     Ok(secret)
 }

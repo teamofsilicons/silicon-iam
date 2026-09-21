@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::domain::id::Id;
 use axum::{
     body::{Body, to_bytes},
     extract::{FromRequestParts, Path, Request, State},
@@ -14,12 +15,11 @@ use axum::{
 };
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 
 use super::ApiState;
 use crate::{error::AppError, infrastructure::postgres::context};
 
-pub(crate) struct MembershipPath(pub(crate) (String, Uuid));
+pub(crate) struct MembershipPath(pub(crate) (String, Id));
 
 impl FromRequestParts<ApiState> for MembershipPath {
     type Rejection = AppError;
@@ -29,7 +29,7 @@ impl FromRequestParts<ApiState> for MembershipPath {
             .await
             .map_err(|_| invalid_id())?;
         if legacy_client(&parts.headers)
-            && let Ok(key) = Uuid::parse_str(&id)
+            && let Ok(key) = Id::parse_str(&id)
         {
             return Ok(Self((org, key)));
         }
@@ -115,7 +115,7 @@ fn needs_translation(value: &Value, key: &str, input: bool) -> bool {
             if input {
                 membership_field(key) || membership_org(id).is_some()
             } else {
-                Uuid::parse_str(id).is_ok()
+                Id::parse_str(id).is_ok()
             }
         }
         _ => false,
@@ -125,8 +125,8 @@ fn needs_translation(value: &Value, key: &str, input: bool) -> bool {
 async fn resolve(
     transaction: &mut Transaction<'_, Postgres>,
     ids: &[String],
-    keys: &[Uuid],
-) -> Result<Vec<(Uuid, String)>, AppError> {
+    keys: &[Id],
+) -> Result<Vec<(Id, String)>, AppError> {
     Ok(
         sqlx::query_as("SELECT * FROM iam_private.resolve_membership_identifiers($1, $2)")
             .bind(ids)
@@ -182,7 +182,7 @@ pub(crate) async fn encode(
 ) -> Result<(), AppError> {
     let mut keys = BTreeSet::new();
     visit_ids(value, "", &mut |value, _| {
-        if let Some(key) = value.as_str().and_then(|id| Uuid::parse_str(id).ok()) {
+        if let Some(key) = value.as_str().and_then(|id| Id::parse_str(id).ok()) {
             keys.insert(key);
         }
         Ok(())
@@ -199,7 +199,7 @@ pub(crate) async fn encode(
         if let Some(id) = value.as_str().and_then(|key| mapping.get(key)) {
             *value = Value::String(id.clone());
         } else if membership_field(key)
-            && value.as_str().is_some_and(|id| Uuid::parse_str(id).is_ok())
+            && value.as_str().is_some_and(|id| Id::parse_str(id).is_ok())
         {
             return Err(AppError::Internal {
                 category: "membership_identifier_missing",
@@ -234,7 +234,7 @@ pub(crate) async fn transport(
     next: Next,
 ) -> Result<Response, AppError> {
     if legacy_client(request.headers()) {
-        let mut response = next.run(request).await;
+        let mut response = encode_response(&state, next.run(request).await, false).await?;
         response.headers_mut().insert(
             "silicon-iam-membership-format",
             http::HeaderValue::from_static("uuid-legacy"),
@@ -309,6 +309,57 @@ pub(crate) async fn transport(
         Request::from_parts(parts, body)
     };
     let response = next.run(request).await;
+    encode_response(&state, response, true).await
+}
+
+/// Internal record field names never become duplicate public identity keys.
+/// This also covers JSON returned by privileged SQL readers and replay caches.
+pub(crate) fn remove_principal_ids(value: &mut Value) -> bool {
+    match value {
+        Value::Object(object) => {
+            let principal = object.remove("principal_id");
+            let mut changed = principal.is_some();
+            if let Some(identity) = principal
+                && !["id", "carbon_id", "silicon_id", "app_id", "public_id"]
+                    .iter()
+                    .any(|key| object.contains_key(*key))
+            {
+                object.insert("id".to_owned(), identity);
+            }
+            let redundant_keys: Vec<_> = object
+                .keys()
+                .filter(|key| key.ends_with("_principal_id"))
+                .cloned()
+                .collect();
+            for key in redundant_keys {
+                if let Some(value) = object.remove(&key) {
+                    object
+                        .entry(key.replace("_principal_id", "_id"))
+                        .or_insert(value);
+                    changed = true;
+                }
+            }
+            for value in object.values_mut() {
+                changed |= remove_principal_ids(value);
+            }
+            changed
+        }
+        Value::Array(values) => {
+            let mut changed = false;
+            for value in values {
+                changed |= remove_principal_ids(value);
+            }
+            changed
+        }
+        _ => false,
+    }
+}
+
+async fn encode_response(
+    state: &ApiState,
+    response: Response,
+    translate_memberships: bool,
+) -> Result<Response, AppError> {
     if !is_json(response.headers()) {
         return Ok(response);
     }
@@ -321,12 +372,16 @@ pub(crate) async fn transport(
     let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) else {
         return Ok(Response::from_parts(parts, Body::from(bytes)));
     };
-    if !needs_translation(&value, "", false) {
+    let identities_changed = remove_principal_ids(&mut value);
+    let memberships_changed = translate_memberships && needs_translation(&value, "", false);
+    if !identities_changed && !memberships_changed {
         return Ok(Response::from_parts(parts, Body::from(bytes)));
     }
-    let mut transaction = context::begin_scoped(state.db()).await?;
-    encode(&mut transaction, &mut value).await?;
-    transaction.commit().await?;
+    if memberships_changed {
+        let mut transaction = context::begin_scoped(state.db()).await?;
+        encode(&mut transaction, &mut value).await?;
+        transaction.commit().await?;
+    }
     parts.headers.remove(header::CONTENT_LENGTH);
     Ok(Response::from_parts(parts, Body::from(value.to_string())))
 }
@@ -345,6 +400,27 @@ fn is_json(headers: &http::HeaderMap) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_responses_remove_redundant_principal_keys_recursively() {
+        let mut value = json!({"principal_id":"saket","carbon_id":"saket","items":[{"actor":{"principal_id":"chef:bricks","public_id":"chef:bricks","type":"silicon"}}]});
+        assert!(remove_principal_ids(&mut value));
+        assert_eq!(
+            value,
+            json!({"carbon_id":"saket","items":[{"actor":{"public_id":"chef:bricks","type":"silicon"}}]})
+        );
+        assert!(!remove_principal_ids(&mut value));
+    }
+
+    #[test]
+    fn generic_webhook_actors_keep_their_canonical_identity() {
+        let mut value = json!({"actor":{"type":"carbon","principal_id":"saket"},"subject_principal_id":"chef:bricks"});
+        assert!(remove_principal_ids(&mut value));
+        assert_eq!(
+            value,
+            json!({"actor":{"type":"carbon","id":"saket"},"subject_id":"chef:bricks"})
+        );
+    }
 
     #[test]
     fn only_existing_official_clients_receive_legacy_memberships() {

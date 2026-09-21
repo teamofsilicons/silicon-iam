@@ -1,5 +1,6 @@
 //! Full immutable review and activation through HTTP under the runtime DB role.
 #![allow(clippy::too_many_lines)]
+use crate::domain::id::Id;
 use anyhow::ensure;
 use axum::{
     body::{Body, to_bytes},
@@ -7,7 +8,6 @@ use axum::{
 };
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
-use uuid::Uuid;
 
 pub(crate) async fn exercise(
     app: &axum::Router,
@@ -20,8 +20,8 @@ pub(crate) async fn exercise(
         &crate::config::Settings::from_env()?.security,
     )?;
     for (id, address) in [
-        (Uuid::from_u128(2), "owner@example.test"),
-        (Uuid::from_u128(4), "admin@example.test"),
+        (Id::from_u128(2), "owner@example.test"),
+        (Id::from_u128(4), "admin@example.test"),
     ] {
         let encrypted = crypto.encrypt(
             crate::infrastructure::crypto::EncryptionContext::global(
@@ -40,7 +40,7 @@ pub(crate) async fn exercise(
         .fetch_one(admin)
         .await?;
     let mut desired = private.clone();
-    desired["operation_id"] = json!(Uuid::now_v7());
+    desired["operation_id"] = json!(Id::now_v7());
     desired["configuration_revision"] = json!(2);
     desired["expected_iam_revision"] = json!(revision);
     desired["visibility"] = json!("public");
@@ -99,7 +99,7 @@ pub(crate) async fn exercise(
         current == revision,
         "pending proposal mutated accepted application"
     );
-    let plan_request = json!({"request_id":Uuid::now_v7(),"app_id":name,"configuration_revision":2,"configuration":desired,"visibility":"public"});
+    let plan_request = json!({"request_id":Id::now_v7(),"app_id":name,"configuration_revision":2,"configuration":desired,"visibility":"public"});
     let (status, plan) = read_response(
         app.clone()
             .oneshot(request(
@@ -157,7 +157,7 @@ pub(crate) async fn exercise(
         eligibility["eligible"] == false,
         "ordinary org owner became a Honeycomb validator"
     );
-    let mut decision = json!({"operation_id":Uuid::now_v7(),"request_id":plan["request_id"],"plan_id":plan["plan_id"],"app_id":name,"configuration_revision":2,"provider":"honeycomb","scopes":[],"decision":"approve","reason":"Reviewed exact configuration"});
+    let mut decision = json!({"operation_id":Id::now_v7(),"request_id":plan["request_id"],"plan_id":plan["plan_id"],"app_id":name,"configuration_revision":2,"provider":"honeycomb","scopes":[],"decision":"approve","reason":"Reviewed exact configuration"});
     ensure!(
         app.clone()
             .oneshot(request(
@@ -170,10 +170,10 @@ pub(crate) async fn exercise(
             == StatusCode::FORBIDDEN,
         "owner approved validator gate"
     );
-    let reviewer = Uuid::from_u128(1);
-    let validator_grant = Uuid::now_v7();
+    let reviewer = Id::fixture("test_carbon");
+    let validator_grant = Id::now_v7();
     sqlx::query("INSERT INTO iam.platform_role_grants(id,carbon_id,role,grant_source) VALUES($1,$3,'application_reviewer','bootstrap'),($2,$3,'honeycomb_validator','bootstrap')")
-        .bind(Uuid::now_v7()).bind(validator_grant).bind(reviewer).execute(admin).await?;
+        .bind(Id::now_v7()).bind(validator_grant).bind(reviewer).execute(admin).await?;
     let (status, validator) = read_response(
         app.clone()
             .oneshot(request(
@@ -188,7 +188,7 @@ pub(crate) async fn exercise(
         status == StatusCode::OK,
         "validator decision failed: {validator}"
     );
-    decision["operation_id"] = json!(Uuid::now_v7());
+    decision["operation_id"] = json!(Id::now_v7());
     decision["provider"] = json!("iam");
     decision["scopes"] = json!(["self.identity.read"]);
     ensure!(
@@ -215,7 +215,7 @@ pub(crate) async fn exercise(
     )
     .await?;
     ensure!(status == StatusCode::OK, "IAM review failed: {iam}");
-    let mut activation = json!({"operation_id":Uuid::now_v7(),"request_id":plan["request_id"],"plan_id":plan["plan_id"],"app_id":name,"configuration_revision":2,"expected_iam_revision":revision,"configuration":desired,"visibility":"public","decision_ids":[validator["decision_id"],iam["decision_id"]],"configuration_operations":[pending_operation]});
+    let mut activation = json!({"operation_id":Id::now_v7(),"request_id":plan["request_id"],"plan_id":plan["plan_id"],"app_id":name,"configuration_revision":2,"expected_iam_revision":revision,"configuration":desired,"visibility":"public","decision_ids":[validator["decision_id"],iam["decision_id"]],"configuration_operations":[pending_operation]});
     activation["configuration"]["name"] = json!("Unreviewed change");
     ensure!(
         app.clone()
@@ -243,9 +243,9 @@ pub(crate) async fn exercise(
             == StatusCode::FORBIDDEN,
         "activation accepted revoked reviewer"
     );
-    sqlx::query("INSERT INTO iam.platform_role_grants(id,carbon_id,role,grant_source) VALUES($1,$2,'honeycomb_validator','bootstrap')").bind(Uuid::now_v7()).bind(reviewer).execute(admin).await?;
+    sqlx::query("INSERT INTO iam.platform_role_grants(id,carbon_id,role,grant_source) VALUES($1,$2,'honeycomb_validator','bootstrap')").bind(Id::now_v7()).bind(reviewer).execute(admin).await?;
     // A later denial prevents choosing an older approved decision.
-    decision["operation_id"] = json!(Uuid::now_v7());
+    decision["operation_id"] = json!(Id::now_v7());
     decision["decision"] = json!("deny");
     let (status, denied) = read_response(
         app.clone()
@@ -270,7 +270,7 @@ pub(crate) async fn exercise(
             == StatusCode::FORBIDDEN,
         "activation cherry-picked superseded approval"
     );
-    decision["operation_id"] = json!(Uuid::now_v7());
+    decision["operation_id"] = json!(Id::now_v7());
     decision["decision"] = json!("approve");
     let (_, iam) = read_response(
         app.clone()
@@ -337,7 +337,7 @@ pub(crate) async fn exercise(
     let immutable = sqlx::query(
         "UPDATE iam.honeycomb_publication_decisions SET decision='deny' WHERE decision_id=$1",
     )
-    .bind(Uuid::parse_str(
+    .bind(Id::parse_str(
         iam["decision_id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing receipt string"))?,
@@ -354,7 +354,7 @@ pub(crate) async fn exercise(
     let mut next_desired = desired.clone();
     next_desired["configuration_revision"] = json!(3);
     next_desired["name"] = json!("Updated public name");
-    let next_request = json!({"request_id":Uuid::now_v7(),"app_id":name,"configuration_revision":3,"configuration":next_desired,"visibility":"public"});
+    let next_request = json!({"request_id":Id::now_v7(),"app_id":name,"configuration_revision":3,"configuration":next_desired,"visibility":"public"});
     let (status, next_plan) = read_response(
         app.clone()
             .oneshot(request(
@@ -373,7 +373,7 @@ pub(crate) async fn exercise(
                 .is_some_and(|evidence| evidence.len() == 2),
         "existing exact provider approval was not reused: {next_plan}"
     );
-    let revoke = json!({"operation_id":Uuid::now_v7(),"expected_iam_revision":accepted["iam_revision"],"environment_id":null,"scopes":["directory.carbons.read"],"decision":"revoke"});
+    let revoke = json!({"operation_id":Id::now_v7(),"expected_iam_revision":accepted["iam_revision"],"environment_id":null,"scopes":["directory.carbons.read"],"decision":"revoke"});
     let (status, revoked) = read_response(
         app.clone()
             .oneshot(request(
@@ -388,7 +388,7 @@ pub(crate) async fn exercise(
         status == StatusCode::OK,
         "scope revocation failed: {revoked}"
     );
-    let next_decision = json!({"operation_id":Uuid::now_v7(),"request_id":next_plan["request_id"],"plan_id":next_plan["plan_id"],"app_id":name,"configuration_revision":3,"provider":"honeycomb","scopes":[],"decision":"approve","reason":"reviewed"});
+    let next_decision = json!({"operation_id":Id::now_v7(),"request_id":next_plan["request_id"],"plan_id":next_plan["plan_id"],"app_id":name,"configuration_revision":3,"provider":"honeycomb","scopes":[],"decision":"approve","reason":"reviewed"});
     ensure!(
         app.clone()
             .oneshot(request(
@@ -417,7 +417,7 @@ pub(crate) async fn exercise(
     let saved_prefix = "/api/v1/honeycomb/applications/test_org%3Esaved-publication";
     let mut saved = private.clone();
     saved["app_id"] = json!(saved_name);
-    saved["operation_id"] = json!(Uuid::now_v7());
+    saved["operation_id"] = json!(Id::now_v7());
     saved["expected_iam_revision"] = json!(0);
     let (status, created) = read_response(
         app.clone()
@@ -434,7 +434,7 @@ pub(crate) async fn exercise(
         "saved private config creation failed: {created}"
     );
     saved["visibility"] = json!("public");
-    let mut saved_request = json!({"request_id":Uuid::now_v7(),"app_id":saved_name,"configuration_revision":1,"configuration":saved,"visibility":"public"});
+    let mut saved_request = json!({"request_id":Id::now_v7(),"app_id":saved_name,"configuration_revision":1,"configuration":saved,"visibility":"public"});
     saved_request["configuration"]["name"] = json!("Unaccepted edit");
     ensure!(
         app.clone()
@@ -468,7 +468,7 @@ pub(crate) async fn exercise(
         ("iam", json!(["directory.carbons.read"])),
         ("honeycomb", json!([])),
     ] {
-        let decision = json!({"operation_id":Uuid::now_v7(),"request_id":saved_plan["request_id"],"plan_id":saved_plan["plan_id"],"app_id":saved_name,"configuration_revision":1,"provider":provider,"scopes":scopes,"decision":"approve","reason":"Reviewed saved config"});
+        let decision = json!({"operation_id":Id::now_v7(),"request_id":saved_plan["request_id"],"plan_id":saved_plan["plan_id"],"app_id":saved_name,"configuration_revision":1,"provider":provider,"scopes":scopes,"decision":"approve","reason":"Reviewed saved config"});
         let (status, decision) = read_response(
             app.clone()
                 .oneshot(request(
@@ -485,7 +485,7 @@ pub(crate) async fn exercise(
         );
         saved_decisions.push(decision["decision_id"].clone());
     }
-    let mut saved_activation = json!({"operation_id":Uuid::now_v7(),"request_id":saved_plan["request_id"],"plan_id":saved_plan["plan_id"],"app_id":saved_name,"configuration_revision":1,"expected_iam_revision":created["iam_revision"],"configuration":saved,"visibility":"public","decision_ids":saved_decisions});
+    let mut saved_activation = json!({"operation_id":Id::now_v7(),"request_id":saved_plan["request_id"],"plan_id":saved_plan["plan_id"],"app_id":saved_name,"configuration_revision":1,"expected_iam_revision":created["iam_revision"],"configuration":saved,"visibility":"public","decision_ids":saved_decisions});
     saved_activation["configuration"]["webhook"]["secret"] = json!("z".repeat(48));
     ensure!(
         app.clone()
@@ -543,8 +543,7 @@ pub(crate) async fn exercise(
             .as_array()
             .is_some_and(|page| page.len() == 1)
             && owners_next["next_cursor"].is_null()
-            && owners["recipients"][0]["principal_id"]
-                != owners_next["recipients"][0]["principal_id"],
+            && owners["recipients"][0]["carbon_id"] != owners_next["recipients"][0]["carbon_id"],
         "owner recipient pagination failed: {owners_next}"
     );
     Ok(())

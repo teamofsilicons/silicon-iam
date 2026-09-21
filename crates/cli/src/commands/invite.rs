@@ -48,7 +48,7 @@ pub async fn run(context: &Context, command: InviteCommand) -> Result<()> {
         InviteCommand::Create {
             carbon_id,
             email,
-            job_role,
+            job_description,
             boundary,
             level,
         } => {
@@ -62,7 +62,7 @@ pub async fn run(context: &Context, command: InviteCommand) -> Result<()> {
                     &models::CarbonInviteCreate {
                         carbon_id,
                         email,
-                        job_role,
+                        job_description,
                         tag_ids: None,
                         first_silicon_membership_id: None,
                         extra_silicon_membership_ids: None,
@@ -121,7 +121,10 @@ pub async fn run(context: &Context, command: InviteCommand) -> Result<()> {
             match context.format {
                 Format::Json => json(&membership),
                 Format::Text => {
-                    println!("Joined {} as {}.", membership.org_id, membership.job_role);
+                    println!(
+                        "Joined {} as {}.",
+                        membership.org_id, membership.job_description
+                    );
                     Ok(())
                 }
             }

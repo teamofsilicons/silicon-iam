@@ -19,6 +19,8 @@ CATALOG = [
   ["releases", "Honeycomb installation and direct IAM bootstrap", "docs/HONEYCOMB_RELEASE.md", %w[install packaging]],
   ["telemetry", "Space Station collection, opt-out and delivery", "docs/TELEMETRY.md", %w[diagnostics]],
   ["building", "Build an IAM application step by step", "docs/BUILDING.md", %w[development integration]],
+  ["canonical-identities", "Canonical identity migration and rollout", "docs/canonical-identity-rollout.md", %w[identity-migration]],
+  ["sensitive-actions", "Sensitive action policies, defaults and approvals", "docs/SENSITIVE_ACTIONS.md", %w[policies]],
   ["iam-scopes", "IAM read and mutation permissions", "docs/IAM_SCOPES.md", %w[scopes permissions]],
   ["scoped-backend", "Separate scoped IAM backend", "docs/SCOPED_BACKEND.md", []],
   ["scoped-auth-openapi", "Scoped application session wire contract", "docs/scoped-auth-openapi.yaml", []],

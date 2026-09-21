@@ -6,6 +6,7 @@
     clippy::struct_field_names
 )]
 use super::{ApiError, ApiState, Instruction, Service, authority, database};
+use crate::domain::id::Id;
 use crate::{
     domain::actor::{ActorRef, ActorType},
     features::applications::honeycomb::operations,
@@ -27,7 +28,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,8 +39,8 @@ struct Version {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Mutation {
-    operation_id: Uuid,
-    environment_id: Uuid,
+    operation_id: Id,
+    environment_id: Id,
     generation: i64,
     key_version: i32,
     expected_environment_revision: i64,
@@ -64,7 +64,7 @@ async fn authorize<'a>(
     state: &'a ApiState,
     service: &Service,
     headers: &HeaderMap,
-    environment: Uuid,
+    environment: Id,
     app: &str,
     version: &Version,
     service_read: bool,
@@ -73,7 +73,7 @@ async fn authorize<'a>(
         Transaction<'a, Postgres>,
         SelectedEnvironment,
         ActorRef,
-        Option<Uuid>,
+        Option<Id>,
     ),
     ApiError,
 > {
@@ -146,7 +146,7 @@ async fn authorize<'a>(
         }
     }
     if let Some(client) = &client {
-        let instruction:Instruction=serde_json::from_value(json!({"operation_id":Uuid::nil(),"expected_iam_revision":version.expected_environment_revision,"environment_id":environment,"generation":version.generation,"operation":if client.app_id==app {"import"}else{"test-app"},"app_id":app})).map_err(|_|ApiError::internal("testing_app_authority_instruction"))?;
+        let instruction:Instruction=serde_json::from_value(json!({"operation_id":Id::nil(),"expected_iam_revision":version.expected_environment_revision,"environment_id":environment,"generation":version.generation,"operation":if client.app_id==app {"import"}else{"test-app"},"app_id":app})).map_err(|_|ApiError::internal("testing_app_authority_instruction"))?;
         authority::authorize(&mut tx, state, service, client, &instruction, headers).await?;
     } else if access.is_some() {
         let allowed: bool =
@@ -190,7 +190,7 @@ async fn authorize<'a>(
     {
         return Err(ApiError::conflict("testing_revision_or_state_conflict"));
     }
-    let organization: Uuid =
+    let organization: Id =
         sqlx::query_scalar("SELECT iam_private.honeycomb_testing_organization($1,NULL)")
             .bind(environment)
             .fetch_one(&mut *tx)
@@ -234,7 +234,7 @@ async fn snapshot(
 async fn read(
     State(state): State<ApiState>,
     service: Service,
-    Path((env, app)): Path<(Uuid, String)>,
+    Path((env, app)): Path<(Id, String)>,
     headers: HeaderMap,
     Query(version): Query<Version>,
 ) -> Result<Json<Value>, ApiError> {
@@ -260,7 +260,7 @@ async fn read(
 async fn configure(
     State(state): State<ApiState>,
     service: Service,
-    Path(path): Path<(Uuid, String)>,
+    Path(path): Path<(Id, String)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response, ApiError> {
@@ -269,7 +269,7 @@ async fn configure(
 async fn rotate(
     State(state): State<ApiState>,
     service: Service,
-    Path(path): Path<(Uuid, String)>,
+    Path(path): Path<(Id, String)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response, ApiError> {
@@ -284,7 +284,7 @@ enum MutationKind {
 async fn recover(
     State(state): State<ApiState>,
     service: Service,
-    Path(path): Path<(Uuid, String)>,
+    Path(path): Path<(Id, String)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response, ApiError> {
@@ -296,7 +296,7 @@ async fn recover(
 async fn mutate(
     state: ApiState,
     service: Service,
-    (env, app): (Uuid, String),
+    (env, app): (Id, String),
     headers: HeaderMap,
     body: Bytes,
     mode: MutationKind,
@@ -323,7 +323,7 @@ async fn mutate(
     let (mut tx, selected, actor, client) =
         authorize(&state, &service, &headers, env, &app, &version, false).await?;
     if !rotation && !recovery && input.expected_iam_revision == 0 {
-        let production: Option<Uuid> =
+        let production: Option<Id> =
             sqlx::query_scalar("SELECT iam_private.resolve_honeycomb_application($1)")
                 .bind(&app)
                 .fetch_one(&mut *tx)
@@ -504,9 +504,9 @@ async fn mutate(
 }
 #[derive(sqlx::FromRow)]
 struct WebhookRow {
-    application_id: Uuid,
-    endpoint_id: Uuid,
-    signing_key_id: Uuid,
+    application_id: Id,
+    endpoint_id: Id,
+    signing_key_id: Id,
     url_ciphertext: Vec<u8>,
     url_nonce: Vec<u8>,
     url_key_version: i16,
@@ -527,8 +527,8 @@ async fn webhook(
 }
 fn decrypt(
     state: &ApiState,
-    app: Uuid,
-    id: Uuid,
+    app: Id,
+    id: Id,
     field: ProtectedField,
     ciphertext: Vec<u8>,
     nonce: Vec<u8>,
@@ -558,7 +558,7 @@ fn secret(state: &ApiState) -> Result<(secrecy::SecretString, Value), ApiError> 
         .crypto
         .digest_secret(DigestPurpose::ApplicationSecret, &secret)
         .map_err(|_| ApiError::internal("testing_app_secret_digest"))?;
-    let value = json!({"secret_id":Uuid::now_v7(),"secret_digest":hex::encode(digest.as_bytes()),"secret_digest_version":digest.key_version(),"secret_prefix":secret.expose_secret().chars().take(12).collect::<String>()});
+    let value = json!({"secret_id":Id::now_v7(),"secret_digest":hex::encode(digest.as_bytes()),"secret_digest_version":digest.key_version(),"secret_prefix":secret.expose_secret().chars().take(12).collect::<String>()});
     Ok((secret, value))
 }
 async fn rotate_in_test(
@@ -571,7 +571,7 @@ async fn rotate_in_test(
     if before["configuration_revision"] != input.configuration_revision {
         return Err(ApiError::conflict("configuration_revision_conflict"));
     }
-    let id: Uuid = serde_json::from_value(before["application_id"].clone())
+    let id: Id = serde_json::from_value(before["application_id"].clone())
         .map_err(|_| ApiError::internal("testing_application_id"))?;
     let (secret, value) = secret(state)?;
     let credential: i64 = sqlx::query_scalar(
@@ -628,17 +628,13 @@ async fn configure_in_test(
             .await
             .map_err(database)?;
     let fresh = existing.is_none();
-    let id = if let Some(existing) = &existing {
-        serde_json::from_value(existing.0["application_id"].clone())
-            .map_err(|_| ApiError::internal("testing_app_id"))?
-    } else {
-        Uuid::now_v7()
-    };
+    let id = Id::identity(app)
+        .map_err(|_| ApiError::internal("canonical_testing_application_identity"))?;
     let prior = webhook(tx, app).await?;
     let url = config["webhook"]["url"]
         .as_str()
         .ok_or_else(|| ApiError::validation("webhook.url", "required"))?;
-    let mut endpoint = Uuid::now_v7();
+    let mut endpoint = Id::now_v7();
     let supplied = config["webhook"]["secret"].as_str().map(str::to_owned);
     let mut inherited = false;
     let signing = if let Some(prior) = prior {
@@ -677,7 +673,7 @@ async fn configure_in_test(
         supplied
             .ok_or_else(|| ApiError::validation("webhook.secret", "required for new application"))?
     };
-    let signing_id = Uuid::now_v7();
+    let signing_id = Id::now_v7();
     let enc_url = state
         .crypto
         .encrypt(
@@ -733,12 +729,12 @@ async fn configure_in_test(
         .await
         .map_err(|_| ApiError::conflict("testing_scope_policy_unavailable"))?;
     sqlx::query("SELECT iam_private.activate_testing_application_scopes($1)")
-        .bind(vec![id])
+        .bind(vec![id.to_string()])
         .execute(&mut **tx)
         .await
         .map_err(database)?;
     sqlx::query("SELECT iam_private.honeycomb_testing_app_readiness($1,false)")
-        .bind(vec![id])
+        .bind(vec![id.to_string()])
         .execute(&mut **tx)
         .await
         .map_err(database)?;
@@ -794,7 +790,7 @@ async fn list(
         if item.0["purge_after"] == "infinity" {
             item.0["purge_after"] = Value::Null;
         }
-        let id: Uuid = serde_json::from_value(item.0["environment_id"].clone())
+        let id: Id = serde_json::from_value(item.0["environment_id"].clone())
             .map_err(|_| ApiError::internal("testing_list_identity"))?;
         let record: Option<sqlx::types::Json<Value>> =
             sqlx::query_scalar("SELECT iam_private.honeycomb_testing_record($1,$2)")
@@ -861,12 +857,12 @@ async fn application_identity(
 async fn check_source(
     tx: &mut Transaction<'_, Postgres>,
     app: &str,
-    client: Option<Uuid>,
+    client: Option<Id>,
 ) -> Result<(), ApiError> {
     let Some(client) = client else {
         return Ok(());
     };
-    let source: Option<(Uuid, Uuid, bool, bool)> =
+    let source: Option<(Id, Id, bool, bool)> =
         sqlx::query_as("SELECT * FROM iam_private.honeycomb_testing_application_source($1)")
             .bind(app)
             .fetch_optional(&mut **tx)
@@ -887,7 +883,7 @@ async fn recover_in_test(
     app: &str,
     input: &Mutation,
 ) -> Result<Value, ApiError> {
-    let (id, ciphertext, nonce, key_version): (Uuid, Vec<u8>, Vec<u8>, i16) =
+    let (id, ciphertext, nonce, key_version): (Id, Vec<u8>, Vec<u8>, i16) =
         sqlx::query_as("SELECT * FROM iam_private.get_testing_application_secret($1)")
             .bind(app)
             .fetch_one(&mut **tx)

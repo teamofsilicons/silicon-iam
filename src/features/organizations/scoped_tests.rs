@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use crate::domain::id::Id;
 use anyhow::{Context as _, ensure};
 use axum::{
     Router,
@@ -13,10 +14,7 @@ use axum::{
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::{Value, json};
 use sqlx::{PgPool, postgres::PgPoolOptions};
-use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-use testcontainers_modules::postgres::Postgres;
 use tower::ServiceExt as _;
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -29,13 +27,13 @@ use crate::{
     },
 };
 
-const OWNER: Uuid = Uuid::from_u128(1);
-const MEMBER: Uuid = Uuid::from_u128(3);
-const APP: Uuid = Uuid::from_u128(0x11);
-const ORG: Uuid = Uuid::from_u128(0x21);
-const OWNER_MEMBERSHIP: Uuid = Uuid::from_u128(0x31);
-const MEMBER_MEMBERSHIP: Uuid = Uuid::from_u128(0x33);
-const TAG: Uuid = Uuid::from_u128(0x51);
+const OWNER: Id = Id::fixture("test_carbon");
+const MEMBER: Id = Id::fixture("plain_member");
+const APP: Id = Id::fixture("test_org>app-alpha");
+const ORG: Id = Id::from_u128(0x21);
+const OWNER_MEMBERSHIP: Id = Id::from_u128(0x31);
+const MEMBER_MEMBERSHIP: Id = Id::from_u128(0x33);
+const TAG: Id = Id::from_u128(0x51);
 const WRITE_SCOPES: &[&str] = &[
     "self.organizations.read",
     "organization.profile.update",
@@ -46,26 +44,23 @@ const WRITE_SCOPES: &[&str] = &[
 ];
 
 #[tokio::test]
-#[ignore = "requires Docker and the CI IAM test settings"]
+#[ignore = "requires isolated PostgreSQL and the CI IAM test settings"]
 async fn scoped_mutations_enforce_scope_membership_capability_and_step_up() -> anyhow::Result<()> {
     let mut settings = Settings::from_env().context("load the CI IAM test settings")?;
     ensure!(
         settings.environment == RuntimeEnvironment::Test,
         "requires IAM_ENVIRONMENT=test"
     );
-    let container = Postgres::default().with_tag("16-alpine").start().await?;
-    let host = container.get_host().await?;
-    let port = container.get_host_port_ipv4(5432).await?;
-    let admin_url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-    let admin = PgPoolOptions::new()
-        .max_connections(4)
-        .connect(&admin_url)
-        .await?;
+    let database = crate::test_database::TestDatabase::start().await?;
+    let admin = database.pool.clone();
     postgres::migrate(&admin).await?;
     crate::features::applications::live_tests::seed_protocol_rows(&admin).await?;
-    seed_directory(&admin).await?;
-    grant_scopes(&admin).await?;
-    sqlx::raw_sql("CREATE ROLE silicon_iam_api NOLOGIN; CREATE ROLE silicon_iam_worker NOLOGIN; CREATE ROLE silicon_iam_key_operator NOLOGIN; CREATE ROLE scoped_runtime LOGIN PASSWORD 'scoped-test-only' IN ROLE silicon_iam_api;")
+    sqlx::raw_sql("DO $$ DECLARE role_name text; BEGIN
+      FOREACH role_name IN ARRAY ARRAY['silicon_iam_api','silicon_iam_worker','silicon_iam_key_operator'] LOOP
+        IF to_regrole(role_name) IS NULL THEN EXECUTE format('CREATE ROLE %I NOLOGIN',role_name); END IF;
+      END LOOP;
+      IF to_regrole('scoped_runtime') IS NULL THEN CREATE ROLE scoped_runtime LOGIN PASSWORD 'scoped-test-only' IN ROLE silicon_iam_api; END IF;
+    END $$;")
         .execute(&admin).await?;
     let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
         .lines()
@@ -75,7 +70,24 @@ async fn scoped_mutations_enforce_scope_membership_capability_and_step_up() -> a
     sqlx::raw_sql(sqlx::AssertSqlSafe(grants))
         .execute(&admin)
         .await?;
-    let runtime_url = format!("postgres://scoped_runtime:scoped-test-only@{host}:{port}/postgres");
+    for fixture in [
+        include_str!("../../../tests/sql/iam_mutation_scope_policy.sql"),
+        include_str!("../../../tests/sql/unscoped_membership_disclosure.sql"),
+        include_str!("../../../tests/sql/account_onboarding_login.sql"),
+        include_str!("../../../tests/sql/application_webhook_scopes.sql"),
+    ] {
+        sqlx::raw_sql(fixture).execute(&admin).await?;
+    }
+    seed_directory(&admin).await?;
+    grant_scopes(&admin).await?;
+    let mut runtime_url = url::Url::parse(&database.url)?;
+    runtime_url
+        .set_username("scoped_runtime")
+        .map_err(|()| anyhow::anyhow!("invalid test database URL"))?;
+    runtime_url
+        .set_password(Some("scoped-test-only"))
+        .map_err(|()| anyhow::anyhow!("invalid test database URL"))?;
+    let runtime_url = runtime_url.to_string();
     let runtime = PgPoolOptions::new()
         .max_connections(4)
         .connect(&runtime_url)
@@ -244,7 +256,7 @@ async fn scoped_mutations_enforce_scope_membership_capability_and_step_up() -> a
         "each allowed mutation must carry its application and actor audit attribution"
     );
 
-    let admin_membership = Uuid::from_u128(0x32);
+    let admin_membership = Id::from_u128(0x32);
     let admin_path =
         "/api/v1/organizations/test_org/members/test_admin%5Btest_org%5D/admin-demotions"
             .to_owned();
@@ -353,14 +365,14 @@ async fn seed_directory(pool: &PgPool) -> anyhow::Result<()> {
     sqlx::raw_sql(r"
         BEGIN;
         UPDATE iam.organizations SET trusted_org=true WHERE id='00000000-0000-0000-0000-000000000021';
-        INSERT INTO iam.principals(id,kind,status,activated_at) VALUES('00000000-0000-0000-0000-000000000003','carbon','active',transaction_timestamp());
-        INSERT INTO iam.carbons(id,carbon_id,display_name) VALUES('00000000-0000-0000-0000-000000000003','plain_member','Plain member');
+        INSERT INTO iam.principals(id,kind,status,activated_at) VALUES('plain_member','carbon','active',transaction_timestamp());
+        INSERT INTO iam.carbons(id,carbon_id,display_name) VALUES('plain_member','plain_member','Plain member');
         INSERT INTO iam.carbon_contacts(id,carbon_id,kind,ciphertext,nonce,encryption_key_version,verified_at) VALUES
-          ('00000000-0000-0000-0000-000000000301','00000000-0000-0000-0000-000000000003','email',decode(repeat('31',17),'hex'),decode(repeat('32',12),'hex'),1,transaction_timestamp()),
-          ('00000000-0000-0000-0000-000000000302','00000000-0000-0000-0000-000000000003','phone',decode(repeat('33',17),'hex'),decode(repeat('34',12),'hex'),1,transaction_timestamp());
-        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES('00000000-0000-0000-0000-000000000033','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000003','carbon','member');
-        INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES('00000000-0000-0000-0000-000000000022','other_org','00000000-0000-0000-0000-000000000001','Not selected');
-        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES('00000000-0000-0000-0000-000000000034','00000000-0000-0000-0000-000000000022','00000000-0000-0000-0000-000000000001','carbon','owner');
+          ('00000000-0000-0000-0000-000000000301','plain_member','email',decode(repeat('31',17),'hex'),decode(repeat('32',12),'hex'),1,transaction_timestamp()),
+          ('00000000-0000-0000-0000-000000000302','plain_member','phone',decode(repeat('33',17),'hex'),decode(repeat('34',12),'hex'),1,transaction_timestamp());
+        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES('00000000-0000-0000-0000-000000000033','00000000-0000-0000-0000-000000000021','plain_member','carbon','member');
+        INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES('00000000-0000-0000-0000-000000000022','other_org','test_carbon','Not selected');
+        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES('00000000-0000-0000-0000-000000000034','00000000-0000-0000-0000-000000000022','test_carbon','carbon','owner');
         INSERT INTO iam.organization_tags(id,organization_id,name,normalized_name,created_by_membership_id) VALUES('00000000-0000-0000-0000-000000000051','00000000-0000-0000-0000-000000000021','Initial tag','initial_tag','00000000-0000-0000-0000-000000000031');
         COMMIT;
     ").execute(pool).await?;
@@ -378,15 +390,15 @@ async fn grant_scopes(pool: &PgPool) -> anyhow::Result<()> {
 async fn seed_bearer(
     pool: &PgPool,
     crypto: &CryptoService,
-    subject: Uuid,
-    membership: Uuid,
+    subject: Id,
+    membership: Id,
     scopes: &[&str],
 ) -> anyhow::Result<SecretString> {
     let token = crypto.generate_secret(SecretKind::ApplicationAccessToken)?;
     let digest = crypto.digest_secret(DigestPurpose::ApplicationAccessToken, &token)?;
-    let session_id = Uuid::now_v7();
-    let consent_id = Uuid::now_v7();
-    let token_id = Uuid::now_v7();
+    let session_id = Id::now_v7();
+    let consent_id = Id::now_v7();
+    let token_id = Id::now_v7();
     let mut tx = pool.begin().await?;
     sqlx::query("INSERT INTO iam.authentication_sessions(id,subject_principal_id,subject_kind,authentication_method,assurance_level,subject_auth_epoch,idle_expires_at,absolute_expires_at) VALUES($1,$2,'carbon','email_otp',1,1,transaction_timestamp()+interval '1 day',transaction_timestamp()+interval '2 days')")
         .bind(session_id).bind(subject).execute(&mut *tx).await?;
@@ -416,10 +428,10 @@ async fn seed_step_up(
     pool: &PgPool,
     crypto: &CryptoService,
     bearer: &SecretString,
-    resource: Uuid,
+    resource: Id,
 ) -> anyhow::Result<SecretString> {
     let bearer_digest = crypto.digest_secret(DigestPurpose::ApplicationAccessToken, bearer)?;
-    let session = sqlx::query_scalar::<_, Uuid>(
+    let session = sqlx::query_scalar::<_, Id>(
         "SELECT authentication_session_id FROM iam.access_tokens WHERE token_digest=$1",
     )
     .bind(bearer_digest.as_bytes().as_slice())
@@ -427,17 +439,17 @@ async fn seed_step_up(
     .await?;
     let token = crypto.generate_secret(SecretKind::StepUpAssertion)?;
     let digest = crypto.digest_secret(DigestPurpose::StepUpAssertion, &token)?;
-    let challenge = Uuid::now_v7();
+    let challenge = Id::now_v7();
     let mut tx = pool.begin().await?;
     sqlx::query("INSERT INTO iam.step_up_challenges(id,authentication_session_id,carbon_id,purpose,resource_id,channel,challenge_digest,digest_key_version,status,expires_at,consumed_at) VALUES($1,$2,$3,'organization.authorization_change',$4,'email',$5,1,'completed',transaction_timestamp()+interval '5 minutes',transaction_timestamp())")
         .bind(challenge).bind(session).bind(OWNER).bind(resource).bind(digest.as_bytes().as_slice()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO iam.step_up_assertions(id,step_up_challenge_id,authentication_session_id,carbon_id,purpose,token_prefix,token_digest,digest_key_version,assurance_level,expires_at) VALUES($1,$2,$3,$4,'organization.authorization_change',$5,$6,1,2,transaction_timestamp()+interval '5 minutes')")
-        .bind(Uuid::now_v7()).bind(challenge).bind(session).bind(OWNER).bind(&token.expose_secret()[..12]).bind(digest.as_bytes().as_slice()).execute(&mut *tx).await?;
+        .bind(Id::now_v7()).bind(challenge).bind(session).bind(OWNER).bind(&token.expose_secret()[..12]).bind(digest.as_bytes().as_slice()).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(token)
 }
 
-async fn version(pool: &PgPool, organization: Uuid) -> anyhow::Result<i64> {
+async fn version(pool: &PgPool, organization: Id) -> anyhow::Result<i64> {
     Ok(
         sqlx::query_scalar("SELECT version FROM iam.organizations WHERE id=$1")
             .bind(organization)
@@ -471,7 +483,7 @@ async fn request_with_step_up(
         .uri(path)
         .header("authorization", format!("Bearer {}", token.expose_secret()))
         .header("content-type", "application/json")
-        .header("idempotency-key", Uuid::now_v7().to_string());
+        .header("idempotency-key", Id::now_v7().to_string());
     if let Some(version) = version {
         builder = builder.header("if-match", format!("\"{version}\""));
     }
@@ -493,8 +505,8 @@ async fn request_with_step_up(
 #[test]
 fn scope_gates_reject_external_obo_and_preserve_carbon_only_onboarding() {
     let mut actor = Authenticated(AccessContext {
-        token_id: Uuid::now_v7(),
-        authentication_session_id: Uuid::now_v7(),
+        token_id: Id::now_v7(),
+        authentication_session_id: Id::now_v7(),
         subject: ActorRef {
             actor_type: ActorType::Carbon,
             id: OWNER,
@@ -520,7 +532,7 @@ fn scope_gates_reject_external_obo_and_preserve_carbon_only_onboarding() {
         assert!(super::support::require_scoped_carbon(&actor, onboarding).is_err());
         actor.0.subject.actor_type = ActorType::Carbon;
     }
-    actor.0.audience_application_id = Some(Uuid::from_u128(0x12));
+    actor.0.audience_application_id = Some(Id::fixture("test_org>app-beta"));
     assert!(
         super::support::require_application_scope(&actor, "organization.profile.update").is_err()
     );
@@ -534,8 +546,8 @@ fn scope_gates_reject_external_obo_and_preserve_carbon_only_onboarding() {
 
 fn projection_actor(scopes: &[&str]) -> Authenticated {
     Authenticated(AccessContext {
-        token_id: Uuid::from_u128(0x901),
-        authentication_session_id: Uuid::from_u128(0x902),
+        token_id: Id::from_u128(0x901),
+        authentication_session_id: Id::from_u128(0x902),
         subject: ActorRef {
             actor_type: ActorType::Carbon,
             id: OWNER,
@@ -555,8 +567,8 @@ fn mutation_member_projection_requires_the_correct_target_actor_read_scope() {
     use super::support::{MutationView, mutation_projection};
     let mut member = json!({
         "id": "membership", "org_id": "test_org", "version": 3, "status": "active",
-        "principal": {"principal_id": Uuid::from_u128(0x999), "type": "carbon", "public_id": "private_carbon"},
-        "job_role": "private role", "org_role": "admin", "tags": [{"id":"tag", "name":"private tag"}]
+        "principal": {"type": "carbon", "public_id": "private_carbon"},
+        "job_description": "private role", "org_role": "admin", "tags": [{"id":"tag", "name":"private tag"}]
     });
     let receipt = json!({"id":"membership", "org_id":"test_org", "version":3, "status":"active"});
     for scopes in [
@@ -582,7 +594,7 @@ fn mutation_member_projection_requires_the_correct_target_actor_read_scope() {
         member.clone(),
     );
     assert_eq!(permitted["principal"], member["principal"]);
-    assert_eq!(permitted["job_role"], "private role");
+    assert_eq!(permitted["job_description"], "private role");
     assert!(permitted.get("tags").is_none());
     assert!(permitted.get("org_role").is_none());
     member["principal"]["type"] = json!("silicon");
@@ -601,8 +613,8 @@ fn mutation_self_projection_and_authorization_use_self_field_permissions() {
     use super::support::{MutationView, mutation_projection};
     let member = json!({
         "id":"membership", "version":3,
-        "principal":{"principal_id":OWNER, "type":"carbon", "public_id":"test_carbon"},
-        "job_role":"private role", "org_role":"admin", "capabilities":["members.invite"]
+        "principal":{"type":"carbon", "public_id":"test_carbon"},
+        "job_description":"private role", "org_role":"admin", "capabilities":["members.invite"]
     });
     let actor = projection_actor(&[
         "self.identity.read",
@@ -611,7 +623,7 @@ fn mutation_self_projection_and_authorization_use_self_field_permissions() {
     ]);
     let projected = mutation_projection(&actor, MutationView::Member, member);
     assert!(projected.get("principal").is_some());
-    assert_eq!(projected["job_role"], "private role");
+    assert_eq!(projected["job_description"], "private role");
     assert!(projected.get("org_role").is_none());
     assert!(projected.get("capabilities").is_none());
 
@@ -635,8 +647,8 @@ fn mutation_self_projection_and_authorization_use_self_field_permissions() {
 fn mutation_silicon_creation_returns_generated_ids_and_secret_without_directory_data() {
     use super::support::{MutationView, mutation_projection};
     let silicon = json!({
-        "principal_id":"principal", "membership_id":"member", "silicon_id":"helper:test_org", "org_id":"test_org", "version":1,
-        "display_name":"private", "job_role":"private role", "reports_to_membership_id":"private parent", "tags":[{"id":"tag", "name":"private tag"}]
+        "membership_id":"member", "silicon_id":"helper:test_org", "org_id":"test_org", "version":1,
+        "display_name":"private", "job_description":"private role", "reports_to_membership_id":"private parent", "tags":[{"id":"tag", "name":"private tag"}]
     });
     let actor = projection_actor(&[
         "organization.silicons.update",
@@ -651,7 +663,7 @@ fn mutation_silicon_creation_returns_generated_ids_and_secret_without_directory_
     assert_eq!(
         mutation_projection(&actor, MutationView::SiliconCreated, created),
         json!({
-            "silicon":{"principal_id":"principal", "membership_id":"member", "silicon_id":"helper:test_org", "org_id":"test_org", "version":1},
+            "silicon":{"membership_id":"member", "silicon_id":"helper:test_org", "org_id":"test_org", "version":1},
             "silicon_token":"one-time-secret", "secret_replay_expires_at":"expires"
         })
     );

@@ -1,5 +1,6 @@
 //! Testing-environment lifecycle endpoints.
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -8,7 +9,6 @@ use axum::{
 };
 use serde_json::json;
 use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -117,7 +117,7 @@ const GET_ORGANIZATION_ENVIRONMENT_QUERY: &str = r"
 #[derive(sqlx::FromRow)]
 struct DescribedEnvironment {
     #[sqlx(rename = "testing_environment_id")]
-    id: Uuid,
+    id: Id,
     name: String,
     description: Option<String>,
     key_generation: i32,
@@ -247,7 +247,7 @@ pub(super) async fn create_in_scope(
         });
     }
 
-    let environment_id = Uuid::now_v7();
+    let environment_id = Id::now_v7();
     let key = state
         .crypto
         .generate_testing_environment_key()
@@ -326,7 +326,7 @@ pub(super) async fn create_in_scope(
 pub(super) async fn get_environment(
     State(state): State<ApiState>,
     authenticated: EnvironmentManager,
-    Path((org_id, environment_id)): Path<(String, Uuid)>,
+    Path((org_id, environment_id)): Path<(String, Id)>,
 ) -> Result<Response, AppError> {
     support::plane(&state)?;
     let mut scope = authenticated.begin(&state, &org_id).await?;
@@ -347,7 +347,7 @@ pub(super) async fn get_environment(
 pub(super) async fn update_environment(
     State(state): State<ApiState>,
     authenticated: EnvironmentManager,
-    Path((org_id, environment_id)): Path<(String, Uuid)>,
+    Path((org_id, environment_id)): Path<(String, Id)>,
     headers: HeaderMap,
     Json(mut input): Json<EnvironmentPatch>,
 ) -> Result<Response, AppError> {
@@ -450,8 +450,8 @@ pub(super) async fn update_environment(
 
 async fn ensure_environment_updated(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    environment_id: Uuid,
+    organization_id: Id,
+    environment_id: Id,
     expected_version: i64,
     affected: u64,
 ) -> Result<(), AppError> {
@@ -478,7 +478,7 @@ async fn ensure_environment_updated(
 pub(super) async fn delete_environment(
     State(state): State<ApiState>,
     authenticated: EnvironmentManager,
-    Path((org_id, environment_id)): Path<(String, Uuid)>,
+    Path((org_id, environment_id)): Path<(String, Id)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let plane = support::plane(&state)?;
@@ -565,7 +565,7 @@ pub(super) async fn delete_environment(
 pub(super) async fn restore_environment(
     State(state): State<ApiState>,
     authenticated: EnvironmentManager,
-    Path((org_id, environment_id)): Path<(String, Uuid)>,
+    Path((org_id, environment_id)): Path<(String, Id)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     support::plane(&state)?;
@@ -666,7 +666,7 @@ pub(super) async fn restore_environment(
 pub(super) async fn get_environment_key(
     State(state): State<ApiState>,
     authenticated: EnvironmentManager,
-    Path((org_id, environment_id)): Path<(String, Uuid)>,
+    Path((org_id, environment_id)): Path<(String, Id)>,
 ) -> Result<Response, AppError> {
     support::plane(&state)?;
     let mut scope = authenticated.begin(&state, &org_id).await?;
@@ -724,7 +724,7 @@ pub(super) async fn get_environment_key(
 pub(super) async fn rotate_environment_key(
     State(state): State<ApiState>,
     authenticated: EnvironmentManager,
-    Path((org_id, environment_id)): Path<(String, Uuid)>,
+    Path((org_id, environment_id)): Path<(String, Id)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     support::plane(&state)?;
@@ -837,7 +837,7 @@ pub(super) async fn rotate_environment_key(
 pub(super) async fn clean_environment(
     State(state): State<ApiState>,
     authenticated: EnvironmentManager,
-    Path((org_id, environment_id)): Path<(String, Uuid)>,
+    Path((org_id, environment_id)): Path<(String, Id)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     support::plane(&state)?;
@@ -996,7 +996,7 @@ pub(super) async fn clean_current_environment(
 /// cannot commit together, and erasing first means a failure afterwards leaves
 /// an environment that is empty but still recorded, which the caller can retry.
 /// The reverse order would leave orphaned data no one can reach.
-async fn erase(state: &ApiState, environment_id: Uuid) -> Result<CleaningResult, AppError> {
+async fn erase(state: &ApiState, environment_id: Id) -> Result<CleaningResult, AppError> {
     let plane = support::plane(state)?;
     // Lifecycle authorization was established in the control plane, so this
     // separate testing connection does not inherit request-plane context.
@@ -1040,7 +1040,7 @@ async fn erase(state: &ApiState, environment_id: Uuid) -> Result<CleaningResult,
 /// called.
 async fn describe(
     transaction: &mut Transaction<'_, Postgres>,
-    environment_id: Uuid,
+    environment_id: Id,
 ) -> Result<DescribedEnvironment, AppError> {
     sqlx::query_as::<_, DescribedEnvironment>(
         "SELECT * FROM iam_private.describe_testing_environment($1)",
@@ -1059,7 +1059,7 @@ async fn describe(
 /// the update policy cannot recognize the second caller.
 async fn mark_cleaned(
     transaction: &mut Transaction<'_, Postgres>,
-    environment_id: Uuid,
+    environment_id: Id,
 ) -> Result<(), AppError> {
     sqlx::query("SELECT iam_private.record_testing_environment_cleaning($1)")
         .bind(environment_id)
@@ -1071,7 +1071,7 @@ async fn mark_cleaned(
 
 async fn fetch(
     transaction: &mut Transaction<'_, Postgres>,
-    environment_id: Uuid,
+    environment_id: Id,
 ) -> Result<EnvironmentResponse, AppError> {
     sqlx::query_as::<_, EnvironmentResponse>(GET_ENVIRONMENT_QUERY)
         .bind(environment_id)
@@ -1083,8 +1083,8 @@ async fn fetch(
 
 async fn fetch_in_organization(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    environment_id: Uuid,
+    organization_id: Id,
+    environment_id: Id,
 ) -> Result<EnvironmentResponse, AppError> {
     sqlx::query_as::<_, EnvironmentResponse>(GET_ORGANIZATION_ENVIRONMENT_QUERY)
         .bind(environment_id)
@@ -1097,7 +1097,7 @@ async fn fetch_in_organization(
 
 async fn fetch_key(
     transaction: &mut Transaction<'_, Postgres>,
-    environment_id: Uuid,
+    environment_id: Id,
 ) -> Result<StoredKey, AppError> {
     let row = sqlx::query_as::<_, (Vec<u8>, i16, Vec<u8>, Vec<u8>, i16)>(
         r"

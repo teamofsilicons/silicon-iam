@@ -1,5 +1,6 @@
 use std::{borrow::Cow, num::NonZeroU32, time::Duration};
 
+use crate::domain::id::Id;
 use axum::{
     body::Body,
     http::{HeaderMap, HeaderValue, StatusCode, header},
@@ -9,7 +10,6 @@ use secrecy::SecretString;
 use serde::Serialize;
 use serde_json::json;
 use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -58,9 +58,9 @@ pub(super) enum Claim {
 pub(super) struct MutationEvent<'a> {
     pub(super) action: &'static str,
     pub(super) target_type: &'static str,
-    pub(super) target_id: Option<Uuid>,
+    pub(super) target_id: Option<Id>,
     pub(super) aggregate_type: &'a str,
-    pub(super) aggregate_id: Uuid,
+    pub(super) aggregate_id: Id,
     pub(super) aggregate_version: i64,
     pub(super) event_type: &'a str,
     pub(super) before_state: Option<serde_json::Value>,
@@ -123,7 +123,7 @@ pub(super) async fn begin_organization<'a>(
 pub(super) async fn begin_platform<'a>(
     state: &'a ApiState,
     authenticated: &Authenticated,
-) -> Result<(Transaction<'a, Postgres>, Uuid), AppError> {
+) -> Result<(Transaction<'a, Postgres>, Id), AppError> {
     let carbon_id = security::require_first_party_carbon(&authenticated.0)?;
     let mut transaction = begin_serializable(state, Some(carbon_id), None).await?;
     let allowed = sqlx::query_scalar::<_, bool>(
@@ -153,8 +153,8 @@ pub(super) async fn consume_step_up(
     authenticated: &Authenticated,
     headers: &HeaderMap,
     action: &'static str,
-    resource_id: Uuid,
-) -> Result<Uuid, AppError> {
+    resource_id: Id,
+) -> Result<Id, AppError> {
     let carbon_id = if action == SSO_CHANGE_ACTION {
         organization_support::require_scoped_carbon(authenticated, SSO_MANAGE_SCOPE)?
     } else {
@@ -297,7 +297,7 @@ pub(super) async fn complete_empty(
 pub(super) async fn record_mutation(
     transaction: &mut Transaction<'_, Postgres>,
     authenticated: &Authenticated,
-    organization_id: Option<Uuid>,
+    organization_id: Option<Id>,
     event: MutationEvent<'_>,
 ) -> Result<(), AppError> {
     let aggregate = AggregateVersion {
@@ -348,7 +348,7 @@ pub(super) async fn record_mutation(
 
 pub(super) async fn record_system_mutation(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
     event: MutationEvent<'_>,
 ) -> Result<(), AppError> {
     let aggregate = AggregateVersion {
@@ -394,10 +394,14 @@ pub(super) async fn record_system_mutation(
     Ok(())
 }
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 pub(super) async fn record_browser_mutation(
     transaction: &mut Transaction<'_, Postgres>,
     browser_session: BrowserSession,
-    organization_id: Uuid,
+    organization_id: Id,
     event: MutationEvent<'_>,
 ) -> Result<(), AppError> {
     let aggregate = AggregateVersion {
@@ -596,8 +600,8 @@ fn raw_json_response(
 
 async fn begin_serializable(
     state: &ApiState,
-    principal_id: Option<Uuid>,
-    organization_id: Option<Uuid>,
+    principal_id: Option<Id>,
+    organization_id: Option<Id>,
 ) -> Result<Transaction<'_, Postgres>, AppError> {
     let mut transaction = context::begin_scoped(state.db()).await.map_err(database)?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
@@ -711,17 +715,17 @@ mod tests {
 
     fn access() -> crate::infrastructure::postgres::tokens::AccessContext {
         use crate::domain::actor::{ActorRef, ActorType};
-        use uuid::Uuid;
+        use crate::domain::id::Id;
 
         crate::infrastructure::postgres::tokens::AccessContext {
-            token_id: Uuid::from_u128(1),
-            authentication_session_id: Uuid::from_u128(2),
+            token_id: Id::from_u128(1),
+            authentication_session_id: Id::from_u128(2),
             subject: ActorRef {
                 actor_type: ActorType::Carbon,
-                id: Uuid::from_u128(3),
+                id: Id::from_u128(3),
             },
-            client_application_id: Some(Uuid::from_u128(4)),
-            audience_application_id: Some(Uuid::from_u128(4)),
+            client_application_id: Some(Id::from_u128(4)),
+            audience_application_id: Some(Id::from_u128(4)),
             audience: "tos>interface".to_owned(),
             organization_id: None,
             membership_id: None,
@@ -743,8 +747,8 @@ mod tests {
         direct.scopes = vec!["iam.self".to_owned()];
         let legacy_key = "carbon:00000000-0000-0000-0000-000000000003:resource:first-org";
         assert_eq!(idempotency_caller_scope(&direct, "first-org"), legacy_key);
-        direct.authentication_session_id = uuid::Uuid::from_u128(6);
-        direct.token_id = uuid::Uuid::from_u128(7);
+        direct.authentication_session_id = crate::domain::id::Id::from_u128(6);
+        direct.token_id = crate::domain::id::Id::from_u128(7);
         assert_eq!(idempotency_caller_scope(&direct, "first-org"), legacy_key);
         assert_ne!(
             idempotency_caller_scope(&application, "first-org"),
@@ -763,13 +767,13 @@ mod tests {
             idempotency_caller_scope(&authenticated, "second-org")
         );
         let mut changed = authenticated.clone();
-        changed.subject.id = uuid::Uuid::from_u128(5);
+        changed.subject.id = crate::domain::id::Id::from_u128(5);
         assert_ne!(first, idempotency_caller_scope(&changed, "first-org"));
         changed = authenticated.clone();
-        changed.client_application_id = Some(uuid::Uuid::from_u128(5));
+        changed.client_application_id = Some(crate::domain::id::Id::from_u128(5));
         assert_ne!(first, idempotency_caller_scope(&changed, "first-org"));
         changed = authenticated;
-        changed.authentication_session_id = uuid::Uuid::from_u128(5);
+        changed.authentication_session_id = crate::domain::id::Id::from_u128(5);
         assert_ne!(first, idempotency_caller_scope(&changed, "first-org"));
     }
 

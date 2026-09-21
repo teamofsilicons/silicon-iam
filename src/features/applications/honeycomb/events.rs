@@ -5,7 +5,7 @@ use serde_json::json;
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Page {
-    after: Option<Uuid>,
+    after: Option<Id>,
 }
 pub(super) fn router() -> Router<ApiState> {
     Router::new()
@@ -31,7 +31,7 @@ async fn list(
 async fn replay(
     State(state): State<ApiState>,
     service: Service,
-    Path(event): Path<Uuid>,
+    Path(event): Path<Id>,
 ) -> Result<Json<Value>, ApiError> {
     let queued: bool =
         sqlx::query_scalar("SELECT iam_private.replay_honeycomb_management_event($1,$2)")

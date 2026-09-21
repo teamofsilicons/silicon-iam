@@ -1,5 +1,6 @@
 #![allow(clippy::too_many_arguments, clippy::too_many_lines)]
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, State},
@@ -14,7 +15,6 @@ use sha2::Sha256;
 use sqlx::FromRow;
 use subtle::ConstantTimeEq as _;
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
-use uuid::Uuid;
 
 use crate::{
     api::ApiState,
@@ -49,7 +49,7 @@ type HmacSha256 = Hmac<Sha256>;
 #[derive(FromRow)]
 struct ExchangeAuthorityRow {
     ttl_seconds: i32,
-    audience_application_id: Uuid,
+    audience_application_id: Id,
     endpoint_path: String,
     metadata_definition: sqlx::types::Json<Value>,
     endpoint_version: i64,
@@ -60,16 +60,16 @@ struct ExchangeAuthorityRow {
 
 #[derive(FromRow)]
 struct ProofRow {
-    id: Uuid,
+    id: Id,
     proof_digest: Vec<u8>,
     digest_key_version: i16,
-    issuer_application_id: Uuid,
+    issuer_application_id: Id,
     issuer_app_id: String,
-    subject_principal_id: Uuid,
+    subject_principal_id: Id,
     subject_kind: String,
-    organization_id: Uuid,
-    membership_id: Uuid,
-    parent_access_token_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
+    parent_access_token_id: Id,
     endpoint_id: String,
     request_method: String,
     request_path: String,
@@ -209,7 +209,7 @@ pub(super) async fn exchange(
     // The subject chooses their organization; application ownership is not
     // delegation authority. An omitted selection is unambiguous only when the
     // token currently authorizes exactly one active membership.
-    let memberships = sqlx::query_as::<_, (Uuid, Uuid)>(
+    let memberships = sqlx::query_as::<_, (Id, Id)>(
         "SELECT * FROM iam_private.resolve_application_obo_memberships($1, $2, $3)",
     )
     .bind(access.token_id)
@@ -295,7 +295,7 @@ pub(super) async fn exchange(
         .map_err(|_| ApiError::internal("obo_proof_issuance_time"))?;
     ensure_signature_fresh(signed.signed_at, issuance_now)?;
 
-    let proof_id = Uuid::now_v7();
+    let proof_id = Id::now_v7();
     let raw_proof = state
         .crypto
         .generate_secret(SecretKind::OboProof)
@@ -798,7 +798,7 @@ fn validate_verify(input: &OboVerifyRequest) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn selected_membership(memberships: &[(Uuid, Uuid)]) -> Result<(Uuid, Uuid), ApiError> {
+fn selected_membership(memberships: &[(Id, Id)]) -> Result<(Id, Id), ApiError> {
     match memberships {
         [membership] => Ok(*membership),
         [] => Err(ApiError::forbidden("obo_organization_not_authorized")),
@@ -811,9 +811,9 @@ fn selected_membership(memberships: &[(Uuid, Uuid)]) -> Result<(Uuid, Uuid), Api
 
 async fn install_subject_context(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    subject_id: Uuid,
-    organization_id: Uuid,
-    application_id: Uuid,
+    subject_id: Id,
+    organization_id: Id,
+    application_id: Id,
 ) -> Result<(), ApiError> {
     sqlx::query(
         r"
@@ -833,9 +833,9 @@ async fn install_subject_context(
 
 async fn exchange_replay_is_live(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    proof_id: Uuid,
-    issuer_application_id: Uuid,
-    organization_id: Uuid,
+    proof_id: Id,
+    issuer_application_id: Id,
+    organization_id: Id,
 ) -> Result<bool, ApiError> {
     sqlx::query_scalar::<_, bool>(
         "SELECT * FROM iam_private.application_obo_exchange_replay_is_live($1, $2, $3)",
@@ -851,7 +851,7 @@ async fn exchange_replay_is_live(
 async fn load_current_context(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     proof: &ProofRow,
-    audience_application_id: Uuid,
+    audience_application_id: Id,
 ) -> Result<CurrentProofContext, ApiError> {
     sqlx::query_as::<_, CurrentProofContext>(
         "SELECT * FROM iam_private.application_obo_load_current_context($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
@@ -875,9 +875,9 @@ async fn load_current_context(
 async fn record_protocol_event(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     actor: ActorRef,
-    organization_id: Uuid,
-    application_id: Uuid,
-    proof_id: Uuid,
+    organization_id: Id,
+    application_id: Id,
+    proof_id: Id,
     version: i64,
     action: &'static str,
     event_type: &'static str,
@@ -961,6 +961,7 @@ fn secret_prefix(secret: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::id::Id;
     use axum::{
         http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
         response::IntoResponse as _,
@@ -968,7 +969,6 @@ mod tests {
     use secrecy::SecretString;
     use serde_json::json;
     use time::OffsetDateTime;
-    use uuid::Uuid;
 
     use super::{
         canonical_request, exchange_canonical, reject_organization_header, request_binding_matches,
@@ -981,8 +981,8 @@ mod tests {
 
     #[test]
     fn subject_organization_selection_is_explicit_when_ambiguous() {
-        let first = (Uuid::from_u128(1), Uuid::from_u128(2));
-        let second = (Uuid::from_u128(3), Uuid::from_u128(4));
+        let first = (Id::from_u128(1), Id::from_u128(2));
+        let second = (Id::from_u128(3), Id::from_u128(4));
         assert_eq!(super::selected_membership(&[first]).ok(), Some(first));
         assert!(super::selected_membership(&[]).is_err());
         assert!(super::selected_membership(&[first, second]).is_err());
@@ -1189,9 +1189,9 @@ mod tests {
         };
         let client = ApplicationClient {
             identity: crate::features::applications::security::ApplicationIdentity {
-                application_id: Uuid::from_u128(1),
+                application_id: Id::from_u128(1),
                 app_id: "tos>files".to_owned(),
-                organization_id: Uuid::from_u128(2),
+                organization_id: Id::from_u128(2),
                 auth_epoch: 1,
             },
             authenticated_secret: SecretString::from("ask_test_secret"),

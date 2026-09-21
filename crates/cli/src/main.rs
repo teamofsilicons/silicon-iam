@@ -111,7 +111,7 @@ async fn run(mut cli: Cli) -> error::Result<()> {
         .clone()
         .or_else(|| std::env::var("SILICON_IAM_PROFILE").ok());
     let requested_environment = cli.global.test;
-    let context = Context::new(
+    let mut context = Context::new(
         cli.global.output,
         cli.global.profile,
         cli.global.url,
@@ -132,6 +132,7 @@ async fn run(mut cli: Cli) -> error::Result<()> {
                 .map_or_else(|| "production".to_owned(), |id| format!("test {id}")),
         );
     })?;
+    context.set_request_key(cli.global.request_key)?;
     let guidance = guidance::Plan::capture(&context, &cli.command);
     match commands::dispatch(&context, cli.command).await {
         Ok(()) => {

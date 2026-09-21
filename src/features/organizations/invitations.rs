@@ -4,6 +4,7 @@ use super::application_reads::ReadScopes;
 
 use std::{borrow::Cow, num::NonZeroU32, time::Duration};
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -15,7 +16,6 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::json;
 use sqlx::{Postgres, Transaction};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -76,7 +76,7 @@ const INVITATION_CHALLENGE_LOCK_QUERY: &str = r"
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct ContactMaterial {
-    contact_id: Uuid,
+    contact_id: Id,
     contact_kind: String,
     ciphertext: Vec<u8>,
     nonce: Vec<u8>,
@@ -85,8 +85,8 @@ struct ContactMaterial {
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct ContactResolution {
-    principal_id: Uuid,
-    contact_id: Uuid,
+    principal_id: Id,
+    contact_id: Id,
     contact_ciphertext: Vec<u8>,
     contact_nonce: Vec<u8>,
     contact_encryption_key_version: i16,
@@ -94,10 +94,10 @@ struct ContactResolution {
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct EmailJoinResolution {
-    organization_id: Uuid,
-    invitation_id: Uuid,
+    organization_id: Id,
+    invitation_id: Id,
     invitation_expires_at: OffsetDateTime,
-    contact_id: Uuid,
+    contact_id: Id,
     contact_kind: String,
     contact_ciphertext: Vec<u8>,
     contact_nonce: Vec<u8>,
@@ -106,31 +106,30 @@ struct EmailJoinResolution {
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct InvitationRow {
-    id: Uuid,
+    id: Id,
     org_id: String,
-    target_principal_id: Option<Uuid>,
+    target_principal_id: Option<Id>,
     target_carbon_id: Option<String>,
     target_display_name: Option<String>,
     email_ciphertext: Option<Vec<u8>>,
     email_nonce: Option<Vec<u8>>,
     email_key_version: Option<i16>,
-    target_description: Option<String>,
     target_profile_photo: String,
     target_created_at: Option<OffsetDateTime>,
-    destination_contact_id: Option<Uuid>,
+    destination_contact_id: Option<Id>,
     destination_contact_kind: Option<String>,
     destination_contact_ciphertext: Option<Vec<u8>>,
     destination_contact_nonce: Option<Vec<u8>>,
     destination_contact_encryption_key_version: Option<i16>,
     job_role: String,
-    tag_ids: Vec<Uuid>,
-    first_silicon_membership_id: Option<Uuid>,
-    extra_silicon_membership_ids: Vec<Uuid>,
+    tag_ids: Vec<Id>,
+    first_silicon_membership_id: Option<Id>,
+    extra_silicon_membership_ids: Vec<Id>,
     default_trust_boundary: String,
     default_trust_level: String,
     tag_trust_overrides: sqlx::types::Json<Vec<InvitationTagTrustOverride>>,
     silicon_trust_overrides: sqlx::types::Json<Vec<InvitationSiliconTrustOverride>>,
-    inviter_principal_id: Uuid,
+    inviter_principal_id: Id,
     inviter_type: String,
     inviter_public_id: String,
     status: String,
@@ -142,11 +141,11 @@ struct InvitationRow {
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct ChallengeRow {
-    organization_id: Uuid,
-    target_carbon_id: Uuid,
+    organization_id: Id,
+    target_carbon_id: Id,
     invitation_status: String,
     invitation_expires_at: OffsetDateTime,
-    challenge_id: Uuid,
+    challenge_id: Id,
     code_digest: Vec<u8>,
     digest_key_version: i16,
     failed_attempts: i16,
@@ -166,8 +165,8 @@ enum InvitationOtpDeliveryError {
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct CompletedInvitation {
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
     membership_version: i64,
 }
 
@@ -282,7 +281,7 @@ pub(super) async fn create_invitation(
         "SELECT EXISTS (SELECT 1 FROM iam.organization_memberships WHERE organization_id = $1 AND principal_id = $2 AND status = 'active')",
     )
     .bind(scope.access.organization_id)
-    .bind(target.principal_id)
+    .bind(target.principal_id.map(|id| id.to_string()))
     .fetch_one(&mut *scope.transaction)
     .await
     .map_err(support::database)?;
@@ -292,7 +291,7 @@ pub(super) async fn create_invitation(
         });
     }
     let redirect_application_id = if let Some(app_id) = input.redirect_app_id.as_deref() {
-        Some(sqlx::query_scalar::<_, Uuid>(
+        Some(sqlx::query_scalar::<_, Id>(
             "SELECT id FROM iam.applications WHERE app_id = $1 AND review_status = 'verified' LIMIT 1",
         )
         .bind(app_id)
@@ -303,7 +302,7 @@ pub(super) async fn create_invitation(
     } else {
         None
     };
-    let invitation_id = Uuid::now_v7();
+    let invitation_id = Id::now_v7();
     let encrypted_email = state
         .crypto
         .encrypt(
@@ -330,14 +329,14 @@ pub(super) async fn create_invitation(
     )
     .bind(invitation_id)
     .bind(scope.access.organization_id)
-    .bind(target.principal_id)
+    .bind(target.principal_id.map(|id| id.to_string()))
     .bind(scope.access.membership_id)
     .bind(&input.job_role)
     .bind(input.first_silicon_membership_id)
     .bind(input.default_trust.boundary.as_str())
     .bind(input.default_trust.level.as_str())
     .bind(target.contact.as_ref().map(|contact| contact.contact_id))
-    .bind(redirect_application_id)
+    .bind(redirect_application_id.map(|id| id.to_string()))
     .bind(&encrypted_email.ciphertext)
     .bind(encrypted_email.nonce.as_slice())
     .bind(encrypted_email.key_version)
@@ -385,7 +384,7 @@ pub(super) async fn create_invitation(
         )
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(target.contact.as_ref().map(|contact| contact.contact_id))
     .bind(invitation_id)
     .execute(&mut *scope.transaction)
@@ -438,7 +437,7 @@ pub(super) async fn create_invitation(
 pub(super) async fn get_invitation(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, invite_id)): Path<(String, Uuid)>,
+    Path((org_id, invite_id)): Path<(String, Id)>,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
     let scopes = ReadScopes::for_actor(&authenticated);
@@ -464,7 +463,7 @@ pub(super) async fn get_invitation(
 pub(super) async fn revoke_invitation(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, invite_id)): Path<(String, Uuid)>,
+    Path((org_id, invite_id)): Path<(String, Id)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
@@ -651,7 +650,7 @@ pub(super) async fn send_invitation_email_code(
             category: "invitation_code_ttl",
         }
     })?;
-    let challenge_id = Uuid::now_v7();
+    let challenge_id = Id::now_v7();
     let challenge_expires_at = sqlx::query_scalar::<_, OffsetDateTime>(
         r"
         INSERT INTO iam.invitation_verification_challenges (
@@ -799,11 +798,11 @@ fn classify_invitation_otp_delivery(
 async fn confirm_invitation_otp_delivery(
     state: &ApiState,
     lease: IdempotencyLease,
-    carbon_id: Uuid,
-    organization_id: Uuid,
-    invitation_id: Uuid,
-    challenge_id: Uuid,
-    destination_contact_id: Uuid,
+    carbon_id: Id,
+    organization_id: Id,
+    invitation_id: Id,
+    challenge_id: Id,
+    destination_contact_id: Id,
     response: &InvitationEmailCodeResponse,
 ) -> Result<Vec<u8>, AppError> {
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
@@ -874,10 +873,10 @@ async fn confirm_invitation_otp_delivery(
 async fn fail_invitation_otp_delivery(
     state: &ApiState,
     lease: IdempotencyLease,
-    carbon_id: Uuid,
-    organization_id: Uuid,
-    invitation_id: Uuid,
-    challenge_id: Uuid,
+    carbon_id: Id,
+    organization_id: Id,
+    invitation_id: Id,
+    challenge_id: Id,
 ) -> Result<(), AppError> {
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
         .await
@@ -1005,7 +1004,7 @@ pub(super) async fn join_organization(
     )
     .bind(&org_id)
     .bind(input.invite_id)
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(challenge.digest_key_version)
     .bind(&challenge.code_digest)
     .fetch_optional(&mut *transaction)
@@ -1106,7 +1105,7 @@ pub(super) async fn join_organization(
 }
 
 struct ResolvedTarget {
-    principal_id: Option<Uuid>,
+    principal_id: Option<Id>,
     contact: Option<ContactMaterial>,
 }
 
@@ -1150,7 +1149,7 @@ async fn resolve_target(
     input: &CarbonInviteCreate,
 ) -> Result<ResolvedTarget, AppError> {
     if let Some(carbon_id) = input.carbon_id.as_deref() {
-        let principal_id = sqlx::query_scalar::<_, Uuid>(
+        let principal_id = sqlx::query_scalar::<_, Id>(
             "SELECT principal_id FROM iam_private.resolve_active_carbon_by_handle($1)",
         )
         .bind(carbon_id)
@@ -1206,15 +1205,15 @@ async fn resolve_target(
 
 async fn insert_invitation_trust_overrides(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    invitation_id: Uuid,
+    organization_id: Id,
+    invitation_id: Id,
     input: &CarbonInviteCreate,
 ) -> Result<(), AppError> {
     if !input.tag_trust_overrides.is_empty() {
         let rule_ids = input
             .tag_trust_overrides
             .iter()
-            .map(|_| Uuid::now_v7())
+            .map(|_| Id::now_v7())
             .collect::<Vec<_>>();
         let tag_ids = input
             .tag_trust_overrides
@@ -1263,7 +1262,7 @@ async fn insert_invitation_trust_overrides(
         let rule_ids = input
             .silicon_trust_overrides
             .iter()
-            .map(|_| Uuid::now_v7())
+            .map(|_| Id::now_v7())
             .collect::<Vec<_>>();
         let silicon_membership_ids = input
             .silicon_trust_overrides
@@ -1313,7 +1312,7 @@ async fn insert_invitation_trust_overrides(
 
 async fn enforce_invitation_code_send_limit(
     state: &ApiState,
-    carbon_id: Uuid,
+    carbon_id: Id,
     organization_handle: &str,
 ) -> Result<(), AppError> {
     let policy = RateLimitPolicy::new(
@@ -1338,13 +1337,13 @@ async fn enforce_invitation_code_send_limit(
     Ok(())
 }
 
-fn invitation_code_send_scope(carbon_id: Uuid, organization_handle: &str) -> String {
+fn invitation_code_send_scope(carbon_id: Id, organization_handle: &str) -> String {
     format!("carbon={carbon_id}:organization={organization_handle}")
 }
 
 async fn primary_email(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
+    principal_id: Id,
 ) -> Result<ContactMaterial, AppError> {
     sqlx::query_as::<_, ContactMaterial>(
         r"
@@ -1398,8 +1397,8 @@ async fn begin_invitation<'a>(
     state: &'a ApiState,
     authenticated: &Authenticated,
     org_id: &str,
-    invite_id: Uuid,
-) -> Result<(Transaction<'a, Postgres>, Uuid), AppError> {
+    invite_id: Id,
+) -> Result<(Transaction<'a, Postgres>, Id), AppError> {
     support::require_scoped_carbon(authenticated, "organizations.join")?;
     let mut transaction = context::begin(
         state.db(),
@@ -1407,7 +1406,7 @@ async fn begin_invitation<'a>(
     )
     .await
     .map_err(support::database)?;
-    let organization_id = sqlx::query_scalar::<_, Option<Uuid>>(
+    let organization_id = sqlx::query_scalar::<_, Option<Id>>(
         "SELECT iam_private.resolve_organization_invitation_tenant($1, $2)",
     )
     .bind(org_id)
@@ -1425,8 +1424,8 @@ async fn begin_invitation<'a>(
 async fn fetch_invitation(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    organization_id: Uuid,
-    invite_id: Uuid,
+    organization_id: Id,
+    invite_id: Id,
     organization_handle: &str,
 ) -> Result<InvitationResponse, AppError> {
     let row = sqlx::query_as::<_, InvitationRow>(INVITATION_BY_ID_SQL)
@@ -1519,7 +1518,6 @@ fn materialize_invitation(
                 carbon_id,
                 display_name,
                 created_at,
-                description: row.target_description,
                 profile_photo: row.target_profile_photo,
             })
         }
@@ -1561,8 +1559,8 @@ fn materialize_invitation(
 
 async fn fetch_challenge(
     transaction: &mut Transaction<'_, Postgres>,
-    invite_id: Uuid,
-    carbon_id: Uuid,
+    invite_id: Id,
+    carbon_id: Id,
 ) -> Result<ChallengeRow, AppError> {
     sqlx::query_as::<_, ChallengeRow>(INVITATION_CHALLENGE_LOCK_QUERY)
         .bind(invite_id)
@@ -1613,7 +1611,7 @@ async fn register_failed_attempt(
 
 async fn validate_invitation_references(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
     input: &CarbonInviteCreate,
 ) -> Result<(), AppError> {
     let mut tags = input.tag_ids.clone();
@@ -1729,7 +1727,7 @@ fn validate_invitation_email(email: &str) -> Result<String, AppError> {
     Ok(crate::domain::auth::normalize_email(email))
 }
 
-fn unique_ids(name: &'static str, values: &mut [Uuid], maximum: usize) -> Result<(), AppError> {
+fn unique_ids(name: &'static str, values: &mut [Id], maximum: usize) -> Result<(), AppError> {
     values.sort_unstable();
     if values.len() > maximum || values.windows(2).any(|pair| pair[0] == pair[1]) {
         return Err(validation::field(
@@ -1744,7 +1742,7 @@ fn unique_override_targets<T>(
     name: &'static str,
     values: &mut [T],
     maximum: usize,
-    target_id: impl Copy + Fn(&T) -> Uuid,
+    target_id: impl Copy + Fn(&T) -> Id,
 ) -> Result<(), AppError> {
     values.sort_unstable_by_key(target_id);
     if values.len() > maximum
@@ -1848,7 +1846,7 @@ fn precondition_failed() -> AppError {
 const INVITATION_LIST_SQL: &str = r"
     SELECT invitation.id, organization.org_id,
            target.id AS target_principal_id, target.carbon_id AS target_carbon_id,
-           target.display_name AS target_display_name, target.description AS target_description,
+           target.display_name AS target_display_name,
            COALESCE(target.profile_photo_uri, '') AS target_profile_photo,
            target.created_at AS target_created_at,
            invitation.email_ciphertext, invitation.email_nonce, invitation.email_key_version,
@@ -1918,7 +1916,7 @@ const INVITATION_LIST_SQL: &str = r"
 const INVITATION_BY_ID_SQL: &str = r"
     SELECT invitation.id, $3::text AS org_id,
            target.id AS target_principal_id, target.carbon_id AS target_carbon_id,
-           target.display_name AS target_display_name, target.description AS target_description,
+           target.display_name AS target_display_name,
            COALESCE(target.profile_photo_uri, '') AS target_profile_photo,
            target.created_at AS target_created_at,
            invitation.email_ciphertext, invitation.email_nonce, invitation.email_key_version,
@@ -2002,7 +2000,7 @@ mod tests {
 
     #[test]
     fn invitation_override_targets_must_be_unique() {
-        let tag_id = Uuid::now_v7();
+        let tag_id = Id::now_v7();
         let mut overrides = vec![
             InvitationTagTrustOverride {
                 tag_id,
@@ -2029,12 +2027,15 @@ mod tests {
 
     #[test]
     fn invitation_code_send_scope_is_stable_and_tenant_qualified() {
-        let carbon_id = Uuid::now_v7();
+        let carbon_id = Id::fixture("invitee");
 
         let scope = invitation_code_send_scope(carbon_id, "acme");
 
         assert_eq!(scope, invitation_code_send_scope(carbon_id, "acme"));
-        assert_ne!(scope, invitation_code_send_scope(Uuid::now_v7(), "acme"));
+        assert_ne!(
+            scope,
+            invitation_code_send_scope(Id::fixture("other-invitee"), "acme")
+        );
         assert_ne!(scope, invitation_code_send_scope(carbon_id, "other-org"));
     }
 
@@ -2102,28 +2103,15 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires isolated PostgreSQL via IAM_TEST_DATABASE_ADMIN_URL or Docker"]
     async fn live_pending_invitation_otp_cannot_be_consumed() -> anyhow::Result<()> {
         use anyhow::ensure;
-        use sqlx::postgres::PgPoolOptions;
-        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-        use testcontainers_modules::postgres::Postgres as TestPostgres;
 
-        let container = TestPostgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&format!(
-                "postgres://postgres:postgres@{host}:{port}/postgres"
-            ))
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let challenge_id = Uuid::from_u128(0x36_01);
+        let challenge_id = Id::from_u128(0x36_01);
         let mut transaction = pool.begin().await?;
         // Foreign keys are irrelevant to this focused constraint test. Check
         // constraints remain active while replication-trigger FKs are skipped.
@@ -2145,10 +2133,10 @@ mod tests {
             ",
         )
         .bind(challenge_id)
-        .bind(Uuid::from_u128(0x36_02))
-        .bind(Uuid::from_u128(0x36_03))
-        .bind(Uuid::from_u128(0x36_04))
-        .bind(Uuid::from_u128(0x36_05))
+        .bind(Id::from_u128(0x36_02))
+        .bind(Id::from_u128(0x36_03))
+        .bind(Id::fixture("recipient"))
+        .bind(Id::from_u128(0x36_05))
         .execute(&mut *transaction)
         .await?;
 
@@ -2184,23 +2172,23 @@ mod tests {
     /// Every other Docker-backed test connects as the schema owner, where row
     /// security does not apply and the fault is invisible.
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires isolated PostgreSQL via IAM_TEST_DATABASE_ADMIN_URL or Docker"]
     #[allow(
         clippy::too_many_lines,
         reason = "one fixture spans the organization, the inviter, the invitee and the challenge"
     )]
     async fn an_invitee_can_lock_their_own_invitation() -> anyhow::Result<()> {
         use anyhow::ensure;
-        use sqlx::postgres::PgPoolOptions;
-        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-        use testcontainers_modules::postgres::Postgres as TestPostgres;
 
         const RUNTIME_ROLES: &str = "
-            CREATE ROLE silicon_iam_api NOLOGIN NOSUPERUSER NOBYPASSRLS;
-            CREATE ROLE silicon_iam_worker NOLOGIN NOSUPERUSER NOBYPASSRLS;
-            CREATE ROLE silicon_iam_key_operator NOLOGIN NOSUPERUSER NOBYPASSRLS;
-            CREATE ROLE silicon_iam_api_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS
-                IN ROLE silicon_iam_api;
+            DO $$ DECLARE role_name text; BEGIN
+                FOREACH role_name IN ARRAY ARRAY['silicon_iam_api','silicon_iam_worker','silicon_iam_key_operator','silicon_iam_api_runtime'] LOOP
+                    IF to_regrole(role_name) IS NULL THEN
+                        EXECUTE format('CREATE ROLE %I NOLOGIN NOSUPERUSER NOBYPASSRLS',role_name);
+                    END IF;
+                END LOOP;
+            END $$;
+            GRANT silicon_iam_api TO silicon_iam_api_runtime;
         ";
         let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
             .lines()
@@ -2208,18 +2196,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let container = TestPostgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&format!(
-                "postgres://postgres:postgres@{host}:{port}/postgres"
-            ))
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
         sqlx::raw_sql(sqlx::AssertSqlSafe(RUNTIME_ROLES))
             .execute(&pool)
@@ -2228,13 +2206,13 @@ mod tests {
             .execute(&pool)
             .await?;
 
-        let admin = Uuid::from_u128(0x52_01);
-        let recipient = Uuid::from_u128(0x52_02);
-        let organization = Uuid::from_u128(0x52_03);
-        let admin_membership = Uuid::from_u128(0x52_04);
-        let invitation = Uuid::from_u128(0x52_05);
-        let challenge = Uuid::from_u128(0x52_06);
-        let invitee_email_contact = Uuid::from_u128(0x52_07);
+        let admin = Id::fixture("admin");
+        let recipient = Id::fixture("recipient");
+        let organization = Id::from_u128(0x52_03);
+        let admin_membership = Id::from_u128(0x52_04);
+        let invitation = Id::from_u128(0x52_05);
+        let challenge = Id::from_u128(0x52_06);
+        let invitee_email_contact = Id::from_u128(0x52_07);
 
         let mut fixture = pool.begin().await?;
         sqlx::raw_sql(sqlx::AssertSqlSafe(
@@ -2248,14 +2226,14 @@ mod tests {
             (
                 admin,
                 "admin",
-                Uuid::from_u128(0x52_11),
-                Uuid::from_u128(0x52_12),
+                Id::from_u128(0x52_11),
+                Id::from_u128(0x52_12),
             ),
             (
                 recipient,
                 "recipient",
                 invitee_email_contact,
-                Uuid::from_u128(0x52_13),
+                Id::from_u128(0x52_13),
             ),
         ] {
             sqlx::query(
@@ -2387,23 +2365,23 @@ mod tests {
         Ok(())
     }
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires isolated PostgreSQL via IAM_TEST_DATABASE_ADMIN_URL or Docker"]
     #[allow(
         clippy::too_many_lines,
         reason = "full invitation, registration, worker and restricted-role acceptance lifecycle"
     )]
     async fn an_email_invitation_can_precede_signup_and_be_accepted() -> anyhow::Result<()> {
         use anyhow::ensure;
-        use sqlx::postgres::PgPoolOptions;
-        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-        use testcontainers_modules::postgres::Postgres as TestPostgres;
 
         const RUNTIME_ROLES: &str = "
-            CREATE ROLE silicon_iam_api NOLOGIN NOSUPERUSER NOBYPASSRLS;
-            CREATE ROLE silicon_iam_worker NOLOGIN NOSUPERUSER NOBYPASSRLS;
-            CREATE ROLE silicon_iam_key_operator NOLOGIN NOSUPERUSER NOBYPASSRLS;
-            CREATE ROLE silicon_iam_api_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS
-                IN ROLE silicon_iam_api;
+            DO $$ DECLARE role_name text; BEGIN
+                FOREACH role_name IN ARRAY ARRAY['silicon_iam_api','silicon_iam_worker','silicon_iam_key_operator','silicon_iam_api_runtime'] LOOP
+                    IF to_regrole(role_name) IS NULL THEN
+                        EXECUTE format('CREATE ROLE %I NOLOGIN NOSUPERUSER NOBYPASSRLS',role_name);
+                    END IF;
+                END LOOP;
+            END $$;
+            GRANT silicon_iam_api TO silicon_iam_api_runtime;
         ";
         let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
             .lines()
@@ -2411,18 +2389,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let container = TestPostgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&format!(
-                "postgres://postgres:postgres@{host}:{port}/postgres"
-            ))
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
         sqlx::raw_sql(sqlx::AssertSqlSafe(RUNTIME_ROLES))
             .execute(&pool)
@@ -2431,13 +2399,13 @@ mod tests {
             .execute(&pool)
             .await?;
 
-        let admin = Uuid::from_u128(0x52_01);
-        let recipient = Uuid::from_u128(0x52_02);
-        let organization = Uuid::from_u128(0x52_03);
-        let admin_membership = Uuid::from_u128(0x52_04);
-        let invitation = Uuid::from_u128(0x52_05);
-        let challenge = Uuid::from_u128(0x52_06);
-        let invitee_email_contact = Uuid::from_u128(0x52_07);
+        let admin = Id::fixture("admin");
+        let recipient = Id::fixture("recipient");
+        let organization = Id::from_u128(0x52_03);
+        let admin_membership = Id::from_u128(0x52_04);
+        let invitation = Id::from_u128(0x52_05);
+        let challenge = Id::from_u128(0x52_06);
+        let invitee_email_contact = Id::from_u128(0x52_07);
 
         let mut fixture = pool.begin().await?;
         sqlx::raw_sql(sqlx::AssertSqlSafe(
@@ -2451,14 +2419,14 @@ mod tests {
             (
                 admin,
                 "admin",
-                Uuid::from_u128(0x52_11),
-                Uuid::from_u128(0x52_12),
+                Id::from_u128(0x52_11),
+                Id::from_u128(0x52_12),
             ),
             (
                 recipient,
                 "recipient",
                 invitee_email_contact,
-                Uuid::from_u128(0x52_13),
+                Id::from_u128(0x52_13),
             ),
         ]
         .into_iter()
@@ -2558,7 +2526,7 @@ mod tests {
             unresolved.is_none(),
             "an inviter must not claim the recipient's email"
         );
-        let job = Uuid::now_v7();
+        let job = Id::now_v7();
         sqlx::query("INSERT INTO iam.notification_jobs (id, notification_kind, provider, recipient_contact_kind, template_id, context_type, context_id, status, lease_owner, lease_expires_at) VALUES ($1, 'invitation', 'postmark', 'email', 'invitation.created', 'organization_invitation', $2, 'processing', 'email-test', transaction_timestamp() + interval '1 minute')")
             .bind(job).bind(invitation).execute(&mut *managing).await?;
         managing.commit().await?;
@@ -2590,14 +2558,14 @@ mod tests {
             (
                 admin,
                 "admin",
-                Uuid::from_u128(0x52_11),
-                Uuid::from_u128(0x52_12),
+                Id::from_u128(0x52_11),
+                Id::from_u128(0x52_12),
             ),
             (
                 recipient,
                 "recipient",
                 invitee_email_contact,
-                Uuid::from_u128(0x52_13),
+                Id::from_u128(0x52_13),
             ),
         ]
         .into_iter()
@@ -2720,7 +2688,7 @@ mod tests {
         sqlx::query("SELECT set_config('iam.principal_id', $1::text, true), set_config('iam.organization_id', $2::text, true)")
             .bind(recipient).bind(organization).execute(&mut *joining).await?;
         let joined = sqlx::query_as::<_, CompletedInvitation>("SELECT * FROM iam_private.complete_verified_organization_invitation('tos', $1, $2, 1::smallint, decode(repeat('33',32),'hex'))")
-            .bind(invitation).bind(Uuid::now_v7()).fetch_one(&mut *joining).await?;
+            .bind(invitation).bind(Id::now_v7()).fetch_one(&mut *joining).await?;
         ensure!(joined.organization_id == organization);
         joining.commit().await?;
         let state = sqlx::query_scalar::<_, String>(

@@ -1,5 +1,6 @@
 //! Application-scoped plane selection. The selector is never root authority.
 use super::{graph, support};
+use crate::domain::id::Id;
 use crate::{
     api::{ApiState, authentication::Authenticated},
     error::AppError,
@@ -20,7 +21,6 @@ use secrecy::{ExposeSecret as _, SecretString};
 use sha2::{Digest as _, Sha256};
 use sqlx::{Postgres, Transaction};
 use tower::ServiceExt as _;
-use uuid::Uuid;
 
 pub(crate) const APPLICATION_HEADER: &str = "x-testing-application";
 
@@ -38,7 +38,7 @@ pub(super) fn presented(headers: &HeaderMap) -> Result<Option<HeaderValue>, AppE
 
 pub(crate) async fn register(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
+    application_id: Id,
     secret: &SecretString,
 ) -> Result<(), AppError> {
     if !testing_plane::is_active() {
@@ -58,7 +58,7 @@ pub(crate) async fn backfill(state: &ApiState) -> Result<(), AppError> {
     if state.testing.is_none() {
         return Ok(());
     }
-    let environments = sqlx::query_as::<_, (Uuid, Uuid)>(
+    let environments = sqlx::query_as::<_, (Id, Id)>(
         "SELECT * FROM iam_private.test_application_backfill_environments()",
     )
     .fetch_all(&state.pool)
@@ -74,7 +74,7 @@ pub(crate) async fn backfill(state: &ApiState) -> Result<(), AppError> {
                 let mut tx = context::begin(state.db(), DatabaseContext::anonymous())
                     .await
                     .map_err(support::database)?;
-                let rows = sqlx::query_as::<_, (Uuid, Vec<u8>, Vec<u8>, i16)>(
+                let rows = sqlx::query_as::<_, (Id, Vec<u8>, Vec<u8>, i16)>(
                     "SELECT * FROM iam_private.test_application_selector_backfill()",
                 )
                 .fetch_all(&mut *tx)
@@ -117,7 +117,7 @@ pub(super) async fn select(
     let (_, secret) = crate::features::applications::security::basic_credentials(&headers)
         .map_err(|_| AppError::Unauthenticated)?;
     let plane = support::plane(&state)?;
-    let (id, expected_app) = sqlx::query_as::<_, (Uuid, Uuid)>(
+    let (id, expected_app) = sqlx::query_as::<_, (Id, Id)>(
         "SELECT * FROM iam_private.resolve_test_application_selector($1)",
     )
     .bind(Sha256::digest(secret.expose_secret().as_bytes()).as_slice())
@@ -125,7 +125,7 @@ pub(super) async fn select(
     .await
     .map_err(support::database)?
     .ok_or(AppError::Unauthenticated)?;
-    let organization_id = sqlx::query_scalar::<_, Uuid>(
+    let organization_id = sqlx::query_scalar::<_, Id>(
         "SELECT organization_id FROM iam_private.test_application_environment($1)",
     )
     .bind(id)
@@ -190,6 +190,10 @@ pub(super) async fn select(
                 // Reuse the application's existing scope-governed router. Anonymous OTP,
                 // account creation, direct IAM consent and administrative routes do not exist here.
                 return match crate::api::scoped::router(state.clone())
+                    .layer(axum::middleware::from_fn_with_state(
+                        state.clone(),
+                        crate::api::membership_ids::transport,
+                    ))
                     .with_state(state.clone())
                     .oneshot(Request::from_parts(parts, body))
                     .await

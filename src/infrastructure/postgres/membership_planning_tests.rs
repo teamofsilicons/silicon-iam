@@ -6,54 +6,56 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::domain::id::Id;
 use anyhow::{Context as _, ensure};
 use serde_json::Value;
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgPoolOptions};
-use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-use testcontainers_modules::postgres::Postgres as PostgresImage;
 use tokio::{sync::Barrier, task::JoinSet};
-use uuid::Uuid;
 
-const SUBJECT: Uuid = Uuid::from_u128(1);
-const APPLICATION: Uuid = Uuid::from_u128(0x11);
-const MEMBER: Uuid = Uuid::from_u128(0x31);
-const WORLD: Uuid = Uuid::from_u128(0xa001);
+const SUBJECT: Id = Id::fixture("test_carbon");
+const APPLICATION: Id = Id::fixture("test_org>app-alpha");
+const MEMBER: Id = Id::from_u128(0x31);
+const WORLD: Id = Id::from_u128(0xa001);
 const MIGRATION: &str =
     include_str!("../../../migrations/0094_membership_authorization_join_planning.sql");
 
 #[derive(Clone, Copy)]
 struct Check {
-    principal: Uuid,
-    application: Option<Uuid>,
-    token: Uuid,
-    membership: Uuid,
+    principal: Id,
+    application: Option<Id>,
+    token: Id,
+    membership: Id,
 }
 
 const CARBON: Check = Check {
     principal: SUBJECT,
     application: None,
-    token: Uuid::from_u128(0x101),
+    token: Id::from_u128(0x101),
     membership: MEMBER,
 };
 const CARBON_BOUND: Check = Check {
-    token: Uuid::from_u128(0x102),
+    token: Id::from_u128(0x102),
     ..CARBON
 };
 const SILICON: Check = Check {
-    principal: Uuid::from_u128(0x501),
+    principal: Id::fixture("planner_silicon:test_org"),
     application: None,
-    token: Uuid::from_u128(0x551),
-    membership: Uuid::from_u128(0x531),
+    token: Id::from_u128(0x551),
+    membership: Id::from_u128(0x531),
 };
 const SILICON_BOUND: Check = Check {
-    token: Uuid::from_u128(0x552),
+    token: Id::from_u128(0x552),
     ..SILICON
 };
 const POSITIVE: [Check; 4] = [CARBON, CARBON_BOUND, SILICON, SILICON_BOUND];
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "test fixtures intentionally copy bounded canonical authority snapshots"
+)]
 async fn authorize(
     tx: &mut Transaction<'_, Postgres>,
-    world: Option<Uuid>,
+    world: Option<Id>,
     input: Check,
 ) -> anyhow::Result<bool> {
     sqlx::query("SET LOCAL ROLE silicon_iam_api")
@@ -80,7 +82,11 @@ async fn authorize(
     Ok(allowed)
 }
 
-async fn read(pool: &PgPool, world: Option<Uuid>, input: Check) -> anyhow::Result<bool> {
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "test fixtures intentionally copy bounded canonical authority snapshots"
+)]
+async fn read(pool: &PgPool, world: Option<Id>, input: Check) -> anyhow::Result<bool> {
     let mut tx = pool.begin().await?;
     let value = authorize(&mut tx, world, input).await?;
     tx.rollback().await?;
@@ -88,35 +94,28 @@ async fn read(pool: &PgPool, world: Option<Uuid>, input: Check) -> anyhow::Resul
 }
 
 #[tokio::test]
-#[ignore = "requires Docker; uses disposable production and testing PostgreSQL databases"]
+#[ignore = "requires Docker or local PostgreSQL via IAM_TEST_DATABASE_ADMIN_URL"]
 async fn membership_join_planning_preserves_authority_and_bounds_concurrent_work()
 -> anyhow::Result<()> {
-    let container = PostgresImage::default()
-        .with_tag("16-alpine")
-        .start()
-        .await?;
-    let address = format!(
-        "{}:{}",
-        container.get_host().await?,
-        container.get_host_port_ipv4(5432).await?
-    );
-    let production = admin_pool(&address, "postgres", None).await?;
-    sqlx::raw_sql("CREATE ROLE silicon_iam_api NOLOGIN; CREATE ROLE silicon_iam_worker NOLOGIN; CREATE ROLE silicon_iam_key_operator NOLOGIN; CREATE ROLE planner_runtime LOGIN PASSWORD 'disposable-planner-test' IN ROLE silicon_iam_api;")
-        .execute(&production).await?;
+    let production_database = crate::test_database::TestDatabase::start().await?;
+    let testing_database = crate::test_database::TestDatabase::start().await?;
+    let production = admin_pool(&production_database.url, None).await?;
+    let testing = admin_pool(&testing_database.url, Some(WORLD)).await?;
+    let runtime_role = format!("iam_planner_{}", uuid::Uuid::now_v7().simple());
+    for pool in [&production, &testing] {
+        sqlx::raw_sql("DO $$ DECLARE name text; BEGIN FOREACH name IN ARRAY ARRAY['silicon_iam_api','silicon_iam_worker','silicon_iam_key_operator'] LOOP IF to_regrole(name) IS NULL THEN EXECUTE format('CREATE ROLE %I NOLOGIN',name); END IF; END LOOP; END $$;").execute(pool).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DO $$ BEGIN IF to_regrole('{runtime_role}') IS NULL THEN CREATE ROLE {runtime_role} LOGIN PASSWORD 'disposable-planner-test' IN ROLE silicon_iam_api; END IF; END $$;"))).execute(pool).await?;
+    }
     super::migrate(&production).await?;
-    sqlx::query("CREATE DATABASE testing")
-        .execute(&production)
-        .await?;
-    let testing = admin_pool(&address, "testing", Some(WORLD)).await?;
     super::migrate_testing(&testing).await?;
     let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
         .lines()
         .filter(|line| !line.trim_start().starts_with('\\'))
         .collect::<Vec<_>>()
         .join("\n");
-    for (label, admin, world) in [
-        ("production", &production, None),
-        ("testing", &testing, Some(WORLD)),
+    for (label, admin, world, database_url) in [
+        ("production", &production, None, &production_database.url),
+        ("testing", &testing, Some(WORLD), &testing_database.url),
     ] {
         crate::features::applications::live_tests::seed_protocol_rows(admin).await?;
         sqlx::raw_sql(include_str!("membership_planning_seed.sql"))
@@ -125,6 +124,13 @@ async fn membership_join_planning_preserves_authority_and_bounds_concurrent_work
         sqlx::raw_sql(sqlx::AssertSqlSafe(grants.clone()))
             .execute(admin)
             .await?;
+        let mut runtime_url = url::Url::parse(database_url)?;
+        runtime_url
+            .set_username(&runtime_role)
+            .map_err(|()| anyhow::anyhow!("runtime username"))?;
+        runtime_url
+            .set_password(Some("disposable-planner-test"))
+            .map_err(|()| anyhow::anyhow!("runtime password"))?;
         let runtime = PgPoolOptions::new()
             .max_connections(2)
             .min_connections(2)
@@ -137,14 +143,7 @@ async fn membership_join_planning_preserves_authority_and_bounds_concurrent_work
                     Ok(())
                 })
             })
-            .connect(&format!(
-                "postgres://planner_runtime:disposable-planner-test@{address}/{}",
-                if world.is_some() {
-                    "testing"
-                } else {
-                    "postgres"
-                }
-            ))
+            .connect(runtime_url.as_str())
             .await?;
         let (superuser, bypass): (bool, bool) =
             sqlx::query_as("SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user")
@@ -155,11 +154,13 @@ async fn membership_join_planning_preserves_authority_and_bounds_concurrent_work
             "requests require a restricted runtime login"
         );
         check_metadata(admin).await?;
-        authority_matrix(admin, &runtime, world)
+        Box::pin(authority_matrix(admin, &runtime, world))
             .await
             .with_context(|| label.to_owned())?;
-        // Baseline only in this disposable database. The body, owner, security
-        // mode, volatility, search path and ACL must survive reapplying 0094.
+        // 0094 only changes a planner setting; both arguments are resource
+        // UUIDs (token and membership), so its signature survives 0111 intact.
+        // The current canonical body, owner, security mode and ACL must remain
+        // unchanged when this historical setting-only migration is reapplied.
         let identity = function_identity(admin).await?;
         sqlx::query("ALTER FUNCTION iam_private.application_token_allows_membership(uuid,uuid) RESET join_collapse_limit")
             .execute(admin).await?;
@@ -182,12 +183,19 @@ async fn membership_join_planning_preserves_authority_and_bounds_concurrent_work
         );
         runtime.close().await;
     }
+    for pool in [&production, &testing] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP ROLE IF EXISTS {runtime_role}"
+        )))
+        .execute(pool)
+        .await?;
+    }
     testing.close().await;
     production.close().await;
     Ok(())
 }
 
-async fn admin_pool(address: &str, database: &str, world: Option<Uuid>) -> anyhow::Result<PgPool> {
+async fn admin_pool(database_url: &str, world: Option<Id>) -> anyhow::Result<PgPool> {
     Ok(PgPoolOptions::new()
         .max_connections(3)
         .after_connect(move |connection, _| {
@@ -199,9 +207,7 @@ async fn admin_pool(address: &str, database: &str, world: Option<Uuid>) -> anyho
                 Ok(())
             })
         })
-        .connect(&format!(
-            "postgres://postgres:postgres@{address}/{database}"
-        ))
+        .connect(database_url)
         .await?)
 }
 
@@ -226,7 +232,7 @@ async fn check_metadata(pool: &PgPool) -> anyhow::Result<()> {
 async fn authority_matrix(
     admin: &PgPool,
     runtime: &PgPool,
-    world: Option<Uuid>,
+    world: Option<Id>,
 ) -> anyhow::Result<()> {
     for input in POSITIVE {
         ensure!(
@@ -249,7 +255,7 @@ async fn authority_matrix(
     }
     for input in [
         Check {
-            principal: Uuid::from_u128(2),
+            principal: Id::fixture("test_admin"),
             ..CARBON
         },
         Check {
@@ -258,15 +264,15 @@ async fn authority_matrix(
         },
         Check {
             principal: APPLICATION,
-            application: Some(Uuid::from_u128(0x12)),
+            application: Some(Id::fixture("test_org>app-beta")),
             ..CARBON
         },
         Check {
-            token: Uuid::from_u128(0x103),
+            token: Id::from_u128(0x103),
             ..CARBON
         },
         Check {
-            membership: Uuid::from_u128(0x32),
+            membership: Id::from_u128(0x32),
             ..CARBON
         },
         Check {
@@ -278,7 +284,7 @@ async fn authority_matrix(
             ..SILICON_BOUND
         },
         Check {
-            token: Uuid::nil(),
+            token: Id::nil(),
             ..CARBON
         },
     ] {
@@ -290,7 +296,7 @@ async fn authority_matrix(
     if world.is_some() {
         for input in POSITIVE {
             ensure!(
-                !read(runtime, Some(Uuid::from_u128(0xa002)), input).await?,
+                !read(runtime, Some(Id::from_u128(0xa002)), input).await?,
                 "authorization crossed testing worlds"
             );
         }
@@ -303,12 +309,12 @@ async fn authority_matrix(
         ),
         (
             "stale subject epoch",
-            "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='00000000-0000-0000-0000-000000000001'",
+            "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='test_carbon'",
             CARBON,
         ),
         (
             "stale client epoch",
-            "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='00000000-0000-0000-0000-000000000011'",
+            "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='test_org>app-alpha'",
             CARBON,
         ),
         (
@@ -380,7 +386,7 @@ async fn authority_matrix(
 
 async fn concurrent(
     pool: &PgPool,
-    world: Option<Uuid>,
+    world: Option<Id>,
     baseline: bool,
 ) -> anyhow::Result<(f64, f64, u32)> {
     let barrier = Arc::new(Barrier::new(12));

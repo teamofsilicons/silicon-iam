@@ -2,6 +2,7 @@
 
 use std::{borrow::Cow, time::Instant};
 
+use crate::domain::id::Id;
 use futures::{StreamExt as _, stream};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Serialize;
@@ -9,7 +10,6 @@ use serde_json::Value;
 use sqlx::{PgPool, Postgres, Transaction};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use url::Url;
-use uuid::Uuid;
 
 use crate::{
     error::AppError,
@@ -26,19 +26,19 @@ use super::{
 
 #[derive(sqlx::FromRow)]
 struct ClaimedDelivery {
-    delivery_id: Uuid,
-    testing_environment_id: Option<Uuid>,
+    delivery_id: Id,
+    testing_environment_id: Option<Id>,
     testing_generation: i64,
     cycle_attempt_count: i32,
-    outbox_event_id: Uuid,
+    outbox_event_id: Id,
     recipient_kind: String,
-    application_webhook_endpoint_id: Option<Uuid>,
-    silicon_webhook_endpoint_id: Option<Uuid>,
-    signing_key_id: Option<Uuid>,
-    silicon_webhook_signing_key_id: Option<Uuid>,
-    organization_id: Option<Uuid>,
+    application_webhook_endpoint_id: Option<Id>,
+    silicon_webhook_endpoint_id: Option<Id>,
+    signing_key_id: Option<Id>,
+    silicon_webhook_signing_key_id: Option<Id>,
+    organization_id: Option<Id>,
     aggregate_type: String,
-    aggregate_id: Uuid,
+    aggregate_id: Id,
     aggregate_version: i64,
     event_type: String,
     schema_version: i16,
@@ -48,7 +48,7 @@ struct ClaimedDelivery {
 
 #[derive(sqlx::FromRow)]
 struct ApplicationMaterial {
-    application_id: Uuid,
+    application_id: Id,
     url_ciphertext: Vec<u8>,
     url_nonce: Vec<u8>,
     url_encryption_key_version: i16,
@@ -60,7 +60,7 @@ struct ApplicationMaterial {
 
 #[derive(sqlx::FromRow)]
 struct SiliconMaterial {
-    organization_id: Uuid,
+    organization_id: Id,
     url_ciphertext: Vec<u8>,
     url_nonce: Vec<u8>,
     url_encryption_key_version: i16,
@@ -72,7 +72,7 @@ struct SiliconMaterial {
 
 #[derive(sqlx::FromRow)]
 struct ApplicationEventProjection {
-    projection_id: Uuid,
+    projection_id: Id,
     payload_ciphertext: Vec<u8>,
     payload_nonce: Vec<u8>,
     encryption_key_version: i16,
@@ -80,7 +80,7 @@ struct ApplicationEventProjection {
 
 #[derive(sqlx::FromRow)]
 struct TestingEnvironmentKeyMaterial {
-    organization_id: Uuid,
+    organization_id: Id,
     key_ciphertext: Vec<u8>,
     key_nonce: Vec<u8>,
     key_encryption_key_version: i16,
@@ -89,10 +89,10 @@ struct TestingEnvironmentKeyMaterial {
 #[derive(Serialize)]
 struct EventEnvelope<'a> {
     spec_version: &'static str,
-    event_id: Uuid,
+    event_id: Id,
     event_type: &'a str,
     occurred_at: &'a str,
-    organization_id: Option<Uuid>,
+    organization_id: Option<Id>,
     aggregate: AggregateEnvelope<'a>,
     data: &'a Value,
 }
@@ -111,13 +111,13 @@ struct TestEvent<'a> {
 
 #[derive(Serialize)]
 struct EventMetadata<'a> {
-    environment_id: Option<Uuid>,
+    environment_id: Option<Id>,
     generation: i64,
     spec_version: &'static str,
-    event_id: Uuid,
+    event_id: Id,
     event_type: &'a str,
     occurred_at: &'a str,
-    organization_id: Option<Uuid>,
+    organization_id: Option<Id>,
     aggregate: AggregateEnvelope<'a>,
 }
 
@@ -125,12 +125,12 @@ struct EventMetadata<'a> {
 struct AggregateEnvelope<'a> {
     #[serde(rename = "type")]
     aggregate_type: &'a str,
-    id: Uuid,
+    id: Id,
     version: i64,
 }
 
 struct DeliveryMaterial {
-    application_id: Option<Uuid>,
+    application_id: Option<Id>,
     destination: Url,
     signing_secret: SecretString,
     signing_key_version: i64,
@@ -541,7 +541,7 @@ async fn load_event_data(
     context: &WorkerContext,
     transaction: &mut Transaction<'_, Postgres>,
     delivery: &ClaimedDelivery,
-    application_id: Option<Uuid>,
+    application_id: Option<Id>,
 ) -> Result<Value, WebhookError> {
     let Some(application_id) = application_id else {
         return Ok(delivery.payload.clone());
@@ -601,6 +601,9 @@ fn serialize_event(
     data: &Value,
     testing_key: Option<&SecretString>,
 ) -> Result<Vec<u8>, AppError> {
+    let mut public_data = data.clone();
+    crate::api::membership_ids::remove_principal_ids(&mut public_data);
+    let data = &public_data;
     let result = if let Some(testing_key) = testing_key {
         serde_json::to_vec(&TestEventEnvelope {
             test: TestEvent {
@@ -647,7 +650,7 @@ fn serialize_event(
 /// preventing queued data-plane work from escaping after retirement.
 async fn load_testing_key(
     context: &WorkerContext,
-    testing_environment_id: Uuid,
+    testing_environment_id: Id,
     generation: i64,
 ) -> Result<SecretString, WebhookError> {
     let material = sqlx::query_as::<_, TestingEnvironmentKeyMaterial>(
@@ -703,6 +706,10 @@ fn wire_event_type(event_type: &str, schema_version: i16) -> Result<Cow<'_, str>
     Ok(Cow::Owned(format!("{event_type}{suffix}")))
 }
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 fn decrypt_url(
     context: &WorkerContext,
     encryption_context: EncryptionContext,
@@ -721,6 +728,10 @@ fn decrypt_url(
     Url::parse(value).map_err(|_| WebhookError::DestinationRejected)
 }
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 fn decrypt_secret(
     context: &WorkerContext,
     encryption_context: EncryptionContext,
@@ -757,14 +768,14 @@ async fn begin_attempt(
     context: &WorkerContext,
     pool: &PgPool,
     delivery: &ClaimedDelivery,
-) -> Result<Option<Uuid>, AppError> {
+) -> Result<Option<Id>, AppError> {
     let lease_seconds =
         i64::try_from(context.settings.worker.lease_duration.as_secs()).map_err(|_| {
             AppError::Internal {
                 category: "worker_lease_duration",
             }
         })?;
-    let attempt_id = Uuid::now_v7();
+    let attempt_id = Id::now_v7();
     let mut transaction =
         begin_processing_transaction(pool, delivery.testing_environment_id).await?;
     let attempt_number = sqlx::query_scalar::<_, i32>(
@@ -809,7 +820,7 @@ async fn finish_success(
     context: &WorkerContext,
     pool: &PgPool,
     delivery: &ClaimedDelivery,
-    attempt_id: Uuid,
+    attempt_id: Id,
     duration_ms: i32,
     receipt: WebhookReceipt,
 ) -> Result<(), AppError> {
@@ -871,7 +882,7 @@ async fn finish_attempt_error(
     _context: &WorkerContext,
     pool: &PgPool,
     delivery: &ClaimedDelivery,
-    attempt_id: Uuid,
+    attempt_id: Id,
     duration_ms: i32,
     http_status: Option<i16>,
     error: WebhookError,
@@ -948,32 +959,32 @@ async fn finish_failure(
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::id::Id;
     use secrecy::SecretString;
     use serde_json::{Value, json};
     use time::OffsetDateTime;
-    use uuid::Uuid;
 
     use super::{ClaimedDelivery, RecipientType, serialize_event, wire_event_type};
 
-    fn delivery(testing_environment_id: Option<Uuid>) -> ClaimedDelivery {
+    fn delivery(testing_environment_id: Option<Id>) -> ClaimedDelivery {
         ClaimedDelivery {
-            delivery_id: Uuid::from_u128(1),
+            delivery_id: Id::from_u128(1),
             testing_environment_id,
             testing_generation: 1,
             cycle_attempt_count: 1,
-            outbox_event_id: Uuid::from_u128(2),
+            outbox_event_id: Id::from_u128(2),
             recipient_kind: "application".to_owned(),
-            application_webhook_endpoint_id: Some(Uuid::from_u128(3)),
+            application_webhook_endpoint_id: Some(Id::from_u128(3)),
             silicon_webhook_endpoint_id: None,
-            signing_key_id: Some(Uuid::from_u128(4)),
+            signing_key_id: Some(Id::from_u128(4)),
             silicon_webhook_signing_key_id: None,
-            organization_id: Some(Uuid::from_u128(5)),
+            organization_id: Some(Id::from_u128(5)),
             aggregate_type: "carbon".to_owned(),
-            aggregate_id: Uuid::from_u128(6),
+            aggregate_id: Id::from_u128(6),
             aggregate_version: 7,
             event_type: "carbon.updated.v1".to_owned(),
             schema_version: 1,
-            payload: json!({ "carbon_id": Uuid::from_u128(6) }),
+            payload: json!({ "carbon_id": Id::from_u128(6) }),
             created_at: OffsetDateTime::UNIX_EPOCH,
         }
     }
@@ -1031,7 +1042,7 @@ mod tests {
 
         let testing_key = SecretString::from("A".repeat(32));
         let test = serialize_event(
-            &delivery(Some(Uuid::from_u128(9))),
+            &delivery(Some(Id::from_u128(9))),
             "carbon.updated.v1",
             "1970-01-01T00:00:00Z",
             &data,

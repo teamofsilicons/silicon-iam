@@ -26,13 +26,13 @@ behavior.
 | `organization.carbons.remove` | Remove a Carbon membership |
 | `organization.tags.create` / `.update` / `.delete` | Manage tag definitions |
 | `organization.member_tags.update` | Replace member tag assignments through the existing governance endpoint |
-| `organization.job_roles.update` | Replace a member's descriptive job role |
+| `organization.job_roles.update` | Replace a member's job description |
 | `organization.silicon_access.update` | Change a Carbon's first or extra Silicon assignments |
 | `organization.trust.update` | Change trust defaults, rules or a Carbon's configured trust |
 | `organization.admins.promote` / `.demote` | Change a Carbon member's admin status |
 | `organization.capabilities.update` | Replace an admin's capability set |
 | `organization.change_requests.read` | Read role/tag change requests and decisions |
-| `organization.job_role_changes.request` / `organization.tag_changes.request` | Submit requests subject to the existing actor and governance rules |
+| `organization.job_role_changes.request` / `organization.tag_changes.request` | Retired legacy request creation; use direct mutations and sensitive-action policies |
 | `organization.change_requests.decide` | Decide requests for which the represented user is an eligible approver |
 | `organization.job_role_history.read` / `organization.tag_history.read` | Read the respective histories |
 | `organization.sso.read` / `.manage` | View SSO configuration or manage setup, testing, disabling and organization join method |

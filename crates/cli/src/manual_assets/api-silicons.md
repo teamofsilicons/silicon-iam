@@ -1,6 +1,6 @@
 # Silicon identities and credentials
 
-A Silicon is a machine identity that exists only inside one organization. It authenticates with a credential pair, carries tags and a job role like any member, and can subscribe to directory changes over its own webhook.
+A Silicon is a machine identity that exists only inside one organization. It authenticates with a credential pair, carries tags and a job description like any member, and can subscribe to directory changes over its own webhook.
 
 ## Identity
 

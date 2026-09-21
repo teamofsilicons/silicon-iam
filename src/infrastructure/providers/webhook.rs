@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use crate::domain::id::Id;
 use bytes::BytesMut;
 use futures::StreamExt as _;
 use hmac::{Hmac, Mac as _};
@@ -12,7 +13,6 @@ use secrecy::{ExposeSecret as _, SecretString};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use url::{Host, Url};
-use uuid::Uuid;
 
 use crate::config::RuntimeEnvironment;
 
@@ -37,7 +37,7 @@ pub(crate) struct WebhookRequest<'a> {
     pub(crate) destination: &'a Url,
     pub(crate) signing_secret: &'a SecretString,
     pub(crate) signing_key_version: i64,
-    pub(crate) event_id: Uuid,
+    pub(crate) event_id: Id,
     pub(crate) timestamp: i64,
     pub(crate) body: &'a [u8],
 }

@@ -1,7 +1,7 @@
 //! Shared actor identity types.
 
+use crate::domain::id::Id;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 /// Kind of principal represented by an IAM actor.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -37,5 +37,5 @@ pub struct ActorRef {
     #[serde(rename = "type")]
     pub actor_type: ActorType,
     /// Internal `UUIDv7` identity.
-    pub id: Uuid,
+    pub id: Id,
 }

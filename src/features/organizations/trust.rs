@@ -1,6 +1,7 @@
 use super::application_reads::{self, ReadScopes};
 use std::{borrow::Cow, collections::BTreeSet};
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -10,7 +11,6 @@ use axum::{
 use serde_json::json;
 use sqlx::{Postgres, Transaction};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -35,14 +35,14 @@ const TRUST_RULE_DELETE_ROUTE: &str = "DELETE /api/v1/organizations/{org_id}/tru
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct TrustRuleRow {
-    id: Uuid,
+    id: Id,
     org_id: String,
     subject_kind: String,
-    subject_membership_id: Option<Uuid>,
-    subject_tag_id: Option<Uuid>,
+    subject_membership_id: Option<Id>,
+    subject_tag_id: Option<Id>,
     target_kind: String,
-    target_silicon_membership_id: Option<Uuid>,
-    target_tag_id: Option<Uuid>,
+    target_silicon_membership_id: Option<Id>,
+    target_tag_id: Option<Id>,
     trust_boundary: String,
     trust_level: String,
     version: i64,
@@ -52,7 +52,7 @@ struct TrustRuleRow {
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub(super) struct MatchRow {
-    pub(super) id: Uuid,
+    pub(super) id: Id,
     pub(super) subject_kind: String,
     pub(super) target_kind: String,
     pub(super) trust_boundary: String,
@@ -256,7 +256,7 @@ pub(super) async fn create_trust_rule(
         &input.target,
     )
     .await?;
-    let rule_id = Uuid::now_v7();
+    let rule_id = Id::now_v7();
     let affected_membership_ids = lock_trust_rule_memberships(
         &mut scope.transaction,
         scope.access.organization_id,
@@ -330,7 +330,7 @@ pub(super) async fn create_trust_rule(
 pub(super) async fn get_trust_rule(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, rule_id)): Path<(String, Uuid)>,
+    Path((org_id, rule_id)): Path<(String, Id)>,
 ) -> Result<Response, AppError> {
     ReadScopes::for_actor(&authenticated).require("organization.trust.read")?;
     let org_id = validation::organization_id(&org_id)?.to_string();
@@ -356,7 +356,7 @@ pub(super) async fn get_trust_rule(
 pub(super) async fn update_trust_rule(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, rule_id)): Path<(String, Uuid)>,
+    Path((org_id, rule_id)): Path<(String, Id)>,
     headers: HeaderMap,
     Json(input): Json<TrustRulePatch>,
 ) -> Result<Response, AppError> {
@@ -491,7 +491,7 @@ pub(super) async fn update_trust_rule(
 pub(super) async fn delete_trust_rule(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, rule_id)): Path<(String, Uuid)>,
+    Path((org_id, rule_id)): Path<(String, Id)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
@@ -617,15 +617,15 @@ pub(super) async fn evaluate_trust(
     if !scopes.has("organization.trust.read")
         && let Some(object) = projected.as_object_mut()
     {
-        object.retain(|key, _| matches!(key.as_str(), "trust" | "advisory"));
+        object.retain(|key, _| key == "trust");
     }
     support::json(StatusCode::OK, &projected, None)
 }
 
 async fn fetch_rule(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    rule_id: Uuid,
+    organization_id: Id,
+    rule_id: Id,
 ) -> Result<TrustRuleResponse, AppError> {
     let row = sqlx::query_as::<_, TrustRuleRow>(TRUST_RULE_BY_ID_SQL)
         .bind(organization_id)
@@ -639,8 +639,8 @@ async fn fetch_rule(
 
 struct SelectorParts {
     kind: &'static str,
-    membership_id: Option<Uuid>,
-    tag_id: Option<Uuid>,
+    membership_id: Option<Id>,
+    tag_id: Option<Id>,
 }
 
 fn selector_parts(selector: &TrustSelector, subject: bool) -> SelectorParts {
@@ -660,7 +660,7 @@ fn selector_parts(selector: &TrustSelector, subject: bool) -> SelectorParts {
 
 async fn validate_selectors(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
     subject: &TrustSelector,
     target: &TrustSelector,
 ) -> Result<(), AppError> {
@@ -698,9 +698,9 @@ async fn validate_selectors(
 /// being acquired and returns the exact, stable active membership set.
 async fn lock_trust_rule_memberships<'a>(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
     selectors: impl IntoIterator<Item = (&'a TrustSelector, bool)>,
-) -> Result<Vec<Uuid>, AppError> {
+) -> Result<Vec<Id>, AppError> {
     let mut direct_membership_ids = BTreeSet::new();
     let mut subject_tag_ids = BTreeSet::new();
     let mut target_tag_ids = BTreeSet::new();
@@ -738,7 +738,7 @@ async fn lock_trust_rule_memberships<'a>(
     tag_ids.sort_unstable();
     tag_ids.dedup();
     if !tag_ids.is_empty() {
-        let locked_tags = sqlx::query_scalar::<_, Uuid>(
+        let locked_tags = sqlx::query_scalar::<_, Id>(
             r"
             SELECT tag.id
             FROM iam.organization_tags AS tag
@@ -782,12 +782,12 @@ async fn lock_trust_rule_memberships<'a>(
 
 async fn lock_selected_memberships(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    direct_membership_ids: &[Uuid],
-    subject_tag_ids: &[Uuid],
-    target_tag_ids: &[Uuid],
-) -> Result<Vec<Uuid>, AppError> {
-    sqlx::query_scalar::<_, Uuid>(
+    organization_id: Id,
+    direct_membership_ids: &[Id],
+    subject_tag_ids: &[Id],
+    target_tag_ids: &[Id],
+) -> Result<Vec<Id>, AppError> {
+    sqlx::query_scalar::<_, Id>(
         r"
         SELECT membership.id
         FROM iam.organization_memberships AS membership
@@ -828,7 +828,7 @@ async fn lock_selected_memberships(
 
 async fn validate_evaluation(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
     input: &TrustEvaluationInput,
 ) -> Result<(), AppError> {
     validate_active_membership(
@@ -849,8 +849,8 @@ async fn validate_evaluation(
 
 async fn validate_active_membership(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
     require_silicon: bool,
 ) -> Result<(), AppError> {
     let active = sqlx::query_scalar::<_, bool>(
@@ -886,7 +886,6 @@ pub(super) fn evaluate_matches(
             trust: parse_trust(default_boundary, default_level)?,
             source: "organization_default".to_owned(),
             matching_rule_ids: Vec::new(),
-            advisory: true,
         });
     };
     let candidates = matches
@@ -913,7 +912,6 @@ pub(super) fn evaluate_matches(
             "tag_rule".to_owned()
         },
         matching_rule_ids: candidates.iter().map(|row| row.id).collect(),
-        advisory: true,
     })
 }
 
@@ -1023,12 +1021,12 @@ async fn record_rule(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     authenticated: &Authenticated,
-    organization_id: Uuid,
+    organization_id: Id,
     action: &'static str,
     event_type: &'static str,
     before: Option<&TrustRuleResponse>,
     after: Option<&TrustRuleResponse>,
-    affected_membership_ids: &[Uuid],
+    affected_membership_ids: &[Id],
 ) -> Result<(), AppError> {
     let current = after.or(before).ok_or(AppError::Internal {
         category: "trust_audit_state",
@@ -1054,7 +1052,7 @@ async fn record_rule(
     .await
 }
 
-fn rule_event_metadata(trust_rule_id: Uuid, affected_membership_ids: &[Uuid]) -> serde_json::Value {
+fn rule_event_metadata(trust_rule_id: Id, affected_membership_ids: &[Id]) -> serde_json::Value {
     json!({
         "trust_rule_id": trust_rule_id,
         "affected_membership_ids": affected_membership_ids,
@@ -1167,14 +1165,14 @@ mod tests {
     fn restrictive_trust_wins_at_equal_specificity() {
         let matches = vec![
             MatchRow {
-                id: Uuid::now_v7(),
+                id: Id::now_v7(),
                 subject_kind: "tag".to_owned(),
                 target_kind: "tag".to_owned(),
                 trust_boundary: "internal".to_owned(),
                 trust_level: "trusted".to_owned(),
             },
             MatchRow {
-                id: Uuid::now_v7(),
+                id: Id::now_v7(),
                 subject_kind: "tag".to_owned(),
                 target_kind: "tag".to_owned(),
                 trust_boundary: "external".to_owned(),
@@ -1199,9 +1197,9 @@ mod tests {
 
     #[test]
     fn trust_rule_event_metadata_carries_the_exact_sorted_member_set() {
-        let rule_id = Uuid::from_u128(10);
-        let first = Uuid::from_u128(20);
-        let second = Uuid::from_u128(30);
+        let rule_id = Id::from_u128(10);
+        let first = Id::from_u128(20);
+        let second = Id::from_u128(30);
         assert_eq!(
             rule_event_metadata(rule_id, &[first, second]),
             json!({

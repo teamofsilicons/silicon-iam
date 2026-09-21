@@ -2,10 +2,10 @@
 
 use std::collections::BTreeSet;
 
+use crate::domain::id::Id;
 use futures::{StreamExt as _, stream};
 use serde_json::Value;
 use sqlx::{PgPool, Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::{
     error::AppError, infrastructure::postgres::events::uses_captured_application_webhook_projection,
@@ -17,11 +17,11 @@ use super::{
 
 #[derive(sqlx::FromRow)]
 struct ClaimedEvent {
-    id: Uuid,
-    testing_environment_id: Option<Uuid>,
-    organization_id: Option<Uuid>,
+    id: Id,
+    testing_environment_id: Option<Id>,
+    organization_id: Option<Id>,
     aggregate_type: String,
-    aggregate_id: Uuid,
+    aggregate_id: Id,
     event_type: String,
     payload: Value,
     attempt_count: i32,
@@ -30,14 +30,14 @@ struct ClaimedEvent {
 
 #[derive(sqlx::FromRow)]
 struct ApplicationRecipient {
-    endpoint_id: Uuid,
-    signing_key_id: Uuid,
+    endpoint_id: Id,
+    signing_key_id: Id,
 }
 
 #[derive(sqlx::FromRow)]
 struct SiliconRecipient {
-    endpoint_id: Uuid,
-    signing_key_id: Uuid,
+    endpoint_id: Id,
+    signing_key_id: Id,
 }
 
 pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppError> {
@@ -238,8 +238,8 @@ async fn expand_application_recipients(
         ",
     )
     .bind(event.organization_id)
-    .bind(subject_id)
-    .bind(application_id)
+    .bind(subject_id.map(|id| id.to_string()))
+    .bind(application_id.map(|id| id.to_string()))
     .bind(event.created_at)
     .bind(&event.event_type)
     .fetch_all(&mut **transaction)
@@ -294,7 +294,7 @@ async fn expand_silicon_recipients(
 
 async fn load_silicon_recipients(
     transaction: &mut Transaction<'_, Postgres>,
-    event_id: Uuid,
+    event_id: Id,
 ) -> Result<Vec<SiliconRecipient>, sqlx::Error> {
     sqlx::query_as::<_, SiliconRecipient>(
         r"
@@ -310,10 +310,10 @@ async fn load_silicon_recipients(
 async fn insert_application_recipient(
     transaction: &mut Transaction<'_, Postgres>,
     event: &ClaimedEvent,
-    endpoint_id: Uuid,
-    signing_key_id: Uuid,
+    endpoint_id: Id,
+    signing_key_id: Id,
 ) -> Result<(), sqlx::Error> {
-    let recipient_id = Uuid::now_v7();
+    let recipient_id = Id::now_v7();
     let ordering_key = recipient_ordering_key("application", endpoint_id, event);
     let insert_result = sqlx::query(
         r"
@@ -335,7 +335,7 @@ async fn insert_application_recipient(
     let persisted_recipient_id = if insert_result.rows_affected() == 1 {
         recipient_id
     } else {
-        sqlx::query_scalar::<_, Uuid>(
+        sqlx::query_scalar::<_, Id>(
             r"
             SELECT id
             FROM iam.outbox_event_recipients
@@ -360,7 +360,7 @@ async fn insert_application_recipient(
         ON CONFLICT (outbox_event_id, recipient_id) DO NOTHING
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(event.id)
     .bind(persisted_recipient_id)
     .bind(signing_key_id)
@@ -372,10 +372,10 @@ async fn insert_application_recipient(
 async fn insert_silicon_recipient(
     transaction: &mut Transaction<'_, Postgres>,
     event: &ClaimedEvent,
-    endpoint_id: Uuid,
-    signing_key_id: Uuid,
+    endpoint_id: Id,
+    signing_key_id: Id,
 ) -> Result<(), sqlx::Error> {
-    let recipient_id = Uuid::now_v7();
+    let recipient_id = Id::now_v7();
     let ordering_key = recipient_ordering_key("silicon_webhook", endpoint_id, event);
     let insert_result = sqlx::query(
         r"
@@ -397,7 +397,7 @@ async fn insert_silicon_recipient(
     let persisted_recipient_id = if insert_result.rows_affected() == 1 {
         recipient_id
     } else {
-        sqlx::query_scalar::<_, Uuid>(
+        sqlx::query_scalar::<_, Id>(
             r"
             SELECT id
             FROM iam.outbox_event_recipients
@@ -422,7 +422,7 @@ async fn insert_silicon_recipient(
         ON CONFLICT (outbox_event_id, recipient_id) DO NOTHING
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(event.id)
     .bind(persisted_recipient_id)
     .bind(signing_key_id)
@@ -472,16 +472,16 @@ async fn mark_failure(
     Ok(())
 }
 
-fn payload_uuid(payload: &Value, keys: &[&str]) -> Option<Uuid> {
+fn payload_uuid(payload: &Value, keys: &[&str]) -> Option<Id> {
     keys.iter().find_map(|key| {
         payload
             .get(*key)
             .and_then(Value::as_str)
-            .and_then(|value| Uuid::parse_str(value).ok())
+            .and_then(|value| Id::parse(value).ok())
     })
 }
 
-fn recipient_ordering_key(kind: &str, endpoint_id: Uuid, event: &ClaimedEvent) -> String {
+fn recipient_ordering_key(kind: &str, endpoint_id: Id, event: &ClaimedEvent) -> String {
     format!(
         "{kind}:{endpoint_id}:{}:{}",
         event.aggregate_type, event.aggregate_id
@@ -490,19 +490,19 @@ fn recipient_ordering_key(kind: &str, endpoint_id: Uuid, event: &ClaimedEvent) -
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::id::Id;
     use serde_json::json;
     use time::OffsetDateTime;
-    use uuid::Uuid;
 
     use super::{ClaimedEvent, payload_uuid, recipient_ordering_key};
 
     fn event() -> ClaimedEvent {
         ClaimedEvent {
-            id: Uuid::from_u128(1),
+            id: Id::from_u128(1),
             testing_environment_id: None,
-            organization_id: Some(Uuid::from_u128(2)),
+            organization_id: Some(Id::from_u128(2)),
             aggregate_type: "organization_membership".to_owned(),
-            aggregate_id: Uuid::from_u128(3),
+            aggregate_id: Id::from_u128(3),
             event_type: "organization.membership.updated.v1".to_owned(),
             payload: json!({}),
             attempt_count: 1,
@@ -513,8 +513,8 @@ mod tests {
     #[test]
     fn ordering_is_scoped_to_destination_and_aggregate() {
         let event = event();
-        let first_endpoint = Uuid::from_u128(4);
-        let second_endpoint = Uuid::from_u128(5);
+        let first_endpoint = Id::from_u128(4);
+        let second_endpoint = Id::from_u128(5);
 
         let application = recipient_ordering_key("application", first_endpoint, &event);
         let silicon = recipient_ordering_key("silicon_webhook", first_endpoint, &event);
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn authentication_revocation_payload_routes_by_subject() {
-        let subject_id = Uuid::from_u128(6);
+        let subject_id = Id::from_u128(6);
         let payload = json!({
             "subject_principal_id": subject_id,
             "authorized_state": { "authentication_session": { "status": "revoked" } },

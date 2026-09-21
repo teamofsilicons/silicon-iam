@@ -1,7 +1,7 @@
+use crate::domain::id::Id;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,7 +27,6 @@ pub(super) struct SignupCompletionInput {
     pub(super) carbon_id: String,
     pub(super) display_name: String,
     pub(super) timezone: Option<String>,
-    pub(super) description: Option<String>,
     pub(super) profile_photo: Option<String>,
 }
 
@@ -69,7 +68,7 @@ pub(super) struct PageQuery {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct AuthSessionResponse {
-    pub(super) session_id: Uuid,
+    pub(super) session_id: Id,
     #[serde(with = "time::serde::rfc3339")]
     pub(super) expires_at: OffsetDateTime,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,7 +96,7 @@ pub(super) struct AvailabilityResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct ActorResponse {
-    pub(super) principal_id: Uuid,
+    pub(super) principal_id: Id,
     #[serde(rename = "type")]
     pub(super) actor_type: String,
     pub(super) public_id: String,
@@ -105,11 +104,10 @@ pub(super) struct ActorResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct CarbonSelfResponse {
-    pub(super) principal_id: Uuid,
+    pub(super) principal_id: Id,
     pub(super) carbon_id: String,
     pub(super) display_name: String,
     pub(super) timezone: String,
-    pub(super) description: Option<String>,
     pub(super) profile_photo: String,
     pub(super) email: String,
     pub(super) phone_number: String,
@@ -130,12 +128,12 @@ pub(super) struct TokenResponse {
     #[serde(with = "time::serde::rfc3339")]
     pub(super) refresh_expires_at: OffsetDateTime,
     pub(super) actor: ActorResponse,
-    pub(super) session_id: Uuid,
+    pub(super) session_id: Id,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct SessionResponse {
-    pub(super) session_id: Uuid,
+    pub(super) session_id: Id,
     pub(super) actor: ActorResponse,
     pub(super) status: String,
     pub(super) user_agent_summary: Option<String>,
@@ -152,7 +150,7 @@ pub(super) struct SessionResponse {
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct LoginEventResponse {
-    pub(super) id: Uuid,
+    pub(super) id: Id,
     pub(super) actor: ActorResponse,
     pub(super) app_id: Option<String>,
     pub(super) org_id: Option<String>,
@@ -234,7 +232,6 @@ pub(super) struct ValidatedSignupCompletion {
     pub(super) carbon_id: crate::domain::auth::CarbonId,
     pub(super) display_name: String,
     pub(super) timezone: String,
-    pub(super) description: Option<String>,
     pub(super) profile_photo: Option<url::Url>,
 }
 
@@ -254,6 +251,10 @@ pub(super) enum VerificationOutcome {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 pub(super) enum LoginVerificationOutcome {
     Success(TokenResponse),
     Invalid,
@@ -261,6 +262,10 @@ pub(super) enum LoginVerificationOutcome {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 pub(super) enum RefreshMutationOutcome {
     Success(TokenResponse),
     ReplayRevoked,
@@ -324,7 +329,7 @@ impl StepUpAction {
 pub(super) struct StepUpChallengeInput {
     pub(super) channel: ContactChannel,
     pub(super) action: StepUpAction,
-    pub(super) resource_id: Uuid,
+    pub(super) resource_id: Id,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

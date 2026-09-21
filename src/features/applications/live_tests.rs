@@ -1,60 +1,40 @@
 //! Live PostgreSQL protocol-invariant coverage.
 //!
 //! The test is ignored in the default suite because it needs a disposable
-//! PostgreSQL database. Docker is the default; `IAM_TEST_DATABASE_URL` may name
-//! an explicitly prepared empty native test database. Production credentials
+//! PostgreSQL database. Docker is the default; `IAM_TEST_DATABASE_ADMIN_URL`
+//! can select a local server for a fresh isolated database. Production credentials
 //! must never be supplied. It exercises the same queries used by HTTP handlers.
 #![allow(clippy::too_many_lines)]
 
+use crate::domain::id::Id;
 use anyhow::{Context as _, ensure};
 use axum::{body::to_bytes, http::StatusCode, response::IntoResponse as _};
 use serde_json::Value;
-use sqlx::{Acquire as _, PgPool, postgres::PgPoolOptions};
-use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-use testcontainers_modules::postgres::Postgres;
-use uuid::Uuid;
+use sqlx::{Acquire as _, PgPool};
 
 use crate::infrastructure::testing_plane::{self, SelectedEnvironment};
 
 use super::applications::ensure_application_id_available_for_testing;
 
-const CARBON_ID: Uuid = Uuid::from_u128(1);
-const ADMIN_CARBON_ID: Uuid = Uuid::from_u128(2);
-const ORGANIZATION_ID: Uuid = Uuid::from_u128(0x21);
-const OWNER_MEMBERSHIP_ID: Uuid = Uuid::from_u128(0x31);
-const ADMIN_MEMBERSHIP_ID: Uuid = Uuid::from_u128(0x32);
-const APP_A_ID: Uuid = Uuid::from_u128(0x11);
-const APP_B_ID: Uuid = Uuid::from_u128(0x12);
-const CONSENT_ID: Uuid = Uuid::from_u128(0x71);
-const FAMILY_ID: Uuid = Uuid::from_u128(0x91);
-const SECOND_FAMILY_ID: Uuid = Uuid::from_u128(0x93);
-const PARENT_REFRESH_ID: Uuid = Uuid::from_u128(0x92);
-const PROOF_ID: Uuid = Uuid::from_u128(0x121);
-const APP_SECRET_ID: Uuid = Uuid::from_u128(0x131);
+const CARBON_ID: Id = Id::fixture("test_carbon");
+const ADMIN_CARBON_ID: Id = Id::fixture("test_admin");
+const ORGANIZATION_ID: Id = Id::from_u128(0x21);
+const OWNER_MEMBERSHIP_ID: Id = Id::from_u128(0x31);
+const ADMIN_MEMBERSHIP_ID: Id = Id::from_u128(0x32);
+const APP_A_ID: Id = Id::fixture("test_org>app-alpha");
+const APP_B_ID: Id = Id::fixture("test_org>app-beta");
+const CONSENT_ID: Id = Id::from_u128(0x71);
+const FAMILY_ID: Id = Id::from_u128(0x91);
+const SECOND_FAMILY_ID: Id = Id::from_u128(0x93);
+const PARENT_REFRESH_ID: Id = Id::from_u128(0x92);
+const PROOF_ID: Id = Id::from_u128(0x121);
+const APP_SECRET_ID: Id = Id::from_u128(0x131);
 
 #[tokio::test]
-#[ignore = "requires Docker or an empty disposable database in IAM_TEST_DATABASE_URL"]
+#[ignore = "requires Docker or local PostgreSQL via IAM_TEST_DATABASE_ADMIN_URL"]
 async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyhow::Result<()> {
-    let native_url = std::env::var("IAM_TEST_DATABASE_URL").ok();
-    let container = if native_url.is_none() {
-        Some(Postgres::default().with_tag("16-alpine").start().await?)
-    } else {
-        None
-    };
-    let database_url = if let Some(url) = native_url {
-        url
-    } else {
-        let postgres = container
-            .as_ref()
-            .context("missing disposable PostgreSQL container")?;
-        let host = postgres.get_host().await?;
-        let port = postgres.get_host_port_ipv4(5432).await?;
-        format!("postgres://postgres:postgres@{host}:{port}/postgres")
-    };
-    let pool = PgPoolOptions::new()
-        .max_connections(8)
-        .connect(&database_url)
-        .await?;
+    let database = crate::test_database::TestDatabase::start().await?;
+    let pool = database.pool.clone();
     crate::infrastructure::postgres::migrate(&pool).await?;
     seed_protocol_rows(&pool).await?;
     private_application_authority_and_endpoint_lifetime(&pool).await?;
@@ -145,24 +125,24 @@ async fn private_application_authority_and_endpoint_lifetime(pool: &PgPool) -> a
         sqlx::query_scalar::<_, bool>(
             "SELECT iam_private.application_private_token_is_current($1)"
         )
-        .bind(Uuid::from_u128(0x101))
+        .bind(Id::from_u128(0x101))
         .fetch_one(&mut *tx)
         .await?,
         "owning membership authorizes existing private token"
     );
-    ensure!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM iam_private.lock_current_application_oauth_subject_authority($1,$2,$3,$4,'carbon',NULL,NULL)").bind(APP_A_ID).bind(CONSENT_ID).bind(Uuid::from_u128(0x41)).bind(CARBON_ID).fetch_one(&mut *tx).await? == 1, "private refresh/introspection chain is live");
+    ensure!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM iam_private.lock_current_application_oauth_subject_authority($1,$2,$3,$4,'carbon',NULL,NULL)").bind(APP_A_ID).bind(CONSENT_ID).bind(Id::from_u128(0x41)).bind(CARBON_ID).fetch_one(&mut *tx).await? == 1, "private refresh/introspection chain is live");
     // Suspend within a rollback-only transaction; no production data is involved.
     sqlx::query("UPDATE iam.organization_memberships SET status='suspended',suspended_at=transaction_timestamp() WHERE id=$1").bind(OWNER_MEMBERSHIP_ID).execute(&mut *tx).await?;
     ensure!(
         !sqlx::query_scalar::<_, bool>(
             "SELECT iam_private.application_private_token_is_current($1)"
         )
-        .bind(Uuid::from_u128(0x101))
+        .bind(Id::from_u128(0x101))
         .fetch_one(&mut *tx)
         .await?,
         "membership removal invalidates private bearer authority"
     );
-    ensure!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM iam_private.lock_current_application_oauth_subject_authority($1,$2,$3,$4,'carbon',NULL,NULL)").bind(APP_A_ID).bind(CONSENT_ID).bind(Uuid::from_u128(0x41)).bind(CARBON_ID).fetch_one(&mut *tx).await? == 0, "membership loss invalidates refresh and introspection");
+    ensure!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM iam_private.lock_current_application_oauth_subject_authority($1,$2,$3,$4,'carbon',NULL,NULL)").bind(APP_A_ID).bind(CONSENT_ID).bind(Id::from_u128(0x41)).bind(CARBON_ID).fetch_one(&mut *tx).await? == 0, "membership loss invalidates refresh and introspection");
     tx.rollback().await?;
 
     let mut tx = pool.begin().await?;
@@ -209,34 +189,34 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
             $1, $2, $3, $4, 'silicon', $5, $6
         ) AS authority
     ";
-    let silicon_id = Uuid::from_u128(0x501);
-    let membership_id = Uuid::from_u128(0x531);
-    let parent_id = Uuid::from_u128(0x541);
-    let second_parent_id = Uuid::from_u128(0x542);
-    let unscoped_consent = Uuid::from_u128(0x571);
-    let scoped_consent = Uuid::from_u128(0x572);
+    let silicon_id = Id::fixture("test_silicon:test_org");
+    let membership_id = Id::from_u128(0x531);
+    let parent_id = Id::from_u128(0x541);
+    let second_parent_id = Id::from_u128(0x542);
+    let unscoped_consent = Id::from_u128(0x571);
+    let scoped_consent = Id::from_u128(0x572);
     let mut transaction = pool.begin().await?;
     sqlx::raw_sql(
         r"
         INSERT INTO iam.principals (id, kind, status, activated_at)
-        VALUES ('00000000-0000-0000-0000-000000000501', 'silicon', 'active',
+        VALUES ('test_silicon:test_org', 'silicon', 'active',
                 transaction_timestamp());
         INSERT INTO iam.organization_memberships (
             id, organization_id, principal_id, principal_kind, org_role
         ) VALUES ('00000000-0000-0000-0000-000000000531',
                   '00000000-0000-0000-0000-000000000021',
-                  '00000000-0000-0000-0000-000000000501', 'silicon', 'member');
+                  'test_silicon:test_org', 'silicon', 'member');
         INSERT INTO iam.silicons (
             id, organization_id, membership_id, organization_handle, silicon_handle,
             display_name, provisioning_status
-        ) VALUES ('00000000-0000-0000-0000-000000000501',
+        ) VALUES ('test_silicon:test_org',
                   '00000000-0000-0000-0000-000000000021',
                   '00000000-0000-0000-0000-000000000531', 'test_org', 'test_silicon',
                   'Test Silicon', 'active');
         INSERT INTO iam.authentication_sessions (
             id, subject_principal_id, subject_kind, authentication_method,
             assurance_level, subject_auth_epoch, idle_expires_at, absolute_expires_at
-        ) SELECT id, '00000000-0000-0000-0000-000000000501', 'silicon',
+        ) SELECT id, 'test_silicon:test_org', 'silicon',
                  'silicon_credential', 1, 1,
                  transaction_timestamp() + interval '1 day',
                  transaction_timestamp() + interval '2 days'
@@ -248,14 +228,14 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
             selected_membership_ids
         ) VALUES (
             '00000000-0000-0000-0000-000000000571',
-            '00000000-0000-0000-0000-000000000011',
-            '00000000-0000-0000-0000-000000000501', 'silicon', NULL, NULL,
+            'test_org>app-alpha',
+            'test_silicon:test_org', 'silicon', NULL, NULL,
             '00000000-0000-0000-0000-000000000541',
             ARRAY['00000000-0000-0000-0000-000000000531'::uuid]
         ), (
             '00000000-0000-0000-0000-000000000572',
-            '00000000-0000-0000-0000-000000000011',
-            '00000000-0000-0000-0000-000000000501', 'silicon',
+            'test_org>app-alpha',
+            'test_silicon:test_org', 'silicon',
             '00000000-0000-0000-0000-000000000021',
             '00000000-0000-0000-0000-000000000531',
             '00000000-0000-0000-0000-000000000541',
@@ -388,15 +368,15 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
     for (label, mutation) in [
         (
             "principal epoch change",
-            "UPDATE iam.principals SET auth_epoch = auth_epoch + 1 WHERE id = '00000000-0000-0000-0000-000000000501'",
+            "UPDATE iam.principals SET auth_epoch = auth_epoch + 1 WHERE id = 'test_silicon:test_org'",
         ),
         (
             "suspended principal",
-            "UPDATE iam.principals SET status = 'suspended', suspended_at = transaction_timestamp() WHERE id = '00000000-0000-0000-0000-000000000501'",
+            "UPDATE iam.principals SET status = 'suspended', suspended_at = transaction_timestamp() WHERE id = 'test_silicon:test_org'",
         ),
         (
             "inactive Silicon",
-            "UPDATE iam.silicons SET provisioning_status = 'hook_error' WHERE id = '00000000-0000-0000-0000-000000000501'",
+            "UPDATE iam.silicons SET provisioning_status = 'hook_error' WHERE id = 'test_silicon:test_org'",
         ),
         (
             "suspended organization",
@@ -426,8 +406,8 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
             .bind(unscoped_consent)
             .bind(parent_id)
             .bind(silicon_id)
-            .bind(None::<Uuid>)
-            .bind(None::<Uuid>)
+            .bind(None::<Id>)
+            .bind(None::<Id>)
             .fetch_optional(&mut *savepoint)
             .await?;
         ensure!(
@@ -446,8 +426,8 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
         .bind(unscoped_consent)
         .bind(parent_id)
         .bind(silicon_id)
-        .bind(None::<Uuid>)
-        .bind(None::<Uuid>)
+        .bind(None::<Id>)
+        .bind(None::<Id>)
         .fetch_optional(&mut *savepoint)
         .await
         .err()
@@ -473,10 +453,10 @@ async fn selected_login_additions_preserve_existing_organizations(
     pool: &PgPool,
 ) -> anyhow::Result<()> {
     let mut transaction = pool.begin().await?;
-    let unscoped_token = Uuid::from_u128(0x101);
-    let bound_token = Uuid::from_u128(0x102);
-    let second_organization = Uuid::from_u128(0x22);
-    let second_membership = Uuid::from_u128(0x33);
+    let unscoped_token = Id::from_u128(0x101);
+    let bound_token = Id::from_u128(0x102);
+    let second_organization = Id::from_u128(0x22);
+    let second_membership = Id::from_u128(0x33);
 
     set_context(&mut transaction, CARBON_ID, None, APP_A_ID).await?;
     let reachable = reachable_organizations(&mut transaction, unscoped_token).await?;
@@ -642,9 +622,9 @@ async fn selected_login_additions_preserve_existing_organizations(
 
 async fn set_context(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    principal_id: Uuid,
-    organization_id: Option<Uuid>,
-    application_id: Uuid,
+    principal_id: Id,
+    organization_id: Option<Id>,
+    application_id: Id,
 ) -> anyhow::Result<()> {
     sqlx::query(
         r"
@@ -663,7 +643,7 @@ async fn set_context(
 
 async fn reachable_organizations(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    token_id: Uuid,
+    token_id: Id,
 ) -> anyhow::Result<Option<Vec<String>>> {
     let listed = sqlx::query_scalar::<_, Option<Value>>(
         "SELECT iam_private.list_current_application_authorizations($1, $2, $3, 1)",
@@ -685,9 +665,9 @@ async fn reachable_organizations(
 
 async fn selected_organization(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    token_id: Uuid,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    token_id: Id,
+    organization_id: Id,
+    membership_id: Id,
 ) -> anyhow::Result<Option<String>> {
     let snapshot = sqlx::query_scalar::<_, Option<Value>>(
         "SELECT iam_private.get_current_application_authorization($1, $2, $3, $4, $5, 1, NULL)",
@@ -704,9 +684,9 @@ async fn selected_organization(
 
 async fn obo_exchange_authority(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    parent_token_id: Uuid,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    parent_token_id: Id,
+    organization_id: Id,
+    membership_id: Id,
 ) -> anyhow::Result<Option<i64>> {
     sqlx::query_scalar::<_, i64>(
         r"
@@ -729,8 +709,8 @@ async fn obo_exchange_authority(
 
 async fn consent_preserves_each_parent_session(pool: &PgPool) -> anyhow::Result<()> {
     let mut transaction = pool.begin().await?;
-    let first_parent = Uuid::from_u128(0x41);
-    let second_parent = Uuid::from_u128(0x42);
+    let first_parent = Id::from_u128(0x41);
+    let second_parent = Id::from_u128(0x42);
     sqlx::query(
         r"
         INSERT INTO iam.authentication_sessions (
@@ -755,8 +735,8 @@ async fn consent_preserves_each_parent_session(pool: &PgPool) -> anyhow::Result<
         let mut grants = Vec::new();
         for parent in [first_parent, second_parent, first_parent] {
             let (grant, _) =
-                sqlx::query_as::<_, (Uuid, i64)>(super::oauth::OAUTH_CONSENT_UPSERT_QUERY)
-                    .bind(Uuid::now_v7())
+                sqlx::query_as::<_, (Id, i64)>(super::oauth::OAUTH_CONSENT_UPSERT_QUERY)
+                    .bind(Id::now_v7())
                     .bind(APP_A_ID)
                     .bind(CARBON_ID)
                     .bind("carbon")
@@ -840,7 +820,7 @@ async fn direct_test_creation_rejects_a_production_application_id(
 
     let Err(rejection) = testing_plane::scope(
         SelectedEnvironment {
-            id: Uuid::from_u128(0x501),
+            id: Id::from_u128(0x501),
             organization_id: ORGANIZATION_ID,
         },
         ensure_application_id_available_for_testing(production_pool, "test_org>app-alpha"),
@@ -878,10 +858,10 @@ async fn qualified_application_directory_and_webhook_rotation_are_consistent(
         "Application directory fields were not stored in their canonical form"
     );
 
-    let pending_endpoint_id = Uuid::from_u128(0x143);
-    let pending_key_id = Uuid::from_u128(0x144);
-    let active_successor_key_id = Uuid::from_u128(0x145);
-    let pending_successor_key_id = Uuid::from_u128(0x146);
+    let pending_endpoint_id = Id::from_u128(0x143);
+    let pending_key_id = Id::from_u128(0x144);
+    let active_successor_key_id = Id::from_u128(0x145);
+    let pending_successor_key_id = Id::from_u128(0x146);
     let mut transaction = pool.begin().await?;
     sqlx::query(
         r"
@@ -956,7 +936,7 @@ async fn qualified_application_directory_and_webhook_rotation_are_consistent(
         version_three_count == 2,
         "one logical rotation version was not shared by active and pending endpoints"
     );
-    let recipients = sqlx::query_as::<_, (Uuid, Uuid)>(
+    let recipients = sqlx::query_as::<_, (Id, Id)>(
         r"
         SELECT endpoint_id, signing_key_id
         FROM iam_private.list_worker_application_webhook_recipients(
@@ -991,7 +971,7 @@ async fn qualified_application_directory_and_webhook_rotation_are_consistent(
 }
 
 async fn pending_webhook_application_is_importable(pool: &PgPool) -> anyhow::Result<()> {
-    let endpoint_id = Uuid::from_u128(0x151);
+    let endpoint_id = Id::from_u128(0x151);
     let mut transaction = pool.begin().await?;
     sqlx::query(
         r"
@@ -1017,12 +997,12 @@ async fn pending_webhook_application_is_importable(pool: &PgPool) -> anyhow::Res
                   decode(repeat('65', 12), 'hex'), 1)
         ",
     )
-    .bind(Uuid::from_u128(0x152))
+    .bind(Id::from_u128(0x152))
     .bind(APP_B_ID)
     .bind(endpoint_id)
     .execute(&mut *transaction)
     .await?;
-    let imported_endpoint = sqlx::query_scalar::<_, Uuid>(
+    let imported_endpoint = sqlx::query_scalar::<_, Id>(
         "SELECT source_webhook_endpoint_id FROM iam_private.get_testing_application_import($1)",
     )
     .bind("test_org>app-beta")
@@ -1039,9 +1019,9 @@ async fn pending_webhook_application_is_importable(pool: &PgPool) -> anyhow::Res
 async fn authorized_application_organization_projection_is_exact(
     pool: &PgPool,
 ) -> anyhow::Result<()> {
-    let reviewer_id = Uuid::from_u128(3);
-    let other_organization_id = Uuid::from_u128(0x22);
-    let other_application_id = Uuid::from_u128(0x13);
+    let reviewer_id = Id::fixture("test_reviewer");
+    let other_organization_id = Id::from_u128(0x22);
+    let other_application_id = Id::fixture("other_org>app-gamma");
     let mut transaction = pool.begin().await?;
     sqlx::query(
         r"
@@ -1137,8 +1117,8 @@ async fn authorized_application_organization_projection_is_exact(
 
 async fn set_application_projection_context(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    principal_id: Uuid,
-    application_id: Option<Uuid>,
+    principal_id: Id,
+    application_id: Option<Id>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         r"
@@ -1155,7 +1135,7 @@ async fn set_application_projection_context(
 
 async fn projected_organization(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    application_id: Uuid,
+    application_id: Id,
 ) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar::<_, String>(
         r"
@@ -1278,7 +1258,7 @@ async fn application_tenancy_and_creator_are_immutable(pool: &PgPool) -> anyhow:
     let Err(organization_change) =
         sqlx::query("UPDATE iam.applications SET organization_id = $2 WHERE id = $1")
             .bind(APP_B_ID)
-            .bind(Uuid::from_u128(0x22))
+            .bind(Id::from_u128(0x22))
             .execute(pool)
             .await
     else {
@@ -1314,14 +1294,14 @@ async fn application_tenancy_and_creator_are_immutable(pool: &PgPool) -> anyhow:
 }
 
 async fn application_lifecycle_and_manual_replay_are_atomic(pool: &PgPool) -> anyhow::Result<()> {
-    let replacement_secret_id = Uuid::from_u128(0x132);
-    let event_id = Uuid::from_u128(0x151);
-    let recipient_id = Uuid::from_u128(0x152);
-    let delivery_id = Uuid::from_u128(0x153);
-    let second_event_id = Uuid::from_u128(0x157);
-    let second_recipient_id = Uuid::from_u128(0x158);
-    let second_delivery_id = Uuid::from_u128(0x159);
-    let replay_batch_id = Uuid::from_u128(0x156);
+    let replacement_secret_id = Id::from_u128(0x132);
+    let event_id = Id::from_u128(0x151);
+    let recipient_id = Id::from_u128(0x152);
+    let delivery_id = Id::from_u128(0x153);
+    let second_event_id = Id::from_u128(0x157);
+    let second_recipient_id = Id::from_u128(0x158);
+    let second_delivery_id = Id::from_u128(0x159);
+    let replay_batch_id = Id::from_u128(0x156);
     let mut transaction = pool.begin().await?;
 
     sqlx::query(
@@ -1480,8 +1460,8 @@ async fn application_lifecycle_and_manual_replay_are_atomic(pool: &PgPool) -> an
             crate::features::webhook_replay::replay_application_delivery(
                 &mut transaction,
                 delivery,
-                Uuid::from_u128(0x141),
-                Uuid::from_u128(0x142),
+                Id::from_u128(0x141),
+                Id::from_u128(0x142),
                 replay_batch_id,
             )
             .await?,
@@ -1539,7 +1519,7 @@ async fn application_lifecycle_and_manual_replay_are_atomic(pool: &PgPool) -> an
         second_claimable == [second_delivery_id],
         "the next replay-batch delivery did not become eligible after its predecessor finished"
     );
-    let preserved_event = sqlx::query_as::<_, (Uuid, i64, String, serde_json::Value)>(
+    let preserved_event = sqlx::query_as::<_, (Id, i64, String, serde_json::Value)>(
         r"
         SELECT id, aggregate_version, event_type, payload
         FROM iam.outbox_events WHERE id = $1
@@ -1564,9 +1544,9 @@ async fn application_lifecycle_and_manual_replay_are_atomic(pool: &PgPool) -> an
 
 async fn claimable_replay_deliveries(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    delivery_ids: &[Uuid],
-) -> anyhow::Result<Vec<Uuid>> {
-    sqlx::query_scalar::<_, Uuid>(
+    delivery_ids: &[Id],
+) -> anyhow::Result<Vec<Id>> {
+    sqlx::query_scalar::<_, Id>(
         r"
         SELECT delivery.id
         FROM iam.webhook_deliveries AS delivery
@@ -1638,7 +1618,7 @@ async fn application_deletion_revokes_all_client_authority(pool: &PgPool) -> any
         ) VALUES ($1, $2, $3, 'delete', 'operator request', $4)
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(APP_A_ID)
     .bind(CARBON_ID)
     .bind(version)
@@ -1773,7 +1753,7 @@ async fn application_scope_revocation_contains_existing_access(
 }
 
 async fn authorization_code_scope_revocation_fails_closed(pool: &PgPool) -> anyhow::Result<()> {
-    let request_id = Uuid::from_u128(0x61);
+    let request_id = Id::from_u128(0x61);
     let mut transaction = pool.begin().await?;
     // The ceiling is read through an owner-rights function that answers only
     // for the application the caller is authenticated as, exactly as the real
@@ -1842,7 +1822,7 @@ async fn authorization_code_scope_revocation_fails_closed(pool: &PgPool) -> anyh
 }
 
 async fn authorization_code_is_single_use(pool: &PgPool) -> anyhow::Result<()> {
-    let first = sqlx::query_scalar::<_, Uuid>(
+    let first = sqlx::query_scalar::<_, Id>(
         r"
         UPDATE iam.oauth_authorization_codes
         SET consumed_at = transaction_timestamp()
@@ -1853,7 +1833,7 @@ async fn authorization_code_is_single_use(pool: &PgPool) -> anyhow::Result<()> {
     )
     .fetch_optional(pool)
     .await?;
-    let replay = sqlx::query_scalar::<_, Uuid>(
+    let replay = sqlx::query_scalar::<_, Id>(
         r"
         UPDATE iam.oauth_authorization_codes
         SET consumed_at = transaction_timestamp()
@@ -1872,7 +1852,7 @@ async fn authorization_code_is_single_use(pool: &PgPool) -> anyhow::Result<()> {
 }
 
 async fn refresh_reuse_compromises_the_complete_family(pool: &PgPool) -> anyhow::Result<()> {
-    let replacement_id = Uuid::from_u128(0x94);
+    let replacement_id = Id::from_u128(0x94);
     let mut transaction = pool.begin().await?;
     sqlx::query(
         r"
@@ -1888,7 +1868,7 @@ async fn refresh_reuse_compromises_the_complete_family(pool: &PgPool) -> anyhow:
     .bind(PARENT_REFRESH_ID)
     .execute(&mut *transaction)
     .await?;
-    let rotated = sqlx::query_scalar::<_, Uuid>(
+    let rotated = sqlx::query_scalar::<_, Id>(
         r"
         UPDATE iam.refresh_tokens
         SET consumed_at = transaction_timestamp(), replacement_token_id = $2
@@ -2068,7 +2048,7 @@ async fn obo_proof_is_single_use(pool: &PgPool) -> anyhow::Result<()> {
 }
 
 async fn stale_obo_parent_authority_is_rejected(pool: &PgPool) -> anyhow::Result<()> {
-    let parent_id = Uuid::from_u128(0x102);
+    let parent_id = Id::from_u128(0x102);
     let parent_is_current = sqlx::query_scalar::<_, bool>(
         r"
         SELECT parent.membership_authz_epoch = membership.authz_epoch
@@ -2130,7 +2110,7 @@ async fn stale_obo_parent_authority_is_rejected(pool: &PgPool) -> anyhow::Result
 async fn expired_obo_proof_cannot_be_consumed_after_transaction_wait(
     pool: &PgPool,
 ) -> anyhow::Result<()> {
-    let expiring_proof_id = Uuid::from_u128(0x122);
+    let expiring_proof_id = Id::from_u128(0x122);
     let mut issuance = pool.begin().await?;
     set_context(&mut issuance, CARBON_ID, Some(ORGANIZATION_ID), APP_A_ID).await?;
     sqlx::query(
@@ -2173,7 +2153,7 @@ async fn expired_obo_proof_cannot_be_consumed_after_transaction_wait(
     sqlx::query("SELECT pg_sleep(0.2)")
         .execute(&mut *verification)
         .await?;
-    let consumed = sqlx::query_scalar::<_, Uuid>(
+    let consumed = sqlx::query_scalar::<_, Id>(
         r"
         WITH wall_clock AS MATERIALIZED (
             SELECT clock_timestamp() AS value
@@ -2198,8 +2178,8 @@ async fn expired_obo_proof_cannot_be_consumed_after_transaction_wait(
     Ok(())
 }
 
-async fn consume_obo_proof(pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
-    sqlx::query_scalar::<_, Uuid>(
+async fn consume_obo_proof(pool: &PgPool) -> Result<Option<Id>, sqlx::Error> {
+    sqlx::query_scalar::<_, Id>(
         r"
         UPDATE iam.obo_proofs
         SET consumed_at = transaction_timestamp(), consumed_by_application_id = $2
@@ -2232,7 +2212,7 @@ async fn committed_application_secret_revocation_wins_authentication(
     let authentication_pool = pool.clone();
     let authentication = tokio::spawn(async move {
         let mut transaction = authentication_pool.begin().await?;
-        let resolved = sqlx::query_scalar::<_, Uuid>(
+        let resolved = sqlx::query_scalar::<_, Id>(
             r"
             SELECT id FROM iam.application_secrets
             WHERE id = $1
@@ -2244,7 +2224,7 @@ async fn committed_application_secret_revocation_wins_authentication(
         .fetch_optional(&mut *transaction)
         .await?;
         transaction.commit().await?;
-        Ok::<Option<Uuid>, sqlx::Error>(resolved)
+        Ok::<Option<Id>, sqlx::Error>(resolved)
     });
     tokio::task::yield_now().await;
     revocation.commit().await?;
@@ -2259,8 +2239,10 @@ async fn committed_application_secret_revocation_wins_authentication(
 }
 
 pub(crate) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
-    sqlx::raw_sql(
-        r#"
+    let canonical = sqlx::query_scalar::<_, bool>(
+        "SELECT atttypid='text'::regtype FROM pg_attribute WHERE attrelid='iam.principals'::regclass AND attname='id'",
+    ).fetch_one(pool).await?;
+    let mut fixture = r#"
         BEGIN;
         INSERT INTO iam.cryptographic_key_versions (purpose, key_version, status)
         VALUES ('token_hmac', 1, 'active'), ('contact_aead', 1, 'active');
@@ -2526,11 +2508,31 @@ pub(crate) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             transaction_timestamp() + interval '60 seconds'
         );
         COMMIT;
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("seed application protocol invariant test")?;
+        "#.to_owned();
+    if canonical {
+        // This contact resource deliberately shares its old UUID with the
+        // administrator identity; only the identity reference is converted.
+        fixture = fixture.replace(
+            "('00000000-0000-0000-0000-000000000002',\n           '00000000-0000-0000-0000-000000000001', 'email'",
+            "('__owner_email_contact__',\n           '00000000-0000-0000-0000-000000000001', 'email'",
+        );
+        for (old, current) in [
+            ("00000000-0000-0000-0000-000000000001", "test_carbon"),
+            ("00000000-0000-0000-0000-000000000002", "test_admin"),
+            ("00000000-0000-0000-0000-000000000011", "test_org>app-alpha"),
+            ("00000000-0000-0000-0000-000000000012", "test_org>app-beta"),
+        ] {
+            fixture = fixture.replace(old, current);
+        }
+        fixture = fixture.replace(
+            "__owner_email_contact__",
+            "00000000-0000-0000-0000-000000000002",
+        );
+    }
+    sqlx::raw_sql(sqlx::AssertSqlSafe(fixture))
+        .execute(pool)
+        .await
+        .context("seed application protocol invariant test")?;
     Ok(())
 }
 
@@ -2539,7 +2541,7 @@ async fn cross_organization_login_selection_reports_private_restriction(
     pool: &PgPool,
 ) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
-    sqlx::raw_sql("INSERT INTO iam.organizations(id,org_id,name,created_by_carbon_id) VALUES ('00000000-0000-0000-0000-000000000621','second_org','Second','00000000-0000-0000-0000-000000000001'); INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES ('00000000-0000-0000-0000-000000000631','00000000-0000-0000-0000-000000000621','00000000-0000-0000-0000-000000000001','carbon','owner');").execute(&mut *tx).await?;
+    sqlx::raw_sql("INSERT INTO iam.organizations(id,org_id,name,created_by_carbon_id) VALUES ('00000000-0000-0000-0000-000000000621','second_org','Second','test_carbon'); INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES ('00000000-0000-0000-0000-000000000631','00000000-0000-0000-0000-000000000621','test_carbon','carbon','owner');").execute(&mut *tx).await?;
     sqlx::query(
         "SELECT set_config('iam.principal_id',$1,true),set_config('iam.application_id','',true)",
     )
@@ -2548,30 +2550,30 @@ async fn cross_organization_login_selection_reports_private_restriction(
     .await?;
     let query = "SELECT iam_private.lock_account_login_organization_selection($1,$2,$3,$4)";
     // Public apps allow an explicitly selected second organization.
-    let selected: Vec<Uuid> = sqlx::query_scalar(query)
+    let selected: Vec<Id> = sqlx::query_scalar(query)
         .bind(CARBON_ID)
-        .bind(Uuid::from_u128(0x41))
+        .bind(Id::from_u128(0x41))
         .bind(vec!["second_org"])
         .bind(APP_A_ID)
         .fetch_one(&mut *tx)
         .await?;
-    ensure!(selected == vec![Uuid::from_u128(0x631)]);
+    ensure!(selected == vec![Id::from_u128(0x631)]);
     sqlx::query("UPDATE iam.applications SET visibility='private' WHERE id=$1")
         .bind(APP_A_ID)
         .execute(&mut *tx)
         .await?;
-    let same: Vec<Uuid> = sqlx::query_scalar(query)
+    let same: Vec<Id> = sqlx::query_scalar(query)
         .bind(CARBON_ID)
-        .bind(Uuid::from_u128(0x41))
+        .bind(Id::from_u128(0x41))
         .bind(vec!["test_org"])
         .bind(APP_A_ID)
         .fetch_one(&mut *tx)
         .await?;
     ensure!(same == vec![OWNER_MEMBERSHIP_ID]);
     let mut attempt = tx.begin().await?;
-    let error = sqlx::query_scalar::<_, Vec<Uuid>>(query)
+    let error = sqlx::query_scalar::<_, Vec<Id>>(query)
         .bind(CARBON_ID)
-        .bind(Uuid::from_u128(0x41))
+        .bind(Id::from_u128(0x41))
         .bind(vec!["second_org"])
         .bind(APP_A_ID)
         .fetch_one(&mut *attempt)

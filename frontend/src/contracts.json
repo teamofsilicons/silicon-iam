@@ -1,4 +1,257 @@
 {
+  "ActionActors": {
+    "type": "string",
+    "enum": [
+      "any_member",
+      "only_admins",
+      "only_owner"
+    ]
+  },
+  "ActionApprovalRequirement": {
+    "type": "string",
+    "enum": [
+      "none",
+      "admin",
+      "owner"
+    ]
+  },
+  "ActionAutoApproval": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "carbon_ids",
+      "silicon_ids",
+      "tag_ids"
+    ],
+    "description": "Any matching requester ID or requester membership tag automatically approves an otherwise permitted action. Empty lists require manual approval. These selectors never grant permission.",
+    "properties": {
+      "carbon_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string"
+        }
+      },
+      "silicon_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string"
+        }
+      },
+      "tag_ids": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    }
+  },
+  "ActionPolicyUpdate": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "allowed_actors",
+      "approval",
+      "auto_approve"
+    ],
+    "description": "Owner or an admin delegated action_policies.manage can configure a rule. Owner always bypasses permission and approval gates. Authorized approvers perform their own permitted actions directly.",
+    "properties": {
+      "allowed_actors": {
+        "$ref": "#/components/schemas/ActionActors"
+      },
+      "approval": {
+        "$ref": "#/components/schemas/ActionApprovalRequirement"
+      },
+      "auto_approve": {
+        "$ref": "#/components/schemas/ActionAutoApproval"
+      }
+    }
+  },
+  "ActionPolicy": {
+    "type": "object",
+    "required": [
+      "action",
+      "label",
+      "allowed_actors",
+      "approval",
+      "auto_approve",
+      "defaults",
+      "version"
+    ],
+    "properties": {
+      "action": {
+        "type": "string"
+      },
+      "label": {
+        "type": "string"
+      },
+      "allowed_actors": {
+        "$ref": "#/components/schemas/ActionActors"
+      },
+      "approval": {
+        "$ref": "#/components/schemas/ActionApprovalRequirement"
+      },
+      "auto_approve": {
+        "$ref": "#/components/schemas/ActionAutoApproval"
+      },
+      "defaults": {
+        "type": "object",
+        "required": [
+          "allowed_actors",
+          "approval"
+        ],
+        "properties": {
+          "allowed_actors": {
+            "$ref": "#/components/schemas/ActionActors"
+          },
+          "approval": {
+            "$ref": "#/components/schemas/ActionApprovalRequirement"
+          }
+        }
+      },
+      "version": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0,
+        "description": "Zero is an unmodified default. Supply this version in If-Match when configuring."
+      }
+    }
+  },
+  "ActionPolicyList": {
+    "type": "object",
+    "required": [
+      "items",
+      "can_manage"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ActionPolicy"
+        }
+      },
+      "can_manage": {
+        "type": "boolean"
+      }
+    }
+  },
+  "ActionApproval": {
+    "type": "object",
+    "required": [
+      "id",
+      "action",
+      "status",
+      "requested_by",
+      "method",
+      "path",
+      "request_body",
+      "created_at",
+      "expires_at",
+      "version",
+      "can_decide"
+    ],
+    "description": "Approval binds the exact method, path, body, version, request key, session and application scope. Retry the original mutation after approval. Policy changes invalidate earlier approvals. Requests expire after twelve hours.",
+    "properties": {
+      "id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "action": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "approved",
+          "rejected",
+          "consumed"
+        ]
+      },
+      "requested_by": {
+        "type": "object",
+        "required": [
+          "actor_type",
+          "public_id"
+        ],
+        "properties": {
+          "actor_type": {
+            "type": "string"
+          },
+          "public_id": {
+            "type": "string"
+          }
+        }
+      },
+      "method": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "request_body": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": true
+      },
+      "expected_version": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "created_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "expires_at": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "version": {
+        "type": "integer",
+        "format": "int64"
+      },
+      "can_decide": {
+        "type": "boolean"
+      }
+    }
+  },
+  "ActionApprovalList": {
+    "type": "object",
+    "required": [
+      "items"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ActionApproval"
+        }
+      }
+    }
+  },
+  "ActionApprovalDecision": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "decision"
+    ],
+    "properties": {
+      "decision": {
+        "type": "string",
+        "enum": [
+          "approve",
+          "reject"
+        ]
+      }
+    }
+  },
   "ErrorEnvelope": {
     "type": "object",
     "required": [
@@ -230,16 +483,11 @@
   "ActorRef": {
     "type": "object",
     "required": [
-      "principal_id",
       "type",
       "public_id"
     ],
     "additionalProperties": false,
     "properties": {
-      "principal_id": {
-        "type": "string",
-        "format": "uuid"
-      },
       "type": {
         "type": "string",
         "enum": [
@@ -256,17 +504,12 @@
   "CarbonPublic": {
     "type": "object",
     "required": [
-      "principal_id",
       "carbon_id",
       "display_name",
       "profile_photo",
       "created_at"
     ],
     "properties": {
-      "principal_id": {
-        "type": "string",
-        "format": "uuid"
-      },
       "carbon_id": {
         "$ref": "#/components/schemas/ExistingCarbonId"
       },
@@ -274,13 +517,6 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 200
-      },
-      "description": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "maxLength": 5000
       },
       "profile_photo": {
         "type": "string",
@@ -398,13 +634,6 @@
         ],
         "description": "Defaults to UTC when omitted."
       },
-      "description": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "maxLength": 5000
-      },
       "profile_photo": {
         "type": [
           "string",
@@ -427,13 +656,6 @@
       },
       "timezone": {
         "$ref": "#/components/schemas/TimeZoneId"
-      },
-      "description": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "maxLength": 5000
       },
       "profile_photo": {
         "type": [
@@ -484,7 +706,7 @@
   },
   "StepUpAction": {
     "type": "string",
-    "description": "Closed privileged-action catalog. account.session_revoke binds resource_id to the target session UUID; account.sessions_revoke_all binds it to the current Carbon principal UUID. The Silicon-webhook redirect action binds it to the target Silicon membership UUID. The Application client-secret rotation, webhook-secret rotation and webhook approval actions bind it to the internal Application UUID. Every action requires one non-null resource_id.",
+    "description": "Closed privileged-action catalog. account.session_revoke binds resource_id to the target session UUID; account.sessions_revoke_all binds it to the current Carbon principal UUID. The Silicon-webhook redirect action binds it to the target Silicon membership UUID. The Application client-secret rotation, webhook-secret rotation and webhook approval actions bind it to the canonical Application ID. Every action requires one non-null resource_id.",
     "enum": [
       "account.session_revoke",
       "account.sessions_revoke_all",
@@ -638,9 +860,8 @@
       "active": {
         "type": "boolean"
       },
-      "principal_id": {
-        "type": "string",
-        "format": "uuid"
+      "public_id": {
+        "type": "string"
       },
       "actor_type": {
         "type": "string",
@@ -710,7 +931,6 @@
     "type": "object",
     "description": "Current active membership bound to the authenticated token or verified proof, audience, organization, principal and testing plane. Use on first login and cache misses; webhook snapshots are asynchronous updates, not prerequisites for initial access. org_role requires roles.read and tags requires memberships.read. Null means undisclosed, not member or empty tags. OBO disclosure uses the intersection of the parent token scopes and recipient application's currently approved scopes. The binding authorizes no action outside the verified proof's endpoint/request. Do not reuse it for a different principal, membership, epoch, audience, organization, environment or effective scope set. Never fill undisclosed fields from a broader cached token. Introspect current bearer tokens again before relying on cached authority; a consumed OBO proof is single-use.",
     "required": [
-      "principal_id",
       "organization_id",
       "org_id",
       "membership_id",
@@ -723,10 +943,6 @@
       "tags"
     ],
     "properties": {
-      "principal_id": {
-        "type": "string",
-        "format": "uuid"
-      },
       "actor_type": {
         "type": "string",
         "enum": [
@@ -909,16 +1125,11 @@
   "LoginEventActor": {
     "type": "object",
     "required": [
-      "principal_id",
       "type",
       "public_id"
     ],
     "additionalProperties": false,
     "properties": {
-      "principal_id": {
-        "type": "string",
-        "format": "uuid"
-      },
       "type": {
         "type": "string",
         "enum": [
@@ -1580,7 +1791,7 @@
       "principal",
       "status",
       "org_role",
-      "job_role",
+      "job_description",
       "tags",
       "extra_silicons",
       "authorization_epoch",
@@ -1662,7 +1873,7 @@
           "member"
         ]
       },
-      "job_role": {
+      "job_description": {
         "type": "string",
         "maxLength": 5000
       },
@@ -1854,7 +2065,7 @@
     "type": "object",
     "required": [
       "org_role",
-      "job_role"
+      "job_description"
     ],
     "additionalProperties": false,
     "properties": {
@@ -1866,7 +2077,7 @@
           "member"
         ]
       },
-      "job_role": {
+      "job_description": {
         "type": "string",
         "maxLength": 5000
       }
@@ -2014,7 +2225,7 @@
   "CarbonInviteCreate": {
     "type": "object",
     "required": [
-      "job_role",
+      "job_description",
       "default_trust"
     ],
     "minProperties": 3,
@@ -2040,7 +2251,7 @@
         "format": "email",
         "maxLength": 320
       },
-      "job_role": {
+      "job_description": {
         "type": "string",
         "maxLength": 5000
       },
@@ -2117,7 +2328,7 @@
       "id",
       "org_id",
       "org_role",
-      "job_role",
+      "job_description",
       "tag_ids",
       "extra_silicon_membership_ids",
       "default_trust",
@@ -2147,7 +2358,7 @@
       "org_role": {
         "const": "member"
       },
-      "job_role": {
+      "job_description": {
         "type": "string",
         "maxLength": 5000
       },
@@ -2276,7 +2487,7 @@
     "type": "object",
     "required": [
       "silicon_id",
-      "job_role"
+      "job_description"
     ],
     "additionalProperties": false,
     "properties": {
@@ -2297,13 +2508,6 @@
         ],
         "description": "Defaults to UTC when omitted."
       },
-      "description": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "maxLength": 5000
-      },
       "profile_photo": {
         "type": [
           "string",
@@ -2312,7 +2516,7 @@
         "format": "uri",
         "maxLength": 2048
       },
-      "job_role": {
+      "job_description": {
         "type": "string",
         "maxLength": 5000
       },
@@ -2346,13 +2550,6 @@
       "timezone": {
         "$ref": "#/components/schemas/TimeZoneId"
       },
-      "description": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "maxLength": 5000
-      },
       "profile_photo": {
         "type": [
           "string",
@@ -2372,14 +2569,13 @@
   "Silicon": {
     "type": "object",
     "required": [
-      "principal_id",
       "membership_id",
       "silicon_id",
       "org_id",
       "display_name",
       "timezone",
       "profile_photo",
-      "job_role",
+      "job_description",
       "tags",
       "hierarchy_level",
       "webhook_configured",
@@ -2389,10 +2585,6 @@
       "updated_at"
     ],
     "properties": {
-      "principal_id": {
-        "type": "string",
-        "format": "uuid"
-      },
       "membership_id": {
         "type": "string"
       },
@@ -2410,18 +2602,11 @@
       "timezone": {
         "$ref": "#/components/schemas/TimeZoneId"
       },
-      "description": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "maxLength": 5000
-      },
       "profile_photo": {
         "type": "string",
         "format": "uri"
       },
-      "job_role": {
+      "job_description": {
         "type": "string",
         "maxLength": 5000
       },
@@ -3329,8 +3514,7 @@
     "required": [
       "trust",
       "source",
-      "matching_rule_ids",
-      "advisory"
+      "matching_rule_ids"
     ],
     "properties": {
       "trust": {
@@ -3350,9 +3534,6 @@
           "type": "string",
           "format": "uuid"
         }
-      },
-      "advisory": {
-        "const": true
       }
     }
   },
@@ -3379,14 +3560,14 @@
     "type": "object",
     "required": [
       "target_membership_id",
-      "proposed_job_role"
+      "proposed_job_description"
     ],
     "additionalProperties": false,
     "properties": {
       "target_membership_id": {
         "type": "string"
       },
-      "proposed_job_role": {
+      "proposed_job_description": {
         "type": "string",
         "maxLength": 5000
       },
@@ -3462,11 +3643,11 @@
   "DirectJobRoleReplace": {
     "type": "object",
     "required": [
-      "job_role"
+      "job_description"
     ],
     "additionalProperties": false,
     "properties": {
-      "job_role": {
+      "job_description": {
         "type": "string",
         "maxLength": 5000
       }
@@ -3652,8 +3833,8 @@
     "required": [
       "id",
       "membership_id",
-      "old_job_role",
-      "new_job_role",
+      "old_job_description",
+      "new_job_description",
       "requested_by",
       "approvers",
       "approval_request_id",
@@ -3667,10 +3848,10 @@
       "membership_id": {
         "type": "string"
       },
-      "old_job_role": {
+      "old_job_description": {
         "type": "string"
       },
-      "new_job_role": {
+      "new_job_description": {
         "type": "string"
       },
       "requested_by": {
@@ -4128,8 +4309,7 @@
         "minimum": 1
       },
       "id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "app_id": {
         "$ref": "#/components/schemas/AppId"
@@ -4378,7 +4558,7 @@
           "null"
         ],
         "format": "uuid",
-        "description": "Internal Application UUID for binding webhook-approval step-up. Returned on webhook configuration reads and mutations."
+        "description": "Canonical Application ID for binding webhook-approval step-up. Returned on webhook configuration reads and mutations."
       },
       "active_url": {
         "type": [
@@ -4502,8 +4682,7 @@
         "type": "string"
       },
       "aggregate_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "aggregate_version": {
         "type": "integer",
@@ -4658,8 +4837,7 @@
         ],
         "properties": {
           "id": {
-            "type": "string",
-            "format": "uuid"
+            "type": "string"
           },
           "type": {
             "type": "string"
@@ -4673,7 +4851,7 @@
       "data": {
         "type": "object",
         "additionalProperties": true,
-        "description": "Event-type-specific authorized projection. Application delivery requires effective declared app scopes, user consent, selected active memberships, and matching webhook event categories. Application recipient unions, payloads, changed_fields, and resource versions are captured in the domain transaction; workers do not hydrate historical events from later state. self.profile.read exposes only display_name, profile_photo, description, and timezone; identity, contacts, membership status, and other data have separate scopes. self.organizations.read exposes organization identifiers, name, logo, description, and resource version, never SSO or administrative/security configuration. Member events use current.members; organization updates use current.organization. Captured invitation, governance, and tag-creation snapshots use current.resource and require organization.invitations.read, organization.governance.read, and organization.tags.read, respectively. Tag/trust changes may include current.resource plus current.members. Raw trust configuration requires organization.trust.read. self.trust.read exposes only membership.effective_trust from the user's perspective, with target_silicon_membership_id, trust, and advisory, and no raw defaults, rules, overrides, or rule identifiers. Before-only recipients receive stable resource/version authorization tombstones, not removed private fields. Application payloads never include credentials or raw provider records, SSO events, or Silicon credential-management and webhook/subscription configuration. A completed Silicon credential rotation may expose only its permitted authorization-epoch and access projection. Silicon subscriptions retain their separate event vocabulary. Applications receive carbon.updated.v1 with scope-filtered fields; organization.membership.profile_updated.v1 is the organization-bound Silicon notification of that profile mutation, not a second Application event."
+        "description": "Event-type-specific authorized projection. Application delivery requires effective declared app scopes, user consent, selected active memberships, and matching webhook event categories. Application recipient unions, payloads, changed_fields, and resource versions are captured in the domain transaction; workers do not hydrate historical events from later state. self.profile.read exposes only display_name, profile_photo, and timezone; identity, contacts, membership status, and other data have separate scopes. self.organizations.read exposes organization identifiers, name, logo, description, and resource version, never SSO or administrative/security configuration. Member events use current.members; organization updates use current.organization. Captured invitation, governance, and tag-creation snapshots use current.resource and require organization.invitations.read, organization.governance.read, and organization.tags.read, respectively. Tag/trust changes may include current.resource plus current.members. Raw trust configuration requires organization.trust.read. self.trust.read exposes only membership.effective_trust from the user's perspective, with target_silicon_membership_id, trust, and no raw defaults, rules, overrides, or rule identifiers. Before-only recipients receive stable resource/version authorization tombstones, not removed private fields. Application payloads never include credentials or raw provider records, SSO events, or Silicon credential-management and webhook/subscription configuration. A completed Silicon credential rotation may expose only its permitted authorization-epoch and access projection. Silicon subscriptions retain their separate event vocabulary. Applications receive carbon.updated.v1 with scope-filtered fields; organization.membership.profile_updated.v1 is the organization-bound Silicon notification of that profile mutation, not a second Application event."
       }
     }
   },
@@ -4712,8 +4890,7 @@
             "additionalProperties": false,
             "properties": {
               "environment_id": {
-                "type": "string",
-                "format": "uuid"
+                "type": "string"
               },
               "generation": {
                 "type": "integer",
@@ -4755,8 +4932,7 @@
                     "type": "string"
                   },
                   "id": {
-                    "type": "string",
-                    "format": "uuid"
+                    "type": "string"
                   },
                   "version": {
                     "type": "integer",
@@ -5910,15 +6086,10 @@
   "ApplicationScopeMessageAuthor": {
     "type": "object",
     "required": [
-      "principal_id",
       "type",
       "public_id"
     ],
     "properties": {
-      "principal_id": {
-        "type": "string",
-        "format": "uuid"
-      },
       "type": {
         "type": "string",
         "enum": [
@@ -6400,8 +6571,7 @@
         "type": "string"
       },
       "application_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "configuration_revision": {
         "type": "integer",
@@ -6771,8 +6941,7 @@
         "type": "string"
       },
       "actor_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "eligible": {
         "type": "boolean"
@@ -6789,16 +6958,15 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "principal_id": {
-        "type": "string",
-        "format": "uuid"
+      "carbon_id": {
+        "type": "string"
       },
       "email": {
         "type": "string"
       }
     },
     "required": [
-      "principal_id",
+      "carbon_id",
       "email"
     ]
   },
@@ -6821,7 +6989,6 @@
       },
       "next_cursor": {
         "type": "string",
-        "format": "uuid",
         "nullable": true
       }
     },
@@ -6989,8 +7156,7 @@
     ],
     "properties": {
       "application_id": {
-        "type": "string",
-        "format": "uuid"
+        "type": "string"
       },
       "app_id": {
         "type": "string"
@@ -7047,7 +7213,6 @@
       },
       "next_cursor": {
         "type": "string",
-        "format": "uuid",
         "nullable": true
       }
     }

@@ -1,20 +1,20 @@
 //! Wire types for the testing-environment control plane.
 
+use crate::domain::id::Id;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PageQuery {
-    pub(super) cursor: Option<Uuid>,
+    pub(super) cursor: Option<Id>,
     pub(super) limit: Option<u16>,
     pub(super) status: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub(super) struct PageInfo {
-    pub(super) next_cursor: Option<Uuid>,
+    pub(super) next_cursor: Option<Id>,
     pub(super) has_more: bool,
 }
 
@@ -45,12 +45,12 @@ pub(super) struct EnvironmentPatch {
 /// that a member might reasonably log or cache.
 #[derive(Clone, Debug, Serialize, sqlx::FromRow)]
 pub(super) struct EnvironmentResponse {
-    pub(super) id: Uuid,
+    pub(super) id: Id,
     pub(super) org_id: String,
     pub(super) name: String,
     pub(super) description: Option<String>,
     pub(super) status: String,
-    pub(super) created_by_membership_id: Uuid,
+    pub(super) created_by_membership_id: Id,
     pub(super) key_generation: i32,
     #[serde(with = "time::serde::rfc3339::option")]
     pub(super) key_rotated_at: Option<OffsetDateTime>,
@@ -89,7 +89,7 @@ pub(super) struct EnvironmentWithKey {
 /// The key on its own, for a later retrieval.
 #[derive(Debug, Serialize)]
 pub(super) struct EnvironmentKey {
-    pub(super) environment_id: Uuid,
+    pub(super) environment_id: Id,
     pub(super) key_generation: i32,
     #[serde(with = "time::serde::rfc3339::option")]
     pub(super) key_rotated_at: Option<OffsetDateTime>,
@@ -103,7 +103,7 @@ pub(super) struct EnvironmentKey {
 /// owns it.
 #[derive(Debug, Serialize)]
 pub(super) struct EnvironmentSelfView {
-    pub(super) id: Uuid,
+    pub(super) id: Id,
     pub(super) name: String,
     pub(super) description: Option<String>,
     pub(super) key_generation: i32,
@@ -114,7 +114,7 @@ pub(super) struct EnvironmentSelfView {
 /// Outcome of erasing an environment's data.
 #[derive(Debug, Serialize)]
 pub(super) struct CleaningResult {
-    pub(super) environment_id: Uuid,
+    pub(super) environment_id: Id,
     pub(super) erased_rows: i64,
     #[serde(with = "time::serde::rfc3339")]
     pub(super) cleaned_at: OffsetDateTime,

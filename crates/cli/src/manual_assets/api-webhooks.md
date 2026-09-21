@@ -18,10 +18,10 @@ Webhooks are a notification channel, never an authorization one. When an applica
 
 | Information | Required permission and permitted content |
 | --- | --- |
-| Own profile | `self.profile.read` exposes display name, photo, description, and timezone. It does not expose contact details, account status, or creation/update timestamps. Identity, contacts, and membership fields have separate permissions. |
+| Own profile | `self.profile.read` exposes display name, photo, and timezone. It does not expose contact details, account status, or creation/update timestamps. Identity, contacts, and membership fields have separate permissions. |
 | Organization profile | `self.organizations.read` exposes identifiers, name, logo, description, and the resource version. It does not disclose SSO, security, or administrative configuration. |
-| Other members | Matching `directory.*.read` permissions separately authorize listings, profile fields, membership, capabilities, tags, job roles, and Silicon relationships. Directory access never includes credential or webhook management configuration. |
-| Own effective trust | `self.trust.read` exposes `membership.effective_trust` from that user's perspective: target Silicon membership ID, effective trust, and its advisory flag. It does not expose defaults, rules, overrides, or rule identifiers. |
+| Other members | Matching `directory.*.read` permissions separately authorize listings, profile fields, membership, capabilities, tags, job descriptions, and Silicon relationships. Directory access never includes credential or webhook management configuration. |
+| Own effective trust | `self.trust.read` exposes `membership.effective_trust` from that user's perspective: target Silicon membership ID and effective trust. It does not expose defaults, rules, overrides, or rule identifiers. |
 | Organization trust configuration | `organization.trust.read` is required for raw trust configuration and its aggregate events, including `membership.trust` where disclosed. |
 | Invitations | `organization.invitations.read` authorizes immutable invitation lifecycle snapshots captured at the mutation. |
 | Governance | `organization.governance.read` authorizes captured role/tag requests and approval decisions. It does not grant access to SSO or Silicon credential/webhook administration. |

@@ -707,7 +707,7 @@ replace the test destination to install an independent test secret.
 An application's user access token carries only approved scopes. Organization lists include
 only explicitly selected active memberships. Directory lists require the corresponding
 `directory.carbons.read` or `directory.silicons.read`; field scopes independently control
-profiles, roles, job roles, tags, hierarchy, capabilities, and accessible Silicons.
+profiles, roles, job descriptions, tags, hierarchy, capabilities, and accessible Silicons.
 Self permissions never reveal those fields for other members. Email and phone are self-only.
 Absent fields mean undisclosed and must not be replaced with cached wider permissions.
 

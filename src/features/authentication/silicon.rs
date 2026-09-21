@@ -1,5 +1,6 @@
 use std::{num::NonZeroU32, time::Duration};
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{State, rejection::JsonRejection},
@@ -9,7 +10,6 @@ use axum::{
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 use sqlx::FromRow;
-use uuid::Uuid;
 
 use crate::{
     api::ApiState,
@@ -39,12 +39,12 @@ pub(super) struct SiliconAuthenticationInput {
 
 #[derive(FromRow)]
 struct CredentialRow {
-    principal_id: Uuid,
-    credential_id: Uuid,
+    principal_id: Id,
+    credential_id: Id,
     secret_digest: Vec<u8>,
     pepper_key_version: i16,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
     membership_authz_epoch: i64,
     principal_auth_epoch: i64,
     global_silicon_id: String,

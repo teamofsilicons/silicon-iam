@@ -4,8 +4,9 @@
 -- Public main IAM token endpoints still authenticate ApplicationClient secrets.
 BEGIN;
 
-CREATE OR REPLACE FUNCTION iam_private.resolve_scoped_iam_application()
-RETURNS TABLE (application_id uuid, app_id text, organization_id uuid, auth_epoch bigint)
+DROP FUNCTION IF EXISTS iam_private.resolve_scoped_iam_application();
+CREATE FUNCTION iam_private.resolve_scoped_iam_application()
+RETURNS TABLE (application_id text, app_id text, organization_id uuid, auth_epoch bigint)
 LANGUAGE sql STABLE SECURITY DEFINER
 SET search_path = pg_catalog, iam, iam_private
 AS $$

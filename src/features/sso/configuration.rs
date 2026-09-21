@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, State},
@@ -11,7 +12,6 @@ use serde::Serialize;
 use serde_json::json;
 use sqlx::{FromRow, Postgres, Transaction};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -49,7 +49,7 @@ struct ConfigurationRow {
 
 #[derive(FromRow)]
 struct SetupContextRow {
-    organization_id: Uuid,
+    organization_id: Id,
     organization_name: String,
     platform_enabled: bool,
     provider_organization_id: Option<String>,
@@ -61,14 +61,14 @@ struct SetupContextRow {
     reason = "row fields deliberately preserve the local and provider identifier distinction"
 )]
 struct TestContextRow {
-    organization_id: Uuid,
+    organization_id: Id,
     provider_organization_id: String,
     provider_connection_id: String,
 }
 
 #[derive(FromRow)]
 struct EntitlementMutationRow {
-    organization_id: Uuid,
+    organization_id: Id,
     enabled: bool,
     status: String,
     version: i64,
@@ -76,7 +76,7 @@ struct EntitlementMutationRow {
 
 #[derive(FromRow)]
 struct DisabledConnectionRow {
-    id: Uuid,
+    id: Id,
     status: String,
     version: i64,
 }
@@ -262,7 +262,7 @@ pub(super) async fn create_setup_link(
     .ok_or_else(|| AppError::Conflict {
         code: "sso_entitlement_required".into(),
     })?;
-    let setup_session_id = Uuid::now_v7();
+    let setup_session_id = Id::now_v7();
     sqlx::query(
         r"
         INSERT INTO iam.sso_setup_sessions (
@@ -650,7 +650,7 @@ pub(super) async fn replace_entitlement(
             code: "etag_body_version_mismatch".into(),
         });
     }
-    let organization_id = sqlx::query_scalar::<_, Option<Uuid>>(
+    let organization_id = sqlx::query_scalar::<_, Option<Id>>(
         "SELECT iam_private.resolve_platform_sso_organization($1)",
     )
     .bind(org_id.as_str())
@@ -722,7 +722,7 @@ pub(super) async fn replace_entitlement(
 
 async fn fetch_configuration(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
 ) -> Result<ConfigurationRow, AppError> {
     sqlx::query_as::<_, ConfigurationRow>(
         r"
@@ -757,7 +757,7 @@ async fn fetch_configuration(
 
 async fn fetch_setup_context(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
 ) -> Result<SetupContextRow, AppError> {
     sqlx::query_as::<_, SetupContextRow>(
         r"
@@ -781,7 +781,7 @@ async fn fetch_setup_context(
 
 async fn fetch_test_context(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
 ) -> Result<TestContextRow, AppError> {
     sqlx::query_as::<_, TestContextRow>(
         r"
@@ -858,20 +858,20 @@ fn map_entitlement_error(error: sqlx::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{TestContextRow, configuration_matches_provider, next_connection_version};
+    use crate::domain::id::Id;
     use crate::infrastructure::providers::workos::{WorkOsConnection, WorkOsOrganization};
-    use uuid::Uuid;
 
     #[test]
     fn provider_test_requires_the_exact_active_connection_mapping() {
         let context = TestContextRow {
-            organization_id: Uuid::nil(),
+            organization_id: Id::nil(),
             provider_organization_id: "org_local_mapping".to_owned(),
             provider_connection_id: "conn_local_mapping".to_owned(),
         };
         let organization = WorkOsOrganization {
             id: "org_local_mapping".to_owned(),
             name: "Example".to_owned(),
-            external_id: Some(Uuid::nil().to_string()),
+            external_id: Some(Id::nil().to_string()),
         };
         let connection = WorkOsConnection {
             id: "conn_local_mapping".to_owned(),

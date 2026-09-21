@@ -1,21 +1,21 @@
 //! Shared persistence primitives for recipient-safe webhook dead-letter replay.
 
+use crate::domain::id::Id;
 use serde_json::Value;
 use sqlx::{FromRow, Postgres, QueryBuilder, Transaction};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 #[derive(Clone, Debug, FromRow)]
 pub(crate) struct DeadLetterRecord {
-    pub(crate) delivery_id: Uuid,
-    pub(crate) recipient_id: Uuid,
-    pub(crate) event_id: Uuid,
-    pub(crate) organization_id: Option<Uuid>,
+    pub(crate) delivery_id: Id,
+    pub(crate) recipient_id: Id,
+    pub(crate) event_id: Id,
+    pub(crate) organization_id: Option<Id>,
     pub(crate) event_type: String,
     pub(crate) payload: Value,
     pub(crate) occurred_at: OffsetDateTime,
     pub(crate) aggregate_type: String,
-    pub(crate) aggregate_id: Uuid,
+    pub(crate) aggregate_id: Id,
     pub(crate) aggregate_version: i64,
     pub(crate) status: String,
     pub(crate) attempt_count: i32,
@@ -50,9 +50,9 @@ const RECORD_PROJECTION: &str = r"
 
 pub(crate) async fn list_application_dead_letters(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
+    application_id: Id,
     cursor_at: Option<OffsetDateTime>,
-    cursor_id: Option<Uuid>,
+    cursor_id: Option<Id>,
     limit: i64,
 ) -> Result<Vec<DeadLetterRecord>, sqlx::Error> {
     let mut query = QueryBuilder::<Postgres>::new("SELECT ");
@@ -92,8 +92,8 @@ pub(crate) async fn list_application_dead_letters(
 
 pub(crate) async fn lock_application_dead_letters(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
-    delivery_ids: &[Uuid],
+    application_id: Id,
+    delivery_ids: &[Id],
 ) -> Result<Vec<DeadLetterRecord>, sqlx::Error> {
     let mut query = QueryBuilder::<Postgres>::new("SELECT ");
     query.push(RECORD_PROJECTION).push(
@@ -132,7 +132,7 @@ pub(crate) async fn lock_application_dead_letters(
 /// sole authority for replaying this secret-free revocation notification.
 pub(crate) async fn application_logout_dead_letter_is_bound_to(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
+    application_id: Id,
     delivery: &DeadLetterRecord,
 ) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar::<_, bool>(
@@ -168,10 +168,10 @@ pub(crate) async fn application_logout_dead_letter_is_bound_to(
 
 pub(crate) async fn list_silicon_dead_letters(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    silicon_id: Uuid,
+    organization_id: Id,
+    silicon_id: Id,
     cursor_at: Option<OffsetDateTime>,
-    cursor_id: Option<Uuid>,
+    cursor_id: Option<Id>,
     limit: i64,
 ) -> Result<Vec<DeadLetterRecord>, sqlx::Error> {
     let mut query = QueryBuilder::<Postgres>::new("SELECT ");
@@ -215,9 +215,9 @@ pub(crate) async fn list_silicon_dead_letters(
 
 pub(crate) async fn lock_silicon_dead_letters(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    silicon_id: Uuid,
-    delivery_ids: &[Uuid],
+    organization_id: Id,
+    silicon_id: Id,
+    delivery_ids: &[Id],
 ) -> Result<Vec<DeadLetterRecord>, sqlx::Error> {
     let mut query = QueryBuilder::<Postgres>::new("SELECT ");
     query.push(RECORD_PROJECTION).push(
@@ -257,9 +257,9 @@ pub(crate) async fn lock_silicon_dead_letters(
 pub(crate) async fn replay_application_delivery(
     transaction: &mut Transaction<'_, Postgres>,
     delivery: &DeadLetterRecord,
-    endpoint_id: Uuid,
-    signing_key_id: Uuid,
-    replay_batch_id: Uuid,
+    endpoint_id: Id,
+    signing_key_id: Id,
+    replay_batch_id: Id,
 ) -> Result<DeadLetterRecord, sqlx::Error> {
     let ordering_key = manual_replay_ordering_key("application", endpoint_id, replay_batch_id);
     let updated = sqlx::query(
@@ -291,9 +291,9 @@ pub(crate) async fn replay_application_delivery(
 pub(crate) async fn replay_silicon_delivery(
     transaction: &mut Transaction<'_, Postgres>,
     delivery: &DeadLetterRecord,
-    endpoint_id: Uuid,
-    signing_key_id: Uuid,
-    replay_batch_id: Uuid,
+    endpoint_id: Id,
+    signing_key_id: Id,
+    replay_batch_id: Id,
 ) -> Result<DeadLetterRecord, sqlx::Error> {
     let ordering_key = manual_replay_ordering_key("silicon_webhook", endpoint_id, replay_batch_id);
     sqlx::query(
@@ -315,8 +315,8 @@ pub(crate) async fn replay_silicon_delivery(
 async fn reset_delivery(
     transaction: &mut Transaction<'_, Postgres>,
     delivery: &DeadLetterRecord,
-    application_signing_key_id: Option<Uuid>,
-    silicon_signing_key_id: Option<Uuid>,
+    application_signing_key_id: Option<Id>,
+    silicon_signing_key_id: Option<Id>,
 ) -> Result<DeadLetterRecord, sqlx::Error> {
     let mut query = QueryBuilder::<Postgres>::new(
         r"
@@ -365,15 +365,15 @@ async fn reset_delivery(
         .await
 }
 
-fn manual_replay_ordering_key(kind: &str, endpoint_id: Uuid, replay_batch_id: Uuid) -> String {
+fn manual_replay_ordering_key(kind: &str, endpoint_id: Id, replay_batch_id: Id) -> String {
     format!("manual-replay:{kind}:{endpoint_id}:{replay_batch_id}")
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::id::Id;
     use serde_json::json;
     use time::OffsetDateTime;
-    use uuid::Uuid;
 
     use super::{
         DeadLetterRecord, application_logout_dead_letter_is_bound_to,
@@ -383,15 +383,15 @@ mod tests {
     #[test]
     fn manual_replay_batch_has_one_destination_bound_ordering_lane() {
         let _delivery = DeadLetterRecord {
-            delivery_id: Uuid::from_u128(1),
-            recipient_id: Uuid::from_u128(2),
-            event_id: Uuid::from_u128(3),
+            delivery_id: Id::from_u128(1),
+            recipient_id: Id::from_u128(2),
+            event_id: Id::from_u128(3),
             organization_id: None,
             event_type: "application.updated".to_owned(),
             payload: json!({}),
             occurred_at: OffsetDateTime::UNIX_EPOCH,
             aggregate_type: "application".to_owned(),
-            aggregate_id: Uuid::from_u128(4),
+            aggregate_id: Id::from_u128(4),
             aggregate_version: 2,
             status: "dead_letter".to_owned(),
             attempt_count: 5,
@@ -402,10 +402,10 @@ mod tests {
             dead_lettered_at: Some(OffsetDateTime::UNIX_EPOCH),
             version: 3,
         };
-        let endpoint_id = Uuid::from_u128(5);
-        let other_endpoint_id = Uuid::from_u128(6);
-        let replay_batch_id = Uuid::from_u128(7);
-        let other_batch_id = Uuid::from_u128(8);
+        let endpoint_id = Id::from_u128(5);
+        let other_endpoint_id = Id::from_u128(6);
+        let replay_batch_id = Id::from_u128(7);
+        let other_batch_id = Id::from_u128(8);
         let expected = format!("manual-replay:application:{endpoint_id}:{replay_batch_id}");
         assert_eq!(
             manual_replay_ordering_key("application", endpoint_id, replay_batch_id),
@@ -426,39 +426,29 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL on isolated local PostgreSQL"]
     #[allow(
         clippy::too_many_lines,
         reason = "one fresh-database fixture proves the complete immutable recipient boundary"
     )]
     async fn logout_replay_requires_exact_persisted_application_recipient() -> anyhow::Result<()> {
         use anyhow::ensure;
-        use sqlx::postgres::PgPoolOptions;
-        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-        use testcontainers_modules::postgres::Postgres;
 
-        let container = Postgres::default().with_tag("16-alpine").start().await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&format!(
-                "postgres://postgres:postgres@{host}:{port}/postgres"
-            ))
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let application_id = Uuid::from_u128(0x44_01);
-        let other_application_id = Uuid::from_u128(0x44_02);
-        let endpoint_id = Uuid::from_u128(0x44_03);
-        let other_endpoint_id = Uuid::from_u128(0x44_04);
-        let logout_event_id = Uuid::from_u128(0x44_05);
-        let profile_event_id = Uuid::from_u128(0x44_06);
-        let logout_recipient_id = Uuid::from_u128(0x44_07);
-        let profile_recipient_id = Uuid::from_u128(0x44_08);
-        let logout_delivery_id = Uuid::from_u128(0x44_09);
-        let profile_delivery_id = Uuid::from_u128(0x44_0a);
-        let subject_id = Uuid::from_u128(0x44_0b);
+        let application_id = Id::fixture("replay-org>app-main");
+        let other_application_id = Id::fixture("replay-org>app-other");
+        let endpoint_id = Id::from_u128(0x44_03);
+        let other_endpoint_id = Id::from_u128(0x44_04);
+        let logout_event_id = Id::from_u128(0x44_05);
+        let profile_event_id = Id::from_u128(0x44_06);
+        let logout_recipient_id = Id::from_u128(0x44_07);
+        let profile_recipient_id = Id::from_u128(0x44_08);
+        let logout_delivery_id = Id::from_u128(0x44_09);
+        let profile_delivery_id = Id::from_u128(0x44_0a);
+        let subject_id = Id::fixture("replay-carbon");
 
         let mut transaction = pool.begin().await?;
         // This routing-boundary test bypasses unrelated Application and key
@@ -590,15 +580,15 @@ mod tests {
             &mut transaction,
             logout,
             other_endpoint_id,
-            Uuid::from_u128(0x44_0c),
-            Uuid::from_u128(0x44_0d),
+            Id::from_u128(0x44_0c),
+            Id::from_u128(0x44_0d),
         )
         .await;
         ensure!(
             matches!(cross_application_retarget, Err(sqlx::Error::RowNotFound)),
             "a replay recipient was retargeted across Application boundaries"
         );
-        let persisted_endpoint = sqlx::query_scalar::<_, Uuid>(
+        let persisted_endpoint = sqlx::query_scalar::<_, Id>(
             "SELECT application_webhook_endpoint_id FROM iam.outbox_event_recipients WHERE id = $1",
         )
         .bind(logout_recipient_id)

@@ -6,7 +6,7 @@ use crate::{
     cli::CarbonCommand,
     context::Context,
     error::Result,
-    output::{Format, Table, json, label, or_dash, timestamp},
+    output::{Format, Table, json, label, timestamp},
 };
 
 /// Runs a Carbon profile or lookup command.
@@ -49,8 +49,6 @@ pub async fn run(context: &Context, command: CarbonCommand) -> Result<()> {
         CarbonCommand::Update {
             display_name,
             timezone,
-            description,
-            clear_description,
             profile_photo,
             clear_profile_photo,
         } => {
@@ -62,7 +60,6 @@ pub async fn run(context: &Context, command: CarbonCommand) -> Result<()> {
                     &models::CarbonProfilePatch {
                         display_name,
                         timezone,
-                        description: nullable_patch(description, clear_description),
                         profile_photo: nullable_patch(profile_photo, clear_profile_photo),
                     },
                     &context.mutation(),
@@ -112,10 +109,8 @@ fn report_profile(context: &Context, profile: &models::CarbonSelf) -> Result<()>
         Format::Json => json(profile),
         Format::Text => {
             let mut table = Table::new(["field", "value"]);
-            table.row(["principal_id", &profile.principal_id.to_string()]);
             table.row(["carbon_id", &profile.carbon_id]);
             table.row(["display_name", &profile.display_name]);
-            table.row(["description", &or_dash(profile.description.as_deref())]);
             table.row(["profile_photo", &profile.profile_photo]);
             table.row(["timezone", &profile.timezone]);
             table.row(["email", &profile.email]);

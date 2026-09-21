@@ -2,11 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::domain::id::Id;
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::{
     api::ApiState,
@@ -97,14 +97,14 @@ fn dependencies(scope: &Value) -> Result<BTreeSet<String>, AppError> {
 
 #[derive(sqlx::FromRow)]
 struct StoredImport {
-    application_id: Uuid,
+    application_id: Id,
     secret_ciphertext: Vec<u8>,
     secret_nonce: Vec<u8>,
     secret_key_version: i16,
 }
 
 pub(super) struct ImportedApplication {
-    pub(super) application_id: Uuid,
+    pub(super) application_id: Id,
     pub(super) app_secret: SecretString,
     pub(super) created: bool,
     pub(super) refreshed: bool,
@@ -154,7 +154,7 @@ async fn import_graph(
         .map_err(support::database)?;
     let mut imported = BTreeMap::new();
     for (app_id, source) in graph {
-        let imported_source = sqlx::query_scalar::<_, Uuid>(
+        let imported_source = sqlx::query_scalar::<_, Id>(
             "SELECT source_application_id FROM iam_private.honeycomb_testing_application_source($1)")
             .bind(app_id).fetch_optional(&mut **transaction).await.map_err(support::database)?;
         if imported_source.is_some_and(|identity| identity != source.source_application_id) {
@@ -241,7 +241,7 @@ async fn import_graph(
         .bind(
             imported
                 .values()
-                .map(|app| app.application_id)
+                .map(|app| app.application_id.to_string())
                 .collect::<Vec<_>>(),
         )
         .execute(&mut **transaction)
@@ -255,11 +255,13 @@ pub(super) async fn create_one(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     source: &ProductionApplication,
-    environment_id: Uuid,
-    existing: Option<Uuid>,
+    environment_id: Id,
+    existing: Option<Id>,
 ) -> Result<ImportedApplication, AppError> {
-    let application_id = existing.unwrap_or_else(Uuid::now_v7);
-    let signing_key_id = Uuid::now_v7();
+    let application_id = Id::identity(&source.app_id).map_err(|_| AppError::Internal {
+        category: "canonical_imported_application_identity",
+    })?;
+    let signing_key_id = Id::now_v7();
     let app_secret = state
         .crypto
         .generate_secret(SecretKind::ApplicationSecret)
@@ -290,7 +292,8 @@ pub(super) async fn create_one(
                     .encryption_application_id
                     .unwrap_or(source.source_application_id),
                 source.source_webhook_endpoint_id,
-            ),
+            )
+            .production_application(),
             &encrypted(
                 source.webhook_url_encryption_key_version,
                 &source.webhook_url_nonce,
@@ -309,7 +312,8 @@ pub(super) async fn create_one(
                     .encryption_application_id
                     .unwrap_or(source.source_application_id),
                 source.source_webhook_signing_key_id,
-            ),
+            )
+            .production_application(),
             &encrypted(
                 source.webhook_secret_encryption_key_version,
                 &source.webhook_secret_nonce,
@@ -319,7 +323,7 @@ pub(super) async fn create_one(
         .map_err(|_| AppError::Internal {
             category: "testing_import_webhook_decrypt",
         })?;
-    let endpoint_id = sqlx::query_scalar::<_, Option<Uuid>>(
+    let endpoint_id = sqlx::query_scalar::<_, Option<Id>>(
         "SELECT iam_private.testing_import_webhook_endpoint($1,$2)",
     )
     .bind(application_id)
@@ -327,7 +331,7 @@ pub(super) async fn create_one(
     .fetch_one(&mut **transaction)
     .await
     .map_err(support::database)?
-    .unwrap_or_else(Uuid::now_v7);
+    .unwrap_or_else(Id::now_v7);
     let url = state
         .crypto
         .encrypt(
@@ -368,7 +372,7 @@ pub(super) async fn create_one(
         "url_digest": hex::encode(Sha256::digest(&webhook_url)),
         "signing_ciphertext": hex::encode(signing_secret.ciphertext), "signing_nonce": hex::encode(signing_secret.nonce),
         "signing_key_version": signing_secret.key_version,
-        "secret_id": Uuid::now_v7(), "secret_digest": hex::encode(digest.as_bytes()), "secret_digest_version": digest.key_version(),
+        "secret_id": Id::now_v7(), "secret_digest": hex::encode(digest.as_bytes()), "secret_digest_version": digest.key_version(),
         "secret_prefix": app_secret.expose_secret().chars().take(12).collect::<String>(),
         "secret_ciphertext": hex::encode(stored_secret.ciphertext), "secret_nonce": hex::encode(stored_secret.nonce),
         "secret_key_version": stored_secret.key_version,
@@ -386,10 +390,7 @@ pub(super) async fn create_one(
     })
 }
 
-pub(super) const fn secret_context(
-    environment_id: Uuid,
-    application_id: Uuid,
-) -> EncryptionContext {
+pub(super) const fn secret_context(environment_id: Id, application_id: Id) -> EncryptionContext {
     EncryptionContext::tenant(
         ProtectedField::TestingApplicationSecret,
         environment_id,
@@ -415,7 +416,7 @@ pub(super) fn encrypted(
 pub(crate) async fn record_rotated_application_secret(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    application_id: Uuid,
+    application_id: Id,
     secret: &SecretString,
 ) -> Result<(), AppError> {
     let Some(environment_id) = testing_plane::current_id() else {
@@ -479,7 +480,7 @@ pub(crate) async fn obo_context(state: &ApiState, app_id: &str) -> Result<Option
             category: "testing_application_secret_decrypt",
         })?;
     transaction.commit().await.map_err(support::database)?;
-    let key = sqlx::query_as::<_, (Uuid, Vec<u8>, Vec<u8>, i16)>(
+    let key = sqlx::query_as::<_, (Id, Vec<u8>, Vec<u8>, i16)>(
         "SELECT * FROM iam_private.get_testing_environment_obo_key($1)",
     )
     .bind(environment.id)
@@ -502,7 +503,7 @@ pub(crate) async fn obo_context(state: &ApiState, app_id: &str) -> Result<Option
 
 /// Reflect successfully authenticated test traffic in the production listing.
 /// The test database remains authoritative when the worker rechecks expiry.
-pub(crate) async fn touch_application_activity(state: &ApiState, application_id: Uuid) {
+pub(crate) async fn touch_application_activity(state: &ApiState, application_id: Id) {
     let Some(environment_id) = testing_plane::current_id() else {
         return;
     };

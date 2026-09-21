@@ -96,6 +96,70 @@ pub type VerificationCode = String;
 /// Closed vocabulary from the contract.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ActionActors {
+    /// `any_member`
+    AnyMember,
+    /// `only_admins`
+    OnlyAdmins,
+    /// `only_owner`
+    OnlyOwner,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionApprovalDecisionDecision {
+    /// `approve`
+    Approve,
+    /// `reject`
+    Reject,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionApprovalRequirement {
+    /// `none`
+    None,
+    /// `admin`
+    Admin,
+    /// `owner`
+    Owner,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionApprovalStatus {
+    /// `pending`
+    Pending,
+    /// `approved`
+    Approved,
+    /// `rejected`
+    Rejected,
+    /// `consumed`
+    Consumed,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ActorRefType {
     /// `carbon`
     Carbon,
@@ -979,7 +1043,7 @@ pub enum SsoConfigurationStatus {
 /// current Carbon principal UUID. The Silicon-webhook redirect action binds
 /// it to the target Silicon membership UUID. The Application client-secret
 /// rotation, webhook-secret rotation and webhook approval actions bind it to
-/// the internal Application UUID. Every action requires one non-null
+/// the canonical Application ID. Every action requires one non-null
 /// resource_id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1170,11 +1234,112 @@ pub enum WebhookDeadLetterStatus {
     Other(String),
 }
 
+/// Approval binds the exact method, path, body, version, request key, session
+/// and application scope. Retry the original mutation after approval. Policy
+/// changes invalidate earlier approvals. Requests expire after twelve hours.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActionApproval {
+    /// The contract's `id`.
+    pub id: Uuid,
+    /// The contract's `action`.
+    pub action: String,
+    /// The contract's `status`.
+    pub status: ActionApprovalStatus,
+    /// The contract's `requested_by`.
+    pub requested_by: serde_json::Value,
+    /// The contract's `method`.
+    pub method: String,
+    /// The contract's `path`.
+    pub path: String,
+    /// The contract's `request_body`.
+    pub request_body: Option<serde_json::Value>,
+    /// The contract's `expected_version`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_version: Option<String>,
+    /// The contract's `created_at`.
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    /// The contract's `expires_at`.
+    #[serde(with = "time::serde::rfc3339")]
+    pub expires_at: OffsetDateTime,
+    /// The contract's `version`.
+    pub version: i64,
+    /// The contract's `can_decide`.
+    pub can_decide: bool,
+}
+
+/// Contract type `ActionApprovalDecision`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActionApprovalDecision {
+    /// The contract's `decision`.
+    pub decision: ActionApprovalDecisionDecision,
+}
+
+/// Contract type `ActionApprovalList`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActionApprovalList {
+    /// The contract's `items`.
+    pub items: Vec<ActionApproval>,
+}
+
+/// Any matching requester ID or requester membership tag automatically
+/// approves an otherwise permitted action. Empty lists require manual
+/// approval. These selectors never grant permission.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActionAutoApproval {
+    /// The contract's `carbon_ids`.
+    pub carbon_ids: Vec<String>,
+    /// The contract's `silicon_ids`.
+    pub silicon_ids: Vec<String>,
+    /// The contract's `tag_ids`.
+    pub tag_ids: Vec<Uuid>,
+}
+
+/// Contract type `ActionPolicy`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActionPolicy {
+    /// The contract's `action`.
+    pub action: String,
+    /// The contract's `label`.
+    pub label: String,
+    /// The contract's `allowed_actors`.
+    pub allowed_actors: ActionActors,
+    /// The contract's `approval`.
+    pub approval: ActionApprovalRequirement,
+    /// The contract's `auto_approve`.
+    pub auto_approve: ActionAutoApproval,
+    /// The contract's `defaults`.
+    pub defaults: serde_json::Value,
+    /// Zero is an unmodified default. Supply this version in If-Match when
+    /// configuring.
+    pub version: i64,
+}
+
+/// Contract type `ActionPolicyList`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActionPolicyList {
+    /// The contract's `items`.
+    pub items: Vec<ActionPolicy>,
+    /// The contract's `can_manage`.
+    pub can_manage: bool,
+}
+
+/// Owner or an admin delegated action_policies.manage can configure a rule.
+/// Owner always bypasses permission and approval gates. Authorized approvers
+/// perform their own permitted actions directly.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActionPolicyUpdate {
+    /// The contract's `allowed_actors`.
+    pub allowed_actors: ActionActors,
+    /// The contract's `approval`.
+    pub approval: ActionApprovalRequirement,
+    /// The contract's `auto_approve`.
+    pub auto_approve: ActionAutoApproval,
+}
+
 /// Contract type `ActorRef`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ActorRef {
-    /// The contract's `principal_id`.
-    pub principal_id: Uuid,
     /// The contract's `type`.
     #[serde(rename = "type")]
     pub type_field: ActorRefType,
@@ -1218,7 +1383,7 @@ pub struct Application {
     /// The contract's `scope_version`.
     pub scope_version: i64,
     /// The contract's `id`.
-    pub id: Uuid,
+    pub id: String,
     /// The contract's `app_id`.
     pub app_id: AppId,
     /// The contract's `org_id`.
@@ -1269,8 +1434,6 @@ pub struct Application {
 /// relying on cached authority; a consumed OBO proof is single-use.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApplicationAuthorization {
-    /// The contract's `principal_id`.
-    pub principal_id: Uuid,
     /// The contract's `actor_type`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_type: Option<ApplicationAuthorizationActorType>,
@@ -1610,8 +1773,6 @@ pub struct ApplicationScopeMessage {
 /// Contract type `ApplicationScopeMessageAuthor`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApplicationScopeMessageAuthor {
-    /// The contract's `principal_id`.
-    pub principal_id: Uuid,
     /// The contract's `type`.
     #[serde(rename = "type")]
     pub type_field: ApplicationScopeMessageAuthorType,
@@ -1816,7 +1977,7 @@ pub struct ApplicationTokenRequest {
 /// Contract type `ApplicationWebhook`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApplicationWebhook {
-    /// Internal Application UUID for binding webhook-approval step-up.
+    /// Canonical Application ID for binding webhook-approval step-up.
     /// Returned on webhook configuration reads and mutations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub application_id: Option<Uuid>,
@@ -2050,8 +2211,8 @@ pub struct CarbonInviteCreate {
     /// The contract's `email`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
-    /// The contract's `job_role`.
-    pub job_role: String,
+    /// The contract's `job_description`.
+    pub job_description: String,
     /// The contract's `tag_ids`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag_ids: Option<Vec<Uuid>>,
@@ -2088,14 +2249,6 @@ pub struct CarbonProfilePatch {
     /// The contract's `timezone`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<TimeZoneId>,
-    /// The contract's `description`.
-    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
-    #[serde(
-        with = "serde_with::rust::double_option",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub description: Option<Option<String>>,
     /// The contract's `profile_photo`.
     /// `None` omits this field; `Some(None)` sends JSON null to clear it.
     #[serde(
@@ -2109,15 +2262,10 @@ pub struct CarbonProfilePatch {
 /// Contract type `CarbonPublic`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CarbonPublic {
-    /// The contract's `principal_id`.
-    pub principal_id: Uuid,
     /// The contract's `carbon_id`.
     pub carbon_id: ExistingCarbonId,
     /// The contract's `display_name`.
     pub display_name: String,
-    /// The contract's `description`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
     /// The contract's `profile_photo`.
     pub profile_photo: String,
     /// The contract's `created_at`.
@@ -2137,15 +2285,10 @@ pub struct CarbonResolution {
 /// Contract type `CarbonSelf`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CarbonSelf {
-    /// The contract's `principal_id`.
-    pub principal_id: Uuid,
     /// The contract's `carbon_id`.
     pub carbon_id: ExistingCarbonId,
     /// The contract's `display_name`.
     pub display_name: String,
-    /// The contract's `description`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
     /// The contract's `profile_photo`.
     pub profile_photo: String,
     /// The contract's `created_at`.
@@ -2176,9 +2319,6 @@ pub struct CarbonSignupComplete {
     /// Defaults to UTC when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<TimeZoneId>,
-    /// The contract's `description`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
     /// The contract's `profile_photo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_photo: Option<String>,
@@ -2210,8 +2350,8 @@ pub struct CodeDispatchResult {
 /// Contract type `DirectJobRoleReplace`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DirectJobRoleReplace {
-    /// The contract's `job_role`.
-    pub job_role: String,
+    /// The contract's `job_description`.
+    pub job_description: String,
 }
 
 /// Contract type `DirectTagSetReplace`.
@@ -2272,8 +2412,8 @@ pub struct DirectoryPage {
 pub struct DirectoryRole {
     /// The contract's `org_role`.
     pub org_role: DirectoryRoleOrgRole,
-    /// The contract's `job_role`.
-    pub job_role: String,
+    /// The contract's `job_description`.
+    pub job_description: String,
 }
 
 /// Contract type `EmailInput`.
@@ -2296,7 +2436,7 @@ pub struct HoneycombAdoptionExport {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HoneycombApplicationIdentity {
     /// The contract's `application_id`.
-    pub application_id: Uuid,
+    pub application_id: String,
     /// The contract's `app_id`.
     pub app_id: String,
     /// The contract's `organization_id`.
@@ -2396,8 +2536,8 @@ impl std::fmt::Debug for HoneycombConfiguration {
 /// Contract type `HoneycombNotificationRecipient`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HoneycombNotificationRecipient {
-    /// The contract's `principal_id`.
-    pub principal_id: Uuid,
+    /// The contract's `carbon_id`.
+    pub carbon_id: String,
     /// The contract's `email`.
     pub email: String,
 }
@@ -2413,7 +2553,7 @@ pub struct HoneycombNotificationRecipients {
     pub recipients: Vec<HoneycombNotificationRecipient>,
     /// The contract's `next_cursor`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<Uuid>,
+    pub next_cursor: Option<String>,
 }
 
 /// Contract type `HoneycombOrganizationRecipients`.
@@ -2425,7 +2565,7 @@ pub struct HoneycombOrganizationRecipients {
     pub recipients: Vec<HoneycombNotificationRecipient>,
     /// The contract's `next_cursor`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<Uuid>,
+    pub next_cursor: Option<String>,
 }
 
 /// Contract type `HoneycombPublicationActivation`.
@@ -2592,7 +2732,7 @@ pub struct HoneycombReceipt {
     pub app_id: Option<String>,
     /// The contract's `application_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub application_id: Option<Uuid>,
+    pub application_id: Option<String>,
     /// The contract's `configuration_revision`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configuration_revision: Option<i64>,
@@ -2669,7 +2809,7 @@ pub struct HoneycombReviewerEligibility {
     /// The contract's `provider`.
     pub provider: String,
     /// The contract's `actor_id`.
-    pub actor_id: Uuid,
+    pub actor_id: String,
     /// The contract's `eligible`.
     pub eligible: bool,
 }
@@ -2936,8 +3076,8 @@ pub struct Invite {
     pub masked_delivery_address: Option<String>,
     /// The contract's `org_role`.
     pub org_role: serde_json::Value,
-    /// The contract's `job_role`.
-    pub job_role: String,
+    /// The contract's `job_description`.
+    pub job_description: String,
     /// The contract's `tag_ids`.
     pub tag_ids: Vec<Uuid>,
     /// The contract's `first_silicon_membership_id`.
@@ -3028,8 +3168,6 @@ pub struct LoginEvent {
 /// Contract type `LoginEventActor`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LoginEventActor {
-    /// The contract's `principal_id`.
-    pub principal_id: Uuid,
     /// The contract's `type`.
     #[serde(rename = "type")]
     pub type_field: LoginEventActorType,
@@ -3114,8 +3252,8 @@ pub struct Membership {
     pub status: MembershipStatus,
     /// The contract's `org_role`.
     pub org_role: MembershipOrgRole,
-    /// The contract's `job_role`.
-    pub job_role: String,
+    /// The contract's `job_description`.
+    pub job_description: String,
     /// The contract's `tags`.
     pub tags: Vec<TagSummary>,
     /// The contract's `first_silicon_membership_id`.
@@ -3511,8 +3649,8 @@ pub struct RefreshTokenRequest {
 pub struct RoleChangeRequestCreate {
     /// The contract's `target_membership_id`.
     pub target_membership_id: String,
-    /// The contract's `proposed_job_role`.
-    pub proposed_job_role: String,
+    /// The contract's `proposed_job_description`.
+    pub proposed_job_description: String,
     /// The contract's `reason`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -3525,10 +3663,10 @@ pub struct RoleHistory {
     pub id: Uuid,
     /// The contract's `membership_id`.
     pub membership_id: String,
-    /// The contract's `old_job_role`.
-    pub old_job_role: String,
-    /// The contract's `new_job_role`.
-    pub new_job_role: String,
+    /// The contract's `old_job_description`.
+    pub old_job_description: String,
+    /// The contract's `new_job_description`.
+    pub new_job_description: String,
     /// The contract's `requested_by`.
     pub requested_by: ActorRef,
     /// The contract's `approvers`.
@@ -3626,8 +3764,6 @@ pub struct ShortLivedTokenRequest {
 /// Contract type `Silicon`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Silicon {
-    /// The contract's `principal_id`.
-    pub principal_id: Uuid,
     /// The contract's `membership_id`.
     pub membership_id: String,
     /// The contract's `silicon_id`.
@@ -3638,13 +3774,10 @@ pub struct Silicon {
     pub display_name: String,
     /// The contract's `timezone`.
     pub timezone: TimeZoneId,
-    /// The contract's `description`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
     /// The contract's `profile_photo`.
     pub profile_photo: String,
-    /// The contract's `job_role`.
-    pub job_role: String,
+    /// The contract's `job_description`.
+    pub job_description: String,
     /// The contract's `reports_to_membership_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reports_to_membership_id: Option<String>,
@@ -3686,14 +3819,11 @@ pub struct SiliconCreate {
     /// Defaults to UTC when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<TimeZoneId>,
-    /// The contract's `description`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
     /// The contract's `profile_photo`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_photo: Option<String>,
-    /// The contract's `job_role`.
-    pub job_role: String,
+    /// The contract's `job_description`.
+    pub job_description: String,
     /// The contract's `reports_to_membership_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reports_to_membership_id: Option<String>,
@@ -3736,14 +3866,6 @@ pub struct SiliconPatch {
     /// The contract's `timezone`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<TimeZoneId>,
-    /// The contract's `description`.
-    /// `None` omits this field; `Some(None)` sends JSON null to clear it.
-    #[serde(
-        with = "serde_with::rust::double_option",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub description: Option<Option<String>>,
     /// The contract's `profile_photo`.
     /// `None` omits this field; `Some(None)` sends JSON null to clear it.
     #[serde(
@@ -3832,32 +3954,30 @@ pub struct SiliconWebhookEvent {
     /// recipient unions, payloads, changed_fields, and resource versions are
     /// captured in the domain transaction; workers do not hydrate historical
     /// events from later state. self.profile.read exposes only display_name,
-    /// profile_photo, description, and timezone; identity, contacts,
-    /// membership status, and other data have separate scopes.
-    /// self.organizations.read exposes organization identifiers, name, logo,
-    /// description, and resource version, never SSO or
-    /// administrative/security configuration. Member events use
-    /// current.members; organization updates use current.organization.
-    /// Captured invitation, governance, and tag-creation snapshots use
-    /// current.resource and require organization.invitations.read,
-    /// organization.governance.read, and organization.tags.read,
-    /// respectively. Tag/trust changes may include current.resource plus
-    /// current.members. Raw trust configuration requires
-    /// organization.trust.read. self.trust.read exposes only
+    /// profile_photo, and timezone; identity, contacts, membership status,
+    /// and other data have separate scopes. self.organizations.read exposes
+    /// organization identifiers, name, logo, description, and resource
+    /// version, never SSO or administrative/security configuration. Member
+    /// events use current.members; organization updates use
+    /// current.organization. Captured invitation, governance, and
+    /// tag-creation snapshots use current.resource and require
+    /// organization.invitations.read, organization.governance.read, and
+    /// organization.tags.read, respectively. Tag/trust changes may include
+    /// current.resource plus current.members. Raw trust configuration
+    /// requires organization.trust.read. self.trust.read exposes only
     /// membership.effective_trust from the user's perspective, with
-    /// target_silicon_membership_id, trust, and advisory, and no raw
-    /// defaults, rules, overrides, or rule identifiers. Before-only
-    /// recipients receive stable resource/version authorization tombstones,
-    /// not removed private fields. Application payloads never include
-    /// credentials or raw provider records, SSO events, or Silicon
-    /// credential-management and webhook/subscription configuration. A
-    /// completed Silicon credential rotation may expose only its permitted
-    /// authorization-epoch and access projection. Silicon subscriptions
-    /// retain their separate event vocabulary. Applications receive
-    /// carbon.updated.v1 with scope-filtered fields;
-    /// organization.membership.profile_updated.v1 is the organization-bound
-    /// Silicon notification of that profile mutation, not a second
-    /// Application event.
+    /// target_silicon_membership_id, trust, and no raw defaults, rules,
+    /// overrides, or rule identifiers. Before-only recipients receive stable
+    /// resource/version authorization tombstones, not removed private fields.
+    /// Application payloads never include credentials or raw provider
+    /// records, SSO events, or Silicon credential-management and
+    /// webhook/subscription configuration. A completed Silicon credential
+    /// rotation may expose only its permitted authorization-epoch and access
+    /// projection. Silicon subscriptions retain their separate event
+    /// vocabulary. Applications receive carbon.updated.v1 with scope-filtered
+    /// fields; organization.membership.profile_updated.v1 is the
+    /// organization-bound Silicon notification of that profile mutation, not
+    /// a second Application event.
     pub data: serde_json::Value,
 }
 
@@ -4366,9 +4486,9 @@ pub struct TestingWebhookEvent {
 pub struct TokenIntrospection {
     /// The contract's `active`.
     pub active: bool,
-    /// The contract's `principal_id`.
+    /// The contract's `public_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub principal_id: Option<Uuid>,
+    pub public_id: Option<String>,
     /// The contract's `actor_type`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_type: Option<TokenIntrospectionActorType>,
@@ -4426,8 +4546,6 @@ pub struct TrustEvaluation {
     pub source: TrustEvaluationSource,
     /// The contract's `matching_rule_ids`.
     pub matching_rule_ids: Vec<Uuid>,
-    /// The contract's `advisory`.
-    pub advisory: serde_json::Value,
 }
 
 /// Contract type `TrustEvaluationRequest`.
@@ -4535,7 +4653,7 @@ pub struct WebhookDeadLetter {
     /// The contract's `aggregate_type`.
     pub aggregate_type: String,
     /// The contract's `aggregate_id`.
-    pub aggregate_id: Uuid,
+    pub aggregate_id: String,
     /// The contract's `aggregate_version`.
     pub aggregate_version: i64,
     /// The contract's `status`.
@@ -4589,32 +4707,30 @@ pub struct WebhookEvent {
     /// recipient unions, payloads, changed_fields, and resource versions are
     /// captured in the domain transaction; workers do not hydrate historical
     /// events from later state. self.profile.read exposes only display_name,
-    /// profile_photo, description, and timezone; identity, contacts,
-    /// membership status, and other data have separate scopes.
-    /// self.organizations.read exposes organization identifiers, name, logo,
-    /// description, and resource version, never SSO or
-    /// administrative/security configuration. Member events use
-    /// current.members; organization updates use current.organization.
-    /// Captured invitation, governance, and tag-creation snapshots use
-    /// current.resource and require organization.invitations.read,
-    /// organization.governance.read, and organization.tags.read,
-    /// respectively. Tag/trust changes may include current.resource plus
-    /// current.members. Raw trust configuration requires
-    /// organization.trust.read. self.trust.read exposes only
+    /// profile_photo, and timezone; identity, contacts, membership status,
+    /// and other data have separate scopes. self.organizations.read exposes
+    /// organization identifiers, name, logo, description, and resource
+    /// version, never SSO or administrative/security configuration. Member
+    /// events use current.members; organization updates use
+    /// current.organization. Captured invitation, governance, and
+    /// tag-creation snapshots use current.resource and require
+    /// organization.invitations.read, organization.governance.read, and
+    /// organization.tags.read, respectively. Tag/trust changes may include
+    /// current.resource plus current.members. Raw trust configuration
+    /// requires organization.trust.read. self.trust.read exposes only
     /// membership.effective_trust from the user's perspective, with
-    /// target_silicon_membership_id, trust, and advisory, and no raw
-    /// defaults, rules, overrides, or rule identifiers. Before-only
-    /// recipients receive stable resource/version authorization tombstones,
-    /// not removed private fields. Application payloads never include
-    /// credentials or raw provider records, SSO events, or Silicon
-    /// credential-management and webhook/subscription configuration. A
-    /// completed Silicon credential rotation may expose only its permitted
-    /// authorization-epoch and access projection. Silicon subscriptions
-    /// retain their separate event vocabulary. Applications receive
-    /// carbon.updated.v1 with scope-filtered fields;
-    /// organization.membership.profile_updated.v1 is the organization-bound
-    /// Silicon notification of that profile mutation, not a second
-    /// Application event.
+    /// target_silicon_membership_id, trust, and no raw defaults, rules,
+    /// overrides, or rule identifiers. Before-only recipients receive stable
+    /// resource/version authorization tombstones, not removed private fields.
+    /// Application payloads never include credentials or raw provider
+    /// records, SSO events, or Silicon credential-management and
+    /// webhook/subscription configuration. A completed Silicon credential
+    /// rotation may expose only its permitted authorization-epoch and access
+    /// projection. Silicon subscriptions retain their separate event
+    /// vocabulary. Applications receive carbon.updated.v1 with scope-filtered
+    /// fields; organization.membership.profile_updated.v1 is the
+    /// organization-bound Silicon notification of that profile mutation, not
+    /// a second Application event.
     pub data: serde_json::Value,
 }
 

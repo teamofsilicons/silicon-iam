@@ -1,22 +1,15 @@
 //! Disposable PostgreSQL coverage of cross-organization delegation and app test layers.
 
-use sqlx::postgres::PgPoolOptions;
-use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-use testcontainers_modules::postgres::Postgres;
-
 #[tokio::test]
-#[ignore = "requires Docker; creates isolated production and testing databases"]
+#[ignore = "requires isolated PostgreSQL via IAM_TEST_DATABASE_ADMIN_URL or Docker"]
 async fn application_obo_and_testing_layer_security() -> anyhow::Result<()> {
-    let container = Postgres::default().with_tag("16-alpine").start().await?;
-    let host = container.get_host().await?;
-    let port = container.get_host_port_ipv4(5432).await?;
-    let base_url = format!("postgres://postgres:postgres@{host}:{port}");
-    let production = PgPoolOptions::new()
-        .max_connections(3)
-        .connect(&format!("{base_url}/postgres"))
-        .await?;
-    sqlx::raw_sql("CREATE ROLE silicon_iam_api NOLOGIN; CREATE ROLE silicon_iam_worker NOLOGIN; CREATE ROLE silicon_iam_key_operator NOLOGIN;")
-        .execute(&production).await?;
+    let production_database = crate::test_database::TestDatabase::start().await?;
+    let production = production_database.pool.clone();
+    sqlx::raw_sql("DO $$ DECLARE role_name text; BEGIN
+      FOREACH role_name IN ARRAY ARRAY['silicon_iam_api','silicon_iam_worker','silicon_iam_key_operator'] LOOP
+        IF to_regrole(role_name) IS NULL THEN EXECUTE format('CREATE ROLE %I NOLOGIN',role_name); END IF;
+      END LOOP;
+    END $$;").execute(&production).await?;
     crate::infrastructure::postgres::migrate(&production).await?;
     let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
         .lines()
@@ -32,33 +25,21 @@ async fn application_obo_and_testing_layer_security() -> anyhow::Result<()> {
     sqlx::raw_sql(include_str!("../../../tests/sql/contract_lifecycle.sql"))
         .execute(&production)
         .await?;
-    sqlx::query("CREATE DATABASE testing")
-        .execute(&production)
-        .await?;
-    let testing = PgPoolOptions::new()
-        .max_connections(3)
-        .connect(&format!("{base_url}/testing"))
-        .await?;
+    let testing_database = crate::test_database::TestDatabase::start().await?;
+    let testing = testing_database.pool.clone();
     crate::infrastructure::postgres::migrate_testing(&testing).await?;
     sqlx::raw_sql(sqlx::AssertSqlSafe(grants.clone()))
         .execute(&testing)
         .await?;
-    sqlx::raw_sql(include_str!(
-        "../../../tests/sql/application_testing_layer.sql"
-    ))
-    .execute(&testing)
-    .await?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(canonical_testing_layer_fixture()))
+        .execute(&testing)
+        .await?;
     assert_shared_contract_catalog(&testing).await?;
 
     // Production already applied the historical overlay. Preserve its exact
     // checksums and prove that newly introduced tables are scoped on upgrade.
-    sqlx::query("CREATE DATABASE testing_upgrade")
-        .execute(&production)
-        .await?;
-    let upgrade = PgPoolOptions::new()
-        .max_connections(3)
-        .connect(&format!("{base_url}/testing_upgrade"))
-        .await?;
+    let upgrade_database = crate::test_database::TestDatabase::start().await?;
+    let upgrade = upgrade_database.pool.clone();
     let historical_base = sqlx::migrate::Migrator::with_migrations(
         sqlx::migrate!("./migrations")
             .iter()
@@ -88,27 +69,20 @@ async fn application_obo_and_testing_layer_security() -> anyhow::Result<()> {
     sqlx::raw_sql(sqlx::AssertSqlSafe(grants))
         .execute(&upgrade)
         .await?;
-    sqlx::raw_sql(include_str!(
-        "../../../tests/sql/application_testing_layer.sql"
-    ))
-    .execute(&upgrade)
-    .await?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(canonical_testing_layer_fixture()))
+        .execute(&upgrade)
+        .await?;
     assert_shared_contract_catalog(&upgrade).await?;
     upgrade.close().await;
-    check_production_upgrade(&production, &base_url).await?;
+    check_production_upgrade().await?;
     production.close().await;
     testing.close().await;
     Ok(())
 }
 
-async fn check_production_upgrade(admin: &sqlx::PgPool, base_url: &str) -> anyhow::Result<()> {
-    sqlx::query("CREATE DATABASE production_upgrade")
-        .execute(admin)
-        .await?;
-    let pool = PgPoolOptions::new()
-        .max_connections(3)
-        .connect(&format!("{base_url}/production_upgrade"))
-        .await?;
+async fn check_production_upgrade() -> anyhow::Result<()> {
+    let database = crate::test_database::TestDatabase::start().await?;
+    let pool = database.pool.clone();
     let base = sqlx::migrate::Migrator::with_migrations(
         sqlx::migrate!("./migrations")
             .iter()
@@ -154,7 +128,10 @@ async fn assert_shared_contract_catalog(pool: &sqlx::PgPool) -> anyhow::Result<(
     sqlx::query("SET LOCAL ROLE silicon_iam_api")
         .execute(&mut *transaction)
         .await?;
-    for environment_id in [uuid::Uuid::now_v7(), uuid::Uuid::now_v7()] {
+    for environment_id in [
+        crate::domain::id::Id::now_v7(),
+        crate::domain::id::Id::now_v7(),
+    ] {
         sqlx::query("SELECT set_config('iam.testing_environment_id',$1,true)")
             .bind(environment_id.to_string())
             .execute(&mut *transaction)
@@ -179,4 +156,20 @@ async fn assert_shared_contract_catalog(pool: &sqlx::PgPool) -> anyhow::Result<(
     }
     transaction.rollback().await?;
     Ok(())
+}
+
+/// The shared SQL remains the historical pre-0111 fixture used by upgrade
+/// tests. Current-schema callers substitute only the known identity keys;
+/// endpoint, signing-key, secret and environment UUIDs remain unchanged.
+pub(super) fn canonical_testing_layer_fixture() -> String {
+    include_str!("../../../tests/sql/application_testing_layer.sql")
+        .replace("00000000-0000-0000-0000-00000000b001", "alpha>test")
+        .replace("00000000-0000-0000-0000-00000000b002", "beta>test")
+        .replace("00000000-0000-0000-0000-000000000011", "test_org>app-alpha")
+        .replace("00000000-0000-0000-0000-000000000012", "test_org>app-beta")
+        .replace(
+            "ARRAY['alpha>test','beta>test']::uuid[]",
+            "ARRAY['alpha>test','beta>test']::text[]",
+        )
+        .replace("ARRAY['beta>test']::uuid[]", "ARRAY['beta>test']::text[]")
 }

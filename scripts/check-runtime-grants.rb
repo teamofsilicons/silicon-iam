@@ -11,6 +11,7 @@ WORKER_BINARY_PATH = "src/bin/iam_worker.rs"
 # These files contain database setup or live-database tests, not production API
 # queries. Inline `mod tests` modules are removed separately below.
 EXCLUDED_TEST_PATHS = %w[
+  src/test_database.rs
   src/api/membership_ids_tests.rs
   src/features/applications/honeycomb/operations/publication_tests.rs
   src/features/testing_environments/honeycomb/adoption_retention_tests.rs

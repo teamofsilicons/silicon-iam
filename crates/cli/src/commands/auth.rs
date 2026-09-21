@@ -770,7 +770,6 @@ pub async fn signup(context: &Context, args: SignupArgs) -> Result<()> {
                 carbon_id: args.carbon_id.clone(),
                 display_name: args.display_name.unwrap_or_else(|| args.carbon_id.clone()),
                 timezone: args.timezone,
-                description: None,
                 profile_photo: None,
             },
             &context.mutation(),

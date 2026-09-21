@@ -9,6 +9,7 @@ mod scoped_webhook;
 
 use std::{future::IntoFuture as _, sync::Arc, time::Instant};
 
+use crate::domain::id::Id;
 use axum::{
     Json, Router,
     extract::{MatchedPath, Request, State},
@@ -30,7 +31,6 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
 };
 use tracing::{Instrument as _, info, info_span};
-use uuid::Uuid;
 
 use crate::{
     config::{Settings, TestingSettings},
@@ -151,7 +151,8 @@ async fn serve_surface(settings: Settings, surface: Surface) -> anyhow::Result<(
     }
     postgres::register_runtime_key_versions(&pool, &settings.security).await?;
     let bind_addr = settings.server.bind_addr;
-    let crypto = CryptoService::from_settings(&settings.security)?;
+    let mut crypto = CryptoService::from_settings(&settings.security)?;
+    crypto.load_application_contexts(&pool).await?;
     let notifications = NotificationProviders::from_settings(&settings.providers)?;
     let workos = WorkOsClient::from_settings(&settings.providers)?.map(Arc::new);
     let testing = match settings.testing.as_ref() {
@@ -162,6 +163,7 @@ async fn serve_surface(settings: Settings, surface: Surface) -> anyhow::Result<(
             // so an environment could not store a single credential without
             // this reconciliation having run there too.
             postgres::register_runtime_key_versions(&testing_pool, &settings.security).await?;
+            crypto.load_application_contexts(&testing_pool).await?;
             Some(TestingPlane {
                 pool: testing_pool,
                 settings: Arc::new(testing.clone()),
@@ -570,7 +572,7 @@ fn is_valid_api_version(version: &str) -> bool {
 }
 
 async fn request_scope(mut request: Request, next: Next) -> Response {
-    let request_id = validated_request_id(&request).unwrap_or_else(|| Uuid::now_v7().to_string());
+    let request_id = validated_request_id(&request).unwrap_or_else(|| Id::now_v7().to_string());
     if let Ok(header_value) = request_id.parse() {
         request
             .headers_mut()
@@ -642,7 +644,7 @@ fn validated_request_id(request: &Request) -> Option<String> {
         .get(http::HeaderName::from_static("x-request-id"))?
         .to_str()
         .ok()?;
-    Uuid::parse_str(value).ok().map(|id| id.to_string())
+    Id::parse_str(value).ok().map(|id| id.to_string())
 }
 
 fn normalize_error_response(response: Response) -> Response {

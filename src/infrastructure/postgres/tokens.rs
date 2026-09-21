@@ -1,9 +1,9 @@
 //! Opaque access-token authentication and revocation-aware introspection.
 
+use crate::domain::id::Id;
 use secrecy::SecretString;
 use sqlx::{FromRow, PgPool};
 use thiserror::Error;
-use uuid::Uuid;
 
 use crate::{
     domain::actor::{ActorRef, ActorType},
@@ -14,21 +14,21 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct AccessContext {
     /// Stored token identity.
-    pub token_id: Uuid,
+    pub token_id: Id,
     /// Revocable parent authentication session.
-    pub authentication_session_id: Uuid,
+    pub authentication_session_id: Id,
     /// Human, Silicon, application, or service acting with the token.
     pub subject: ActorRef,
     /// OAuth client application, when one is involved.
-    pub client_application_id: Option<Uuid>,
+    pub client_application_id: Option<Id>,
     /// Application audience, when this is an Application access token.
-    pub audience_application_id: Option<Uuid>,
+    pub audience_application_id: Option<Id>,
     /// Audience string checked by the receiving service.
     pub audience: String,
     /// Organization authorization boundary, when present.
-    pub organization_id: Option<Uuid>,
+    pub organization_id: Option<Id>,
     /// Organization membership snapshot, when present.
-    pub membership_id: Option<Uuid>,
+    pub membership_id: Option<Id>,
     /// Granted OAuth/service scopes.
     pub scopes: Vec<String>,
     /// Authentication assurance level from the parent session.
@@ -39,14 +39,14 @@ pub struct AccessContext {
 /// replay after the presented credential has become inactive.
 #[derive(Clone, Debug)]
 pub(crate) struct LogoutReplayIdentity {
-    pub(crate) token_id: Uuid,
-    pub(crate) authentication_session_id: Uuid,
+    pub(crate) token_id: Id,
+    pub(crate) authentication_session_id: Id,
     pub(crate) subject: ActorRef,
-    pub(crate) client_application_id: Option<Uuid>,
-    pub(crate) audience_application_id: Option<Uuid>,
+    pub(crate) client_application_id: Option<Id>,
+    pub(crate) audience_application_id: Option<Id>,
     pub(crate) audience: String,
-    pub(crate) organization_id: Option<Uuid>,
-    pub(crate) membership_id: Option<Uuid>,
+    pub(crate) organization_id: Option<Id>,
+    pub(crate) membership_id: Option<Id>,
     pub(crate) scopes: Vec<String>,
 }
 
@@ -69,23 +69,23 @@ pub enum AccessTokenError {
 
 #[derive(FromRow)]
 struct AccessRow {
-    token_id: Uuid,
-    authentication_session_id: Uuid,
-    subject_principal_id: Uuid,
+    token_id: Id,
+    authentication_session_id: Id,
+    subject_principal_id: Id,
     subject_kind: String,
-    client_application_id: Option<Uuid>,
-    audience_application_id: Option<Uuid>,
+    client_application_id: Option<Id>,
+    audience_application_id: Option<Id>,
     audience: String,
-    organization_id: Option<Uuid>,
-    membership_id: Option<Uuid>,
+    organization_id: Option<Id>,
+    membership_id: Option<Id>,
     scopes: Vec<String>,
     assurance_level: i16,
 }
 
 #[derive(FromRow)]
 struct AccessCandidate {
-    token_id: Uuid,
-    subject_principal_id: Uuid,
+    token_id: Id,
+    subject_principal_id: Id,
 }
 
 struct AccessLookup {
@@ -96,15 +96,15 @@ struct AccessLookup {
 
 #[derive(FromRow)]
 struct LogoutReplayRow {
-    token_id: Uuid,
-    authentication_session_id: Uuid,
-    subject_principal_id: Uuid,
+    token_id: Id,
+    authentication_session_id: Id,
+    subject_principal_id: Id,
     subject_kind: String,
-    client_application_id: Option<Uuid>,
-    audience_application_id: Option<Uuid>,
+    client_application_id: Option<Id>,
+    audience_application_id: Option<Id>,
     audience: String,
-    organization_id: Option<Uuid>,
-    membership_id: Option<Uuid>,
+    organization_id: Option<Id>,
+    membership_id: Option<Id>,
     scopes: Vec<String>,
 }
 

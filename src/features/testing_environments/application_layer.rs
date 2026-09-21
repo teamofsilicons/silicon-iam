@@ -1,5 +1,6 @@
 //! Application-authenticated testing-environment orchestration.
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Query, State},
@@ -10,7 +11,6 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::ApiState,
@@ -44,7 +44,7 @@ pub(super) struct CreateRequest {
 
 #[derive(Serialize)]
 struct Created {
-    environment_id: Uuid,
+    environment_id: Id,
     org_id: String,
     name: String,
     description: Option<String>,
@@ -58,7 +58,7 @@ struct Created {
 
 #[derive(Serialize, sqlx::FromRow)]
 struct ApplicationEnvironment {
-    environment_id: Uuid,
+    environment_id: Id,
     org_id: String,
     name: String,
     description: Option<String>,
@@ -184,7 +184,7 @@ pub(super) async fn create(
         }
         (environment.id, presented, false)
     } else {
-        let environment_id = Uuid::now_v7();
+        let environment_id = Id::now_v7();
         let key = state
             .crypto
             .generate_testing_environment_key()
@@ -273,7 +273,7 @@ pub(super) async fn create(
     result
 }
 
-async fn creation_rolled_back(state: &ApiState, client: &ApplicationClient, id: Uuid) -> bool {
+async fn creation_rolled_back(state: &ApiState, client: &ApplicationClient, id: Id) -> bool {
     let Ok(mut transaction) = begin(state, client).await else {
         return false;
     };

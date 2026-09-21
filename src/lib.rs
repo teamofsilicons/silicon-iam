@@ -23,3 +23,6 @@ pub mod telemetry;
 pub(crate) mod web;
 pub(crate) mod wire_time;
 pub mod worker;
+
+#[cfg(test)]
+pub(crate) mod test_database;

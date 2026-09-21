@@ -1,12 +1,12 @@
 //! Production authority for the shared environment lifecycle.
 
+use crate::domain::id::Id;
 use axum::{
     extract::FromRequestParts,
     http::request::Parts,
     response::{IntoResponse, Response},
 };
 use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 
 use super::{model::EnvironmentResponse, support};
 use crate::{
@@ -17,6 +17,10 @@ use crate::{
     infrastructure::postgres::context::{self, DatabaseContext},
 };
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 pub(super) enum EnvironmentManager {
     Member(Authenticated),
     Application(ApplicationClient),
@@ -24,7 +28,7 @@ pub(super) enum EnvironmentManager {
 
 pub(super) struct Scope<'a> {
     pub(super) transaction: Transaction<'a, Postgres>,
-    pub(super) organization_id: Uuid,
+    pub(super) organization_id: Id,
 }
 
 impl FromRequestParts<ApiState> for EnvironmentManager {
@@ -66,7 +70,7 @@ impl EnvironmentManager {
         }
     }
 
-    pub(super) fn session_id(&self) -> Option<Uuid> {
+    pub(super) fn session_id(&self) -> Option<Id> {
         match self {
             Self::Member(member) => Some(member.0.authentication_session_id),
             Self::Application(_) => None,
@@ -112,7 +116,7 @@ impl EnvironmentManager {
     pub(super) async fn require_administrator(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
-        organization_id: Uuid,
+        organization_id: Id,
         environment: &EnvironmentResponse,
     ) -> Result<(), AppError> {
         match self {

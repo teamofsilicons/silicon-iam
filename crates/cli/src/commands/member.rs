@@ -259,10 +259,10 @@ fn directory_value(entry: &models::DirectoryMember, field: &str) -> String {
         "role" => entry.role.as_ref().map_or_else(
             || "-".to_owned(),
             |role| {
-                if role.job_role.is_empty() {
+                if role.job_description.is_empty() {
                     label(&role.org_role)
                 } else {
-                    format!("{} ({})", label(&role.org_role), role.job_role)
+                    format!("{} ({})", label(&role.org_role), role.job_description)
                 }
             },
         ),
@@ -317,7 +317,7 @@ fn report(context: &Context, member: &models::Membership) -> Result<()> {
                 member.display_name.as_deref().unwrap_or("-"),
             ]);
             table.row(["role", &label(&member.org_role)]);
-            table.row(["job_role", &member.job_role]);
+            table.row(["job_description", &member.job_description]);
             table.row(["status", &label(&member.status)]);
             table.row([
                 "tags",

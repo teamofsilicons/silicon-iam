@@ -4,6 +4,7 @@
 #[path = "adoption_retention_tests.rs"]
 mod live_tests;
 use super::{database, operations, support};
+use crate::domain::id::Id;
 use crate::{
     api::ApiState,
     domain::actor::{ActorRef, ActorType},
@@ -19,19 +20,18 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use uuid::Uuid;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Export {
-    operation_id: Uuid,
+    operation_id: Id,
     expected_iam_revision: i64,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Retention {
-    operation_id: Uuid,
-    environment_id: Uuid,
+    operation_id: Id,
+    environment_id: Id,
     /// Honeycomb's revision is echoed; the IAM revision is checked separately.
     environment_revision: i64,
     expected_iam_revision: i64,
@@ -40,7 +40,7 @@ struct Retention {
     retired_apps: Vec<String>,
 }
 impl Retention {
-    fn validate(&self, environment: Uuid) -> Result<(), ApiError> {
+    fn validate(&self, environment: Id) -> Result<(), ApiError> {
         if self.environment_id != environment
             || self.environment_revision <= 0
             || self.expected_iam_revision <= 0
@@ -87,7 +87,7 @@ pub(super) fn router() -> Router<ApiState> {
 async fn export(
     State(state): State<ApiState>,
     service: Service,
-    Path(id): Path<Uuid>,
+    Path(id): Path<Id>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response, ApiError> {
@@ -132,7 +132,7 @@ async fn export(
             .await
             .map_err(database)?;
     let (org, digest, digest_version, ciphertext, nonce, encryption_key_version): (
-        Uuid,
+        Id,
         Vec<u8>,
         i16,
         Vec<u8>,
@@ -202,7 +202,7 @@ async fn export(
 async fn retire(
     State(state): State<ApiState>,
     service: Service,
-    Path(id): Path<Uuid>,
+    Path(id): Path<Id>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response, ApiError> {
@@ -362,9 +362,9 @@ mod tests {
     use super::*;
     #[test]
     fn retention_requires_exact_unique_apps_and_all_versions() {
-        let id = Uuid::now_v7();
+        let id = Id::now_v7();
         let mut input = Retention {
-            operation_id: Uuid::now_v7(),
+            operation_id: Id::now_v7(),
             environment_id: id,
             environment_revision: 1,
             expected_iam_revision: 1,

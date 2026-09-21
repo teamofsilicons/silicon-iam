@@ -1,7 +1,7 @@
 //! Transaction-local PostgreSQL identity context for row-level security.
 
+use crate::domain::id::Id;
 use sqlx::{PgPool, Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::infrastructure::testing_plane;
 
@@ -9,13 +9,13 @@ use crate::infrastructure::testing_plane;
 #[derive(Clone, Copy, Debug)]
 pub struct DatabaseContext {
     /// Authenticated principal, if the operation is not public.
-    pub principal_id: Option<Uuid>,
+    pub principal_id: Option<Id>,
     /// Organization selected for an organization-scoped operation.
-    pub organization_id: Option<Uuid>,
+    pub organization_id: Option<Id>,
     /// Application selected for an application-scoped operation.
-    pub application_id: Option<Uuid>,
+    pub application_id: Option<Id>,
     /// Public signup session authorized to finalize a Carbon.
-    pub signup_session_id: Option<Uuid>,
+    pub signup_session_id: Option<Id>,
 }
 
 impl DatabaseContext {
@@ -33,7 +33,7 @@ impl DatabaseContext {
 
     /// Creates a context for a principal without a selected tenant.
     #[must_use]
-    pub const fn principal(principal_id: Uuid) -> Self {
+    pub const fn principal(principal_id: Id) -> Self {
         Self {
             principal_id: Some(principal_id),
             organization_id: None,
@@ -44,7 +44,7 @@ impl DatabaseContext {
 
     /// Creates an organization-scoped principal context.
     #[must_use]
-    pub const fn organization(principal_id: Uuid, organization_id: Uuid) -> Self {
+    pub const fn organization(principal_id: Id, organization_id: Id) -> Self {
         Self {
             principal_id: Some(principal_id),
             organization_id: Some(organization_id),
@@ -55,7 +55,7 @@ impl DatabaseContext {
 
     /// Creates an application-scoped principal context.
     #[must_use]
-    pub const fn application(principal_id: Uuid, application_id: Uuid) -> Self {
+    pub const fn application(principal_id: Id, application_id: Id) -> Self {
         Self {
             principal_id: Some(principal_id),
             organization_id: None,
@@ -66,7 +66,7 @@ impl DatabaseContext {
 
     /// Creates an anonymous context bound to a verified signup session.
     #[must_use]
-    pub const fn signup(signup_session_id: Uuid) -> Self {
+    pub const fn signup(signup_session_id: Id) -> Self {
         Self {
             principal_id: None,
             organization_id: None,
@@ -206,7 +206,7 @@ async fn check_testing_generation(
 /// Returns an error if PostgreSQL rejects the transaction-local setting.
 pub async fn select_organization(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
 ) -> Result<(), sqlx::Error> {
     sqlx::query("SELECT set_config('iam.organization_id', $1, true)")
         .bind(organization_id.to_string())

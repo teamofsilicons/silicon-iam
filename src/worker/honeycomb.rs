@@ -1,10 +1,10 @@
 //! Independent, signed, durable management notifications to Honeycomb.
 use super::WorkerContext;
+use crate::domain::id::Id;
 use hmac::{Hmac, Mac as _};
 use secrecy::ExposeSecret as _;
 use serde_json::Value;
 use sha2::Sha256;
-use uuid::Uuid;
 
 fn signature(key: &[u8], timestamp: i64, body: &[u8]) -> anyhow::Result<String> {
     let mut mac =
@@ -28,7 +28,7 @@ pub(super) async fn process_batch(context: &WorkerContext) -> anyhow::Result<()>
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
-    let rows=sqlx::query_as::<_,(Uuid,i32,sqlx::types::Json<Value>)>("SELECT event_id,attempt_count,envelope FROM iam_private.claim_honeycomb_management_events($1)")
+    let rows=sqlx::query_as::<_,(Id,i32,sqlx::types::Json<Value>)>("SELECT event_id,attempt_count,envelope FROM iam_private.claim_honeycomb_management_events($1)")
         .bind(&settings.app_id).fetch_all(&context.pool).await?;
     for (id, attempt, envelope) in rows {
         let body = serde_json::to_vec(&envelope.0)?;

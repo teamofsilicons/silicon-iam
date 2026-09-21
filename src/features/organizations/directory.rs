@@ -5,6 +5,7 @@ use super::application_reads::{self, ReadScopes};
 
 use std::{borrow::Cow, collections::BTreeMap};
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -14,7 +15,6 @@ use axum::{
 use serde::Serialize;
 use serde_json::json;
 use sqlx::{Postgres, QueryBuilder, Transaction};
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -665,11 +665,11 @@ pub(super) async fn replace_member_capabilities(
 
 pub(super) async fn list_members_query(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    cursor: Option<Uuid>,
+    organization_id: Id,
+    cursor: Option<Id>,
     limit: i64,
     principal_type: Option<&str>,
-    tag_id: Option<Uuid>,
+    tag_id: Option<Id>,
     status: Option<&str>,
 ) -> Result<Vec<MembershipResponse>, AppError> {
     let mut statement = QueryBuilder::<Postgres>::new(MEMBERSHIP_PROJECTION);
@@ -707,8 +707,8 @@ pub(super) async fn list_members_query(
 
 pub(super) async fn fetch_member(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
 ) -> Result<MembershipResponse, AppError> {
     let mut statement = QueryBuilder::<Postgres>::new(MEMBERSHIP_PROJECTION);
     statement
@@ -727,8 +727,8 @@ pub(super) async fn fetch_member(
 
 pub(super) async fn fetch_members(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_ids: &[Uuid],
+    organization_id: Id,
+    membership_ids: &[Id],
 ) -> Result<Vec<MembershipResponse>, AppError> {
     if membership_ids.is_empty() {
         return Ok(Vec::new());
@@ -751,7 +751,7 @@ async fn change_admin_role(
     state: ApiState,
     authenticated: Authenticated,
     org_id: String,
-    membership_id: Uuid,
+    membership_id: Id,
     headers: HeaderMap,
     promote: bool,
 ) -> Result<Response, AppError> {
@@ -899,7 +899,7 @@ async fn replace_capabilities(
     state: ApiState,
     authenticated: Authenticated,
     org_id: String,
-    membership_id: Uuid,
+    membership_id: Id,
     headers: HeaderMap,
     request: &CapabilitiesReplace,
     capabilities: Vec<String>,
@@ -1064,9 +1064,9 @@ fn authorize_directory_patch(
 
 async fn update_carbon_directory(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
-    actor_membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
+    actor_membership_id: Id,
     input: &MembershipDirectoryPatch,
 ) -> Result<(), AppError> {
     if let Some(first) = input.first_silicon_membership_id {
@@ -1141,8 +1141,8 @@ async fn update_carbon_directory(
 
 async fn update_silicon_directory(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
     input: &MembershipDirectoryPatch,
 ) -> Result<bool, AppError> {
     if let Some(reports_to) = input.reports_to_membership_id {
@@ -1177,8 +1177,8 @@ async fn update_silicon_directory(
 
 async fn validate_active_silicons(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_ids: &[Uuid],
+    organization_id: Id,
+    membership_ids: &[Id],
 ) -> Result<(), AppError> {
     let count = sqlx::query_scalar::<_, i64>(
         r"
@@ -1208,8 +1208,8 @@ async fn validate_active_silicons(
 
 async fn validate_active_silicon(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Option<Uuid>,
+    organization_id: Id,
+    membership_id: Option<Id>,
 ) -> Result<(), AppError> {
     if let Some(membership_id) = membership_id {
         validate_active_silicons(transaction, organization_id, &[membership_id]).await?;
@@ -1228,9 +1228,9 @@ async fn validate_active_silicon(
 /// and a transfer revokes the outgoing owner's grants on its way past.
 pub(super) async fn grant_default_administrator_capabilities(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
-    granted_by_membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
+    granted_by_membership_id: Id,
     reason: &'static str,
 ) -> Result<(), AppError> {
     let defaults = sqlx::query_scalar::<_, String>(
@@ -1260,7 +1260,7 @@ pub(super) async fn grant_default_administrator_capabilities(
             )
             ",
         )
-        .bind(Uuid::now_v7())
+        .bind(Id::now_v7())
         .bind(organization_id)
         .bind(membership_id)
         .bind(capability)
@@ -1275,8 +1275,8 @@ pub(super) async fn grant_default_administrator_capabilities(
 
 async fn fetch_membership_identity(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
 ) -> Result<MembershipIdentity, AppError> {
     sqlx::query_as::<_, MembershipIdentity>(
         r"
@@ -1312,8 +1312,8 @@ fn require_active_version(
 
 async fn fetch_authorization(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
 ) -> Result<MembershipAuthorizationResponse, AppError> {
     sqlx::query_as::<_, MembershipAuthorizationResponse>(
         r"
@@ -1381,9 +1381,9 @@ async fn validate_delegation(
 
 async fn replace_grants(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
-    actor_membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
+    actor_membership_id: Id,
     capabilities: &[String],
 ) -> Result<(), AppError> {
     sqlx::query(
@@ -1417,7 +1417,7 @@ async fn replace_grants(
             )
             ",
         )
-        .bind(Uuid::now_v7())
+        .bind(Id::now_v7())
         .bind(organization_id)
         .bind(membership_id)
         .bind(capability)
@@ -1431,8 +1431,8 @@ async fn replace_grants(
 
 async fn bump_membership(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
     expected_version: i64,
     bump_authorization: bool,
 ) -> Result<(), AppError> {
@@ -1465,7 +1465,7 @@ pub(super) async fn record_member_mutation(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     authenticated: &Authenticated,
-    organization_id: Uuid,
+    organization_id: Id,
     action: &'static str,
     event_type: &'static str,
     before: &MembershipResponse,
@@ -1500,7 +1500,7 @@ async fn record_authorization_mutation(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     authenticated: &Authenticated,
-    organization_id: Uuid,
+    organization_id: Id,
     action: &'static str,
     event_type: &'static str,
     before: &MembershipAuthorizationResponse,
@@ -1567,11 +1567,11 @@ fn take_page<T: MembershipPageItem>(items: &mut Vec<T>, limit: i64) -> Result<Pa
 }
 
 trait MembershipPageItem {
-    fn membership_id(&self) -> Uuid;
+    fn membership_id(&self) -> Id;
 }
 
 impl MembershipPageItem for MembershipResponse {
-    fn membership_id(&self) -> Uuid {
+    fn membership_id(&self) -> Id {
         self.id
     }
 }
@@ -1673,8 +1673,8 @@ mod tests {
 
     fn access(capabilities: impl IntoIterator<Item = Capability>) -> OrganizationAccess {
         OrganizationAccess {
-            organization_id: Uuid::from_u128(1),
-            membership_id: Uuid::from_u128(2),
+            organization_id: Id::from_u128(1),
+            membership_id: Id::from_u128(2),
             authority: OrganizationAuthority {
                 org_role: OrgRole::Member,
                 capabilities: capabilities.into_iter().collect::<HashSet<_>>(),

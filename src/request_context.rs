@@ -1,7 +1,7 @@
 //! Request-local correlation data shared across transport-independent errors.
 
+use crate::domain::id::Id;
 use std::future::Future;
-use uuid::Uuid;
 
 tokio::task_local! {
     static REQUEST_ID: String;
@@ -20,6 +20,6 @@ pub fn current_request_id() -> Option<String> {
 
 /// Returns the current request ID as a UUID.
 #[must_use]
-pub fn current_request_uuid() -> Option<Uuid> {
-    current_request_id().and_then(|value| Uuid::parse_str(&value).ok())
+pub fn current_request_uuid() -> Option<Id> {
+    current_request_id().and_then(|value| Id::parse_str(&value).ok())
 }

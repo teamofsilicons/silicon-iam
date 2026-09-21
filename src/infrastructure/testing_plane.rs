@@ -17,9 +17,9 @@
 
 use std::future::Future;
 
+use crate::domain::id::Id;
 use secrecy::{ExposeSecret as _, SecretString};
 use subtle::ConstantTimeEq as _;
-use uuid::Uuid;
 
 /// The verification code every testing environment accepts.
 ///
@@ -34,9 +34,9 @@ pub const UNIVERSAL_VERIFICATION_CODE: &str = "000000";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SelectedEnvironment {
     /// Control-plane identity of the environment.
-    pub id: Uuid,
+    pub id: Id,
     /// Organization that owns the environment.
-    pub organization_id: Uuid,
+    pub organization_id: Id,
 }
 
 tokio::task_local! {
@@ -73,7 +73,7 @@ pub fn current() -> Option<SelectedEnvironment> {
 
 /// Returns only the selected environment's identity.
 #[must_use]
-pub fn current_id() -> Option<Uuid> {
+pub fn current_id() -> Option<Id> {
     current().map(|selected| selected.id)
 }
 
@@ -101,8 +101,8 @@ pub fn accepts_verification_code(supplied: &SecretString) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::id::Id;
     use secrecy::SecretString;
-    use uuid::Uuid;
 
     use super::{
         SelectedEnvironment, UNIVERSAL_VERIFICATION_CODE, accepts_verification_code, current,
@@ -111,8 +111,8 @@ mod tests {
 
     fn selected() -> SelectedEnvironment {
         SelectedEnvironment {
-            id: Uuid::from_u128(1),
-            organization_id: Uuid::from_u128(2),
+            id: Id::from_u128(1),
+            organization_id: Id::from_u128(2),
         }
     }
 
@@ -133,7 +133,7 @@ mod tests {
         scope(selected(), async {
             assert!(is_active());
             assert_eq!(current(), Some(selected()));
-            assert_eq!(current_id(), Some(Uuid::from_u128(1)));
+            assert_eq!(current_id(), Some(Id::from_u128(1)));
             assert!(accepts_verification_code(&SecretString::from(
                 UNIVERSAL_VERIFICATION_CODE.to_owned()
             )));

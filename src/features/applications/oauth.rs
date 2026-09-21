@@ -1,5 +1,6 @@
 #![allow(clippy::too_many_arguments, clippy::too_many_lines)]
 
+use crate::domain::id::Id;
 use axum::{
     Form, Json,
     extract::{Query, State},
@@ -12,7 +13,6 @@ use serde_json::{Value, json};
 use sqlx::{FromRow, Postgres, Transaction};
 use time::OffsetDateTime;
 use url::Url;
-use uuid::Uuid;
 
 use crate::{
     api::ApiState,
@@ -215,54 +215,54 @@ const REFRESH_ISSUANCE_SCOPES_QUERY: &str = r"
 
 #[derive(FromRow)]
 struct AuthorizeApplicationRow {
-    id: Uuid,
+    id: Id,
     app_id: String,
     app_name: Option<String>,
 }
 
 #[derive(FromRow)]
 struct SubjectOrganizationRow {
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
 }
 
 #[derive(FromRow)]
 struct AuthorizationRequestRow {
-    id: Uuid,
-    application_id: Uuid,
-    authentication_session_id: Uuid,
-    subject_principal_id: Uuid,
+    id: Id,
+    application_id: Id,
+    authentication_session_id: Id,
+    subject_principal_id: Id,
     subject_kind: String,
-    organization_id: Option<Uuid>,
-    membership_id: Option<Uuid>,
+    organization_id: Option<Id>,
+    membership_id: Option<Id>,
 }
 
 #[derive(FromRow)]
 struct AuthorizationCodeRow {
-    code_id: Uuid,
-    authorization_request_id: Uuid,
+    code_id: Id,
+    authorization_request_id: Id,
     code_digest: Vec<u8>,
     digest_key_version: i16,
-    authentication_session_id: Uuid,
-    subject_principal_id: Uuid,
+    authentication_session_id: Id,
+    subject_principal_id: Id,
     subject_kind: String,
-    organization_id: Option<Uuid>,
-    membership_id: Option<Uuid>,
-    consent_grant_id: Uuid,
+    organization_id: Option<Id>,
+    membership_id: Option<Id>,
+    consent_grant_id: Id,
 }
 
 #[derive(FromRow)]
 struct RefreshCandidateRow {
-    token_id: Uuid,
-    family_id: Uuid,
+    token_id: Id,
+    family_id: Id,
     token_digest: Vec<u8>,
     digest_key_version: i16,
-    authentication_session_id: Uuid,
-    subject_principal_id: Uuid,
+    authentication_session_id: Id,
+    subject_principal_id: Id,
     subject_kind: String,
-    organization_id: Option<Uuid>,
-    membership_id: Option<Uuid>,
-    consent_grant_id: Uuid,
+    organization_id: Option<Id>,
+    membership_id: Option<Id>,
+    consent_grant_id: Id,
 }
 
 #[derive(FromRow)]
@@ -311,8 +311,8 @@ enum RefreshExchange {
 }
 
 enum RevokedTarget {
-    AccessToken(Uuid),
-    RefreshFamily(Uuid),
+    AccessToken(Id),
+    RefreshFamily(Id),
 }
 
 /// Signs the caller in for a configured application and hands back a
@@ -422,14 +422,14 @@ pub(super) fn require_direct_login(access: &tokens::AccessContext) -> Result<(),
 
 /// Who a short-lived token is being minted for.
 pub(super) struct MintSubject<'a> {
-    pub(super) application_id: Uuid,
-    pub(super) session_id: Uuid,
-    pub(super) principal_id: Uuid,
+    pub(super) application_id: Id,
+    pub(super) session_id: Id,
+    pub(super) principal_id: Id,
     pub(super) subject_kind: &'a str,
-    pub(super) organization_id: Option<Uuid>,
-    pub(super) membership_id: Option<Uuid>,
+    pub(super) organization_id: Option<Id>,
+    pub(super) membership_id: Option<Id>,
     pub(super) redirect_uri: Option<&'a str>,
-    pub(super) selected_membership_ids: &'a [Uuid],
+    pub(super) selected_membership_ids: &'a [Id],
 }
 
 /// Records the login and issues the token that completes it.
@@ -441,8 +441,8 @@ async fn mint_short_lived_token(
     state: &ApiState,
     subject: MintSubject<'_>,
     scopes: &[String],
-) -> Result<(Uuid, SecretString), ApiError> {
-    let request_id = Uuid::now_v7();
+) -> Result<(Id, SecretString), ApiError> {
+    let request_id = Id::now_v7();
     sqlx::query(
         r"
         INSERT INTO iam.oauth_authorization_requests (
@@ -663,7 +663,7 @@ pub(super) async fn issue_for_selection(
             "must not contain duplicates",
         ));
     }
-    let selected_membership_ids = sqlx::query_scalar::<_, Vec<Uuid>>(
+    let selected_membership_ids = sqlx::query_scalar::<_, Vec<Id>>(
         "SELECT iam_private.lock_account_login_organization_selection($1, $2, $3, $4)",
     )
     .bind(access.subject.id)
@@ -846,7 +846,7 @@ fn login_page(
     lead: &str,
     token_section: &str,
     note: &str,
-    refresh_to: Option<Uuid>,
+    refresh_to: Option<Id>,
 ) -> Response {
     let refresh = match refresh_to {
         Some(request_id) => format!(
@@ -1524,7 +1524,7 @@ pub(super) async fn revoke_for_application(
 
 #[derive(FromRow)]
 struct TestingLoginActor {
-    principal_id: Uuid,
+    principal_id: Id,
     subject_kind: String,
     subject_auth_epoch: i64,
     subject_public_id: String,
@@ -1545,8 +1545,8 @@ async fn exchange_testing_actor(
             "The test actor ID is invalid.",
         ));
     }
-    let session_id = Uuid::now_v7();
-    let consent_id = Uuid::now_v7();
+    let session_id = Id::now_v7();
+    let consent_id = Id::now_v7();
     let lifetime = i64::try_from(state.settings.security.refresh_family_ttl.as_secs())
         .map_err(|_| ApiError::internal("test_login_lifetime"))?;
     let actor = sqlx::query_as::<_, TestingLoginActor>(
@@ -1726,7 +1726,7 @@ async fn lock_current_application_client(
 ) -> Result<bool, ApiError> {
     // A scalar function always answers with a row, so the absence of a match
     // arrives as NULL rather than as no row at all.
-    let locked = sqlx::query_scalar::<_, Option<Uuid>>(CURRENT_APPLICATION_CLIENT_LOCK_QUERY)
+    let locked = sqlx::query_scalar::<_, Option<Id>>(CURRENT_APPLICATION_CLIENT_LOCK_QUERY)
         .bind(client.application_id)
         .bind(client.auth_epoch)
         .fetch_optional(&mut **transaction)
@@ -1738,13 +1738,13 @@ async fn lock_current_application_client(
 #[allow(clippy::too_many_arguments)]
 async fn lock_current_application_oauth_subject_authority(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
-    consent_grant_id: Uuid,
-    authentication_session_id: Uuid,
-    subject_principal_id: Uuid,
+    application_id: Id,
+    consent_grant_id: Id,
+    authentication_session_id: Id,
+    subject_principal_id: Id,
     subject_kind: &str,
-    organization_id: Option<Uuid>,
-    membership_id: Option<Uuid>,
+    organization_id: Option<Id>,
+    membership_id: Option<Id>,
 ) -> Result<Option<OAuthSubjectAuthorityRow>, ApiError> {
     sqlx::query_as::<_, OAuthSubjectAuthorityRow>(CURRENT_APPLICATION_OAUTH_SUBJECT_AUTHORITY_QUERY)
         .bind(application_id)
@@ -1922,7 +1922,7 @@ async fn exchange_refresh_token(
 
 async fn load_refresh_candidate(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
+    application_id: Id,
     digest_versions: Vec<i16>,
     digests: Vec<Vec<u8>>,
 ) -> Result<RefreshCandidateRow, ApiError> {
@@ -1938,7 +1938,7 @@ async fn load_refresh_candidate(
 
 async fn lock_refresh_credential(
     transaction: &mut Transaction<'_, Postgres>,
-    application_id: Uuid,
+    application_id: Id,
     candidate: &RefreshCandidateRow,
 ) -> Result<Option<LockedRefreshCredentialRow>, ApiError> {
     sqlx::query_as::<_, LockedRefreshCredentialRow>(REFRESH_CREDENTIAL_LOCK_QUERY)
@@ -1957,9 +1957,9 @@ async fn lock_refresh_credential(
 
 async fn locked_refresh_issuance_scopes(
     transaction: &mut Transaction<'_, Postgres>,
-    family_id: Uuid,
-    consent_grant_id: Uuid,
-    application_id: Uuid,
+    family_id: Id,
+    consent_grant_id: Id,
+    application_id: Id,
 ) -> Result<Vec<String>, ApiError> {
     let scopes = sqlx::query_scalar::<_, String>(REFRESH_ISSUANCE_SCOPES_QUERY)
         .bind(family_id)
@@ -1979,14 +1979,14 @@ fn invalid_refresh_grant() -> ApiError {
 }
 
 struct TokenSubject {
-    session_id: Uuid,
-    principal_id: Uuid,
+    session_id: Id,
+    principal_id: Id,
     subject_kind: String,
     subject_auth_epoch: i64,
-    organization_id: Option<Uuid>,
-    membership_id: Option<Uuid>,
+    organization_id: Option<Id>,
+    membership_id: Option<Id>,
     membership_authz_epoch: Option<i64>,
-    consent_grant_id: Uuid,
+    consent_grant_id: Id,
     org_id: Option<String>,
     subject_public_id: String,
 }
@@ -1997,15 +1997,15 @@ async fn issue_tokens(
     client: &ApplicationIdentity,
     subject: TokenSubject,
     scopes: &[String],
-    existing_family_id: Option<Uuid>,
-    parent_refresh_id: Option<Uuid>,
+    existing_family_id: Option<Id>,
+    parent_refresh_id: Option<Id>,
 ) -> Result<TokenResponse, ApiError> {
     let actor_type = match subject.subject_kind.as_str() {
         "carbon" => ActorType::Carbon,
         "silicon" => ActorType::Silicon,
         _ => return Err(ApiError::internal("oauth_subject_kind")),
     };
-    let access_id = Uuid::now_v7();
+    let access_id = Id::now_v7();
     let raw_access = state
         .crypto
         .generate_secret(SecretKind::ApplicationAccessToken)
@@ -2063,7 +2063,7 @@ async fn issue_tokens(
             .await
             .map_err(|_| ApiError::internal("oauth_access_scope_insert"))?;
     }
-    let family_id = existing_family_id.unwrap_or_else(Uuid::now_v7);
+    let family_id = existing_family_id.unwrap_or_else(Id::now_v7);
     if existing_family_id.is_none() {
         let family_seconds = i64::try_from(state.settings.security.refresh_family_ttl.as_secs())
             .map_err(|_| ApiError::internal("oauth_refresh_family_ttl"))?;
@@ -2104,7 +2104,7 @@ async fn issue_tokens(
             .map_err(|_| ApiError::internal("oauth_refresh_scope_snapshot"))?;
         }
     }
-    let refresh_id = Uuid::now_v7();
+    let refresh_id = Id::now_v7();
     let raw_refresh = state
         .crypto
         .generate_secret(SecretKind::OAuthRefreshToken)
@@ -2192,11 +2192,11 @@ async fn approve_request(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     request: &AuthorizationRequestRow,
-    selected_membership_ids: &[Uuid],
+    selected_membership_ids: &[Id],
 ) -> Result<SecretString, ApiError> {
     let scopes = authorization_request_scopes(transaction, request.id).await?;
-    let grant_id = Uuid::now_v7();
-    let consent = sqlx::query_as::<_, (Uuid, i64)>(OAUTH_CONSENT_UPSERT_QUERY)
+    let grant_id = Id::now_v7();
+    let consent = sqlx::query_as::<_, (Id, i64)>(OAUTH_CONSENT_UPSERT_QUERY)
         .bind(grant_id)
         .bind(request.application_id)
         .bind(request.subject_principal_id)
@@ -2275,7 +2275,7 @@ async fn approve_request(
         )
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(request.id)
     .bind(request.application_id)
     .bind(digest.as_bytes().as_slice())
@@ -2296,7 +2296,7 @@ async fn approve_request(
 
 async fn load_authorization_request(
     transaction: &mut Transaction<'_, Postgres>,
-    request_id: Uuid,
+    request_id: Id,
     for_update: bool,
 ) -> Result<AuthorizationRequestRow, ApiError> {
     let request = if for_update {
@@ -2336,7 +2336,7 @@ async fn load_authorization_request(
 
 async fn authorization_request_scopes(
     transaction: &mut Transaction<'_, Postgres>,
-    request_id: Uuid,
+    request_id: Id,
 ) -> Result<Vec<String>, ApiError> {
     sqlx::query_scalar::<_, String>(
         r"
@@ -2352,9 +2352,9 @@ async fn authorization_request_scopes(
 
 pub(super) async fn authorized_code_exchange_scopes(
     transaction: &mut Transaction<'_, Postgres>,
-    request_id: Uuid,
-    consent_grant_id: Uuid,
-    application_id: Uuid,
+    request_id: Id,
+    consent_grant_id: Id,
+    application_id: Id,
 ) -> Result<Vec<String>, ApiError> {
     // The caller holds the authorization-request and consent-grant row locks.
     // Request scopes are immutable while that request exists, and every
@@ -2383,8 +2383,8 @@ fn scopes_retain_exact_authority(requested: &[String], currently_authorized: &[S
 
 async fn refresh_family_scopes(
     transaction: &mut Transaction<'_, Postgres>,
-    family_id: Uuid,
-    consent_grant_id: Uuid,
+    family_id: Id,
+    consent_grant_id: Id,
 ) -> Result<Vec<String>, ApiError> {
     sqlx::query_scalar::<_, String>(
         r"
@@ -2421,7 +2421,7 @@ async fn revoke_access_token(
     state: &ApiState,
     client: &ApplicationIdentity,
     supplied: &SecretString,
-) -> Result<Option<Uuid>, ApiError> {
+) -> Result<Option<Id>, ApiError> {
     let digests = state
         .crypto
         .digest_secrets(DigestPurpose::ApplicationAccessToken, supplied)
@@ -2434,7 +2434,7 @@ async fn revoke_access_token(
         .iter()
         .map(|digest| digest.as_bytes().to_vec())
         .collect::<Vec<_>>();
-    sqlx::query_scalar::<_, Uuid>(
+    sqlx::query_scalar::<_, Id>(
         r"
         WITH supplied_digest (key_version, digest) AS (
             SELECT * FROM unnest($1::smallint[], $2::bytea[])
@@ -2461,7 +2461,7 @@ async fn revoke_refresh_family(
     state: &ApiState,
     client: &ApplicationIdentity,
     supplied: &SecretString,
-) -> Result<Option<Uuid>, ApiError> {
+) -> Result<Option<Id>, ApiError> {
     let digests = state
         .crypto
         .digest_secrets(DigestPurpose::OAuthRefreshToken, supplied)
@@ -2474,7 +2474,7 @@ async fn revoke_refresh_family(
         .iter()
         .map(|digest| digest.as_bytes().to_vec())
         .collect::<Vec<_>>();
-    let target = sqlx::query_as::<_, (Uuid, Uuid)>(
+    let target = sqlx::query_as::<_, (Id, Id)>(
         r"
         WITH supplied_digest (key_version, digest) AS (
             SELECT * FROM unnest($1::smallint[], $2::bytea[])
@@ -2536,9 +2536,9 @@ async fn revoke_refresh_family(
 
 async fn compromise_refresh_family(
     transaction: &mut Transaction<'_, Postgres>,
-    family_id: Uuid,
-    authentication_session_id: Uuid,
-    client_application_id: Uuid,
+    family_id: Id,
+    authentication_session_id: Id,
+    client_application_id: Id,
 ) -> Result<bool, ApiError> {
     let transitioned = sqlx::query(
         r"
@@ -2581,7 +2581,7 @@ async fn protocol_event(
     client: &ApplicationIdentity,
     action: &'static str,
     target_type: &'static str,
-    target_id: Uuid,
+    target_id: Id,
     aggregate_version: i64,
     event_type: &'static str,
     payload: Value,
@@ -2729,7 +2729,7 @@ fn validate_token_type_hint(token_type_hint: Option<&str>) -> Result<(), ApiErro
 /// installed one, and an unscoped bearer installs none until it selects one.
 async fn install_organization_context(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Option<Uuid>,
+    organization_id: Option<Id>,
 ) -> Result<(), ApiError> {
     sqlx::query("SELECT set_config('iam.organization_id', COALESCE($1, ''), true)")
         .bind(organization_id.map(|id| id.to_string()))
@@ -2746,7 +2746,7 @@ async fn install_organization_context(
 async fn select_reachable_organization(
     transaction: &mut Transaction<'_, Postgres>,
     org_id: &str,
-    subject_id: Uuid,
+    subject_id: Id,
     subject_kind: &str,
 ) -> Result<Option<SubjectOrganizationRow>, ApiError> {
     // The authenticated Application is the RLS principal here and is never a

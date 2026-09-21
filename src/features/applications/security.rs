@@ -2,6 +2,7 @@
 
 use std::{num::NonZeroU32, ops::Deref, time::Duration};
 
+use crate::domain::id::Id;
 use axum::{
     extract::FromRequestParts,
     http::{HeaderMap, header, request::Parts},
@@ -9,7 +10,6 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use secrecy::SecretString;
 use sqlx::{FromRow, Postgres, Transaction};
-use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::{
@@ -34,8 +34,8 @@ pub(super) struct Bearer(pub(super) AccessContext);
 
 #[derive(Clone, Debug)]
 pub(super) struct BrowserSession {
-    pub(super) session_id: Uuid,
-    pub(super) carbon_id: Uuid,
+    pub(super) session_id: Id,
+    pub(super) carbon_id: Id,
     /// Retained so a future browser surface can bind a form to this session;
     /// the short-lived-token login posts nothing, so nothing reads it today.
     #[allow(dead_code)]
@@ -46,9 +46,9 @@ pub(super) struct BrowserSession {
 /// credential and cannot authenticate an external request by itself.
 #[derive(Clone, Debug)]
 pub(crate) struct ApplicationIdentity {
-    pub(crate) application_id: Uuid,
+    pub(crate) application_id: Id,
     pub(crate) app_id: String,
-    pub(crate) organization_id: Uuid,
+    pub(crate) organization_id: Id,
     pub(crate) auth_epoch: i64,
 }
 
@@ -59,6 +59,10 @@ pub(crate) struct ApplicationClient {
 }
 
 /// Discovery permits anonymous public reads and validates every supplied credential.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 pub(super) enum DirectoryCaller {
     Anonymous,
     User(AccessContext),
@@ -104,15 +108,15 @@ impl Deref for ApplicationClient {
 
 #[derive(FromRow)]
 struct ClientSecretRow {
-    application_id: Uuid,
+    application_id: Id,
     secret_digest: Vec<u8>,
     pepper_key_version: i16,
 }
 
 #[derive(FromRow)]
 struct BrowserSessionRow {
-    session_id: Uuid,
-    carbon_id: Uuid,
+    session_id: Id,
+    carbon_id: Id,
 }
 
 impl FromRequestParts<ApiState> for Bearer {
@@ -184,7 +188,7 @@ impl FromRequestParts<ApiState> for BrowserSession {
             60,
         )
         .await?;
-        let mut transaction = context::begin(state.db(), DatabaseContext::principal(Uuid::nil()))
+        let mut transaction = context::begin(state.db(), DatabaseContext::principal(Id::nil()))
             .await
             .map_err(|_| ApiError::internal("browser_session_context"))?;
         let row = sqlx::query_as::<_, BrowserSessionRow>(
@@ -341,7 +345,7 @@ impl FromRequestParts<ApiState> for ApplicationClient {
             .execute(&mut *transaction)
             .await
             .map_err(|_| ApiError::internal("application_client_rls_context"))?;
-            let resolved = sqlx::query_as::<_, (Uuid, String, Uuid, i64)>(
+            let resolved = sqlx::query_as::<_, (Id, String, Id, i64)>(
                 r"
                 SELECT application_id, app_id, organization_id, auth_epoch
                 FROM iam_private.resolve_application_client($1, $2, $3, $4)
@@ -437,7 +441,7 @@ pub(super) async fn enforce_request_rate_limit(
     }
 }
 
-pub(super) fn require_carbon(access: &AccessContext) -> Result<Uuid, ApiError> {
+pub(super) fn require_carbon(access: &AccessContext) -> Result<Id, ApiError> {
     if access.subject.actor_type != ActorType::Carbon
         || access.audience != "silicon-iam"
         || access.client_application_id.is_some()
@@ -454,12 +458,12 @@ pub(super) fn require_carbon(access: &AccessContext) -> Result<Uuid, ApiError> {
 pub(super) async fn organization_filter(
     tx: &mut Transaction<'_, Postgres>,
     org_id: Option<&str>,
-) -> Result<Option<Uuid>, ApiError> {
+) -> Result<Option<Id>, ApiError> {
     let Some(org_id) = org_id else {
         return Ok(None);
     };
     validation::org_id(org_id)?;
-    sqlx::query_scalar::<_, Uuid>(
+    sqlx::query_scalar::<_, Id>(
         "SELECT id FROM iam.organizations WHERE org_id=$1 AND status='active'",
     )
     .bind(org_id)
@@ -476,9 +480,9 @@ pub(super) async fn organization_filter(
 /// upgrades and application/principal inversions between concurrent routes.
 pub(super) async fn lock_step_up_actor(
     transaction: &mut Transaction<'_, Postgres>,
-    carbon_id: Uuid,
+    carbon_id: Id,
 ) -> Result<(), ApiError> {
-    let active_actor = sqlx::query_scalar::<_, Uuid>(
+    let active_actor = sqlx::query_scalar::<_, Id>(
         r"
         SELECT id FROM iam.principals
         WHERE id = $1 AND id = iam_private.current_principal_id()
@@ -502,7 +506,7 @@ pub(super) async fn require_step_up(
     headers: &HeaderMap,
     access: &AccessContext,
     action: &'static str,
-    resource_id: Uuid,
+    resource_id: Id,
     assurance: RequiredAssurance,
 ) -> Result<(), ApiError> {
     let raw = headers
@@ -530,7 +534,7 @@ pub(super) async fn require_step_up(
 
 pub(super) async fn require_platform_capability(
     transaction: &mut Transaction<'_, Postgres>,
-    carbon_id: Uuid,
+    carbon_id: Id,
     capability: &'static str,
 ) -> Result<(), ApiError> {
     let allowed =
@@ -616,19 +620,19 @@ pub(crate) fn basic_credentials(headers: &HeaderMap) -> Result<(String, SecretSt
 #[cfg(test)]
 mod tests {
     use super::require_carbon;
+    use crate::domain::id::Id;
     use crate::{
         domain::actor::{ActorRef, ActorType},
         infrastructure::postgres::tokens::AccessContext,
     };
-    use uuid::Uuid;
 
     fn direct_carbon_access() -> AccessContext {
         AccessContext {
-            token_id: Uuid::now_v7(),
-            authentication_session_id: Uuid::now_v7(),
+            token_id: Id::now_v7(),
+            authentication_session_id: Id::now_v7(),
             subject: ActorRef {
                 actor_type: ActorType::Carbon,
-                id: Uuid::now_v7(),
+                id: Id::now_v7(),
             },
             client_application_id: None,
             audience_application_id: None,
@@ -646,13 +650,13 @@ mod tests {
         assert!(require_carbon(&direct).is_ok());
 
         let mut delegated = direct_carbon_access();
-        delegated.client_application_id = Some(Uuid::now_v7());
+        delegated.client_application_id = Some(Id::now_v7());
         delegated.audience = "third_party_app".to_owned();
         assert!(require_carbon(&delegated).is_err());
 
         let mut organization_bound = direct_carbon_access();
-        organization_bound.organization_id = Some(Uuid::now_v7());
-        organization_bound.membership_id = Some(Uuid::now_v7());
+        organization_bound.organization_id = Some(Id::now_v7());
+        organization_bound.membership_id = Some(Id::now_v7());
         assert!(require_carbon(&organization_bound).is_err());
 
         let mut missing_scope = direct_carbon_access();

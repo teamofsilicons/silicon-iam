@@ -2,10 +2,10 @@
 
 use std::borrow::Cow;
 
+use crate::domain::id::Id;
 use secrecy::SecretString;
 use sqlx::{FromRow, Postgres, Transaction};
 use thiserror::Error;
-use uuid::Uuid;
 
 use crate::{
     error::AppError,
@@ -35,13 +35,13 @@ pub enum RequiredAssurance {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StepUpExpectation {
     /// Carbon performing the privileged mutation.
-    pub carbon_id: Uuid,
+    pub carbon_id: Id,
     /// Current interactive authentication session.
-    pub authentication_session_id: Uuid,
+    pub authentication_session_id: Id,
     /// Closed action string issued with the challenge.
     pub action: &'static str,
     /// Optional aggregate to which the action is restricted.
-    pub resource_id: Option<Uuid>,
+    pub resource_id: Option<Id>,
     /// Minimum acceptable authentication assurance.
     pub required_assurance: RequiredAssurance,
 }
@@ -105,7 +105,7 @@ pub async fn consume(
     crypto: &CryptoService,
     token: &StepUpToken,
     expectation: StepUpExpectation,
-) -> Result<Uuid, AppError> {
+) -> Result<Id, AppError> {
     lock_active_authority(transaction, expectation).await?;
     let digests = crypto
         .digest_secrets(DigestPurpose::StepUpAssertion, &token.0)
@@ -114,7 +114,7 @@ pub async fn consume(
         })?;
 
     for digest in digests {
-        let assertion_id = sqlx::query_scalar::<_, Uuid>(
+        let assertion_id = sqlx::query_scalar::<_, Id>(
             r"
             WITH candidate AS (
                 SELECT assertion.id
@@ -148,7 +148,7 @@ pub async fn consume(
         .bind(expectation.carbon_id)
         .bind(expectation.authentication_session_id)
         .bind(expectation.action)
-        .bind(expectation.resource_id)
+        .bind(expectation.resource_id.map(|id| id.to_string()))
         .bind(expectation.required_assurance as i16)
         .fetch_optional(&mut **transaction)
         .await?;
@@ -163,6 +163,10 @@ pub async fn consume(
     })
 }
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 async fn lock_active_authority(
     transaction: &mut Transaction<'_, Postgres>,
     expectation: StepUpExpectation,

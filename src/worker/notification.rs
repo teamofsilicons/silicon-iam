@@ -1,9 +1,9 @@
 //! Durable invitation and secret-free security notification delivery.
 
+use crate::domain::id::Id;
 use futures::{StreamExt as _, stream};
 use secrecy::SecretString;
 use url::Url;
-use uuid::Uuid;
 
 use crate::{
     application::ports::{
@@ -17,20 +17,20 @@ use super::{WorkerContext, delivery_claim_limit, retry_delay_seconds};
 
 #[derive(sqlx::FromRow)]
 struct ClaimedNotification {
-    id: Uuid,
+    id: Id,
     notification_kind: String,
     provider: String,
-    recipient_contact_id: Option<Uuid>,
+    recipient_contact_id: Option<Id>,
     recipient_contact_kind: String,
     template_id: String,
     context_type: String,
-    context_id: Uuid,
+    context_id: Id,
     attempt_count: i32,
 }
 
 #[derive(sqlx::FromRow)]
 struct ContactMaterial {
-    carbon_id: Uuid,
+    carbon_id: Id,
     ciphertext: Vec<u8>,
     nonce: Vec<u8>,
     encryption_key_version: i16,
@@ -114,7 +114,7 @@ async fn process_job(context: &WorkerContext, job: &ClaimedNotification) -> Resu
     Ok(())
 }
 
-async fn renew_lease(context: &WorkerContext, job_id: Uuid) -> Result<bool, AppError> {
+async fn renew_lease(context: &WorkerContext, job_id: Id) -> Result<bool, AppError> {
     let lease_seconds =
         i64::try_from(context.settings.worker.lease_duration.as_secs()).map_err(|_| {
             AppError::Internal {
@@ -207,7 +207,7 @@ async fn deliver(
 
 #[derive(sqlx::FromRow)]
 struct EmailInvitation {
-    invitation_id: Uuid,
+    invitation_id: Id,
     ciphertext: Vec<u8>,
     nonce: Vec<u8>,
     encryption_key_version: i16,
@@ -284,7 +284,7 @@ fn invitation_join_url(auth_base_url: &Url, organization_handle: &str) -> Url {
 async fn deliver_invitation(
     context: &WorkerContext,
     job: &ClaimedNotification,
-    contact_carbon_id: Uuid,
+    contact_carbon_id: Id,
     destination: &SecretString,
 ) -> Result<DeliveryReceipt, DeliveryError> {
     if job.context_type != "organization_invitation" || job.template_id != "invitation.created" {
@@ -339,16 +339,15 @@ async fn deliver_scope_notice(
     job: &ClaimedNotification,
     destination: &SecretString,
 ) -> Result<DeliveryReceipt, DeliveryError> {
-    let (app_id, request_id, message, status) =
-        sqlx::query_as::<_, (String, Uuid, String, String)>(
-            "SELECT * FROM iam_private.get_worker_application_scope_notice($1,$2)",
-        )
-        .bind(job.id)
-        .bind(&context.instance_id)
-        .fetch_optional(&context.pool)
-        .await
-        .map_err(|_| DeliveryError::Unavailable)?
-        .ok_or(DeliveryError::Rejected)?;
+    let (app_id, request_id, message, status) = sqlx::query_as::<_, (String, Id, String, String)>(
+        "SELECT * FROM iam_private.get_worker_application_scope_notice($1,$2)",
+    )
+    .bind(job.id)
+    .bind(&context.instance_id)
+    .fetch_optional(&context.pool)
+    .await
+    .map_err(|_| DeliveryError::Unavailable)?
+    .ok_or(DeliveryError::Rejected)?;
     let mut reply = context.settings.auth_base_url.clone();
     reply.set_path("/applications");
     reply.set_query(Some(&format!("scope_request={request_id}")));
@@ -400,7 +399,7 @@ async fn deliver_security_notice(
     }
 }
 
-async fn ensure_current_lease(context: &WorkerContext, job_id: Uuid) -> Result<(), DeliveryError> {
+async fn ensure_current_lease(context: &WorkerContext, job_id: Id) -> Result<(), DeliveryError> {
     if renew_lease(context, job_id)
         .await
         .map_err(|_| DeliveryError::Unavailable)?
@@ -561,24 +560,10 @@ mod tests {
     /// empty database is enough: selecting a column that does not exist fails
     /// during analysis, before any row is read.
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL on isolated local PostgreSQL"]
     async fn the_worker_invitation_context_exposes_the_organization_handle() -> anyhow::Result<()> {
-        use sqlx::postgres::PgPoolOptions;
-        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-        use testcontainers_modules::postgres::Postgres as TestPostgres;
-
-        let container = TestPostgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&format!(
-                "postgres://postgres:postgres@{host}:{port}/postgres"
-            ))
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
         let rows = sqlx::query_as::<_, InvitationContext>(
@@ -587,8 +572,8 @@ mod tests {
             FROM iam_private.get_worker_invitation_context($1, $2)
             ",
         )
-        .bind(Uuid::from_u128(0x50_01))
-        .bind(Uuid::from_u128(0x50_02))
+        .bind(Id::from_u128(0x50_01))
+        .bind(Id::fixture("invitation-carbon"))
         .fetch_all(&pool)
         .await?;
 

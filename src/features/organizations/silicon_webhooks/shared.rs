@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
+use crate::domain::id::Id;
 use axum::http::HeaderMap;
 use sqlx::{FromRow, Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -15,14 +15,14 @@ use super::super::support;
 
 #[derive(Clone, Debug, FromRow)]
 pub(super) struct TargetSilicon {
-    pub(super) principal_id: Uuid,
-    pub(super) membership_id: Uuid,
+    pub(super) principal_id: Id,
+    pub(super) membership_id: Id,
     pub(super) status: String,
 }
 
 pub(super) async fn load_target(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
     silicon_id: &str,
 ) -> Result<TargetSilicon, AppError> {
     load_target_with_query(transaction, organization_id, silicon_id, TARGET_SQL).await
@@ -30,7 +30,7 @@ pub(super) async fn load_target(
 
 pub(super) async fn load_target_for_update(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
     silicon_id: &str,
 ) -> Result<TargetSilicon, AppError> {
     load_target_with_query(
@@ -44,7 +44,7 @@ pub(super) async fn load_target_for_update(
 
 async fn load_target_with_query(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
     silicon_id: &str,
     query: &'static str,
 ) -> Result<TargetSilicon, AppError> {
@@ -137,8 +137,8 @@ pub(super) async fn consume_carbon_step_up(
 
 pub(super) async fn cancel_deliveries(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    endpoint_id: Uuid,
+    organization_id: Id,
+    endpoint_id: Id,
     reason: &'static str,
 ) -> Result<(), AppError> {
     sqlx::query_scalar::<_, i64>(
@@ -155,7 +155,7 @@ pub(super) async fn cancel_deliveries(
 
 pub(super) async fn lock_delivery_scope(
     transaction: &mut Transaction<'_, Postgres>,
-    endpoint_id: Uuid,
+    endpoint_id: Id,
 ) -> Result<(), AppError> {
     sqlx::query("SELECT iam_private.lock_silicon_webhook_delivery_scope($1)")
         .bind(endpoint_id)

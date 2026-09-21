@@ -1,8 +1,8 @@
+use crate::domain::id::Id;
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::json;
 use sqlx::{FromRow, Postgres, Transaction};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     config::SecuritySettings,
@@ -56,17 +56,21 @@ const SESSION_REFRESH_TOUCH_QUERY: &str = r"
     RETURNING version
 ";
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 pub(super) enum RefreshResult {
     Rotated(TokenResponse),
     ReplayRevoked,
 }
 
 pub(super) struct SiliconLoginIdentity {
-    pub(super) principal_id: Uuid,
-    pub(super) credential_id: Uuid,
+    pub(super) principal_id: Id,
+    pub(super) credential_id: Id,
     pub(super) principal_auth_epoch: i64,
-    pub(super) organization_id: Uuid,
-    pub(super) membership_id: Uuid,
+    pub(super) organization_id: Id,
+    pub(super) membership_id: Id,
     pub(super) membership_authz_epoch: i64,
     pub(super) global_silicon_id: String,
 }
@@ -83,17 +87,17 @@ struct AccessInsertRow {
 
 #[derive(FromRow)]
 struct RefreshLookupRow {
-    token_id: Uuid,
-    family_id: Uuid,
+    token_id: Id,
+    family_id: Id,
     token_consumed_at: Option<OffsetDateTime>,
     family_absolute_expires_at: OffsetDateTime,
-    session_id: Uuid,
-    subject_principal_id: Uuid,
+    session_id: Id,
+    subject_principal_id: Id,
     subject_kind: String,
     principal_auth_epoch: i64,
     public_id: String,
-    organization_id: Option<Uuid>,
-    membership_id: Option<Uuid>,
+    organization_id: Option<Id>,
+    membership_id: Option<Id>,
     membership_authz_epoch: Option<i64>,
     active: bool,
 }
@@ -106,7 +110,7 @@ pub(super) async fn issue_login_session(
     transaction: &mut Transaction<'_, Postgres>,
     crypto: &CryptoService,
     security: &SecuritySettings,
-    principal_id: Uuid,
+    principal_id: Id,
     channel: ContactChannel,
 ) -> Result<TokenResponse, AppError> {
     let auth_epoch = sqlx::query_scalar::<_, i64>(
@@ -127,8 +131,8 @@ pub(super) async fn issue_login_session(
 
     set_principal_context(transaction, principal_id).await?;
     let carbon_id = carbon_handle(transaction, principal_id).await?;
-    let session_id = Uuid::now_v7();
-    let refresh_family_id = Uuid::now_v7();
+    let session_id = Id::now_v7();
+    let refresh_family_id = Id::now_v7();
     let refresh_seconds = duration_seconds(security.refresh_family_ttl, "refresh_family_ttl")?;
     let session = sqlx::query_as::<_, SessionInsertRow>(CARBON_SESSION_INSERT_QUERY)
         .bind(session_id)
@@ -216,8 +220,8 @@ pub(super) async fn issue_silicon_session(
     identity: SiliconLoginIdentity,
 ) -> Result<TokenResponse, AppError> {
     set_principal_context(transaction, identity.principal_id).await?;
-    let session_id = Uuid::now_v7();
-    let refresh_family_id = Uuid::now_v7();
+    let session_id = Id::now_v7();
+    let refresh_family_id = Id::now_v7();
     let refresh_seconds = duration_seconds(security.refresh_family_ttl, "refresh_family_ttl")?;
     let session = sqlx::query_as::<_, SessionInsertRow>(SILICON_SESSION_INSERT_QUERY)
         .bind(session_id)
@@ -323,7 +327,7 @@ pub(super) async fn rotate_refresh_token(
         .iter()
         .map(|digest| digest.as_bytes().to_vec())
         .collect::<Vec<_>>();
-    let subject_principal_id = sqlx::query_scalar::<_, Uuid>(
+    let subject_principal_id = sqlx::query_scalar::<_, Id>(
         r"
         WITH supplied_digest (key_version, digest) AS (
             SELECT * FROM unnest($1::smallint[], $2::bytea[])
@@ -433,7 +437,7 @@ pub(super) async fn rotate_refresh_token(
     }
 
     set_principal_context(transaction, row.subject_principal_id).await?;
-    let replacement_id = Uuid::now_v7();
+    let replacement_id = Id::now_v7();
     let response = insert_token_pair_with_id(
         transaction,
         crypto,
@@ -485,16 +489,16 @@ pub(super) async fn rotate_refresh_token(
 }
 
 struct TokenPairContext {
-    principal_id: Uuid,
+    principal_id: Id,
     subject_kind: &'static str,
     auth_epoch: i64,
     public_id: String,
-    organization_id: Option<Uuid>,
-    membership_id: Option<Uuid>,
+    organization_id: Option<Id>,
+    membership_id: Option<Id>,
     membership_authz_epoch: Option<i64>,
-    session_id: Uuid,
-    family_id: Uuid,
-    parent_refresh_token_id: Option<Uuid>,
+    session_id: Id,
+    family_id: Id,
+    parent_refresh_token_id: Option<Id>,
     refresh_expires_at: OffsetDateTime,
 }
 
@@ -504,7 +508,7 @@ async fn insert_token_pair(
     security: &SecuritySettings,
     context: TokenPairContext,
 ) -> Result<TokenResponse, AppError> {
-    insert_token_pair_with_id(transaction, crypto, security, context, Uuid::now_v7()).await
+    insert_token_pair_with_id(transaction, crypto, security, context, Id::now_v7()).await
 }
 
 #[allow(
@@ -516,7 +520,7 @@ async fn insert_token_pair_with_id(
     crypto: &CryptoService,
     security: &SecuritySettings,
     context: TokenPairContext,
-    refresh_token_id: Uuid,
+    refresh_token_id: Id,
 ) -> Result<TokenResponse, AppError> {
     let (secret_kind, digest_purpose, token_class, expected_prefix) = match context.subject_kind {
         "carbon" => (
@@ -558,7 +562,7 @@ async fn insert_token_pair_with_id(
         .map_err(|_| AppError::Internal {
             category: "refresh_token_digest",
         })?;
-    let access_token_id = Uuid::now_v7();
+    let access_token_id = Id::now_v7();
     let access_seconds = duration_seconds(security.access_token_ttl, "access_token_ttl")?;
     let access_row = sqlx::query_as::<_, AccessInsertRow>(
         r"
@@ -776,7 +780,7 @@ async fn revoke_replayed_family(
 
 async fn set_principal_context(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
+    principal_id: Id,
 ) -> Result<(), AppError> {
     sqlx::query("SELECT set_config('iam.principal_id', $1, true)")
         .bind(principal_id.to_string())
@@ -790,7 +794,7 @@ async fn set_principal_context(
 
 async fn carbon_handle(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
+    principal_id: Id,
 ) -> Result<String, AppError> {
     sqlx::query_scalar::<_, String>(
         "SELECT carbon_id FROM iam.carbons WHERE id = $1 AND deleted_at IS NULL",

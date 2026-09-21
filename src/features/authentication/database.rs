@@ -1,5 +1,5 @@
+use crate::domain::id::Id;
 use sqlx::{PgPool, Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::error::AppError;
 
@@ -49,7 +49,7 @@ pub(super) fn expired() -> AppError {
 
 pub(super) async fn set_principal_context(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
+    principal_id: Id,
 ) -> Result<(), AppError> {
     sqlx::query("SELECT set_config('iam.principal_id', $1, true)")
         .bind(principal_id.to_string())

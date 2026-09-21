@@ -30,6 +30,7 @@ pub struct Context {
     pub profile: Profile,
     /// Step-up assertion supplied for this invocation, if any.
     pub step_up: Option<String>,
+    request_key: Option<IdempotencyKey>,
     organization: Option<String>,
     testing_environment_id: Option<Uuid>,
     client: Client,
@@ -99,6 +100,7 @@ impl Context {
             profile_name,
             profile: stored,
             step_up,
+            request_key: None,
             organization,
             testing_environment_id,
             client: builder.build()?,
@@ -387,10 +389,19 @@ impl Context {
             .ok_or_else(|| CliError::Usage(format!("Silicon ID `{value}` is invalid")))
     }
 
-    /// A mutation carrying a fresh key, and this invocation's step-up token.
+    /// Select an exact retry key for this invocation.
+    pub fn set_request_key(&mut self, key: Option<String>) -> Result<()> {
+        self.request_key = key.map(IdempotencyKey::parse).transpose()?;
+        Ok(())
+    }
+
+    /// A mutation carrying the supplied retry key or a fresh key, and step-up token.
     #[must_use]
     pub fn mutation(&self) -> Mutation {
-        let mutation = Mutation::new();
+        let mutation = self
+            .request_key
+            .clone()
+            .map_or_else(Mutation::new, Mutation::with_key);
         match &self.step_up {
             Some(token) => mutation.step_up(token.clone()),
             None => mutation,
@@ -469,6 +480,7 @@ mod tests {
                 test_orgs: std::collections::BTreeMap::new(),
             },
             step_up: None,
+            request_key: None,
             organization: None,
             testing_environment_id,
             client,
@@ -565,7 +577,6 @@ mod tests {
             expires_in: 1_800,
             refresh_expires_at: OffsetDateTime::now_utc() + time::Duration::days(900),
             actor: models::ActorRef {
-                principal_id: Uuid::from_u128(1),
                 type_field: models::ActorRefType::Silicon,
                 public_id: "builder:tos".to_owned(),
             },

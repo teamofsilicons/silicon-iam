@@ -1,3 +1,4 @@
+use crate::domain::id::Id;
 use axum::{
     body::Bytes,
     extract::State,
@@ -6,7 +7,6 @@ use axum::{
 use sha2::{Digest as _, Sha256};
 use sqlx::FromRow;
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{api::ApiState, error::AppError};
 
@@ -21,8 +21,8 @@ const MAX_TOP_LEVEL_PROPERTIES: usize = 100;
 
 #[derive(FromRow)]
 struct TransitionRow {
-    organization_id: Uuid,
-    connection_id: Option<Uuid>,
+    organization_id: Id,
+    connection_id: Option<Id>,
     connection_version: Option<i64>,
     changed: bool,
     status: String,
@@ -58,7 +58,7 @@ pub(super) async fn receive(
         let data: WorkOsConnectionData =
             serde_json::from_value(envelope.data).map_err(|_| invalid_webhook("data"))?;
         validate_connection_data(&data, transition)?;
-        let receipt_id = Uuid::now_v7();
+        let receipt_id = Id::now_v7();
         let rows = sqlx::query_as::<_, TransitionRow>(
             r"
             SELECT organization_id, connection_id, connection_version, changed, status
@@ -72,7 +72,7 @@ pub(super) async fn receive(
         .bind(&envelope.id)
         .bind(transition.event_name())
         .bind(&data.organization_id)
-        .bind(Uuid::now_v7())
+        .bind(Id::now_v7())
         .bind(&data.id)
         .bind(data.connection_type.as_deref())
         .bind(payload_digest.as_slice())
@@ -227,7 +227,7 @@ async fn record_ignored_receipt(
         SELECT iam_private.record_ignored_workos_event($1, $2, $3, $4)
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(provider_event_id)
     .bind(payload_digest.as_slice())
     .bind(signature_timestamp)

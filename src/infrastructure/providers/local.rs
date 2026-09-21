@@ -1,7 +1,7 @@
 //! Side-effect-free local notification adapter.
 
+use crate::domain::id::Id;
 use async_trait::async_trait;
-use uuid::Uuid;
 
 use crate::application::ports::{
     DeliveryError, DeliveryReceipt, EmailDelivery, EmailOtp, InvitationEmail, InvitationSms,
@@ -13,7 +13,7 @@ pub(super) struct LocalDelivery;
 
 fn receipt() -> DeliveryReceipt {
     DeliveryReceipt {
-        provider_message_id: format!("local_{}", Uuid::now_v7()),
+        provider_message_id: format!("local_{}", Id::now_v7()),
     }
 }
 

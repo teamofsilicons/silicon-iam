@@ -1,6 +1,7 @@
 //! Real runtime-role coverage of explicit delegated world creation.
 #![allow(clippy::too_many_lines)]
 use super::scoped::{CREATE_SCOPE, validate_boundary};
+use crate::domain::id::Id;
 use crate::{
     api::{ApiState, TestingPlane, authentication::Authenticated},
     config::{Settings, TestingSettings},
@@ -21,20 +22,17 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::{Value, json};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::sync::Arc;
-use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-use testcontainers_modules::postgres::Postgres;
 use tower::ServiceExt as _;
-use uuid::Uuid;
-const APP: Uuid = Uuid::from_u128(0x11);
-const OWNER: Uuid = Uuid::from_u128(1);
-const MEMBER: Uuid = Uuid::from_u128(2);
-const MEMBER_MEMBERSHIP: Uuid = Uuid::from_u128(0x32);
+const APP: Id = Id::fixture("test_org>app-alpha");
+const OWNER: Id = Id::fixture("test_carbon");
+const MEMBER: Id = Id::fixture("test_admin");
+const MEMBER_MEMBERSHIP: Id = Id::from_u128(0x32);
 
 #[test]
 fn delegated_creation_requires_exact_carbon_application_and_selected_org() {
     let mut actor = Authenticated(AccessContext {
-        token_id: Uuid::now_v7(),
-        authentication_session_id: Uuid::now_v7(),
+        token_id: Id::now_v7(),
+        authentication_session_id: Id::now_v7(),
         subject: ActorRef {
             actor_type: ActorType::Carbon,
             id: OWNER,
@@ -71,20 +69,12 @@ fn delegated_creation_requires_exact_carbon_application_and_selected_org() {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker and CI IAM test settings"]
+#[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL plus synthetic IAM settings"]
 async fn scoped_test_creation_preserves_actor_current_authority_and_root_receipt()
 -> anyhow::Result<()> {
-    let container = Postgres::default().with_tag("16-alpine").start().await?;
-    let base = format!(
-        "postgres://postgres:postgres@{}:{}",
-        container.get_host().await?,
-        container.get_host_port_ipv4(5432).await?
-    );
-    let admin = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&format!("{base}/postgres"))
-        .await?;
-    sqlx::raw_sql("CREATE ROLE silicon_iam_api NOLOGIN; CREATE ROLE silicon_iam_worker NOLOGIN; CREATE ROLE silicon_iam_key_operator NOLOGIN; CREATE ROLE scoped_untrusted NOLOGIN;").execute(&admin).await?;
+    let production_database = crate::test_database::TestDatabase::start().await?;
+    let admin = production_database.pool.clone();
+    sqlx::raw_sql("DO $$ BEGIN IF to_regrole('silicon_iam_api') IS NULL THEN CREATE ROLE silicon_iam_api NOLOGIN; END IF; IF to_regrole('silicon_iam_worker') IS NULL THEN CREATE ROLE silicon_iam_worker NOLOGIN; END IF; IF to_regrole('silicon_iam_key_operator') IS NULL THEN CREATE ROLE silicon_iam_key_operator NOLOGIN; END IF; END $$; DO $$ BEGIN IF to_regrole('scoped_untrusted') IS NULL THEN CREATE ROLE scoped_untrusted NOLOGIN; END IF; END $$;").execute(&admin).await?;
     postgres::migrate(&admin).await?;
     crate::features::applications::live_tests::seed_protocol_rows(&admin).await?;
     sqlx::raw_sql("UPDATE iam.organization_memberships SET org_role='member' WHERE id='00000000-0000-0000-0000-000000000032';").execute(&admin).await?;
@@ -101,13 +91,8 @@ async fn scoped_test_creation_preserves_actor_current_authority_and_root_receipt
         .await?
     );
     ensure!(!sqlx::query_scalar::<_,bool>("SELECT has_function_privilege('scoped_untrusted','iam_private.authorize_scoped_testing_environment_creation(uuid,uuid)','EXECUTE')").fetch_one(&admin).await?);
-    sqlx::query("CREATE DATABASE testing")
-        .execute(&admin)
-        .await?;
-    let testing = PgPoolOptions::new()
-        .max_connections(3)
-        .connect(&format!("{base}/testing"))
-        .await?;
+    let testing_database = crate::test_database::TestDatabase::start().await?;
+    let testing = testing_database.pool.clone();
     postgres::migrate_testing(&testing).await?;
     let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
         .lines()
@@ -133,12 +118,12 @@ async fn scoped_test_creation_preserves_actor_current_authority_and_root_receipt
     };
     let settings = Settings::from_env()?;
     let state = ApiState {
-        pool: restricted(format!("{base}/postgres")).await?,
+        pool: restricted(production_database.url.clone()).await?,
         crypto: Arc::new(CryptoService::from_settings(&settings.security)?),
         notifications: NotificationProviders::from_settings(&settings.providers)?,
         workos: None,
         testing: Some(TestingPlane {
-            pool: restricted(format!("{base}/testing")).await?,
+            pool: restricted(testing_database.url.clone()).await?,
             settings: Arc::new(TestingSettings {
                 database: settings.database.clone(),
                 idle_days: 30,
@@ -362,7 +347,7 @@ async fn scoped_test_creation_preserves_actor_current_authority_and_root_receipt
         .iter()
         .find(|value| value.0 == StatusCode::CREATED)
         .context("concurrent environment")?;
-    exercise_test_login(&state, &admin, &base, &created, &other.1).await?;
+    exercise_test_login(&state, &admin, &testing_database.url, &created, &other.1).await?;
     state.pool.close().await;
     state
         .testing
@@ -404,15 +389,15 @@ async fn request(
 async fn seed_bearer(
     pool: &PgPool,
     crypto: &CryptoService,
-    subject: Uuid,
-    membership: Uuid,
+    subject: Id,
+    membership: Id,
     scopes: &[&str],
 ) -> anyhow::Result<SecretString> {
     let token = crypto.generate_secret(SecretKind::ApplicationAccessToken)?;
     let digest = crypto.digest_secret(DigestPurpose::ApplicationAccessToken, &token)?;
-    let session_id = Uuid::now_v7();
-    let consent_id = Uuid::now_v7();
-    let token_id = Uuid::now_v7();
+    let session_id = Id::now_v7();
+    let consent_id = Id::now_v7();
+    let token_id = Id::now_v7();
     let mut tx = pool.begin().await?;
     sqlx::query("INSERT INTO iam.authentication_sessions(id,subject_principal_id,subject_kind,authentication_method,assurance_level,subject_auth_epoch,idle_expires_at,absolute_expires_at) VALUES($1,$2,'carbon','email_otp',1,1,transaction_timestamp()+interval '1 day',transaction_timestamp()+interval '2 days')")
         .bind(session_id).bind(subject).execute(&mut *tx).await?;
@@ -443,11 +428,11 @@ async fn seed_bearer(
 async fn exercise_test_login(
     state: &ApiState,
     production: &PgPool,
-    base: &str,
+    testing_url: &str,
     created: &Value,
     other: &Value,
 ) -> anyhow::Result<()> {
-    let environment = Uuid::parse_str(created["id"].as_str().context("created environment ID")?)?;
+    let environment = Id::parse_str(created["id"].as_str().context("created environment ID")?)?;
     let testing = PgPoolOptions::new()
         .max_connections(3)
         .after_connect(move |connection, _| {
@@ -459,7 +444,7 @@ async fn exercise_test_login(
                 Ok(())
             })
         })
-        .connect(&format!("{base}/testing"))
+        .connect(testing_url)
         .await?;
     crate::features::applications::live_tests::seed_protocol_rows(&testing).await?;
     for pool in [production, &testing] {
@@ -490,7 +475,7 @@ async fn exercise_test_login(
         .await?
         .0 == StatusCode::FORBIDDEN
     );
-    sqlx::raw_sql("UPDATE iam.applications SET test_imported_from_production=true WHERE id='00000000-0000-0000-0000-000000000013'; INSERT INTO iam.testing_application_imports(application_id,source_application_id,secret_ciphertext,secret_nonce,secret_key_version) VALUES('00000000-0000-0000-0000-000000000013','00000000-0000-0000-0000-000000000013',decode(repeat('11',17),'hex'),decode(repeat('22',12),'hex'),1);").execute(&testing).await?;
+    sqlx::raw_sql("UPDATE iam.applications SET test_imported_from_production=true WHERE id='tos>iam'; INSERT INTO iam.testing_application_imports(application_id,source_application_id,secret_ciphertext,secret_nonce,secret_key_version) VALUES('tos>iam','tos>iam',decode(repeat('11',17),'hex'),decode(repeat('22',12),'hex'),1);").execute(&testing).await?;
     let (status, tokens) = auth_call(
         &auth,
         "login",
@@ -664,12 +649,12 @@ async fn auth_call(
 
 async fn seed_scoped_registration(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     sqlx::raw_sql(r"
-        INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES ('00000000-0000-0000-0000-000000000022','tos','00000000-0000-0000-0000-000000000001','Scoped test organization');
-        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role,job_role) VALUES ('00000000-0000-0000-0000-000000000033','00000000-0000-0000-0000-000000000022','00000000-0000-0000-0000-000000000001','carbon','owner','');
-        INSERT INTO iam.principals(id,kind,status,activated_at) VALUES ('00000000-0000-0000-0000-000000000013','application','active',transaction_timestamp());
-        INSERT INTO iam.applications(id,app_id,organization_id,created_by_carbon_id,review_status,base_url) VALUES ('00000000-0000-0000-0000-000000000013','tos>iam','00000000-0000-0000-0000-000000000022','00000000-0000-0000-0000-000000000001','verified','https://scoped.backend.iam.teamofsilicons.com');
-        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES ('00000000-0000-0000-0000-000000000013','self.organizations.read');
-        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES ('00000000-0000-0000-0000-000000000013','self.organizations.read','00000000-0000-0000-0000-000000000001');
+        INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES ('00000000-0000-0000-0000-000000000022','tos','test_carbon','Scoped test organization');
+        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role,job_role) VALUES ('00000000-0000-0000-0000-000000000033','00000000-0000-0000-0000-000000000022','test_carbon','carbon','owner','');
+        INSERT INTO iam.principals(id,kind,status,activated_at) VALUES ('tos>iam','application','active',transaction_timestamp());
+        INSERT INTO iam.applications(id,app_id,organization_id,created_by_carbon_id,review_status,base_url) VALUES ('tos>iam','tos>iam','00000000-0000-0000-0000-000000000022','test_carbon','verified','https://scoped.backend.iam.teamofsilicons.com');
+        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES ('tos>iam','self.organizations.read');
+        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES ('tos>iam','self.organizations.read','test_carbon');
     ").execute(pool).await?;
     Ok(())
 }

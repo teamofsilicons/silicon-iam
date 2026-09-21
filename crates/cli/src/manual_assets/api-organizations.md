@@ -51,7 +51,7 @@ Three read-optimised endpoints answer "who is here, and what is my relationship 
 | GET | `/api/v1/organizations/{org_id}/directory/members` | Every teammate, paginated |
 | GET | `/api/v1/organizations/{org_id}/directory/members/{membership_id}` | One teammate |
 
-Each returns name, ID, job role, tags and trust. **Trust is always resolved from the caller's point of view** — the same pair reads differently depending on who is asking — so label the column accordingly rather than presenting it as an absolute property.
+Each returns name, ID, job description, tags and trust. **Trust is always resolved from the caller's point of view** — the same pair reads differently depending on who is asking — so label the column accordingly rather than presenting it as an absolute property.
 
 An authenticated Application access token may use these read-only directory endpoints as well. IAM resolves the token subject's active membership in the requested organization and returns the directory projection filtered by granted read scopes, including permitted role, tags, organization metadata and evaluated trust. Applications can also call explicitly scoped mutation endpoints after critical-scope approval and user consent. IAM still checks current selected membership, actor capabilities, version preconditions and step-up. See the scoped IAM permission guide for exact operation scopes.
 
@@ -63,11 +63,11 @@ The directory deliberately exposes public handles rather than `membership_id`. T
 
 `GET /api/v1/organizations/{org_id}/directory/details` returns a complete JSON dictionary keyed by Carbon ID or full Silicon ID. Use `iam --org tos --json member details` from the CLI. The server reads all visible active members in batches and returns one dictionary without client pagination.
 
-Each entry includes the canonical `membership_id`, `display_name`, profile, organization role, job role, tags, reporting hierarchy, capabilities and Silicon access permitted by the caller's scopes. `trust` is evaluated from the requesting user's perspective; Carbon-to-Carbon trust is `null`. Private contacts, credentials and fields without read permission are omitted. The compact directory also returns `display_name` alongside its existing `name`.
+Each entry includes the canonical `membership_id`, `display_name`, profile, organization role, job description, tags, reporting hierarchy, capabilities and Silicon access permitted by the caller's scopes. `trust` is evaluated from the requesting user's perspective; Carbon-to-Carbon trust is `null`. Private contacts, credentials and fields without read permission are omitted. The compact directory also returns `display_name` alongside its existing `name`.
 
 ## Invitations
 
-`POST /api/v1/organizations/{org_id}/carbon-invites` identifies the invitee by **either** `carbon_id` **or** `email`, never both, and carries the job role, tags, default trust and any trust overrides they should start with.
+`POST /api/v1/organizations/{org_id}/carbon-invites` identifies the invitee by **either** `carbon_id` **or** `email`, never both, and carries the job description, tags, default trust and any trust overrides they should start with.
 
 An email invitation can be created before the recipient has a Carbon account. The recipient signs up, verifies the invited email, and accepts the invitation. Carbon-ID invitations still require an existing active Carbon. The response omits `target_carbon` until the email invitation is bound to an account.
 

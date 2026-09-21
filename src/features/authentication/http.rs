@@ -1,5 +1,6 @@
 use std::{num::NonZeroU32, str::FromStr as _, time::Duration};
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, Query, State, rejection::JsonRejection},
@@ -8,7 +9,6 @@ use axum::{
 };
 use secrecy::SecretString;
 use serde::Serialize;
-use uuid::Uuid;
 
 use crate::{
     api::{
@@ -51,7 +51,7 @@ pub(super) async fn create_signup_session(
 
 pub(super) async fn start_signup_email(
     State(state): State<ApiState>,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<Id>,
     headers: HeaderMap,
     payload: Result<Json<EmailInput>, JsonRejection>,
 ) -> Result<Response, AppError> {
@@ -62,7 +62,7 @@ pub(super) async fn start_signup_email(
 
 pub(super) async fn start_signup_phone(
     State(state): State<ApiState>,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<Id>,
     headers: HeaderMap,
     payload: Result<Json<PhoneInput>, JsonRejection>,
 ) -> Result<Response, AppError> {
@@ -73,7 +73,7 @@ pub(super) async fn start_signup_phone(
 
 pub(super) async fn verify_signup_email(
     State(state): State<ApiState>,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<Id>,
     headers: HeaderMap,
     payload: Result<Json<VerificationInput>, JsonRejection>,
 ) -> Result<Response, AppError> {
@@ -89,7 +89,7 @@ pub(super) async fn verify_signup_email(
 
 pub(super) async fn verify_signup_phone(
     State(state): State<ApiState>,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<Id>,
     headers: HeaderMap,
     payload: Result<Json<VerificationInput>, JsonRejection>,
 ) -> Result<Response, AppError> {
@@ -105,7 +105,7 @@ pub(super) async fn verify_signup_phone(
 
 pub(super) async fn complete_signup(
     State(state): State<ApiState>,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<Id>,
     headers: HeaderMap,
     payload: Result<Json<SignupCompletionInput>, JsonRejection>,
 ) -> Result<Response, AppError> {
@@ -156,7 +156,7 @@ pub(super) async fn create_login_challenge(
 
 pub(super) async fn verify_login_challenge(
     State(state): State<ApiState>,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<Id>,
     headers: HeaderMap,
     payload: Result<Json<VerificationInput>, JsonRejection>,
 ) -> Result<Response, AppError> {
@@ -188,7 +188,7 @@ pub(super) async fn create_step_up_challenge(
 pub(super) async fn verify_step_up_challenge(
     State(state): State<ApiState>,
     Authenticated(context): Authenticated,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<Id>,
     headers: HeaderMap,
     payload: Result<Json<VerificationInput>, JsonRejection>,
 ) -> Result<Response, AppError> {
@@ -230,6 +230,10 @@ pub(super) async fn refresh_tokens(
     }
 }
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 pub(super) async fn logout(
     State(state): State<ApiState>,
     identity: LogoutAuthenticated,
@@ -279,7 +283,7 @@ pub(super) async fn list_sessions(
 pub(super) async fn revoke_session(
     State(state): State<ApiState>,
     Authenticated(context): Authenticated,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<Id>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let key = IdempotencyKey::from_headers(&headers)?;
@@ -309,7 +313,7 @@ pub(super) async fn login_history(
 async fn verify_signup(
     state: &ApiState,
     headers: &HeaderMap,
-    session_id: Uuid,
+    session_id: Id,
     channel: ContactChannel,
     input: VerificationInput,
 ) -> Result<Response, AppError> {
@@ -332,7 +336,7 @@ async fn verify_signup(
 pub(super) async fn enforce_contact_limit(
     state: &ApiState,
     name: &'static str,
-    session_id: Uuid,
+    session_id: Id,
     contact: &super::model::ValidatedContact,
 ) -> Result<(), AppError> {
     let (contact_scope, session_scope) = contact_limit_scopes(session_id, contact);
@@ -355,7 +359,7 @@ pub(super) async fn enforce_contact_limit(
 }
 
 fn contact_limit_scopes(
-    session_id: Uuid,
+    session_id: Id,
     contact: &super::model::ValidatedContact,
 ) -> (String, String) {
     let contact_scope = format!(
@@ -574,9 +578,9 @@ mod tests {
             presentation: SecretString::from("Person@example.com".to_owned()),
         };
         let (first_contact, first_session) =
-            contact_limit_scopes(uuid::Uuid::from_u128(1), &contact);
+            contact_limit_scopes(crate::domain::id::Id::from_u128(1), &contact);
         let (second_contact, second_session) =
-            contact_limit_scopes(uuid::Uuid::from_u128(2), &contact);
+            contact_limit_scopes(crate::domain::id::Id::from_u128(2), &contact);
 
         assert_eq!(first_contact, second_contact);
         assert_ne!(first_session, second_session);
@@ -587,7 +591,7 @@ mod tests {
             presentation: SecretString::from("other@example.com".to_owned()),
         };
         let (other_contact_scope, same_session_scope) =
-            contact_limit_scopes(uuid::Uuid::from_u128(1), &other_contact);
+            contact_limit_scopes(crate::domain::id::Id::from_u128(1), &other_contact);
         assert_ne!(first_contact, other_contact_scope);
         assert_eq!(first_session, same_session_scope);
     }

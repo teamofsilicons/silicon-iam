@@ -181,8 +181,10 @@ mod tests {
     #[test]
     fn request_span_opt_out_blocks_descendant_events_and_preserves_safe_context()
     -> anyhow::Result<()> {
-        let home =
-            std::env::temp_dir().join(format!("iam-telemetry-test-{}", uuid::Uuid::now_v7()));
+        let home = std::env::temp_dir().join(format!(
+            "iam-telemetry-test-{}",
+            crate::domain::id::Id::now_v7()
+        ));
         let sender = Telemetry::new(
             "table-siliconiam-0123456789abcdef0123456789abcdef",
             "http://127.0.0.1:1",

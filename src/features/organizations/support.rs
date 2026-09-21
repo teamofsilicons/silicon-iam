@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use crate::domain::id::Id;
 use axum::{
     body::Body,
     http::{HeaderMap, HeaderValue, StatusCode},
@@ -8,7 +9,6 @@ use axum::{
 use secrecy::SecretString;
 use serde::Serialize;
 use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -38,9 +38,9 @@ pub(crate) struct OrganizationTransaction<'a> {
 pub(super) struct MutationEvent<'a> {
     pub(super) action: &'static str,
     pub(super) target_type: &'static str,
-    pub(super) target_id: Uuid,
+    pub(super) target_id: Id,
     pub(super) aggregate_type: &'a str,
-    pub(super) aggregate_id: Uuid,
+    pub(super) aggregate_id: Id,
     pub(super) aggregate_version: i64,
     pub(super) event_type: &'a str,
     pub(super) before_state: Option<serde_json::Value>,
@@ -54,11 +54,15 @@ pub(super) enum Claim {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 enum DirectIamBinding {
     Carbon,
     Silicon {
-        organization_id: Uuid,
-        membership_id: Uuid,
+        organization_id: Id,
+        membership_id: Id,
     },
 }
 
@@ -114,7 +118,8 @@ pub(crate) async fn begin_directory_organization<'a>(
         && authenticated.0.audience_application_id.is_some()
         && authenticated.0.audience != "silicon-iam";
     if !application_token {
-        return begin_organization(state, authenticated, organization_handle).await;
+        let scope = begin_organization(state, authenticated, organization_handle).await?;
+        return super::action_policies::authorize_scope(scope, authenticated, &state.crypto).await;
     }
     let principal_id = authenticated.0.subject.id;
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(principal_id))
@@ -147,10 +152,15 @@ pub(crate) async fn begin_directory_organization<'a>(
     context::select_organization(&mut transaction, access.organization_id)
         .await
         .map_err(database)?;
-    Ok(OrganizationTransaction {
-        transaction,
-        access,
-    })
+    super::action_policies::authorize_scope(
+        OrganizationTransaction {
+            transaction,
+            access,
+        },
+        authenticated,
+        &state.crypto,
+    )
+    .await
 }
 
 /// Require an ordinary self-audience application token, never an external OBO token.
@@ -179,7 +189,7 @@ pub(crate) fn require_application_scope(
 pub(crate) fn require_scoped_carbon(
     authenticated: &Authenticated,
     scope: &str,
-) -> Result<Uuid, AppError> {
+) -> Result<Id, AppError> {
     require_application_scope(authenticated, scope)?;
     if authenticated.0.subject.actor_type != ActorType::Carbon {
         return Err(AppError::Forbidden);
@@ -197,7 +207,7 @@ pub(crate) async fn begin_scoped_organization<'a>(
     begin_directory_organization(state, authenticated, org).await
 }
 
-pub(super) fn require_carbon(authenticated: &Authenticated) -> Result<Uuid, AppError> {
+pub(super) fn require_carbon(authenticated: &Authenticated) -> Result<Id, AppError> {
     if authenticated.0.subject.actor_type != ActorType::Carbon
         || direct_iam_binding(authenticated)? != DirectIamBinding::Carbon
     {
@@ -321,7 +331,7 @@ pub(super) async fn replay_resource_if_present<T: Serialize>(
         )
     })?;
     let organization_id =
-        sqlx::query_scalar::<_, Option<Uuid>>("SELECT iam_private.current_organization_id()")
+        sqlx::query_scalar::<_, Option<Id>>("SELECT iam_private.current_organization_id()")
             .fetch_one(&mut **transaction)
             .await
             .map_err(database)?;
@@ -383,7 +393,7 @@ async fn claim_scoped<T: Serialize>(
         )
     })?;
     let organization_id =
-        sqlx::query_scalar::<_, Option<Uuid>>("SELECT iam_private.current_organization_id()")
+        sqlx::query_scalar::<_, Option<Id>>("SELECT iam_private.current_organization_id()")
             .fetch_one(&mut **transaction)
             .await
             .map_err(database)?;
@@ -439,8 +449,8 @@ fn application_caller_scope(actor: &Authenticated, base: String) -> String {
 
 fn idempotency_caller_scope(
     actor_type: &str,
-    actor_id: Uuid,
-    organization_id: Option<Uuid>,
+    actor_id: Id,
+    organization_id: Option<Id>,
     resource_scope: Option<&str>,
 ) -> String {
     format!(
@@ -456,9 +466,9 @@ pub(super) async fn consume_step_up(
     authenticated: &Authenticated,
     headers: &HeaderMap,
     action: &'static str,
-    resource_id: Option<Uuid>,
+    resource_id: Option<Id>,
     assurance: RequiredAssurance,
-) -> Result<Uuid, AppError> {
+) -> Result<Id, AppError> {
     let carbon_id = if authenticated.0.client_application_id.is_some() {
         if authenticated.0.subject.actor_type != ActorType::Carbon {
             return Err(AppError::Forbidden);
@@ -494,7 +504,7 @@ pub(super) async fn consume_step_up(
 pub(super) async fn record_mutation(
     transaction: &mut Transaction<'_, Postgres>,
     authenticated: &Authenticated,
-    organization_id: Uuid,
+    organization_id: Id,
     event: MutationEvent<'_>,
 ) -> Result<(), AppError> {
     persist_mutation(transaction, authenticated, organization_id, event)
@@ -508,7 +518,7 @@ pub(super) async fn record_application_mutation(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     authenticated: &Authenticated,
-    organization_id: Uuid,
+    organization_id: Id,
     event: MutationEvent<'_>,
 ) -> Result<(), AppError> {
     let event_type = event.event_type;
@@ -541,9 +551,9 @@ pub(super) async fn record_application_mutation(
 async fn persist_mutation(
     transaction: &mut Transaction<'_, Postgres>,
     authenticated: &Authenticated,
-    organization_id: Uuid,
+    organization_id: Id,
     event: MutationEvent<'_>,
-) -> Result<Uuid, AppError> {
+) -> Result<Id, AppError> {
     let aggregate = AggregateVersion {
         aggregate_type: event.aggregate_type,
         aggregate_id: event.aggregate_id,
@@ -592,11 +602,11 @@ async fn persist_mutation(
 
 pub(super) async fn lock_membership_removal_event_scope(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
-    reassign_reports_to: Option<Uuid>,
-) -> Result<Vec<Uuid>, AppError> {
-    sqlx::query_scalar::<_, Vec<Uuid>>(
+    organization_id: Id,
+    membership_id: Id,
+    reassign_reports_to: Option<Id>,
+) -> Result<Vec<Id>, AppError> {
+    sqlx::query_scalar::<_, Vec<Id>>(
         "SELECT iam_private.lock_membership_removal_event_scope($1, $2, $3)",
     )
     .bind(organization_id)
@@ -609,7 +619,7 @@ pub(super) async fn lock_membership_removal_event_scope(
 
 async fn silicon_webhook_routing(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
     event: &MutationEvent<'_>,
 ) -> Result<Option<SiliconWebhookRouting>, AppError> {
     let primary_membership_id = if event.target_type == "organization_membership" {
@@ -670,7 +680,7 @@ async fn silicon_webhook_routing(
         tag_ids.insert(event.target_id);
     }
     if !affected_membership_ids.is_empty() {
-        let current_tag_ids = sqlx::query_scalar::<_, Uuid>(
+        let current_tag_ids = sqlx::query_scalar::<_, Id>(
             r"
             SELECT tag_id
             FROM iam.membership_tags
@@ -703,7 +713,7 @@ async fn silicon_webhook_routing(
 
 fn silicon_webhook_topics(
     event: &MutationEvent<'_>,
-    affected_membership_ids: &BTreeSet<Uuid>,
+    affected_membership_ids: &BTreeSet<Id>,
 ) -> Option<Vec<SiliconWebhookTopic>> {
     let mut topics = match event.event_type {
         "organization.membership.created.v1"
@@ -843,25 +853,25 @@ fn webhook_payload(event: &MutationEvent<'_>) -> serde_json::Value {
     serde_json::Value::Object(payload)
 }
 
-fn value_uuid(value: &serde_json::Value, key: &str) -> Option<Uuid> {
+fn value_uuid(value: &serde_json::Value, key: &str) -> Option<Id> {
     match value {
         serde_json::Value::Object(object) => object
             .get(key)
             .and_then(serde_json::Value::as_str)
-            .and_then(|value| Uuid::parse_str(value).ok())
+            .and_then(|value| Id::parse(value).ok())
             .or_else(|| object.values().find_map(|value| value_uuid(value, key))),
         serde_json::Value::Array(values) => values.iter().find_map(|value| value_uuid(value, key)),
         _ => None,
     }
 }
 
-fn collect_membership_ids(value: &serde_json::Value, membership_ids: &mut BTreeSet<Uuid>) {
+fn collect_membership_ids(value: &serde_json::Value, membership_ids: &mut BTreeSet<Id>) {
     match value {
         serde_json::Value::Object(object) => {
             for (key, value) in object {
                 if key == "membership_id"
                     && let Some(membership_id) =
-                        value.as_str().and_then(|value| Uuid::parse_str(value).ok())
+                        value.as_str().and_then(|value| Id::parse(value).ok())
                 {
                     membership_ids.insert(membership_id);
                 }
@@ -886,18 +896,18 @@ fn collect_membership_ids(value: &serde_json::Value, membership_ids: &mut BTreeS
     }
 }
 
-fn collect_direct_uuids(value: &serde_json::Value, ids: &mut BTreeSet<Uuid>) {
+fn collect_direct_uuids(value: &serde_json::Value, ids: &mut BTreeSet<Id>) {
     let Some(values) = value.as_array() else {
         return;
     };
     for value in values {
-        if let Some(id) = value.as_str().and_then(|value| Uuid::parse_str(value).ok()) {
+        if let Some(id) = value.as_str().and_then(|value| Id::parse(value).ok()) {
             ids.insert(id);
         }
     }
 }
 
-fn collect_uuid_array(value: &serde_json::Value, key: &str, ids: &mut BTreeSet<Uuid>) {
+fn collect_uuid_array(value: &serde_json::Value, key: &str, ids: &mut BTreeSet<Id>) {
     match value {
         serde_json::Value::Object(object) => {
             for (candidate, value) in object {
@@ -916,13 +926,12 @@ fn collect_uuid_array(value: &serde_json::Value, key: &str, ids: &mut BTreeSet<U
     }
 }
 
-fn collect_tag_ids(value: &serde_json::Value, tag_ids: &mut BTreeSet<Uuid>) {
+fn collect_tag_ids(value: &serde_json::Value, tag_ids: &mut BTreeSet<Id>) {
     match value {
         serde_json::Value::Object(object) => {
             for (key, value) in object {
                 if key == "tag_id"
-                    && let Some(tag_id) =
-                        value.as_str().and_then(|value| Uuid::parse_str(value).ok())
+                    && let Some(tag_id) = value.as_str().and_then(|value| Id::parse(value).ok())
                 {
                     tag_ids.insert(tag_id);
                 }
@@ -941,7 +950,7 @@ fn collect_tag_ids(value: &serde_json::Value, tag_ids: &mut BTreeSet<Uuid>) {
     }
 }
 
-fn collect_direct_tag_ids(value: &serde_json::Value, tag_ids: &mut BTreeSet<Uuid>) {
+fn collect_direct_tag_ids(value: &serde_json::Value, tag_ids: &mut BTreeSet<Id>) {
     let Some(values) = value.as_array() else {
         return;
     };
@@ -949,7 +958,7 @@ fn collect_direct_tag_ids(value: &serde_json::Value, tag_ids: &mut BTreeSet<Uuid
         let candidate = value
             .as_str()
             .or_else(|| value.get("id").and_then(serde_json::Value::as_str));
-        if let Some(tag_id) = candidate.and_then(|value| Uuid::parse_str(value).ok()) {
+        if let Some(tag_id) = candidate.and_then(|value| Id::parse(value).ok()) {
             tag_ids.insert(tag_id);
         }
     }
@@ -982,8 +991,8 @@ pub(super) fn mutation_projection(
         return value;
     }
     let is_self = value
-        .pointer("/principal/principal_id")
-        .or_else(|| value.get("principal_id"))
+        .pointer("/principal/public_id")
+        .or_else(|| value.get("silicon_id"))
         .and_then(serde_json::Value::as_str)
         .is_some_and(|id| id == actor.0.subject.id.to_string());
     match kind {
@@ -1030,13 +1039,7 @@ pub(super) fn mutation_projection(
                 };
                 // Creation may return its newly generated identifiers and the
                 // explicitly requested one-time credential without read scope.
-                for field in [
-                    "principal_id",
-                    "membership_id",
-                    "silicon_id",
-                    "org_id",
-                    "version",
-                ] {
+                for field in ["membership_id", "silicon_id", "org_id", "version"] {
                     if let Some(generated) = created.get(field) {
                         projected[field] = generated.clone();
                     }
@@ -1270,16 +1273,16 @@ mod tests {
         direct_iam_binding, idempotency_caller_scope, replay_etag_version, require_carbon,
         silicon_webhook_topics, webhook_payload,
     };
-    use uuid::Uuid;
+    use crate::domain::id::Id;
 
     fn event_topics(
         event_type: &'static str,
         target_type: &'static str,
-        target_id: Uuid,
+        target_id: Id,
         before_state: Option<serde_json::Value>,
         after_state: Option<serde_json::Value>,
         metadata: serde_json::Value,
-        affected_membership_ids: impl IntoIterator<Item = Uuid>,
+        affected_membership_ids: impl IntoIterator<Item = Id>,
     ) -> Option<Vec<SiliconWebhookTopic>> {
         let event = MutationEvent {
             action: "test.change",
@@ -1298,11 +1301,11 @@ mod tests {
 
     fn direct_carbon() -> Authenticated {
         Authenticated(AccessContext {
-            token_id: Uuid::from_u128(1),
-            authentication_session_id: Uuid::from_u128(2),
+            token_id: Id::from_u128(1),
+            authentication_session_id: Id::from_u128(2),
             subject: ActorRef {
                 actor_type: ActorType::Carbon,
-                id: Uuid::from_u128(3),
+                id: Id::from_u128(3),
             },
             client_application_id: None,
             audience_application_id: None,
@@ -1324,7 +1327,7 @@ mod tests {
         assert!(require_carbon(&direct).is_ok());
 
         let mut delegated = direct;
-        delegated.0.client_application_id = Some(Uuid::from_u128(4));
+        delegated.0.client_application_id = Some(Id::from_u128(4));
         delegated.0.audience = "third-party-app".to_owned();
         assert!(direct_iam_binding(&delegated).is_err());
         assert!(require_carbon(&delegated).is_err());
@@ -1332,8 +1335,8 @@ mod tests {
 
     #[test]
     fn silicon_iam_tokens_require_exact_tenant_binding() {
-        let organization_id = Uuid::from_u128(5);
-        let membership_id = Uuid::from_u128(6);
+        let organization_id = Id::from_u128(5);
+        let membership_id = Id::from_u128(6);
         let mut authenticated = direct_carbon();
         authenticated.0.subject.actor_type = ActorType::Silicon;
         authenticated.0.organization_id = Some(organization_id);
@@ -1353,9 +1356,9 @@ mod tests {
 
     #[test]
     fn idempotency_scope_binds_tenant_and_concrete_resource() {
-        let actor_id = Uuid::from_u128(1);
-        let first_org = Uuid::from_u128(2);
-        let second_org = Uuid::from_u128(3);
+        let actor_id = Id::from_u128(1);
+        let first_org = Id::from_u128(2);
+        let second_org = Id::from_u128(3);
 
         let first =
             idempotency_caller_scope("carbon", actor_id, Some(first_org), Some("membership-a"));
@@ -1379,7 +1382,7 @@ mod tests {
         reason = "the table-driven event vocabulary is most reviewable as one exhaustive contract test"
     )]
     fn webhook_topic_catalog_keeps_trust_separate_and_fails_closed() {
-        let target_id = Uuid::from_u128(31);
+        let target_id = Id::from_u128(31);
         assert_eq!(
             event_topics(
                 "organization.membership.created.v1",
@@ -1397,8 +1400,8 @@ mod tests {
                 "organization.membership.updated.v1",
                 "organization_membership",
                 target_id,
-                Some(json!({ "job_role": "Engineer", "version": 1 })),
-                Some(json!({ "job_role": "Staff Engineer", "version": 2 })),
+                Some(json!({ "job_description": "Engineer", "version": 1 })),
+                Some(json!({ "job_description": "Staff Engineer", "version": 2 })),
                 json!({}),
                 [target_id],
             ),
@@ -1428,12 +1431,12 @@ mod tests {
             ),
             Some(vec![SiliconWebhookTopic::TrustUpdates])
         );
-        let other_membership_id = Uuid::from_u128(32);
+        let other_membership_id = Id::from_u128(32);
         assert_eq!(
             event_topics(
                 "organization.silicon.removed.v1",
                 "silicon",
-                Uuid::from_u128(33),
+                Id::from_u128(33),
                 None,
                 None,
                 json!({ "membership_id": target_id }),
@@ -1448,7 +1451,7 @@ mod tests {
             event_topics(
                 "organization.silicon.removed.v1",
                 "silicon",
-                Uuid::from_u128(33),
+                Id::from_u128(33),
                 None,
                 None,
                 json!({ "membership_id": target_id }),
@@ -1520,7 +1523,7 @@ mod tests {
 
     #[test]
     fn every_organization_event_in_the_full_catalog_has_explicit_routing() {
-        let target_id = Uuid::from_u128(35);
+        let target_id = Id::from_u128(35);
         for event_type in crate::domain::events::SILICON_FULL_EVENT_TYPES
             .iter()
             .filter(|event_type| event_type.starts_with("organization."))
@@ -1543,7 +1546,7 @@ mod tests {
 
     #[test]
     fn membership_update_topics_split_trust_only_mixed_and_directory_changes() {
-        let target_id = Uuid::from_u128(34);
+        let target_id = Id::from_u128(34);
         let before_trust = json!({ "boundary": "internal", "level": "trusted" });
         let after_trust = json!({ "boundary": "external", "level": "not_trusted" });
         let topics = |before, after| {
@@ -1560,15 +1563,15 @@ mod tests {
 
         assert_eq!(
             topics(
-                json!({ "job_role": "Engineer", "default_trust": before_trust, "version": 1 }),
-                json!({ "job_role": "Engineer", "default_trust": after_trust, "version": 2 }),
+                json!({ "job_description": "Engineer", "default_trust": before_trust, "version": 1 }),
+                json!({ "job_description": "Engineer", "default_trust": after_trust, "version": 2 }),
             ),
             Some(vec![SiliconWebhookTopic::TrustUpdates])
         );
         assert_eq!(
             topics(
-                json!({ "job_role": "Engineer", "default_trust": before_trust, "version": 1 }),
-                json!({ "job_role": "Lead", "default_trust": after_trust, "version": 2 }),
+                json!({ "job_description": "Engineer", "default_trust": before_trust, "version": 1 }),
+                json!({ "job_description": "Lead", "default_trust": after_trust, "version": 2 }),
             ),
             Some(vec![
                 SiliconWebhookTopic::MemberUpdates,
@@ -1579,8 +1582,8 @@ mod tests {
 
     #[test]
     fn tag_topics_reflect_exact_member_and_trust_rule_effects() {
-        let tag_id = Uuid::from_u128(35);
-        let membership_id = Uuid::from_u128(36);
+        let tag_id = Id::from_u128(35);
+        let membership_id = Id::from_u128(36);
         assert_eq!(
             event_topics(
                 "organization.tag_updated.v1",
@@ -1612,9 +1615,9 @@ mod tests {
 
     #[test]
     fn routing_tag_extraction_keeps_before_and_after_audiences() {
-        let before = Uuid::from_u128(11);
-        let after = Uuid::from_u128(12);
-        let selector = Uuid::from_u128(13);
+        let before = Id::from_u128(11);
+        let after = Id::from_u128(12);
+        let selector = Id::from_u128(13);
         let mut tag_ids = BTreeSet::new();
 
         collect_tag_ids(
@@ -1631,8 +1634,8 @@ mod tests {
 
     #[test]
     fn trust_routing_collects_every_membership_selector() {
-        let subject = Uuid::from_u128(14);
-        let target = Uuid::from_u128(15);
+        let subject = Id::from_u128(14);
+        let target = Id::from_u128(15);
         let mut membership_ids = BTreeSet::new();
 
         collect_membership_ids(
@@ -1648,7 +1651,7 @@ mod tests {
 
     #[test]
     fn webhook_payload_keeps_routing_private_and_exposes_redacted_change_state() {
-        let target_id = Uuid::from_u128(21);
+        let target_id = Id::from_u128(21);
         let event = MutationEvent {
             action: "membership.updated",
             target_type: "organization_membership",
@@ -1657,8 +1660,8 @@ mod tests {
             aggregate_id: target_id,
             aggregate_version: 2,
             event_type: "organization.membership.updated.v1",
-            before_state: Some(json!({ "job_role": "Engineer" })),
-            after_state: Some(json!({ "job_role": "Staff Engineer" })),
+            before_state: Some(json!({ "job_description": "Engineer" })),
+            after_state: Some(json!({ "job_description": "Staff Engineer" })),
             metadata: json!({ "membership_id": target_id }),
         };
 
@@ -1667,8 +1670,8 @@ mod tests {
         assert_eq!(payload["membership_id"], json!(target_id));
         assert_eq!(payload["change"], "membership.updated");
         assert_eq!(payload["target"]["id"], json!(target_id));
-        assert_eq!(payload["before"]["job_role"], "Engineer");
-        assert_eq!(payload["after"]["job_role"], "Staff Engineer");
+        assert_eq!(payload["before"]["job_description"], "Engineer");
+        assert_eq!(payload["after"]["job_description"], "Staff Engineer");
         assert!(payload.get("topics").is_none());
         assert!(payload.get("affected_tag_ids").is_none());
     }

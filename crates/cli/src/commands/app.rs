@@ -987,7 +987,7 @@ fn report(context: &Context, application: &models::Application) -> Result<()> {
         Format::Json => json(application),
         Format::Text => {
             let mut table = Table::new(["field", "value"]);
-            table.row(["id", &application.id.to_string()]);
+            table.row(["id", &application.id]);
             table.row(["app", &application.app_id]);
             table.row(["name", &or_dash(application.app_name.as_deref())]);
             table.row(["base_url", &application.base_url]);

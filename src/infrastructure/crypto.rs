@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::domain::id::Id;
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead as _, KeyInit as _, Payload},
@@ -16,7 +17,6 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use thiserror::Error;
-use uuid::Uuid;
 use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::config::{KeyringSettings, SecuritySettings};
@@ -48,6 +48,9 @@ pub struct CryptoService {
 #[derive(Clone)]
 pub struct EncryptionService {
     encryption_keys: Keyring,
+    // Legacy values are cryptographic context metadata only. They cannot be
+    // used to look up or authenticate an identity.
+    application_contexts: BTreeMap<(Option<Id>, Id), Id>,
 }
 
 #[derive(Clone)]
@@ -174,6 +177,8 @@ pub enum ProtectedField {
     CarbonEmail,
     /// Invitation email before Carbon registration.
     InvitationEmail,
+    /// Exact invitation recipient retained for sensitive-action approval.
+    ActionApprovalEmail,
     /// Carbon phone number.
     CarbonPhone,
     /// Bounded idempotency replay envelope containing a one-time secret.
@@ -204,8 +209,9 @@ pub enum ProtectedField {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EncryptionContext {
     field: ProtectedField,
-    tenant_id: Option<Uuid>,
-    entity_id: Uuid,
+    tenant_id: Option<Id>,
+    entity_id: Id,
+    production_application: bool,
 }
 
 /// Cryptographic operation failure whose display never contains plaintext.
@@ -232,6 +238,14 @@ pub enum CryptoError {
 }
 
 impl CryptoService {
+    /// Loads immutable authenticated-encryption context metadata after a
+    /// canonical-identity migration, before accepting requests.
+    ///
+    /// # Errors
+    /// Fails startup if metadata cannot be read or contains invalid handles.
+    pub async fn load_application_contexts(&mut self, pool: &sqlx::PgPool) -> anyhow::Result<()> {
+        self.encryption.load_application_contexts(pool).await
+    }
     /// Builds the service from already validated runtime settings.
     ///
     /// # Errors
@@ -496,7 +510,56 @@ impl EncryptionService {
     pub fn from_settings(settings: &KeyringSettings) -> Result<Self, CryptoError> {
         Ok(Self {
             encryption_keys: Keyring::from_settings("IAM_ENCRYPTION_KEYRING", settings)?,
+            application_contexts: BTreeMap::new(),
         })
+    }
+
+    /// Loads the AAD-only metadata retained for existing encrypted values.
+    ///
+    /// # Errors
+    /// Rejects unavailable metadata and conflicting context registrations.
+    pub async fn load_application_contexts(&mut self, pool: &sqlx::PgPool) -> anyhow::Result<()> {
+        let rows: Vec<(String, Option<uuid::Uuid>, uuid::Uuid)> = sqlx::query_as(
+            "SELECT application_id, testing_environment_id, context_id FROM iam_private.application_encryption_contexts()",
+        ).fetch_all(pool).await?;
+        for (application, environment, context) in rows {
+            let key = (environment.map(Id::from), Id::identity(&application)?);
+            let context = Id::from(context);
+            if let Some(previous) = self.application_contexts.insert(key, context) {
+                anyhow::ensure!(
+                    previous == context,
+                    "conflicting application encryption context"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn retained_context(&self, mut context: EncryptionContext) -> EncryptionContext {
+        let application_id = match context.field {
+            ProtectedField::ApplicationWebhookUrl
+            | ProtectedField::ApplicationWebhookSigningSecret
+            | ProtectedField::ApplicationWebhookEventPayload => context.tenant_id,
+            ProtectedField::TestingApplicationSecret => Some(context.entity_id),
+            _ => None,
+        };
+        if let Some(retained) = application_id.and_then(|application| {
+            self.application_contexts.get(&(
+                if context.production_application {
+                    None
+                } else {
+                    testing_plane::current_id()
+                },
+                application,
+            ))
+        }) {
+            if context.field == ProtectedField::TestingApplicationSecret {
+                context.entity_id = *retained;
+            } else {
+                context.tenant_id = Some(*retained);
+            }
+        }
+        context
     }
 
     /// Encrypts sensitive data using AES-256-GCM and row-bound context.
@@ -515,6 +578,9 @@ impl EncryptionService {
             .map_err(|_| CryptoError::InvalidKey("IAM_ENCRYPTION_KEYRING"))?;
         let mut nonce = [0_u8; 12];
         fill_random(&mut nonce)?;
+        // New writes always use canonical identity handles. The retained UUID
+        // metadata is a read-only bridge for ciphertext created before the
+        // migration, including across testing-environment clean/recreate.
         let aad = encryption_aad(context, key_version);
         let ciphertext = cipher
             .encrypt(
@@ -556,6 +622,19 @@ impl EncryptionService {
                     aad: &aad,
                 },
             )
+            .or_else(|error| {
+                let retained = self.retained_context(context);
+                if retained == context {
+                    return Err(error);
+                }
+                cipher.decrypt(
+                    Nonce::from_slice(&encrypted.nonce),
+                    Payload {
+                        msg: &encrypted.ciphertext,
+                        aad: &encryption_aad(retained, encrypted.key_version),
+                    },
+                )
+            })
             .map_err(|_| CryptoError::Decryption)?;
 
         Ok(Zeroizing::new(plaintext))
@@ -615,22 +694,32 @@ impl SecretDigest {
 impl EncryptionContext {
     /// Binds ciphertext to a global entity row.
     #[must_use]
-    pub const fn global(field: ProtectedField, entity_id: Uuid) -> Self {
+    pub const fn global(field: ProtectedField, entity_id: Id) -> Self {
         Self {
             field,
             tenant_id: None,
             entity_id,
+            production_application: false,
         }
     }
 
     /// Binds ciphertext to a tenant/application scope and one entity row.
     #[must_use]
-    pub const fn tenant(field: ProtectedField, tenant_id: Uuid, entity_id: Uuid) -> Self {
+    pub const fn tenant(field: ProtectedField, tenant_id: Id, entity_id: Id) -> Self {
         Self {
             field,
             tenant_id: Some(tenant_id),
             entity_id,
+            production_application: false,
         }
+    }
+
+    /// Selects production metadata when importing a production application
+    /// while the request itself executes inside a testing environment.
+    #[must_use]
+    pub const fn production_application(mut self) -> Self {
+        self.production_application = true;
+        self
     }
 }
 
@@ -678,6 +767,7 @@ impl ProtectedField {
     const fn label(self) -> &'static [u8] {
         match self {
             Self::InvitationEmail => b"invitation-email",
+            Self::ActionApprovalEmail => b"action-approval-email",
             Self::CarbonEmail => b"carbon-email",
             Self::CarbonPhone => b"carbon-phone",
             Self::IdempotencySecretResponse => b"idempotency-secret-response",
@@ -744,6 +834,10 @@ fn keyed_digest(
     })
 }
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 fn encryption_aad(context: EncryptionContext, key_version: i16) -> Vec<u8> {
     let field = context.field.label();
     let mut aad = Vec::with_capacity(96);
@@ -791,9 +885,9 @@ const fn secret_prefix(kind: SecretKind) -> &'static str {
 mod tests {
     use std::collections::BTreeMap;
 
+    use crate::domain::id::Id;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use secrecy::{ExposeSecret as _, SecretString};
-    use uuid::Uuid;
 
     use crate::config::{KeyringSettings, SecuritySettings};
 
@@ -829,6 +923,93 @@ mod tests {
             panic!("valid test keyrings must initialize");
         };
         service
+    }
+
+    #[test]
+    fn canonical_application_context_decrypts_retained_ciphertext_without_uuid_identity()
+    -> anyhow::Result<()> {
+        let mut service = service();
+        let legacy_context = Id::from_u128(71);
+        let application = Id::identity("bricks>remind")?;
+        let row = Id::from_u128(72);
+        let legacy =
+            EncryptionContext::tenant(ProtectedField::ApplicationWebhookUrl, legacy_context, row);
+        let canonical =
+            EncryptionContext::tenant(ProtectedField::ApplicationWebhookUrl, application, row);
+        let ciphertext = service.encrypt(legacy, b"https://example.test/webhook")?;
+        service
+            .encryption
+            .application_contexts
+            .insert((None, application), legacy_context);
+        assert_eq!(
+            service.decrypt(canonical, &ciphertext)?.as_slice(),
+            b"https://example.test/webhook"
+        );
+        let other = EncryptionContext::tenant(
+            ProtectedField::ApplicationWebhookUrl,
+            Id::identity("bricks>waveform")?,
+            row,
+        );
+        assert_eq!(
+            service.decrypt(other, &ciphertext),
+            Err(CryptoError::Decryption)
+        );
+
+        // New ciphertext remains decryptable after a cleaned testing identity
+        // is recreated without any retained legacy metadata.
+        let fresh = service.encrypt(canonical, b"new canonical ciphertext")?;
+        service.encryption.application_contexts.clear();
+        assert_eq!(
+            service.decrypt(canonical, &fresh)?.as_slice(),
+            b"new canonical ciphertext"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retained_application_contexts_are_isolated_between_testing_environments()
+    -> anyhow::Result<()> {
+        use crate::infrastructure::testing_plane::{SelectedEnvironment, scope};
+        let mut service = service();
+        let application = Id::identity("bricks>remind")?;
+        let first = SelectedEnvironment {
+            id: Id::from_u128(81),
+            organization_id: Id::from_u128(91),
+        };
+        let second = SelectedEnvironment {
+            id: Id::from_u128(82),
+            organization_id: Id::from_u128(91),
+        };
+        let row = Id::from_u128(83);
+        let old = Id::from_u128(84);
+        let ciphertext = service.encrypt(
+            EncryptionContext::tenant(ProtectedField::ApplicationWebhookUrl, old, row),
+            b"first environment",
+        )?;
+        service
+            .encryption
+            .application_contexts
+            .insert((Some(first.id), application), old);
+        service
+            .encryption
+            .application_contexts
+            .insert((Some(second.id), application), Id::from_u128(85));
+        let canonical =
+            EncryptionContext::tenant(ProtectedField::ApplicationWebhookUrl, application, row);
+        assert!(
+            scope(first, async { service.decrypt(canonical, &ciphertext) })
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            scope(second, async { service.decrypt(canonical, &ciphertext) }).await,
+            Err(CryptoError::Decryption)
+        );
+        assert_eq!(
+            service.decrypt(canonical, &ciphertext),
+            Err(CryptoError::Decryption)
+        );
+        Ok(())
     }
 
     #[test]
@@ -890,12 +1071,12 @@ mod tests {
             panic!("the configured test keyring must produce a digest");
         };
         let first_environment = SelectedEnvironment {
-            id: Uuid::from_u128(101),
-            organization_id: Uuid::from_u128(201),
+            id: Id::from_u128(101),
+            organization_id: Id::from_u128(201),
         };
         let second_environment = SelectedEnvironment {
-            id: Uuid::from_u128(102),
-            organization_id: Uuid::from_u128(201),
+            id: Id::from_u128(102),
+            organization_id: Id::from_u128(201),
         };
         let Ok(first) = scope(first_environment, async {
             service.digest_secret(DigestPurpose::ApplicationSecret, &credential)
@@ -942,7 +1123,7 @@ mod tests {
     #[test]
     fn encryption_is_row_bound_and_randomized() {
         let service = service();
-        let entity_id = Uuid::now_v7();
+        let entity_id = Id::now_v7();
         let context = EncryptionContext::global(ProtectedField::CarbonEmail, entity_id);
         let first = service.encrypt(context, b"user@example.com");
         let second = service.encrypt(context, b"user@example.com");
@@ -956,7 +1137,7 @@ mod tests {
             service.decrypt(context, &first).map(|value| value.to_vec()),
             Ok(b"user@example.com".to_vec())
         );
-        let wrong_row = EncryptionContext::global(ProtectedField::CarbonEmail, Uuid::now_v7());
+        let wrong_row = EncryptionContext::global(ProtectedField::CarbonEmail, Id::now_v7());
         assert!(matches!(
             service.decrypt(wrong_row, &first),
             Err(CryptoError::Decryption)
@@ -966,8 +1147,8 @@ mod tests {
     #[test]
     fn application_event_projection_is_bound_to_recipient_and_row() {
         let service = service();
-        let application_id = Uuid::now_v7();
-        let projection_id = Uuid::now_v7();
+        let application_id = Id::now_v7();
+        let projection_id = Id::now_v7();
         let context = EncryptionContext::tenant(
             ProtectedField::ApplicationWebhookEventPayload,
             application_id,
@@ -978,13 +1159,13 @@ mod tests {
         };
         let wrong_application = EncryptionContext::tenant(
             ProtectedField::ApplicationWebhookEventPayload,
-            Uuid::now_v7(),
+            Id::now_v7(),
             projection_id,
         );
         let wrong_row = EncryptionContext::tenant(
             ProtectedField::ApplicationWebhookEventPayload,
             application_id,
-            Uuid::now_v7(),
+            Id::now_v7(),
         );
 
         assert!(matches!(
@@ -1002,7 +1183,7 @@ mod tests {
         let Ok(service) = EncryptionService::from_settings(&keyring(4, 9)) else {
             panic!("valid encryption keyring must initialize");
         };
-        let entity_id = Uuid::now_v7();
+        let entity_id = Id::now_v7();
         let context = EncryptionContext::global(ProtectedField::CarbonEmail, entity_id);
         let Ok(encrypted) = service.encrypt(context, b"worker@example.com") else {
             panic!("valid encryption must succeed");
@@ -1015,7 +1196,7 @@ mod tests {
                 .map(|value| value.to_vec()),
             Ok(b"worker@example.com".to_vec())
         );
-        let wrong_context = EncryptionContext::global(ProtectedField::CarbonEmail, Uuid::now_v7());
+        let wrong_context = EncryptionContext::global(ProtectedField::CarbonEmail, Id::now_v7());
         assert!(matches!(
             service.decrypt(wrong_context, &encrypted),
             Err(CryptoError::Decryption)

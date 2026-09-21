@@ -106,7 +106,7 @@
 </table>
 
 <p>
-  Each returns name, ID, job role, tags and trust. <strong>Trust is always resolved from the
+  Each returns name, ID, job description, tags and trust. <strong>Trust is always resolved from the
   caller's point of view</strong> — the same pair reads differently depending on who is asking —
   so label the column accordingly rather than presenting it as an absolute property.
 </p>
@@ -136,7 +136,7 @@ JSON dictionary keyed by Carbon ID or full Silicon ID. Use
 <code>iam --org tos --json member details</code> from the CLI. The server reads all
 visible active members in batches and returns one dictionary without client pagination.</p>
 <p>Each entry includes the canonical <code>membership_id</code>, <code>display_name</code>,
-profile, organization role, job role, tags, reporting hierarchy, capabilities and Silicon
+profile, organization role, job description, tags, reporting hierarchy, capabilities and Silicon
 access permitted by the caller's scopes. <code>trust</code> is evaluated from the
 requesting user's perspective; Carbon-to-Carbon trust is <code>null</code>. Private
 contacts, credentials and fields without read permission are omitted. The compact
@@ -147,7 +147,7 @@ directory also returns <code>display_name</code> alongside its existing <code>na
 <p>
   <code>POST /api/v1/organizations/{org_id}/carbon-invites</code> identifies the invitee by
   <strong>either</strong> <code>carbon_id</code> <strong>or</strong> <code>email</code>, never
-  both, and carries the job role, tags, default trust and any trust overrides they should start
+  both, and carries the job description, tags, default trust and any trust overrides they should start
   with.
 </p>
 

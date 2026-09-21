@@ -1,5 +1,5 @@
 //! Encrypted immutable source snapshots make interrupted imports replayable.
-use super::{ActorRef, ApiError, ApiState, Instruction, Service, Uuid, database};
+use super::{ActorRef, ApiError, ApiState, Id, Instruction, Service, database};
 use crate::infrastructure::crypto::{EncryptedValue, EncryptionContext, ProtectedField};
 use sqlx::{Postgres, Transaction};
 use std::collections::BTreeMap;
@@ -9,7 +9,7 @@ pub(super) async fn snapshot(
     state: &ApiState,
     service: &Service,
     actor: &ActorRef,
-    token: Option<Uuid>,
+    token: Option<Id>,
     input: &Instruction,
 ) -> Result<Graph, ApiError> {
     let root = input

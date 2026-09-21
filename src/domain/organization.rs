@@ -52,6 +52,8 @@ pub enum Capability {
     TrustManage,
     /// Configure SSO.
     SsoManage,
+    /// Configure sensitive-action and automatic approval rules.
+    ActionPoliciesManage,
 }
 
 /// Invalid organization capability persisted or supplied at an API boundary.
@@ -97,6 +99,7 @@ impl Capability {
             Self::AdminsCreate => "admins.create",
             Self::AdminsManage => "admins.manage",
             Self::SsoManage => "sso.manage",
+            Self::ActionPoliciesManage => "action_policies.manage",
         }
     }
 }
@@ -122,6 +125,7 @@ impl FromStr for Capability {
             "admins.create" => Ok(Self::AdminsCreate),
             "admins.manage" => Ok(Self::AdminsManage),
             "sso.manage" => Ok(Self::SsoManage),
+            "action_policies.manage" => Ok(Self::ActionPoliciesManage),
             _ => Err(CapabilityError),
         }
     }

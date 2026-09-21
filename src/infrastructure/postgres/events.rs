@@ -2,9 +2,9 @@
 
 use std::collections::BTreeSet;
 
+use crate::domain::id::Id;
 use serde_json::Value;
 use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::{domain::actor::ActorRef, request_context};
 
@@ -55,17 +55,17 @@ pub struct AuditRecord<'a> {
     /// Actor responsible for the mutation; absent only for system maintenance.
     pub actor: Option<ActorRef>,
     /// Parent authentication session when the actor is interactive.
-    pub authentication_session_id: Option<Uuid>,
+    pub authentication_session_id: Option<Id>,
     /// Organization boundary, when applicable.
-    pub organization_id: Option<Uuid>,
+    pub organization_id: Option<Id>,
     /// Application boundary, when applicable.
-    pub application_id: Option<Uuid>,
+    pub application_id: Option<Id>,
     /// Stable dotted action vocabulary.
     pub action: &'static str,
     /// Stable target type.
     pub target_type: &'static str,
     /// Target UUID, when the target already exists.
-    pub target_id: Option<Uuid>,
+    pub target_id: Option<Id>,
     /// Authentication method used for the request.
     pub authentication_method: Option<&'static str>,
     /// Aggregate identity and new exact version.
@@ -84,7 +84,7 @@ pub struct AggregateVersion<'a> {
     /// Stable aggregate type.
     pub aggregate_type: &'a str,
     /// Aggregate UUID.
-    pub aggregate_id: Uuid,
+    pub aggregate_id: Id,
     /// Exact version after the mutation.
     pub version: i64,
 }
@@ -92,7 +92,7 @@ pub struct AggregateVersion<'a> {
 /// Minimal versioned integration event committed with a domain mutation.
 pub struct OutboxRecord<'a> {
     /// Optional organization boundary.
-    pub organization_id: Option<Uuid>,
+    pub organization_id: Option<Id>,
     /// Aggregate ordering identity.
     pub aggregate: AggregateVersion<'a>,
     /// Ordinal when one mutation emits multiple events at one version.
@@ -137,15 +137,15 @@ pub struct SiliconWebhookRouting {
     /// One or more closed subscription topics.
     pub topics: Vec<SiliconWebhookTopic>,
     /// Organization membership affected by the event, when applicable.
-    pub affected_membership_id: Option<Uuid>,
+    pub affected_membership_id: Option<Id>,
     /// Union of affected tags before and after the mutation.
-    pub affected_tag_ids: Vec<Uuid>,
+    pub affected_tag_ids: Vec<Id>,
     /// Memberships whose pre-mutation tags must participate in own-tag routing.
     ///
     /// Enqueueing combines these IDs with the post-mutation tag intersection
     /// while the domain transaction is still open, producing one immutable
     /// event-time audience. Delivery never hydrates later tag membership.
-    pub before_tag_membership_ids: Vec<Uuid>,
+    pub before_tag_membership_ids: Vec<Id>,
     /// Whether the event concerns the organization rather than a taggable member.
     pub organization_wide: bool,
 }
@@ -158,9 +158,9 @@ pub struct SiliconWebhookRouting {
 pub async fn record_audit(
     transaction: &mut Transaction<'_, Postgres>,
     record: AuditRecord<'_>,
-) -> Result<Uuid, sqlx::Error> {
-    let id = Uuid::now_v7();
-    let request_id = request_context::current_request_uuid().unwrap_or_else(Uuid::now_v7);
+) -> Result<Id, sqlx::Error> {
+    let id = Id::now_v7();
+    let request_id = request_context::current_request_uuid().unwrap_or_else(Id::now_v7);
     let (actor_id, actor_kind) = record.actor.map_or((None, None), |actor| {
         (Some(actor.id), Some(actor.actor_type.as_str()))
     });
@@ -189,17 +189,17 @@ pub async fn record_audit(
     )
     .bind(id)
     .bind(request_id)
-    .bind(actor_id)
+    .bind(actor_id.map(|id| id.to_string()))
     .bind(actor_kind)
     .bind(record.authentication_session_id)
     .bind(record.organization_id)
-    .bind(record.application_id)
+    .bind(record.application_id.map(|id| id.to_string()))
     .bind(record.action)
     .bind(record.target_type)
-    .bind(record.target_id)
+    .bind(record.target_id.map(|id| id.to_string()))
     .bind(record.authentication_method)
     .bind(aggregate_type)
-    .bind(aggregate_id)
+    .bind(aggregate_id.map(|id| id.to_string()))
     .bind(aggregate_version)
     .bind(record.before_state)
     .bind(record.after_state)
@@ -218,8 +218,8 @@ pub async fn record_audit(
 pub async fn enqueue_outbox(
     transaction: &mut Transaction<'_, Postgres>,
     record: OutboxRecord<'_>,
-) -> Result<Uuid, sqlx::Error> {
-    let id = Uuid::now_v7();
+) -> Result<Id, sqlx::Error> {
+    let id = Id::now_v7();
     let silicon_webhook_routable =
         is_silicon_webhook_routable(record.silicon_webhook_routing.as_ref());
     let own_tag_membership_ids = capture_own_tag_membership_ids(
@@ -241,7 +241,7 @@ pub async fn enqueue_outbox(
     .bind(id)
     .bind(record.organization_id)
     .bind(record.aggregate.aggregate_type)
-    .bind(record.aggregate.aggregate_id)
+    .bind(record.aggregate.aggregate_id.to_string())
     .bind(record.aggregate.version)
     .bind(record.event_ordinal)
     .bind(record.event_type)
@@ -310,9 +310,9 @@ pub async fn enqueue_outbox(
 
 async fn capture_own_tag_membership_ids(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Option<Uuid>,
+    organization_id: Option<Id>,
     routing: Option<&SiliconWebhookRouting>,
-) -> Result<Vec<Uuid>, sqlx::Error> {
+) -> Result<Vec<Id>, sqlx::Error> {
     let (Some(organization_id), Some(routing)) = (organization_id, routing) else {
         return Ok(Vec::new());
     };
@@ -333,7 +333,7 @@ async fn capture_own_tag_membership_ids(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    sqlx::query_scalar::<_, Uuid>(
+    sqlx::query_scalar::<_, Id>(
         r"
         SELECT membership_id
         FROM iam_private.lock_silicon_webhook_own_tag_audience($1, $2, $3)

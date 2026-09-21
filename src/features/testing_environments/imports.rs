@@ -1,5 +1,6 @@
 //! Test-only import of a production Application configuration.
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::State,
@@ -11,7 +12,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -51,12 +51,12 @@ pub(super) struct TestingApplicationImported {
 pub(super) struct ProductionApplication {
     #[serde(default)]
     #[sqlx(default)]
-    pub(super) encryption_application_id: Option<Uuid>,
+    pub(super) encryption_application_id: Option<Id>,
     pub(super) source_revision: i64,
     pub(super) visibility: String,
-    pub(super) source_application_id: Uuid,
-    pub(super) source_webhook_endpoint_id: Uuid,
-    pub(super) source_webhook_signing_key_id: Uuid,
+    pub(super) source_application_id: Id,
+    pub(super) source_webhook_endpoint_id: Id,
+    pub(super) source_webhook_signing_key_id: Id,
     pub(super) app_id: String,
     pub(super) org_id: String,
     pub(super) organization_name: String,
@@ -134,7 +134,7 @@ pub(super) async fn import_application(
     let source = graph.get(&qualified_app_id).ok_or(AppError::NotFound)?;
     let application_id = imported_root.application_id;
     let organization_id =
-        sqlx::query_scalar::<_, Uuid>("SELECT organization_id FROM iam.applications WHERE id=$1")
+        sqlx::query_scalar::<_, Id>("SELECT organization_id FROM iam.applications WHERE id=$1")
             .bind(application_id)
             .fetch_one(&mut *transaction)
             .await
@@ -197,8 +197,8 @@ pub(super) async fn import_application(
 async fn record_import(
     transaction: &mut Transaction<'_, Postgres>,
     authenticated: &Authenticated,
-    testing_environment_id: Uuid,
-    organization_id: Uuid,
+    testing_environment_id: Id,
+    organization_id: Id,
     aggregate: AggregateVersion<'_>,
     source: &ProductionApplication,
     created: bool,
@@ -259,7 +259,7 @@ async fn record_import(
     .map_err(support::database)
 }
 
-fn require_direct_carbon(authenticated: &Authenticated) -> Result<Uuid, AppError> {
+fn require_direct_carbon(authenticated: &Authenticated) -> Result<Id, AppError> {
     let access = &authenticated.0;
     if access.subject.actor_type == ActorType::Carbon
         && access.audience == "silicon-iam"
@@ -274,7 +274,7 @@ fn require_direct_carbon(authenticated: &Authenticated) -> Result<Uuid, AppError
     }
 }
 
-fn import_idempotency_scope(environment_id: Uuid) -> String {
+fn import_idempotency_scope(environment_id: Id) -> String {
     format!("environment:{environment_id}:application_import")
 }
 
@@ -306,7 +306,7 @@ fn qualified_app_id(value: &str) -> Result<String, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use uuid::Uuid;
+    use crate::domain::id::Id;
 
     use super::{import_idempotency_scope, qualified_app_id};
 
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn import_idempotency_scope_is_environment_bound_but_body_independent() {
-        let environment_id = Uuid::from_u128(7);
+        let environment_id = Id::from_u128(7);
         assert_eq!(
             import_idempotency_scope(environment_id),
             format!("environment:{environment_id}:application_import")

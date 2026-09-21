@@ -2,9 +2,9 @@
 
 use std::{collections::HashSet, str::FromStr as _};
 
+use crate::domain::id::Id;
 use sqlx::{FromRow, Postgres, Transaction};
 use thiserror::Error;
-use uuid::Uuid;
 
 use crate::domain::organization::{Capability, OrgRole, OrganizationAuthority};
 
@@ -12,9 +12,9 @@ use crate::domain::organization::{Capability, OrgRole, OrganizationAuthority};
 #[derive(Clone, Debug)]
 pub struct OrganizationAccess {
     /// Internal organization identity.
-    pub organization_id: Uuid,
+    pub organization_id: Id,
     /// Durable membership identity.
-    pub membership_id: Uuid,
+    pub membership_id: Id,
     /// Resolved authorization tier and explicit grants.
     pub authority: OrganizationAuthority,
 }
@@ -32,8 +32,8 @@ pub enum AuthorizationError {
 
 #[derive(FromRow)]
 struct OrganizationAccessRow {
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
     org_role: String,
     capabilities: Vec<String>,
 }
@@ -49,7 +49,7 @@ struct OrganizationAccessRow {
 /// value. A non-member or unknown handle returns `Ok(None)`.
 pub async fn resolve_organization_access(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
+    principal_id: Id,
     organization_handle: &str,
 ) -> Result<Option<OrganizationAccess>, AuthorizationError> {
     let row = sqlx::query_as::<_, OrganizationAccessRow>(
@@ -59,13 +59,13 @@ pub async fn resolve_organization_access(
             membership.id AS membership_id,
             membership.org_role::text AS org_role,
             ARRAY(
-                SELECT capability_grant.capability
-                FROM iam.organization_capability_grants AS capability_grant
-                WHERE capability_grant.organization_id = organization.id
-                  AND capability_grant.grantee_membership_id = membership.id
-                  AND capability_grant.revoked_at IS NULL
-                  AND capability_grant.capability <> 'audit.read'
-                ORDER BY capability_grant.capability
+                SELECT catalog.capability
+                FROM iam.organization_capability_catalog AS catalog
+                WHERE catalog.capability <> 'audit.read'
+                  AND iam_private.has_organization_capability(
+                      organization.id, $1, catalog.capability
+                  )
+                ORDER BY catalog.capability
             ) AS capabilities
         FROM iam.organizations AS organization
         JOIN iam.organization_memberships AS membership

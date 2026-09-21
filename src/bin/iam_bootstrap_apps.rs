@@ -2,6 +2,7 @@
 use clap::Parser;
 use secrecy::ExposeSecret as _;
 use serde::{Deserialize, Serialize};
+use silicon_iam::domain::id::Id;
 use silicon_iam::{
     config::Settings,
     infrastructure::{
@@ -10,7 +11,6 @@ use silicon_iam::{
     },
 };
 use std::{collections::BTreeMap, io::Write as _, path::PathBuf};
-use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(
@@ -78,7 +78,7 @@ async fn bootstrap(input: Arguments, settings: Settings) -> anyhow::Result<()> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('iam:bootstrap-apps',0))")
         .execute(&mut *tx)
         .await?;
-    let (org,actor):(Uuid,Uuid)=sqlx::query_as("SELECT org.id,carbon.id FROM iam.organizations org JOIN iam.organization_memberships member ON member.organization_id=org.id AND member.status='active' AND member.org_role='owner' AND member.principal_kind='carbon' JOIN iam.carbons carbon ON carbon.id=member.principal_id JOIN iam.principals principal ON principal.id=carbon.id AND principal.status='active' WHERE org.org_id=$1 AND carbon.carbon_id=$2 AND org.status='active' FOR SHARE OF org,member,principal").bind(&input.org_id).bind(&input.carbon_id).fetch_one(&mut *tx).await?;
+    let (org,actor):(Id,Id)=sqlx::query_as("SELECT org.id,carbon.id FROM iam.organizations org JOIN iam.organization_memberships member ON member.organization_id=org.id AND member.status='active' AND member.org_role='owner' AND member.principal_kind='carbon' JOIN iam.carbons carbon ON carbon.id=member.principal_id JOIN iam.principals principal ON principal.id=carbon.id AND principal.status='active' WHERE org.org_id=$1 AND carbon.carbon_id=$2 AND org.status='active' FOR SHARE OF org,member,principal").bind(&input.org_id).bind(&input.carbon_id).fetch_one(&mut *tx).await?;
     let mut file = if input.output.exists() {
         anyhow::ensure!(
             !std::fs::symlink_metadata(&input.output)?
@@ -158,7 +158,7 @@ async fn bootstrap(input: Arguments, settings: Settings) -> anyhow::Result<()> {
         "bootstrap file belongs to a different setup"
     );
     for id in [&input.iam_app_id, &input.honeycomb_app_id] {
-        let present: Option<(Uuid, Uuid)> =
+        let present: Option<(Id, Id)> =
             sqlx::query_as("SELECT id,organization_id FROM iam.applications WHERE app_id=$1")
                 .bind(id)
                 .fetch_optional(&mut *tx)
@@ -172,7 +172,7 @@ async fn bootstrap(input: Arguments, settings: Settings) -> anyhow::Result<()> {
                 "previously existing app is missing; reconcile without regenerating credentials"
             )
         })?;
-        let id_uuid = Uuid::now_v7();
+        let id_uuid = Id::identity(id)?;
         let digest =
             crypto.digest_secret(DigestPurpose::ApplicationSecret, &secret.clone().into())?;
         sqlx::query("INSERT INTO iam.principals(id,kind,status,activated_at) VALUES($1,'application','active',transaction_timestamp())").bind(id_uuid).execute(&mut *tx).await?;
@@ -193,8 +193,8 @@ async fn bootstrap(input: Arguments, settings: Settings) -> anyhow::Result<()> {
             .bind(actor)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("INSERT INTO iam.application_secrets(id,application_id,secret_version,secret_prefix,secret_digest,pepper_key_version,created_by_carbon_id) VALUES($1,$2,1,$3,$4,$5,$6)").bind(Uuid::now_v7()).bind(id_uuid).bind(secret.chars().take(12).collect::<String>()).bind(digest.as_bytes().as_slice()).bind(digest.key_version()).bind(actor).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO iam.audit_events(id,request_id,actor_principal_id,actor_kind,organization_id,application_id,action,target_type,target_id,metadata) VALUES($1,$2,$3,'carbon',$4,$5,'application.authentication.bootstrap','application',$5,'{}')").bind(Uuid::now_v7()).bind(Uuid::now_v7()).bind(actor).bind(org).bind(id_uuid).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO iam.application_secrets(id,application_id,secret_version,secret_prefix,secret_digest,pepper_key_version,created_by_carbon_id) VALUES($1,$2,1,$3,$4,$5,$6)").bind(Id::now_v7()).bind(id_uuid).bind(secret.chars().take(12).collect::<String>()).bind(digest.as_bytes().as_slice()).bind(digest.key_version()).bind(actor).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO iam.audit_events(id,request_id,actor_principal_id,actor_kind,organization_id,application_id,action,target_type,target_id,metadata) VALUES($1,$2,$3,'carbon',$4,$5,'application.authentication.bootstrap','application',$5,'{}')").bind(Id::now_v7()).bind(Id::now_v7()).bind(actor).bind(org).bind(id_uuid).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     println!(
@@ -224,18 +224,18 @@ mod tests {
         let mut settings = Settings::from_env()?;
         settings.database.url = url.into();
         postgres::register_runtime_key_versions(&pool, &settings.security).await?;
-        let actor = Uuid::now_v7();
-        let org = Uuid::now_v7();
+        let actor = Id::identity("bootstrap_owner")?;
+        let org = Id::now_v7();
         let mut tx = pool.begin().await?;
         sqlx::query("INSERT INTO iam.principals(id,kind,status,activated_at) VALUES($1,'carbon','active',transaction_timestamp())").bind(actor).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO iam.carbons(id,carbon_id,display_name) VALUES($1,'bootstrap_owner','Owner')").bind(actor).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES($1,'bootstrap_org',$2,'Bootstrap')").bind(org).bind(actor).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES($1,$2,$3,'carbon','owner')").bind(Uuid::now_v7()).bind(org).bind(actor).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES($1,$2,$3,'carbon','owner')").bind(Id::now_v7()).bind(org).bind(actor).execute(&mut *tx).await?;
         for (index, kind) in ["email", "phone"].iter().enumerate() {
-            sqlx::query("INSERT INTO iam.carbon_contacts(id,carbon_id,kind,ciphertext,nonce,encryption_key_version,verified_at) VALUES($1,$2,$3::iam.contact_kind,$4,$5,1,transaction_timestamp())").bind(Uuid::now_v7()).bind(actor).bind(kind).bind(vec![2u8;17]).bind(vec![u8::try_from(index)?;12]).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO iam.carbon_contacts(id,carbon_id,kind,ciphertext,nonce,encryption_key_version,verified_at) VALUES($1,$2,$3::iam.contact_kind,$4,$5,1,transaction_timestamp())").bind(Id::now_v7()).bind(actor).bind(kind).bind(vec![2u8;17]).bind(vec![u8::try_from(index)?;12]).execute(&mut *tx).await?;
         }
         tx.commit().await?;
-        let directory = std::env::temp_dir().join(format!("iam-bootstrap-test-{}", Uuid::now_v7()));
+        let directory = std::env::temp_dir().join(format!("iam-bootstrap-test-{}", Id::now_v7()));
         std::fs::create_dir(&directory)?;
         let output = directory.join("credentials.json");
         let arguments = || Arguments {
@@ -247,7 +247,7 @@ mod tests {
         };
         bootstrap(arguments(), settings.clone()).await?;
         let original = std::fs::read(&output)?;
-        let identities: Vec<Uuid> =
+        let identities: Vec<Id> =
             sqlx::query_scalar("SELECT id FROM iam.applications ORDER BY app_id")
                 .fetch_all(&pool)
                 .await?;
@@ -256,10 +256,9 @@ mod tests {
             std::fs::read(&output)? == original,
             "bootstrap rewrote credentials"
         );
-        let after: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM iam.applications ORDER BY app_id")
-                .fetch_all(&pool)
-                .await?;
+        let after: Vec<Id> = sqlx::query_scalar("SELECT id FROM iam.applications ORDER BY app_id")
+            .fetch_all(&pool)
+            .await?;
         anyhow::ensure!(
             identities == after && after.len() == 2,
             "bootstrap recreated identities"

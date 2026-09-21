@@ -1,7 +1,7 @@
+use crate::domain::id::Id;
 use secrecy::SecretString;
 use serde::{Deserialize, Deserializer, Serialize};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 #[derive(Clone, Debug, Deserialize)]
 pub(super) struct PageQuery {
@@ -174,11 +174,11 @@ pub(super) struct ApplicationAdminDecision {
 
 #[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]
 pub(super) struct ApplicationView {
-    pub(super) id: Uuid,
+    pub(super) id: Id,
     pub(super) app_id: String,
-    pub(super) organization_id: Uuid,
+    pub(super) organization_id: Id,
     pub(super) org_id: String,
-    pub(super) created_by_carbon_id: Uuid,
+    pub(super) created_by_carbon_id: Id,
     pub(super) app_name: Option<String>,
     pub(super) app_logo_uri: Option<String>,
     pub(super) base_url: String,
@@ -193,7 +193,7 @@ pub(super) struct ApplicationView {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct ApplicationDetail {
     pub(super) visibility: String,
-    pub(super) id: Uuid,
+    pub(super) id: Id,
     pub(super) app_id: String,
     pub(super) org_id: String,
     pub(super) created_by: PublicActor,
@@ -245,7 +245,7 @@ pub(super) struct WebhookEndpointView {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct WebhookView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) application_id: Option<Uuid>,
+    pub(super) application_id: Option<Id>,
     pub(super) active_url: Option<String>,
     pub(super) pending_url: Option<String>,
     pub(super) status: String,
@@ -269,13 +269,13 @@ pub(super) struct DeadLetterPageQuery {
 
 #[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]
 pub(super) struct WebhookDeadLetterView {
-    pub(super) delivery_id: Uuid,
-    pub(super) event_id: Uuid,
+    pub(super) delivery_id: Id,
+    pub(super) event_id: Id,
     pub(super) event_type: String,
     #[serde(with = "crate::wire_time")]
     pub(super) occurred_at: OffsetDateTime,
     pub(super) aggregate_type: String,
-    pub(super) aggregate_id: Uuid,
+    pub(super) aggregate_id: Id,
     pub(super) aggregate_version: i64,
     pub(super) status: String,
     pub(super) attempt_count: i32,
@@ -297,7 +297,7 @@ pub(super) struct WebhookDeadLetterPage {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WebhookReplayRequest {
-    pub(super) delivery_ids: Vec<Uuid>,
+    pub(super) delivery_ids: Vec<Id>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -308,7 +308,7 @@ pub(super) struct WebhookReplayResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize, sqlx::FromRow)]
 pub(super) struct PublicActor {
-    pub(super) principal_id: Uuid,
+    pub(super) principal_id: Id,
     #[serde(rename = "type")]
     pub(super) actor_type: String,
     pub(super) public_id: String,
@@ -316,7 +316,7 @@ pub(super) struct PublicActor {
 
 #[derive(Clone, Debug, Serialize, sqlx::FromRow)]
 pub(super) struct LoginEventActor {
-    pub(super) principal_id: Uuid,
+    pub(super) principal_id: Id,
     #[serde(rename = "type")]
     pub(super) actor_type: String,
     // History remains readable when directory RLS withholds an actor's handle.
@@ -325,7 +325,7 @@ pub(super) struct LoginEventActor {
 
 #[derive(Clone, Debug, Serialize, sqlx::FromRow)]
 pub(super) struct LoginEventView {
-    pub(super) id: Uuid,
+    pub(super) id: Id,
     #[sqlx(flatten)]
     pub(super) actor: LoginEventActor,
     pub(super) app_id: Option<String>,
@@ -400,13 +400,13 @@ pub(super) struct ShortLivedTokenResponse {
     pub(super) slt: String,
     pub(super) expires_in: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) request_id: Option<Uuid>,
+    pub(super) request_id: Option<Id>,
 }
 
 /// Which login a token page is reporting on.
 #[derive(Clone, Debug, Deserialize)]
 pub(super) struct LoginStatusQuery {
-    pub(super) request: Uuid,
+    pub(super) request: Id,
 }
 
 /// What an application presents to trade a credential for tokens.
@@ -445,8 +445,8 @@ pub(super) struct TokenInput {
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct IntrospectionResponse {
     pub(super) active: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) principal_id: Option<Uuid>,
+    #[serde(rename = "public_id", skip_serializing_if = "Option::is_none")]
+    pub(super) principal_id: Option<Id>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) actor_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -454,9 +454,9 @@ pub(super) struct IntrospectionResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) org_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) membership_id: Option<Uuid>,
+    pub(super) membership_id: Option<Id>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) session_id: Option<Uuid>,
+    pub(super) session_id: Option<Id>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -478,24 +478,24 @@ pub(super) struct IntrospectionResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct AuthorizationTag {
-    pub(super) id: Uuid,
+    pub(super) id: Id,
     pub(super) name: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct ApplicationAuthorization {
-    pub(super) principal_id: Uuid,
+    pub(super) principal_id: Id,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) actor_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) public_id: Option<String>,
-    pub(super) organization_id: Uuid,
+    pub(super) organization_id: Id,
     pub(super) org_id: String,
-    pub(super) membership_id: Uuid,
+    pub(super) membership_id: Id,
     pub(super) membership_version: i64,
     pub(super) authorization_epoch: i64,
     pub(super) audience: String,
-    pub(super) testing_environment_id: Option<Uuid>,
+    pub(super) testing_environment_id: Option<Id>,
     pub(super) scopes: Vec<String>,
     pub(super) org_role: Option<String>,
     pub(super) tags: Option<Vec<AuthorizationTag>>,
@@ -524,7 +524,7 @@ pub(super) struct OboProofResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) testing_context: Option<serde_json::Value>,
     pub(super) access_proof: String,
-    pub(super) proof_id: Uuid,
+    pub(super) proof_id: Id,
     pub(super) expires_in: u64,
     #[serde(with = "crate::wire_time")]
     pub(super) expires_at: OffsetDateTime,
@@ -554,7 +554,7 @@ pub(super) struct OboEndpointReference {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct OboAccessResult {
     pub(super) valid: bool,
-    pub(super) proof_id: Uuid,
+    pub(super) proof_id: Id,
     pub(super) issuer_app_id: String,
     pub(super) audience: String,
     pub(super) actor: PublicActor,
@@ -613,7 +613,7 @@ mod tests {
 
     fn actor() -> PublicActor {
         PublicActor {
-            principal_id: Uuid::nil(),
+            principal_id: Id::nil(),
             actor_type: "carbon".to_owned(),
             public_id: "owner_1".to_owned(),
         }
@@ -729,9 +729,9 @@ mod tests {
     #[test]
     fn login_history_projection_contains_actor_and_request_outcome() {
         let value = serde_json::to_value(LoginEventView {
-            id: Uuid::nil(),
+            id: Id::nil(),
             actor: LoginEventActor {
-                principal_id: Uuid::nil(),
+                principal_id: Id::nil(),
                 actor_type: "silicon".to_owned(),
                 public_id: None,
             },
@@ -741,7 +741,7 @@ mod tests {
             success: true,
             ip_prefix: None,
             user_agent_summary: None,
-            request_id: Uuid::nil().to_string(),
+            request_id: Id::nil().to_string(),
             occurred_at: datetime!(2026-01-01 0:00 UTC),
         })
         .unwrap_or(Value::Null);
@@ -765,7 +765,7 @@ mod tests {
     fn application_projection_uses_wire_compatible_timestamps() {
         let value = serde_json::to_value(ApplicationDetail {
             visibility: "public".to_owned(),
-            id: Uuid::nil(),
+            id: Id::nil(),
             app_id: "tos>briefcase".to_owned(),
             org_id: "tos".to_owned(),
             created_by: actor(),

@@ -1,8 +1,8 @@
+use crate::domain::id::Id;
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::json;
 use sqlx::{FromRow, Postgres, Transaction};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::ApiState,
@@ -94,7 +94,7 @@ const APPLICATION_WEBHOOK_APPROVAL_RESOURCE_QUERY: &str = r"
 
 #[derive(FromRow)]
 struct ContactRow {
-    id: Uuid,
+    id: Id,
     ciphertext: Vec<u8>,
     nonce: Vec<u8>,
     encryption_key_version: i16,
@@ -104,7 +104,7 @@ struct ContactRow {
 struct ChallengeRow {
     channel: String,
     purpose: String,
-    resource_id: Option<Uuid>,
+    resource_id: Option<Id>,
     challenge_digest: Option<Vec<u8>>,
     digest_key_version: Option<i16>,
     provider_verification_sid: Option<String>,
@@ -116,7 +116,7 @@ struct ChallengeRow {
 
 #[derive(FromRow)]
 struct CancelledChallengeRow {
-    id: Uuid,
+    id: Id,
     channel: String,
     was_delivered: bool,
     failed_attempts: i16,
@@ -198,7 +198,7 @@ pub(super) async fn create_challenge(
         contact.ciphertext,
     )?;
 
-    let challenge_id = Uuid::now_v7();
+    let challenge_id = Id::now_v7();
     let otp = state
         .crypto
         .generate_otp()
@@ -250,7 +250,7 @@ pub(super) async fn create_challenge(
     .bind(context.authentication_session_id)
     .bind(principal_id)
     .bind(input.action.database_value())
-    .bind(input.resource_id)
+    .bind(input.resource_id.to_string())
     .fetch_all(&mut *transaction)
     .await
     .map_err(|_| AppError::Internal {
@@ -314,7 +314,7 @@ pub(super) async fn create_challenge(
     .bind(principal_id)
     .bind(input.channel.database_value())
     .bind(input.action.database_value())
-    .bind(input.resource_id)
+    .bind(input.resource_id.to_string())
     .bind(
         local_digest
             .as_ref()
@@ -386,13 +386,13 @@ pub(super) async fn create_challenge(
 async fn confirm_step_up_delivery(
     state: &ApiState,
     record_id: idempotency::Lease,
-    principal_id: Uuid,
-    authentication_session_id: Uuid,
-    challenge_id: Uuid,
+    principal_id: Id,
+    authentication_session_id: Id,
+    challenge_id: Id,
     channel: ContactChannel,
     provider_message_id: &str,
     action: StepUpAction,
-    resource_id: Uuid,
+    resource_id: Id,
     response: &AuthSessionResponse,
 ) -> Result<(), AppError> {
     let mut transaction = serializable(state.db(), "step_up_delivery_finalize_transaction").await?;
@@ -500,8 +500,8 @@ async fn confirm_step_up_delivery(
 async fn fail_step_up_delivery(
     state: &ApiState,
     record_id: idempotency::Lease,
-    principal_id: Uuid,
-    challenge_id: Uuid,
+    principal_id: Id,
+    challenge_id: Id,
 ) -> Result<(), AppError> {
     let mut transaction = serializable(state.db(), "step_up_delivery_failure_transaction").await?;
     set_principal_context(&mut transaction, principal_id).await?;
@@ -540,7 +540,7 @@ pub(super) async fn verify_challenge(
     state: &ApiState,
     context: &AccessContext,
     key: &IdempotencyKey,
-    challenge_id: Uuid,
+    challenge_id: Id,
     code: SecretString,
 ) -> Result<Outcome<StepUpVerificationOutcome>, AppError> {
     let principal_id = sessions::carbon_context(context)?;
@@ -724,7 +724,7 @@ pub(super) async fn verify_challenge(
             code: std::borrow::Cow::Borrowed("step_up_verification_race"),
         });
     }
-    let assertion_id = Uuid::now_v7();
+    let assertion_id = Id::now_v7();
     sqlx::query(
         r"
         INSERT INTO iam.step_up_assertions (
@@ -815,9 +815,9 @@ pub(super) async fn verify_challenge(
 async fn lock_current_session(
     transaction: &mut Transaction<'_, Postgres>,
     context: &AccessContext,
-    principal_id: Uuid,
+    principal_id: Id,
 ) -> Result<(), AppError> {
-    let locked_session_id = sqlx::query_scalar::<_, Uuid>(
+    let locked_session_id = sqlx::query_scalar::<_, Id>(
         r"
         SELECT session.id
         FROM iam.authentication_sessions AS session
@@ -851,13 +851,13 @@ async fn lock_current_session(
 
 async fn validate_resource_binding(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
+    principal_id: Id,
     action: StepUpAction,
-    resource_id: Uuid,
+    resource_id: Id,
 ) -> Result<(), AppError> {
     match action {
         StepUpAction::AccountSessionRevoke => {
-            let owned_session = sqlx::query_scalar::<_, Uuid>(SESSION_RESOURCE_OWNERSHIP_QUERY)
+            let owned_session = sqlx::query_scalar::<_, Id>(SESSION_RESOURCE_OWNERSHIP_QUERY)
                 .bind(resource_id)
                 .bind(principal_id)
                 .fetch_optional(&mut **transaction)
@@ -872,14 +872,14 @@ async fn validate_resource_binding(
         StepUpAction::AccountSessionsRevokeAll if resource_id != principal_id => {
             return Err(AppError::Validation {
                 details: json!({
-                    "resource_id": ["must equal the current Carbon principal_id for this action"]
+                    "resource_id": ["must equal the current carbon_id for this action"]
                 }),
             });
         }
         StepUpAction::ApplicationClientSecretRotate
         | StepUpAction::ApplicationWebhookSecretRotate => {
             let owned_application =
-                sqlx::query_scalar::<_, Uuid>(APPLICATION_RESOURCE_OWNERSHIP_QUERY)
+                sqlx::query_scalar::<_, Id>(APPLICATION_RESOURCE_OWNERSHIP_QUERY)
                     .bind(resource_id)
                     .bind(principal_id)
                     .fetch_optional(&mut **transaction)
@@ -902,7 +902,7 @@ async fn validate_resource_binding(
                 category: "step_up_webhook_reviewer_validate",
             })?;
             let authorized_application =
-                sqlx::query_scalar::<_, Uuid>(APPLICATION_WEBHOOK_APPROVAL_RESOURCE_QUERY)
+                sqlx::query_scalar::<_, Id>(APPLICATION_WEBHOOK_APPROVAL_RESOURCE_QUERY)
                     .bind(resource_id)
                     .bind(principal_id)
                     .bind(platform_reviewer)
@@ -922,7 +922,7 @@ async fn validate_resource_binding(
 
 async fn active_contact(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
+    principal_id: Id,
     channel: ContactChannel,
 ) -> Result<ContactRow, AppError> {
     sqlx::query_as::<_, ContactRow>(
@@ -949,9 +949,9 @@ async fn active_contact(
 
 async fn lock_challenge(
     transaction: &mut Transaction<'_, Postgres>,
-    challenge_id: Uuid,
-    principal_id: Uuid,
-    authentication_session_id: Uuid,
+    challenge_id: Id,
+    principal_id: Id,
+    authentication_session_id: Id,
 ) -> Result<Option<ChallengeRow>, AppError> {
     sqlx::query_as::<_, ChallengeRow>(STEP_UP_CHALLENGE_LOCK_QUERY)
         .bind(challenge_id)
@@ -966,9 +966,9 @@ async fn lock_challenge(
 
 async fn record_failure(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
-    authentication_session_id: Uuid,
-    challenge_id: Uuid,
+    principal_id: Id,
+    authentication_session_id: Id,
+    challenge_id: Id,
     channel: &str,
 ) -> Result<(), AppError> {
     let aggregate_version =
@@ -1001,8 +1001,8 @@ async fn record_failure(
 
 async fn record_cancellation(
     transaction: &mut Transaction<'_, Postgres>,
-    principal_id: Uuid,
-    authentication_session_id: Uuid,
+    principal_id: Id,
+    authentication_session_id: Id,
     challenge: CancelledChallengeRow,
 ) -> Result<(), AppError> {
     let aggregate_version =
@@ -1129,7 +1129,7 @@ mod tests {
         });
         assert!(serde_json::from_value::<StepUpChallengeInput>(missing).is_err());
 
-        let resource_id = uuid::Uuid::from_u128(1);
+        let resource_id = crate::domain::id::Id::from_u128(1);
         let valid = serde_json::json!({
             "channel": "email",
             "action": "account.session_revoke",

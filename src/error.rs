@@ -52,6 +52,14 @@ pub enum AppError {
         /// Stable missing-precondition code.
         code: Cow<'static, str>,
     },
+    /// A persisted sensitive-action request requires another authorized actor.
+    #[error("the action is awaiting approval")]
+    ApprovalRequired {
+        /// Exact pending request to review before retrying the mutation.
+        approval_request_id: String,
+        /// Idempotency key which binds retries to the approved mutation.
+        idempotency_key: String,
+    },
     /// A supplied optimistic-concurrency or step-up precondition did not hold.
     #[error("a request precondition failed")]
     PreconditionFailed {
@@ -250,6 +258,19 @@ impl AppError {
                 Cow::Borrowed("forbidden"),
                 Cow::Borrowed("The actor is not authorized for this action."),
                 None,
+            ),
+            Self::ApprovalRequired {
+                approval_request_id,
+                idempotency_key,
+            } => (
+                StatusCode::PRECONDITION_REQUIRED,
+                Cow::Borrowed("approval_required"),
+                Cow::Borrowed(
+                    "This action requires approval. Retry the same request after approval.",
+                ),
+                Some(
+                    serde_json::json!({"approval_request_id": approval_request_id,"idempotency_key":idempotency_key}),
+                ),
             ),
             Self::NotFound => (
                 StatusCode::NOT_FOUND,

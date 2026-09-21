@@ -31,38 +31,20 @@ Later entries win. `POST …/trust/effective` resolves a specific subject and ta
 
 Tag-to-tag rules form a matrix, and the matrix is not symmetric. "Tech trusts legal" says nothing whatsoever about "legal trusts tech" — they are two independent rules, and an interface that renders them as one is lying about the model.
 
-## Governance: who may change a role or a tag
+## Sensitive-action policies
 
-| Actor | Job roles and tags |
-| --- | --- |
-| Owner or administrator | Changes them directly |
-| Silicon | May only *request* a change |
-| Ordinary member | Neither |
+The owner, or an admin delegated `action_policies.manage`, configures an action's requester tier (any member, only admins, or only owner) and required approval (none, admin, or owner). The owner always acts directly. A permitted requester who can approve the action also acts directly.
 
-The quorum then depends on *who the change is about*:
+Automatic approval can match a requester's permanent Carbon ID, full Silicon ID, or membership tag. It satisfies approval without granting action permission. When approval is required, empty selector lists require manual approval.
 
-| Target | Approvals required |
-| --- | --- |
-| A Carbon | That Carbon **and** an owner or administrator |
-| A Silicon | An owner or administrator only |
-| A Silicon token rotation | The organization owner |
+Submit the direct job-description, tag, profile, hierarchy, or trust mutation. Job Description changes apply directly by default, without approval. When a rule requires review, HTTP 428 `approval_required` returns the pending request and its request key. Review exact changes at `GET …/action-approvals` and decide at `POST …/action-approvals/{request_id}/decisions`. After approval, retry the identical mutation and request key.
 
-Show the quorum per party, not as a single total. "1 of 2" hides which of the two is still missing, and that is precisely the thing a reader needs.
+Approvals expire after twelve hours. Changed rules, resource versions, sessions, or request contents require fresh validation. The approval and action commit atomically. The old role-change and tag-change request routes return HTTP 410; token rotation continues to use its dedicated ownership and credential-verification flow.
 
-### The request lifecycle
-
-1. A Silicon opens a request via `POST …/role-change-requests` or `POST …/members/{membership_id}/tag-change-requests`.
-
-2. Each required party records a decision at `POST …/approval-requests/{request_id}/decisions`, with `If-Match` on the request version.
-
-3. Once the quorum is met the change applies atomically and the request completes.
-
-`immutable_payload` is fixed when the request opens, so nobody can approve one change and have another take effect. A token-rotation decision additionally requires a verified-channel step-up token.
-
-`actionable_by_me=true` narrows the list to requests the caller can act on now, which is the only filter most people want.
+`GET …/action-policies` lists every action with its current rule and defaults. Use `PUT …/action-policies/{action}` and If-Match to configure it.
 
 ## History
 
-`GET …/members/{membership_id}/job-role-history` and `…/tag-history` record who requested each change, who approved it, when it applied, and the linked approval request. A direct owner or administrator change has no `approval_request_id` and no approvers, which is how you tell the two apart.
+`GET …/members/{membership_id}/job-role-history` and `…/tag-history` record the applied change and actor. Sensitive-action approvals retain the exact reviewed request and consumption status in the action-approvals list.
 
 Audit records are retained for seven years.

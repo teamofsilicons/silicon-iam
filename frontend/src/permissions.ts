@@ -11,7 +11,7 @@ export async function organizationAuthority(
     );
     const own = page.items.find(
       (item) =>
-        item.principal.principal_id === principal && item.status === "active",
+        item.principal.public_id === principal && item.status === "active",
     );
     if (own) return request(`${orgPath(org)}/members/${own.id}/authorization`);
     if (!page.page.has_more || !page.page.next_cursor) break;
@@ -28,7 +28,17 @@ export function operationAllowed(
   if (authority.org_role === "owner") return;
   const has = (capability: string) =>
     (authority.capabilities || []).includes(capability);
-  const admin = authority.org_role === "admin";
+  // Sensitive-action policies are checked by the server for this exact request.
+  // A static capability snapshot cannot represent a configurable permission tier.
+  if (
+    /\/members\/[^/]+\/(job-role|job-description|tags)$/.test(op.path) ||
+    (/\/members\/[^/]+$/.test(op.path) && op.method === "PATCH") ||
+    (/\/silicons\/[^/]+$/.test(op.path) && op.method === "PATCH") ||
+    /\/trust\//.test(op.path) ||
+    /\/tags(?:\/|$)/.test(op.path) ||
+    (/\/organizations\/[^/]+$/.test(op.path) && op.method === "PATCH")
+  )
+    return;
   let required = "";
   if (op.path.endsWith("/ownership-transfers"))
     return "Only the current organization owner can transfer ownership.";
@@ -45,8 +55,6 @@ export function operationAllowed(
   else if (/\/(admin-demotions|capabilities)$/.test(op.path))
     required = "admins.manage";
   else if (/\/members\/[^/]+\/(job-role|tags)$/.test(op.path)) {
-    if (!admin)
-      return "Direct job-role and tag changes require a current organization owner or admin.";
     required = op.path.endsWith("/tags") ? "tags.manage" : "roles.approve";
   } else if (/\/members\/[^/]+$/.test(op.path))
     required =

@@ -2,6 +2,7 @@ use super::application_reads::{self, ReadScopes};
 use crate::api::membership_ids::MembershipPath;
 use std::collections::BTreeMap;
 
+use crate::domain::id::Id;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -9,7 +10,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, QueryBuilder, Transaction, types::Json};
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -123,7 +123,7 @@ pub(super) struct DirectoryPageQuery {
 
 #[derive(Debug, sqlx::FromRow)]
 struct DirectoryRow {
-    membership_id: Uuid,
+    membership_id: Id,
     principal_kind: String,
     name: String,
     public_id: String,
@@ -136,15 +136,15 @@ struct DirectoryRow {
 
 #[derive(Debug, sqlx::FromRow)]
 struct DirectoryTrustDefaultRow {
-    subject_membership_id: Uuid,
+    subject_membership_id: Id,
     default_trust_boundary: String,
     default_trust_level: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
 struct DirectoryTrustMatchRow {
-    directory_membership_id: Uuid,
-    id: Uuid,
+    directory_membership_id: Id,
+    id: Id,
     subject_kind: String,
     target_kind: String,
     trust_boundary: String,
@@ -152,7 +152,7 @@ struct DirectoryTrustMatchRow {
 }
 
 impl DirectoryTrustMatchRow {
-    fn into_parts(self) -> (Uuid, trust::MatchRow) {
+    fn into_parts(self) -> (Id, trust::MatchRow) {
         (
             self.directory_membership_id,
             trust::MatchRow {
@@ -169,6 +169,7 @@ impl DirectoryTrustMatchRow {
 #[derive(Debug, Serialize)]
 struct DirectoryRole {
     org_role: String,
+    #[serde(rename = "job_description")]
     job_role: String,
 }
 
@@ -252,9 +253,9 @@ struct DirectoryPage {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TrustEvaluationTarget {
-    directory_member: Uuid,
-    subject: Uuid,
-    target_silicon: Uuid,
+    directory_member: Id,
+    subject: Id,
+    target_silicon: Id,
 }
 
 pub(super) async fn get_self(
@@ -485,8 +486,8 @@ pub(super) async fn details(
 
 async fn fetch_directory_member(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
     fields: DirectoryFields,
 ) -> Result<DirectoryRow, AppError> {
     let mut statement = directory_statement(fields);
@@ -506,8 +507,8 @@ async fn fetch_directory_member(
 
 async fn list_directory_members(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    cursor: Option<Uuid>,
+    organization_id: Id,
+    cursor: Option<Id>,
     limit: i64,
     fields: DirectoryFields,
     actor_filter: Option<&str>,
@@ -549,12 +550,12 @@ fn directory_statement(fields: DirectoryFields) -> QueryBuilder<Postgres> {
 
 async fn evaluate_directory_trust(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    requester_membership_id: Uuid,
+    organization_id: Id,
+    requester_membership_id: Id,
     requester_kind: ActorType,
     fields: DirectoryFields,
     rows: &[DirectoryRow],
-) -> Result<BTreeMap<Uuid, TrustEvaluationResponse>, AppError> {
+) -> Result<BTreeMap<Id, TrustEvaluationResponse>, AppError> {
     if !fields.contains(FIELD_TRUST) {
         return Ok(BTreeMap::new());
     }
@@ -595,7 +596,7 @@ async fn evaluate_directory_trust(
         });
     }
 
-    let mut matches = BTreeMap::<Uuid, Vec<trust::MatchRow>>::new();
+    let mut matches = BTreeMap::<Id, Vec<trust::MatchRow>>::new();
     if !targets.is_empty() {
         let directory_membership_ids = targets
             .iter()
@@ -645,19 +646,19 @@ async fn evaluate_directory_trust(
 /// All subjects share two batched reads; rule identifiers never leave this module.
 pub(super) async fn effective_trust_for_subjects(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    subjects: &[Uuid],
-) -> Result<BTreeMap<Uuid, serde_json::Value>, AppError> {
+    organization_id: Id,
+    subjects: &[Id],
+) -> Result<BTreeMap<Id, serde_json::Value>, AppError> {
     #[derive(sqlx::FromRow)]
     struct SubjectMatch {
-        subject_membership_id: Uuid,
+        subject_membership_id: Id,
         #[sqlx(flatten)]
         matched: DirectoryTrustMatchRow,
     }
     if subjects.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let targets = sqlx::query_scalar::<_, Uuid>(
+    let targets = sqlx::query_scalar::<_, Id>(
         "SELECT membership.id FROM iam.organization_memberships membership JOIN iam.silicons silicon ON silicon.membership_id=membership.id AND silicon.organization_id=membership.organization_id JOIN iam.principals principal ON principal.id=silicon.id AND principal.status='active' WHERE membership.organization_id=$1 AND membership.status='active' AND silicon.provisioning_status='active' ORDER BY membership.id"
     ).bind(organization_id).fetch_all(&mut **transaction).await.map_err(support::database)?;
     let defaults = sqlx::query_as::<_, DirectoryTrustDefaultRow>(DIRECTORY_TRUST_DEFAULT_SQL)
@@ -674,7 +675,7 @@ pub(super) async fn effective_trust_for_subjects(
             pair_targets.push(*target);
         }
     }
-    let mut matches = BTreeMap::<(Uuid, Uuid), Vec<trust::MatchRow>>::new();
+    let mut matches = BTreeMap::<(Id, Id), Vec<trust::MatchRow>>::new();
     if !pair_subjects.is_empty() {
         let rows = sqlx::query_as::<_, SubjectMatch>(DIRECTORY_TRUST_MATCH_SQL)
             .bind(organization_id)
@@ -705,7 +706,9 @@ pub(super) async fn effective_trust_for_subjects(
                 &default.default_trust_level,
                 candidates,
             )?;
-            effective.push(serde_json::json!({"target_silicon_membership_id":target,"trust":evaluated.trust,"advisory":evaluated.advisory}));
+            effective.push(
+                serde_json::json!({"target_silicon_membership_id":target,"trust":evaluated.trust}),
+            );
         }
         result.insert(default.subject_membership_id, serde_json::json!(effective));
     }
@@ -713,7 +716,7 @@ pub(super) async fn effective_trust_for_subjects(
 }
 
 fn trust_target(
-    requester_membership_id: Uuid,
+    requester_membership_id: Id,
     requester_kind: ActorType,
     row: &DirectoryRow,
 ) -> Result<Option<TrustEvaluationTarget>, AppError> {
@@ -892,7 +895,7 @@ mod tests {
 
     fn directory_row(principal_kind: &str) -> DirectoryRow {
         DirectoryRow {
-            membership_id: Uuid::from_u128(10),
+            membership_id: Id::from_u128(10),
             principal_kind: principal_kind.to_owned(),
             name: "Directory member".to_owned(),
             public_id: "directory-member".to_owned(),
@@ -901,7 +904,7 @@ mod tests {
             organization_public_id: "example-org".to_owned(),
             organization_name: "Example Org".to_owned(),
             tags: Json(vec![TagSummary {
-                id: Uuid::from_u128(11),
+                id: Id::from_u128(11),
                 name: "Engineering".to_owned(),
             }]),
         }
@@ -933,7 +936,7 @@ mod tests {
             Ok(value) if value == json!({
                 "name": "Directory member",
                 "display_name": "Directory member",
-                "role": { "org_role": "member", "job_role": "Engineer" }
+                "role": { "org_role": "member", "job_description": "Engineer" }
             })
         ));
     }
@@ -948,17 +951,16 @@ mod tests {
                 "name": "Directory member",
                 "display_name": "Directory member",
                 "id": "directory-member",
-                "role": { "org_role": "member", "job_role": "Engineer" },
+                "role": { "org_role": "member", "job_description": "Engineer" },
                 "org": { "id": "example-org", "name": "Example Org" },
                 "tags": [{
-                    "id": Uuid::from_u128(11),
+                    "id": Id::from_u128(11),
                     "name": "Engineering"
                 }],
                 "trust": {
                     "trust": { "boundary": "internal", "level": "not_trusted" },
                     "source": "organization_default",
                     "matching_rule_ids": [],
-                    "advisory": true
                 }
             })
         ));
@@ -966,7 +968,7 @@ mod tests {
 
     #[test]
     fn trust_orientation_uses_the_requesters_point_of_view() {
-        let requester = Uuid::from_u128(20);
+        let requester = Id::from_u128(20);
         let silicon = directory_row("silicon");
         assert!(matches!(
             trust_target(requester, ActorType::Carbon, &silicon),
@@ -996,7 +998,7 @@ mod tests {
 
     #[test]
     fn carbon_subject_defaults_are_membership_scoped_without_per_row_queries() {
-        let requester = Uuid::from_u128(20);
+        let requester = Id::from_u128(20);
         let carbon = directory_row("carbon");
         let silicon = directory_row("silicon");
 

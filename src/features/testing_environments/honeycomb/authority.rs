@@ -1,5 +1,6 @@
 //! Production application authority is separate from a test key or service identity.
 use super::{Instruction, Service, database};
+use crate::domain::id::Id;
 use crate::{
     api::ApiState,
     features::applications::{error::ApiError, security::ApplicationClient},
@@ -11,7 +12,6 @@ use axum::{
 };
 use secrecy::SecretString;
 use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 
 pub(super) async fn production_application(
     state: &ApiState,
@@ -82,7 +82,7 @@ pub(super) async fn authorize(
 
 pub(super) async fn private_import_allowed(
     tx: &mut Transaction<'_, Postgres>,
-    actor: Uuid,
+    actor: Id,
     org: &str,
 ) -> Result<bool, ApiError> {
     sqlx::query_scalar("SELECT iam_private.honeycomb_testing_application_import_allowed($1,$2)")

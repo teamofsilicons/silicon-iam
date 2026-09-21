@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, State},
@@ -12,7 +13,6 @@ use serde::Serialize;
 use serde_json::json;
 use sqlx::{FromRow, Postgres, Transaction};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -50,7 +50,7 @@ struct SubscriptionRow {
     mode: String,
     topics: Vec<String>,
     tag_filter_enabled: bool,
-    additional_tag_ids: Vec<Uuid>,
+    additional_tag_ids: Vec<Id>,
     version: i64,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
@@ -58,7 +58,7 @@ struct SubscriptionRow {
 
 #[derive(Clone, Copy, Debug, FromRow)]
 struct SubscriptionIdentity {
-    id: Uuid,
+    id: Id,
     version: i64,
 }
 
@@ -192,7 +192,7 @@ pub(in crate::features::organizations) async fn replace_subscription(
         "subscription_replaced",
     )
     .await?;
-    let subscription_id = existing.map_or_else(Uuid::now_v7, |subscription| subscription.id);
+    let subscription_id = existing.map_or_else(Id::now_v7, |subscription| subscription.id);
     let version = if existing.is_some() {
         sqlx::query_scalar::<_, i64>(
             r"
@@ -417,7 +417,7 @@ pub(in crate::features::organizations) async fn delete_subscription(
     .execute(&mut *scope.transaction)
     .await
     .map_err(support::database)?;
-    let deleted_id = sqlx::query_scalar::<_, Uuid>(
+    let deleted_id = sqlx::query_scalar::<_, Id>(
         r"
         DELETE FROM iam.silicon_webhook_subscriptions
         WHERE organization_id = $1 AND silicon_id = $2
@@ -516,8 +516,8 @@ fn canonicalize(
 }
 
 fn replace_claim_request(
-    organization_id: Uuid,
-    silicon_id: Uuid,
+    organization_id: Id,
+    silicon_id: Id,
     input: &CanonicalSubscription,
 ) -> serde_json::Value {
     json!({
@@ -544,10 +544,10 @@ fn enforce_existing_version(
 
 async fn lock_active_endpoint(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    silicon_id: Uuid,
-) -> Result<Option<Uuid>, AppError> {
-    sqlx::query_scalar::<_, Uuid>(
+    organization_id: Id,
+    silicon_id: Id,
+) -> Result<Option<Id>, AppError> {
+    sqlx::query_scalar::<_, Id>(
         r"
         SELECT id
         FROM iam.silicon_webhook_endpoints
@@ -564,7 +564,7 @@ async fn lock_active_endpoint(
 
 async fn load_subscription(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
     target: &TargetSilicon,
 ) -> Result<SiliconWebhookSubscriptionResponse, AppError> {
     let row = sqlx::query_as::<_, SubscriptionRow>(
@@ -631,8 +631,8 @@ async fn load_subscription(
 
 async fn validate_active_filter_tags(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    tag_ids: &[Uuid],
+    organization_id: Id,
+    tag_ids: &[Id],
 ) -> Result<(), AppError> {
     let count = sqlx::query_scalar::<_, i64>(
         r"
@@ -685,7 +685,7 @@ mod tests {
             mode: SiliconWebhookSubscriptionMode::All,
             topics: vec![SiliconWebhookTopic::TrustUpdates],
             tag_filter: Some(SiliconWebhookTagFilter {
-                additional_tag_ids: vec![Uuid::from_u128(2), Uuid::from_u128(1)],
+                additional_tag_ids: vec![Id::from_u128(2), Id::from_u128(1)],
             }),
         }) else {
             panic!("all mode must be valid");
@@ -693,7 +693,7 @@ mod tests {
         assert_eq!(canonical.topics, SiliconWebhookTopic::ALL);
         assert_eq!(
             canonical.tag_filter.map(|filter| filter.additional_tag_ids),
-            Some(vec![Uuid::from_u128(1), Uuid::from_u128(2)])
+            Some(vec![Id::from_u128(1), Id::from_u128(2)])
         );
     }
 
@@ -733,48 +733,35 @@ mod tests {
 
     #[test]
     fn replacement_idempotency_is_bound_to_the_target_silicon() {
-        let organization_id = Uuid::now_v7();
+        let organization_id = Id::now_v7();
         let input = CanonicalSubscription {
             mode: SiliconWebhookSubscriptionMode::All,
             topics: SiliconWebhookTopic::ALL.to_vec(),
             tag_filter: None,
         };
-        let first = replace_claim_request(organization_id, Uuid::now_v7(), &input);
-        let second = replace_claim_request(organization_id, Uuid::now_v7(), &input);
+        let first = replace_claim_request(organization_id, Id::fixture("first:acme"), &input);
+        let second = replace_claim_request(organization_id, Id::fixture("second:acme"), &input);
         assert_ne!(first, second);
     }
 
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires isolated PostgreSQL via IAM_TEST_DATABASE_ADMIN_URL or Docker"]
     async fn archived_additional_tag_no_longer_authorizes_delivery() -> anyhow::Result<()> {
         use anyhow::ensure;
-        use sqlx::postgres::PgPoolOptions;
-        use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-        use testcontainers_modules::postgres::Postgres as TestPostgres;
 
-        let container = TestPostgres::default()
-            .with_tag("16-alpine")
-            .start()
-            .await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&format!(
-                "postgres://postgres:postgres@{host}:{port}/postgres"
-            ))
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let organization_id = Uuid::from_u128(0x41_01);
-        let creator_id = Uuid::from_u128(0x41_02);
-        let silicon_id = Uuid::from_u128(0x41_03);
-        let membership_id = Uuid::from_u128(0x41_04);
-        let endpoint_id = Uuid::from_u128(0x41_05);
-        let signing_key_id = Uuid::from_u128(0x41_06);
-        let subscription_id = Uuid::from_u128(0x41_07);
-        let tag_id = Uuid::from_u128(0x41_08);
-        let event_id = Uuid::from_u128(0x41_09);
+        let organization_id = Id::from_u128(0x41_01);
+        let creator_id = Id::fixture("tag-filter-owner");
+        let silicon_id = Id::fixture("subscriber:tag-filter-test");
+        let membership_id = Id::from_u128(0x41_04);
+        let endpoint_id = Id::from_u128(0x41_05);
+        let signing_key_id = Id::from_u128(0x41_06);
+        let subscription_id = Id::from_u128(0x41_07);
+        let tag_id = Id::from_u128(0x41_08);
+        let event_id = Id::from_u128(0x41_09);
 
         let mut transaction = pool.begin().await?;
         // This focused resolver test deliberately bypasses unrelated foreign-key
@@ -923,7 +910,7 @@ mod tests {
         .execute(&mut *transaction)
         .await?;
 
-        let active_recipients = sqlx::query_scalar::<_, Uuid>(
+        let active_recipients = sqlx::query_scalar::<_, Id>(
             "SELECT silicon_id FROM iam_private.list_worker_silicon_webhook_recipients($1)",
         )
         .bind(event_id)
@@ -944,7 +931,7 @@ mod tests {
         .bind(tag_id)
         .execute(&mut *transaction)
         .await?;
-        let archived_recipients = sqlx::query_scalar::<_, Uuid>(
+        let archived_recipients = sqlx::query_scalar::<_, Id>(
             "SELECT silicon_id FROM iam_private.list_worker_silicon_webhook_recipients($1)",
         )
         .bind(event_id)

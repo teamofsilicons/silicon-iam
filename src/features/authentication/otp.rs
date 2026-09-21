@@ -1,7 +1,7 @@
+use crate::domain::id::Id;
 use secrecy::{ExposeSecret as _, SecretString};
 use sqlx::FromRow;
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, Default, FromRow, PartialEq, Eq)]
 pub(super) struct AttemptState {
@@ -33,7 +33,7 @@ pub(super) fn inherited_attempt_state(states: &[AttemptState]) -> AttemptState {
 
 pub(super) fn bound_secret(
     domain: &'static str,
-    scope_id: Uuid,
+    scope_id: Id,
     code: &SecretString,
 ) -> SecretString {
     let mut value = String::with_capacity(domain.len() + 1 + 36 + 1 + 6);
@@ -47,8 +47,8 @@ pub(super) fn bound_secret(
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::id::Id;
     use secrecy::{ExposeSecret as _, SecretString};
-    use uuid::Uuid;
 
     use time::{Duration, OffsetDateTime};
 
@@ -57,9 +57,9 @@ mod tests {
     #[test]
     fn otp_binding_separates_domain_and_session() {
         let code = SecretString::from("123456".to_owned());
-        let first = bound_secret("login", Uuid::from_u128(1), &code);
-        let second = bound_secret("login", Uuid::from_u128(2), &code);
-        let third = bound_secret("step-up", Uuid::from_u128(1), &code);
+        let first = bound_secret("login", Id::from_u128(1), &code);
+        let second = bound_secret("login", Id::from_u128(2), &code);
+        let third = bound_secret("step-up", Id::from_u128(1), &code);
         assert_ne!(first.expose_secret(), second.expose_secret());
         assert_ne!(first.expose_secret(), third.expose_secret());
     }

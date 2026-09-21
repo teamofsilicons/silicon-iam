@@ -22,6 +22,54 @@ pub async fn run(context: &Context, command: ApprovalCommand) -> Result<()> {
     let client = context.authenticated().await?;
     let org = context.organization()?;
     match command {
+        ApprovalCommand::Actions => json(&client.governance().action_approvals(org).await?),
+        ApprovalCommand::Policies => json(&client.governance().action_policies(org).await?),
+        ApprovalCommand::DecideAction {
+            request_id,
+            expected_version,
+            decision,
+        } => {
+            let decision = if decision == "approve" {
+                models::ActionApprovalDecisionDecision::Approve
+            } else {
+                models::ActionApprovalDecisionDecision::Reject
+            };
+            json(
+                &client
+                    .governance()
+                    .decide_action(
+                        org,
+                        request_id,
+                        expected_version,
+                        &models::ActionApprovalDecision { decision },
+                        &context.mutation(),
+                    )
+                    .await?,
+            )
+        }
+        ApprovalCommand::ConfigurePolicy {
+            action,
+            expected_version,
+            file,
+        } => {
+            let input: models::ActionPolicyUpdate = serde_json::from_str(
+                &std::fs::read_to_string(file)
+                    .map_err(|error| CliError::Usage(error.to_string()))?,
+            )
+            .map_err(|error| CliError::Usage(error.to_string()))?;
+            json(
+                &client
+                    .governance()
+                    .configure_action_policy(
+                        org,
+                        &action,
+                        expected_version,
+                        &input,
+                        &context.mutation(),
+                    )
+                    .await?,
+            )
+        }
         ApprovalCommand::List {
             status,
             kind,
@@ -92,47 +140,41 @@ pub async fn run(context: &Context, command: ApprovalCommand) -> Result<()> {
                 .await?;
             report(context, &decided)
         }
-        ApprovalCommand::RequestRole {
-            membership_id,
-            job_role,
-        } => {
-            let requested = client
-                .governance()
-                .request_role_change(
-                    org,
-                    &models::RoleChangeRequestCreate {
-                        target_membership_id: membership_id,
-                        proposed_job_role: job_role,
-                        reason: None,
-                    },
-                    &context.mutation(),
-                )
-                .await?;
-            report(context, &requested)
-        }
         ApprovalCommand::RequestTags {
             membership_id,
             add,
             remove,
         } => {
-            let requested = client
-                .governance()
-                .request_tag_change(
-                    org,
-                    &membership_id,
-                    &models::TagChangeRequestCreate {
-                        add_tag_ids: (!add.is_empty()).then_some(add),
-                        remove_tag_ids: (!remove.is_empty()).then_some(remove),
-                        reason: None,
-                    },
-                    &context.mutation(),
-                )
-                .await?;
-            report(context, &requested)
+            let current = client.members().get(org, &membership_id).await?;
+            let mut tags: Vec<_> = current
+                .tags
+                .iter()
+                .map(|tag| tag.id)
+                .filter(|id| !remove.contains(id))
+                .collect();
+            tags.extend(add);
+            tags.sort_unstable();
+            tags.dedup();
+            json(
+                &client
+                    .governance()
+                    .replace_tags(
+                        org,
+                        &membership_id,
+                        current.version,
+                        &models::DirectTagSetReplace { tag_ids: tags },
+                        &context.mutation(),
+                    )
+                    .await?,
+            )
         }
-        ApprovalCommand::SetRole {
+        ApprovalCommand::RequestRole {
             membership_id,
-            job_role,
+            job_description,
+        }
+        | ApprovalCommand::SetRole {
+            membership_id,
+            job_description,
         } => {
             let current = client.members().get(org, &membership_id).await?;
             let updated = client
@@ -141,14 +183,14 @@ pub async fn run(context: &Context, command: ApprovalCommand) -> Result<()> {
                     org,
                     &membership_id,
                     current.version,
-                    &models::DirectJobRoleReplace { job_role },
+                    &models::DirectJobRoleReplace { job_description },
                     &context.mutation(),
                 )
                 .await?;
             match context.format {
                 Format::Json => json(&updated),
                 Format::Text => {
-                    println!("Job role is now {}.", updated.job_role);
+                    println!("Job description is now {}.", updated.job_description);
                     Ok(())
                 }
             }
@@ -203,8 +245,8 @@ pub async fn run(context: &Context, command: ApprovalCommand) -> Result<()> {
                     for entry in &listed.items {
                         table.row([
                             timestamp(entry.applied_at),
-                            entry.old_job_role.clone(),
-                            entry.new_job_role.clone(),
+                            entry.old_job_description.clone(),
+                            entry.new_job_description.clone(),
                         ]);
                     }
                     table.print();
@@ -260,7 +302,7 @@ fn report(context: &Context, request: &models::ApprovalRequest) -> Result<()> {
                     "{}:{} ({})",
                     label(&request.requested_by.type_field),
                     request.requested_by.public_id,
-                    request.requested_by.principal_id
+                    request.requested_by.public_id
                 ),
             ]);
             table.row(["target_membership", &request.target_membership_id]);
@@ -277,7 +319,7 @@ fn report(context: &Context, request: &models::ApprovalRequest) -> Result<()> {
                         label(&decision.decision),
                         label(&decision.approver.type_field),
                         decision.approver.public_id,
-                        decision.approver.principal_id,
+                        decision.approver.public_id,
                         timestamp(decision.decided_at),
                         or_dash(decision.comment.as_deref()),
                         decision.id

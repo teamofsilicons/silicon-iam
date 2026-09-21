@@ -6,8 +6,6 @@ use anyhow::ensure;
 use axum::{body::to_bytes, http::StatusCode, response::IntoResponse};
 use serde_json::{Value, json};
 use sqlx::postgres::PgPoolOptions;
-use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-use testcontainers_modules::postgres::Postgres as PostgresImage;
 
 use super::*;
 use crate::{
@@ -20,32 +18,19 @@ use crate::{
     },
 };
 
-const APP: Uuid = Uuid::from_u128(0x11);
-const ENVIRONMENT: Uuid = Uuid::from_u128(0x801);
+const APP: Id = Id::fixture("test_org>app-alpha");
+const ENVIRONMENT: Id = Id::from_u128(0x801);
 
 #[tokio::test]
-#[ignore = "requires Docker and development IAM settings with synthetic keyrings"]
+#[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL plus synthetic IAM settings"]
 async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fallback()
 -> anyhow::Result<()> {
-    let container = PostgresImage::default()
-        .with_tag("16-alpine")
-        .start()
-        .await?;
-    let url = format!(
-        "postgres://postgres:postgres@{}:{}",
-        container.get_host().await?,
-        container.get_host_port_ipv4(5432).await?
-    );
-    let production = PgPoolOptions::new()
-        .max_connections(3)
-        .connect(&format!("{url}/postgres"))
-        .await?;
-    sqlx::raw_sql("CREATE ROLE silicon_iam_api NOLOGIN; CREATE ROLE silicon_iam_worker NOLOGIN; CREATE ROLE silicon_iam_key_operator NOLOGIN;").execute(&production).await?;
+    let production_database = crate::test_database::TestDatabase::start().await?;
+    let production = production_database.pool.clone();
+    sqlx::raw_sql("DO $$ BEGIN IF to_regrole('silicon_iam_api') IS NULL THEN CREATE ROLE silicon_iam_api NOLOGIN; END IF; IF to_regrole('silicon_iam_worker') IS NULL THEN CREATE ROLE silicon_iam_worker NOLOGIN; END IF; IF to_regrole('silicon_iam_key_operator') IS NULL THEN CREATE ROLE silicon_iam_key_operator NOLOGIN; END IF; END $$;").execute(&production).await?;
     crate::infrastructure::postgres::migrate(&production).await?;
     super::super::live_tests::seed_protocol_rows(&production).await?;
-    sqlx::query("CREATE DATABASE testing")
-        .execute(&production)
-        .await?;
+    let testing_database = crate::test_database::TestDatabase::start().await?;
     let testing = PgPoolOptions::new()
         .max_connections(3)
         .after_connect(|connection, _| {
@@ -57,23 +42,23 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
                 Ok(())
             })
         })
-        .connect(&format!("{url}/testing"))
+        .connect(&testing_database.url)
         .await?;
     crate::infrastructure::postgres::migrate_testing(&testing).await?;
     super::super::live_tests::seed_protocol_rows(&testing).await?;
     sqlx::raw_sql(r"
-        INSERT INTO iam.principals (id,kind,status,activated_at) VALUES ('00000000-0000-0000-0000-000000000003','carbon','active',transaction_timestamp());
-        INSERT INTO iam.carbons (id,carbon_id,display_name) VALUES ('00000000-0000-0000-0000-000000000003','oac_test_admin','Prefix test actor');
+        INSERT INTO iam.principals (id,kind,status,activated_at) VALUES ('oac_test_admin','carbon','active',transaction_timestamp());
+        INSERT INTO iam.carbons (id,carbon_id,display_name) VALUES ('oac_test_admin','oac_test_admin','Prefix test actor');
         INSERT INTO iam.carbon_contacts (id,carbon_id,kind,ciphertext,nonce,encryption_key_version,verified_at)
-        SELECT CASE WHEN kind='email' THEN '00000000-0000-0000-0000-000000000202'::uuid ELSE '00000000-0000-0000-0000-000000000203'::uuid END, '00000000-0000-0000-0000-000000000003'::uuid, kind, ciphertext, nonce, encryption_key_version, verified_at FROM iam.carbon_contacts WHERE carbon_id='00000000-0000-0000-0000-000000000001';
+        SELECT CASE WHEN kind='email' THEN '00000000-0000-0000-0000-000000000202'::uuid ELSE '00000000-0000-0000-0000-000000000203'::uuid END, 'oac_test_admin'::text, kind, ciphertext, nonce, encryption_key_version, verified_at FROM iam.carbon_contacts WHERE carbon_id='test_carbon';
         INSERT INTO iam.principals (id,kind,status,activated_at) VALUES
-            ('00000000-0000-0000-0000-000000000501','silicon','active',transaction_timestamp());
+            ('worker:test_org','silicon','active',transaction_timestamp());
         INSERT INTO iam.organization_memberships (id,organization_id,principal_id,principal_kind,org_role)
-        VALUES ('00000000-0000-0000-0000-000000000531','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000501','silicon','member');
+        VALUES ('00000000-0000-0000-0000-000000000531','00000000-0000-0000-0000-000000000021','worker:test_org','silicon','member');
         INSERT INTO iam.silicons (id,organization_id,membership_id,organization_handle,silicon_handle,display_name,provisioning_status)
-        VALUES ('00000000-0000-0000-0000-000000000501','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000531','test_org','worker','Worker','active');
-        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES ('00000000-0000-0000-0000-000000000011','self.identity.read') ON CONFLICT DO NOTHING;
-        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES ('00000000-0000-0000-0000-000000000011','self.identity.read','00000000-0000-0000-0000-000000000001') ON CONFLICT DO NOTHING;
+        VALUES ('worker:test_org','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000531','test_org','worker','Worker','active');
+        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES ('test_org>app-alpha','self.identity.read') ON CONFLICT DO NOTHING;
+        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES ('test_org>app-alpha','self.identity.read','test_carbon') ON CONFLICT DO NOTHING;
     ").execute(&testing).await?;
     let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
         .lines()
@@ -103,9 +88,9 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
     settings.providers.allow_local_providers = true;
     let crypto = Arc::new(CryptoService::from_settings(&settings.security)?);
     let state = ApiState {
-        pool: restricted(format!("{url}/postgres")).await?,
+        pool: restricted(production_database.url.clone()).await?,
         testing: Some(TestingPlane {
-            pool: restricted(format!("{url}/testing")).await?,
+            pool: restricted(testing_database.url.clone()).await?,
             settings: Arc::new(TestingSettings {
                 database: settings.database.clone(),
                 idle_days: 30,
@@ -131,13 +116,13 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
         .execute(&mut *tx)
         .await?;
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM iam_private.create_testing_actor_login($1,1,'test_carbon',$2,$3,1800)")
-        .bind(APP).bind(Uuid::now_v7()).bind(Uuid::now_v7()).fetch_one(&mut *tx).await?;
+        .bind(APP).bind(Id::now_v7()).bind(Id::now_v7()).fetch_one(&mut *tx).await?;
     ensure!(count == 0);
     tx.rollback().await?;
-    testing_plane::scope(
+    Box::pin(testing_plane::scope(
         SelectedEnvironment {
             id: ENVIRONMENT,
-            organization_id: Uuid::from_u128(0x21),
+            organization_id: Id::from_u128(0x21),
         },
         async {
             for actor in ["test_carbon", "worker:test_org", "oac_test_admin"] {
@@ -195,20 +180,20 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
             }
             // Mint a real one-time code through the existing IAM path and exchange it.
             let mut tx =
-                context::begin(state.db(), DatabaseContext::principal(Uuid::from_u128(1))).await?;
+                context::begin(state.db(), DatabaseContext::principal(Id::fixture("test_carbon"))).await?;
             let scopes = vec!["self.identity.read".to_owned()];
             let (_, code) = mint_short_lived_token(
                 &mut tx,
                 &state,
                 MintSubject {
                     application_id: APP,
-                    session_id: Uuid::from_u128(0x41),
-                    principal_id: Uuid::from_u128(1),
+                    session_id: Id::from_u128(0x41),
+                    principal_id: Id::fixture("test_carbon"),
                     subject_kind: "carbon",
                     organization_id: None,
                     membership_id: None,
                     redirect_uri: None,
-                    selected_membership_ids: &[Uuid::from_u128(0x31)],
+                    selected_membership_ids: &[Id::from_u128(0x31)],
                 },
                 &scopes,
             )
@@ -234,16 +219,16 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
                     == StatusCode::BAD_REQUEST
             );
             sqlx::query("UPDATE iam.principals SET status = 'suspended', suspended_at = transaction_timestamp() WHERE id = $1")
-                .bind(Uuid::from_u128(1)).execute(&testing).await?;
+                .bind(Id::fixture("test_carbon")).execute(&testing).await?;
             ensure!(exchange(&state, "test_carbon", "suspended-actor-login").await?.0 == StatusCode::BAD_REQUEST);
             anyhow::Ok(())
         },
-    )
+    ))
     .await?;
-    testing_plane::scope(
+    Box::pin(testing_plane::scope(
         SelectedEnvironment {
-            id: Uuid::from_u128(0x802),
-            organization_id: Uuid::from_u128(0x21),
+            id: Id::from_u128(0x802),
+            organization_id: Id::from_u128(0x21),
         },
         async {
             ensure!(
@@ -254,7 +239,7 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
             );
             anyhow::Ok(())
         },
-    )
+    ))
     .await?;
     Ok(())
 }
@@ -287,7 +272,7 @@ async fn request_tokens(
         identity: crate::features::applications::security::ApplicationIdentity {
             application_id: APP,
             app_id: "test_org>app-alpha".to_owned(),
-            organization_id: Uuid::from_u128(0x21),
+            organization_id: Id::from_u128(0x21),
             auth_epoch: 1,
         },
         authenticated_secret: SecretString::from("synthetic-secret".to_owned()),

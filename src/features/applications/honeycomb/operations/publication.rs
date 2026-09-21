@@ -5,7 +5,7 @@ use axum::{extract::Query, routing::get};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PlanRequest {
-    request_id: Uuid,
+    request_id: Id,
     app_id: String,
     configuration_revision: i64,
     configuration: Value,
@@ -14,9 +14,9 @@ struct PlanRequest {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DecisionRequest {
-    operation_id: Uuid,
-    request_id: Uuid,
-    plan_id: Uuid,
+    operation_id: Id,
+    request_id: Id,
+    plan_id: Id,
     app_id: String,
     configuration_revision: i64,
     provider: String,
@@ -27,17 +27,17 @@ struct DecisionRequest {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ActivationRequest {
-    operation_id: Uuid,
-    request_id: Uuid,
-    plan_id: Uuid,
+    operation_id: Id,
+    request_id: Id,
+    plan_id: Id,
     app_id: String,
     configuration_revision: i64,
     expected_iam_revision: i64,
     configuration: Value,
     visibility: String,
-    decision_ids: Vec<Uuid>,
+    decision_ids: Vec<Id>,
     #[serde(default)]
-    configuration_operations: Vec<Uuid>,
+    configuration_operations: Vec<Id>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,7 +49,7 @@ struct ProviderQuery {
 #[serde(deny_unknown_fields)]
 struct RecipientQuery {
     provider: String,
-    after: Option<Uuid>,
+    after: Option<Id>,
     #[serde(default = "recipient_limit")]
     limit: i32,
 }
@@ -109,7 +109,7 @@ pub(super) fn configuration_digest(input: &AcceptedConfiguration) -> Result<Vec<
 fn configuration(
     path: &str,
     revision: i64,
-    operation: Uuid,
+    operation: Id,
     expected: i64,
     visibility: &str,
     value: &Value,
@@ -391,7 +391,7 @@ async fn activate(
         return Ok(management_response(response, true));
     }
     validate_current_revision(&mut tx, &state, &service, &desired).await?;
-    let app = sqlx::query_scalar::<_, Uuid>(
+    let app = sqlx::query_scalar::<_, Id>(
         "SELECT iam_private.honeycomb_publication_accept($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
     )
     .bind(service.application_id)
@@ -408,7 +408,7 @@ async fn activate(
     .fetch_one(&mut *tx)
     .await
     .map_err(|error| database_error(&error))?;
-    let current = sqlx::query_as::<_, (Uuid, i64, String)>(
+    let current = sqlx::query_as::<_, (Id, i64, String)>(
         "SELECT id,version,visibility FROM iam.applications WHERE id=$1 FOR UPDATE",
     )
     .bind(app)
@@ -467,7 +467,7 @@ async fn activate(
         .map_err(|_| ApiError::internal("publication_activation_commit"))?;
     Ok(management_response(response, false))
 }
-async fn read_plan(state: &ApiState, service: &Service, plan: Uuid) -> Result<Value, ApiError> {
+async fn read_plan(state: &ApiState, service: &Service, plan: Id) -> Result<Value, ApiError> {
     sqlx::query_scalar::<_, Option<sqlx::types::Json<Value>>>(
         "SELECT iam_private.honeycomb_publication_read($1,$2)",
     )
@@ -482,7 +482,7 @@ async fn read_plan(state: &ApiState, service: &Service, plan: Uuid) -> Result<Va
 async fn read(
     State(state): State<ApiState>,
     service: Service,
-    Path(plan): Path<Uuid>,
+    Path(plan): Path<Id>,
 ) -> Result<Json<Value>, ApiError> {
     Ok(Json(read_plan(&state, &service, plan).await?))
 }
@@ -503,7 +503,7 @@ fn require_provider(plan: &Value, provider: &str, owners: bool) -> Result<(), Ap
 async fn eligibility(
     State(state): State<ApiState>,
     service: Service,
-    Path(plan): Path<Uuid>,
+    Path(plan): Path<Id>,
     Query(query): Query<ProviderQuery>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
@@ -530,8 +530,8 @@ async fn eligibility(
 }
 #[derive(sqlx::FromRow)]
 struct Recipient {
-    principal_id: Uuid,
-    contact_id: Uuid,
+    principal_id: Id,
+    contact_id: Id,
     ciphertext: Vec<u8>,
     nonce: Vec<u8>,
     encryption_key_version: i16,
@@ -539,7 +539,7 @@ struct Recipient {
 async fn recipients(
     State(state): State<ApiState>,
     service: Service,
-    Path(plan): Path<Uuid>,
+    Path(plan): Path<Id>,
     Query(query): Query<RecipientQuery>,
 ) -> Result<Json<Value>, ApiError> {
     if !(1..=1000).contains(&query.limit) {
@@ -553,7 +553,7 @@ async fn recipients(
     .bind(service.application_id)
     .bind(plan)
     .bind(&query.provider)
-    .bind(query.after)
+    .bind(query.after.map(|id| id.to_string()))
     .bind(query.limit)
     .fetch_all(&state.pool)
     .await
@@ -568,7 +568,7 @@ fn recipient_page(
     state: &ApiState,
     mut rows: Vec<Recipient>,
     requested_limit: i32,
-) -> Result<(Vec<Value>, Option<Uuid>), ApiError> {
+) -> Result<(Vec<Value>, Option<Id>), ApiError> {
     let limit = usize::try_from(requested_limit)
         .map_err(|_| ApiError::internal("publication_recipient_limit"))?;
     let has_more = rows.len() > limit;
@@ -598,7 +598,7 @@ fn recipient_page(
             .map_err(|_| ApiError::internal("publication_recipient_decrypt"))?;
         let email = String::from_utf8(plaintext.to_vec())
             .map_err(|_| ApiError::internal("publication_recipient_encoding"))?;
-        recipients.push(json!({"principal_id":row.principal_id,"email":email}));
+        recipients.push(json!({"carbon_id":row.principal_id,"email":email}));
     }
     Ok((recipients, next_cursor))
 }
@@ -606,7 +606,7 @@ fn recipient_page(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OrganizationRecipientQuery {
-    after: Option<Uuid>,
+    after: Option<Id>,
     #[serde(default = "recipient_limit")]
     limit: i32,
 }
@@ -625,7 +625,7 @@ async fn organization_recipients(
     )
     .bind(service.application_id)
     .bind(&org_id)
-    .bind(query.after)
+    .bind(query.after.map(|id| id.to_string()))
     .bind(query.limit)
     .fetch_all(&state.pool)
     .await
@@ -662,7 +662,7 @@ async fn validate_current_revision(
     service: &Service,
     desired: &AcceptedConfiguration,
 ) -> Result<(), ApiError> {
-    let (app, revision, visibility): (Uuid, i64, String) = sqlx::query_as(
+    let (app, revision, visibility): (Id, i64, String) = sqlx::query_as(
         "SELECT id,honeycomb_configuration_revision,visibility FROM iam.applications WHERE app_id=$1 AND deleted_at IS NULL FOR UPDATE")
         .bind(&desired.app_id).fetch_optional(&mut **tx).await
         .map_err(|_| ApiError::internal("publication_current_configuration"))?.ok_or_else(ApiError::not_found)?;

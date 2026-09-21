@@ -5,8 +5,9 @@ DECLARE
     application_number integer;
     fixture_prefix text;
     expected_environment uuid;
-    expected_owner uuid;
-    expected_application uuid;
+    expected_owner iam.carbons.id%TYPE;
+    expected_application iam.applications.id%TYPE;
+    legacy_application uuid;
     previous_environment text := current_setting('iam.testing_environment_id', true);
     expected_scopes constant text[] := ARRAY['self.identity.read', 'self.profile.read'];
     actual_scopes text[];
@@ -15,8 +16,8 @@ BEGIN
     FOR environment_number IN 1..2 LOOP
         fixture_prefix := 'v1_upgrade_' || environment_number;
         expected_environment := md5(fixture_prefix || ':environment')::uuid;
-        expected_owner := md5(fixture_prefix || ':owner')::uuid;
         PERFORM set_config('iam.testing_environment_id', expected_environment::text, true);
+        SELECT id INTO STRICT expected_owner FROM iam.carbons WHERE carbon_id=fixture_prefix || '_owner';
         IF NOT EXISTS (
             SELECT 1 FROM iam.authentication_sessions session
             WHERE session.id = md5(fixture_prefix || ':session')::uuid
@@ -37,7 +38,8 @@ BEGIN
         ) THEN RAISE EXCEPTION 'v1 upgrade invalidated a direct IAM session in environment %', environment_number;
         END IF;
         FOR application_number IN 1..3 LOOP
-            expected_application := md5(fixture_prefix || ':app:' || application_number)::uuid;
+            legacy_application := md5(fixture_prefix || ':app:' || application_number)::uuid;
+            SELECT id INTO STRICT expected_application FROM iam.applications WHERE app_id=fixture_prefix || '>app-' || application_number;
             SELECT * INTO STRICT app_record FROM iam.applications WHERE id = expected_application;
             IF app_record.review_status <> (ARRAY['verified','suspended','under_review'])[application_number]
                 OR app_record.version <> 2
@@ -63,27 +65,27 @@ BEGIN
                 OR (SELECT count(*) FROM iam.oauth_authorization_request_scopes scope
                     WHERE scope.application_id = expected_application AND scope.scope = 'profile') <> 1
                 OR (SELECT array_agg(scope.scope) FROM iam.oauth_consent_grant_scopes scope
-                    WHERE scope.consent_grant_id = md5(expected_application::text || ':consent')::uuid)
+                    WHERE scope.consent_grant_id = md5(legacy_application::text || ':consent')::uuid)
                     IS DISTINCT FROM ARRAY['profile']::text[]
             THEN RAISE EXCEPTION 'v1 upgrade modified immutable scope history or retroactively extended consent for %', expected_application;
             END IF;
             IF NOT EXISTS (SELECT 1 FROM iam.access_tokens token
-                    WHERE token.id = md5(expected_application::text || ':access')::uuid
+                    WHERE token.id = md5(legacy_application::text || ':access')::uuid
                       AND token.revoked_at IS NOT NULL AND token.revocation_reason = 'application_v1_reconsent')
                 OR NOT EXISTS (SELECT 1 FROM iam.refresh_token_families family
-                    WHERE family.id = md5(expected_application::text || ':family')::uuid
+                    WHERE family.id = md5(legacy_application::text || ':family')::uuid
                       AND family.status = 'revoked' AND family.revocation_reason = 'application_v1_reconsent')
                 OR NOT EXISTS (SELECT 1 FROM iam.refresh_tokens token
-                    WHERE token.id = md5(expected_application::text || ':refresh')::uuid AND token.revoked_at IS NOT NULL)
+                    WHERE token.id = md5(legacy_application::text || ':refresh')::uuid AND token.revoked_at IS NOT NULL)
                 OR (application_number = 1 AND NOT EXISTS (SELECT 1 FROM iam.obo_proofs proof
-                    WHERE proof.id = md5(expected_application::text || ':obo')::uuid AND proof.revoked_at IS NOT NULL))
+                    WHERE proof.id = md5(legacy_application::text || ':obo')::uuid AND proof.revoked_at IS NOT NULL))
                 OR NOT EXISTS (SELECT 1 FROM iam.oauth_authorization_requests request
-                    WHERE request.id = md5(expected_application::text || ':request')::uuid AND request.status = 'expired')
+                    WHERE request.id = md5(legacy_application::text || ':request')::uuid AND request.status = 'expired')
                 OR NOT EXISTS (SELECT 1 FROM iam.oauth_authorization_codes code
-                    WHERE code.id = md5(expected_application::text || ':code')::uuid
+                    WHERE code.id = md5(legacy_application::text || ':code')::uuid
                       AND code.consumed_at IS NULL AND code.expires_at <= clock_timestamp())
                 OR NOT EXISTS (SELECT 1 FROM iam.oauth_consent_grants consent
-                    WHERE consent.id = md5(expected_application::text || ':consent')::uuid
+                    WHERE consent.id = md5(legacy_application::text || ':consent')::uuid
                       AND consent.status = 'revoked' AND consent.revoked_at IS NOT NULL)
             THEN RAISE EXCEPTION 'v1 upgrade left a legacy application credential usable or deleted history for %', expected_application;
             END IF;

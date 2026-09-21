@@ -75,23 +75,23 @@ async fn receive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::id::Id;
     use axum::{body::Body, http::Request};
     use hmac::{Hmac, Mac as _};
     use serde_json::{Value, json};
     use sha2::Sha256;
     use time::OffsetDateTime;
     use tower::ServiceExt as _;
-    use uuid::Uuid;
 
     const SECRET: &str = "scoped-iam-webhook-test-secret-at-least-32";
 
     fn event() -> Value {
         json!({
-            "spec_version": "1.0", "event_id": Uuid::from_u128(1),
+            "spec_version": "1.0", "event_id": Id::from_u128(1),
             "event_type": "organization.membership.created.v1",
             "occurred_at": "2026-09-13T00:00:00Z",
             "organization_id": null,
-            "aggregate": {"type": "membership", "id": Uuid::from_u128(2), "version": 1},
+            "aggregate": {"type": "membership", "id": Id::from_u128(2), "version": 1},
             "data": {}
         })
     }
@@ -103,7 +103,7 @@ mod tests {
         mac.update(body);
         let mut headers = HeaderMap::new();
         for (key, value) in [
-            ("x-silicon-iam-event-id", Uuid::from_u128(1).to_string()),
+            ("x-silicon-iam-event-id", Id::from_u128(1).to_string()),
             ("x-silicon-iam-timestamp", timestamp.to_string()),
             ("x-silicon-iam-key-version", version.to_string()),
             (

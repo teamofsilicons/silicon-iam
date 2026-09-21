@@ -1,31 +1,26 @@
 //! Real-database checks for the new first-version application permission contract.
+use crate::domain::id::Id;
 use anyhow::{Context as _, ensure};
 use serde_json::{Value, json};
-use sqlx::{postgres::PgPoolOptions, types::Json};
-use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-use testcontainers_modules::postgres::Postgres;
-use uuid::Uuid;
+use sqlx::types::Json;
 
 #[allow(
     clippy::too_many_lines,
     reason = "one transaction exercises the entire review lifecycle under the runtime role"
 )]
 #[tokio::test]
-#[ignore = "requires a local Docker daemon"]
+#[ignore = "requires isolated PostgreSQL via IAM_TEST_DATABASE_ADMIN_URL or Docker"]
 async fn critical_scope_reviews_preserve_previous_authority_and_require_target_approval()
 -> anyhow::Result<()> {
-    let container = Postgres::default().with_tag("16-alpine").start().await?;
-    let pool = PgPoolOptions::new()
-        .max_connections(4)
-        .connect(&format!(
-            "postgres://postgres:postgres@{}:{}/postgres",
-            container.get_host().await?,
-            container.get_host_port_ipv4(5432).await?
-        ))
-        .await?;
+    let database = crate::test_database::TestDatabase::start().await?;
+    let pool = database.pool.clone();
     crate::infrastructure::postgres::migrate(&pool).await?;
     super::live_tests::seed_protocol_rows(&pool).await?;
-    sqlx::raw_sql("CREATE ROLE silicon_iam_api NOLOGIN; CREATE ROLE silicon_iam_worker NOLOGIN; CREATE ROLE silicon_iam_key_operator NOLOGIN;").execute(&pool).await?;
+    sqlx::raw_sql("DO $$ DECLARE role_name text; BEGIN
+      FOREACH role_name IN ARRAY ARRAY['silicon_iam_api','silicon_iam_worker','silicon_iam_key_operator'] LOOP
+        IF to_regrole(role_name) IS NULL THEN EXECUTE format('CREATE ROLE %I NOLOGIN',role_name); END IF;
+      END LOOP;
+    END $$;").execute(&pool).await?;
     let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
         .lines()
         .filter(|line| !line.trim_start().starts_with('\\'))
@@ -53,10 +48,10 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
     .execute(&pool)
     .await
     .context("unscoped membership disclosure and renewed consent")?;
-    let app = Uuid::from_u128(0x11);
-    let target = Uuid::from_u128(0x12);
-    let actor = Uuid::from_u128(1);
-    let org = Uuid::from_u128(0x21);
+    let app = Id::fixture("test_org>app-alpha");
+    let target = Id::fixture("test_org>app-beta");
+    let actor = Id::fixture("test_carbon");
+    let org = Id::from_u128(0x21);
     sqlx::query("INSERT INTO iam.application_obo_endpoints(organization_id,application_id,endpoint_id,path,metadata_definition,critical) VALUES($1,$2,'files.read','/files','{}',true),($1,$2,'files.list','/files/list','{}',false)").bind(org).bind(target).execute(&pool).await?;
     let mut tx = pool.begin().await?;
     sqlx::query("SET LOCAL ROLE silicon_iam_api")
@@ -90,7 +85,7 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
         status == "verified",
         "an upgrade disabled the previous active version"
     );
-    let ids = sqlx::query_scalar::<_, Vec<Uuid>>(
+    let ids = sqlx::query_scalar::<_, Vec<Id>>(
         "SELECT iam_private.submit_application_scope_requests($1,$2,$3)",
     )
     .bind(app)
@@ -167,7 +162,7 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
         "permission removal must be immediate"
     );
     tx.commit().await?;
-    let notifications = sqlx::query_as::<_, (Uuid, i64)>(
+    let notifications = sqlx::query_as::<_, (Id, i64)>(
         "SELECT c.carbon_id, count(*) FROM iam.notification_jobs j \
          JOIN iam.carbon_contacts c ON c.id=j.recipient_contact_id \
          JOIN iam.application_scope_messages m ON m.id=j.context_id \
@@ -178,7 +173,7 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
     .fetch_all(&pool)
     .await?;
     ensure!(
-        notifications == vec![(actor, 3), (Uuid::from_u128(2), 3)],
+        notifications == vec![(Id::fixture("test_admin"), 3), (actor, 3)],
         "submission, decision, and reply must each email the owner and admin once, even when both apps share an organization"
     );
     Ok(())

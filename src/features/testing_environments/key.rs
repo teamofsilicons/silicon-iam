@@ -96,12 +96,16 @@ pub(crate) async fn select_plane(
     };
     support::touch(&state.pool, selected.id).await;
 
-    testing_plane::scope_runtime(selected, resolved.runtime_version, async {
-        if let Err(error) = super::scope_policy::revalidate(&state).await {
-            return error.into_response();
-        }
-        next.run(request).await
-    })
+    Box::pin(testing_plane::scope_runtime(
+        selected,
+        resolved.runtime_version,
+        async {
+            if let Err(error) = super::scope_policy::revalidate(&state).await {
+                return error.into_response();
+            }
+            next.run(request).await
+        },
+    ))
     .await
 }
 

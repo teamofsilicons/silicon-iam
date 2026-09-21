@@ -90,13 +90,25 @@ pub async fn migrate(pool: &PgPool) -> anyhow::Result<()> {
 ///
 /// Returns an error if migration locking or a migration statement fails.
 pub async fn migrate_testing(pool: &PgPool) -> anyhow::Result<()> {
-    let mut base = sqlx::migrate!("./migrations");
-    base.set_ignore_missing(true);
-    base.run(pool).await?;
-
-    let mut overlay = sqlx::migrate!("./migrations/testing");
-    overlay.set_ignore_missing(true);
-    overlay.run(pool).await?;
+    // Historical testing overlays were written for UUID identity columns.
+    // Install them before the canonical-identity conversion, on both fresh
+    // databases and upgrades. Never alter a previously applied checksum.
+    for (source, before, boundary) in [
+        (&MIGRATOR, true, 111),
+        (&TESTING_MIGRATOR, true, 9014),
+        (&MIGRATOR, false, 111),
+        (&TESTING_MIGRATOR, false, 9014),
+    ] {
+        let mut phase = sqlx::migrate::Migrator::with_migrations(
+            source
+                .iter()
+                .filter(|migration| (migration.version < boundary) == before)
+                .cloned()
+                .collect(),
+        );
+        phase.set_ignore_missing(true);
+        phase.run(pool).await?;
+    }
     // Forward base migrations can introduce or replace privileged helpers.
     // Reconcile ownership even when every overlay was already applied.
     sqlx::query("SELECT iam_private.reconcile_testing_environment_security()")

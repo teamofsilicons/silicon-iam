@@ -8,6 +8,7 @@ mod webhook;
 
 use std::sync::{Arc, atomic::AtomicUsize};
 
+use crate::domain::id::Id;
 use sqlx::{PgPool, Postgres, Transaction};
 use tokio::{
     sync::Mutex,
@@ -15,7 +16,6 @@ use tokio::{
     time::{Instant, MissedTickBehavior},
 };
 use tracing::{error, info};
-use uuid::Uuid;
 
 use crate::{
     config::WorkerProcessSettings,
@@ -51,6 +51,19 @@ fn delivery_claim_limit(context: &WorkerContext) -> Result<i64, crate::error::Ap
     })
 }
 
+async fn load_encryption(
+    settings: &crate::config::KeyringSettings,
+    production: &PgPool,
+    testing: Option<&PgPool>,
+) -> anyhow::Result<EncryptionService> {
+    let mut encryption = EncryptionService::from_settings(settings)?;
+    encryption.load_application_contexts(production).await?;
+    if let Some(testing) = testing {
+        encryption.load_application_contexts(testing).await?;
+    }
+    Ok(encryption)
+}
+
 /// Runs durable worker stages until coordinated shutdown.
 ///
 /// # Errors
@@ -76,7 +89,8 @@ pub async fn run(settings: WorkerProcessSettings) -> anyhow::Result<()> {
         }
         None => None,
     };
-    let encryption = EncryptionService::from_settings(&settings.encryption_keys)?;
+    let encryption =
+        load_encryption(&settings.encryption_keys, &pool, testing_pool.as_ref()).await?;
     let notifications = NotificationProviders::from_worker_settings(&settings.providers)?;
     let poll_interval = settings.worker.poll_interval;
     let retention_sweep_interval = settings.worker.retention.sweep_interval;
@@ -91,7 +105,7 @@ pub async fn run(settings: WorkerProcessSettings) -> anyhow::Result<()> {
         notifications,
         outbound_stage_lock: Mutex::new(()),
         retention_phase_cursor: AtomicUsize::new(retention_phase_seed),
-        instance_id: format!("iam-worker-{}", Uuid::now_v7()),
+        instance_id: format!("iam-worker-{}", Id::now_v7()),
     });
     let mut ticker = tokio::time::interval(poll_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -265,7 +279,7 @@ async fn run_once(context: &WorkerContext) {
 /// is scoped before any dependent row is read or inserted.
 async fn begin_processing_transaction(
     pool: &PgPool,
-    testing_environment_id: Option<Uuid>,
+    testing_environment_id: Option<Id>,
 ) -> Result<Transaction<'_, Postgres>, sqlx::Error> {
     let mut transaction = pool.begin().await?;
     if let Some(testing_environment_id) = testing_environment_id {
@@ -277,7 +291,7 @@ async fn begin_processing_transaction(
     Ok(transaction)
 }
 
-pub(super) fn retry_delay_seconds(attempt: u32, maximum: std::time::Duration, id: Uuid) -> i64 {
+pub(super) fn retry_delay_seconds(attempt: u32, maximum: std::time::Duration, id: Id) -> i64 {
     use sha2::{Digest as _, Sha256};
 
     let exponent = attempt.saturating_sub(1).min(20);
@@ -298,7 +312,7 @@ mod tests {
 
     #[test]
     fn retry_delay_is_positive_deterministic_and_capped_with_jitter() {
-        let id = Uuid::nil();
+        let id = Id::nil();
         let first = retry_delay_seconds(10, std::time::Duration::from_secs(60), id);
         let second = retry_delay_seconds(10, std::time::Duration::from_secs(60), id);
         assert_eq!(first, second);

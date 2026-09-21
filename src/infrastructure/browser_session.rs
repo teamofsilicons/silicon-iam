@@ -3,6 +3,7 @@
 //! The cookie is host-only (there is deliberately no `Domain` attribute), so
 //! the API origin selected by deployment configuration is its sole authority.
 
+use crate::domain::id::Id;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac as _};
 use http::{HeaderMap, HeaderValue, header};
@@ -11,7 +12,6 @@ use sha2::Sha256;
 use subtle::ConstantTimeEq as _;
 use thiserror::Error;
 use time::OffsetDateTime;
-use uuid::Uuid;
 use zeroize::{Zeroize as _, Zeroizing};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -24,7 +24,7 @@ const MAX_COOKIE_VALUE_BYTES: usize = 1_024;
 
 /// Authenticated fields carried by the browser session cookie.
 pub(crate) struct VerifiedSessionCookie {
-    pub(crate) session_id: Uuid,
+    pub(crate) session_id: Id,
     pub(crate) csrf_token: String,
 }
 
@@ -45,7 +45,7 @@ pub(crate) enum BrowserSessionCookieError {
 /// Issues a secure, host-only browser session cookie bounded by the session's
 /// absolute expiry.
 pub(crate) fn issue(
-    session_id: Uuid,
+    session_id: Id,
     absolute_expires_at: OffsetDateTime,
     encoded_key: &SecretString,
 ) -> Result<HeaderValue, BrowserSessionCookieError> {
@@ -92,7 +92,7 @@ pub(crate) fn verify_headers(
 }
 
 fn issue_at(
-    session_id: Uuid,
+    session_id: Id,
     absolute_expires_at: OffsetDateTime,
     now: OffsetDateTime,
     encoded_key: &SecretString,
@@ -131,7 +131,7 @@ fn verify(
     let csrf = csrf.ok_or(BrowserSessionCookieError::InvalidCookie)?;
     let signature = signature.ok_or(BrowserSessionCookieError::InvalidCookie)?;
     let session_id =
-        Uuid::parse_str(session).map_err(|_| BrowserSessionCookieError::InvalidCookie)?;
+        Id::parse_str(session).map_err(|_| BrowserSessionCookieError::InvalidCookie)?;
     if session != session_id.to_string() {
         return Err(BrowserSessionCookieError::InvalidCookie);
     }
@@ -185,13 +185,13 @@ fn decode_key(
     result
 }
 
-fn derive_csrf(key: &[u8; 32], session_id: Uuid) -> Result<String, BrowserSessionCookieError> {
+fn derive_csrf(key: &[u8; 32], session_id: Id) -> Result<String, BrowserSessionCookieError> {
     derive_csrf_bytes(key, session_id).map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
 }
 
 fn derive_csrf_bytes(
     key: &[u8; 32],
-    session_id: Uuid,
+    session_id: Id,
 ) -> Result<[u8; 32], BrowserSessionCookieError> {
     let mut mac = new_mac(key)?;
     mac.update(CSRF_DERIVATION_DOMAIN);
@@ -215,11 +215,11 @@ fn new_mac(key: &[u8]) -> Result<HmacSha256, BrowserSessionCookieError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::id::Id;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use http::{HeaderMap, HeaderValue, header};
     use secrecy::SecretString;
     use time::{Duration, OffsetDateTime};
-    use uuid::Uuid;
 
     use super::{clear, issue_at, verify_headers};
 
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn issued_cookie_authenticates_and_is_host_only() {
         let now = OffsetDateTime::UNIX_EPOCH;
-        let session_id = Uuid::now_v7();
+        let session_id = Id::now_v7();
         let result = issue_at(session_id, now + Duration::hours(1), now, &key());
         assert!(result.is_ok());
         let Ok(set_cookie) = result else {
@@ -264,7 +264,7 @@ mod tests {
         assert!(verify_headers(&duplicate, &key()).is_err());
 
         let now = OffsetDateTime::UNIX_EPOCH;
-        let result = issue_at(Uuid::now_v7(), now + Duration::minutes(5), now, &key());
+        let result = issue_at(Id::now_v7(), now + Duration::minutes(5), now, &key());
         assert!(result.is_ok());
         if let Ok(header_value) = result {
             let pair = header_value

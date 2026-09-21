@@ -1,3 +1,4 @@
+import { ActionPolicies, ActionApprovals } from "./ActionPolicies";
 import { createSignal, For, Match, Show, Switch } from "solid-js";
 import { createResource } from "./resource";
 import {
@@ -45,7 +46,13 @@ export function OrganizationArea(props: AreaProps) {
   const [authority] = createResource(
     () =>
       props.org
-        ? ([props.org, props.user.principal_id, revision()] as const)
+        ? ([
+            props.org,
+            props.user.carbon_id ||
+              props.user.silicon_id ||
+              props.user.public_id,
+            revision(),
+          ] as const)
         : undefined,
     ([org, principal]) => organizationAuthority(org, principal),
   );
@@ -164,6 +171,9 @@ export function OrganizationArea(props: AreaProps) {
                 "approvals",
               ].includes(props.page)}
             >
+              <Show when={props.page === "approvals"}>
+                <ActionApprovals org={props.org} revision={revision()} />
+              </Show>
               <ResourceList
                 kind={props.page}
                 org={props.org}
@@ -400,6 +410,10 @@ function OrganizationSettings(props: {
           </section>
         </div>
       </Show>
+      <ActionPolicies
+        org={props.organization.org_id}
+        revision={props.revision}
+      />
     </>
   );
 }
@@ -701,7 +715,7 @@ function ResourceList(props: {
                       class="button"
                       onClick={() =>
                         operate({
-                          title: "Save job role",
+                          title: "Save job description",
                           path: `${base()}/${selected()}/job-role`,
                           method: "PUT",
                           schema: "DirectJobRoleReplace",
@@ -710,7 +724,7 @@ function ResourceList(props: {
                         })
                       }
                     >
-                      Change job role
+                      Change job description
                     </button>
                     <button
                       class="button"
@@ -847,7 +861,7 @@ function ResourceList(props: {
                             "The owner must approve. Approval revokes the old token immediately; completion separately reveals the replacement.",
                           stepUp: {
                             action: "silicon.rotate_token",
-                            resource: record()!.principal_id,
+                            resource: record()!.silicon_id,
                           },
                         })
                       }
@@ -1057,10 +1071,10 @@ function ResourceList(props: {
               </Show>
               <Show when={props.kind === "members"}>
                 <details>
-                  <summary>Job role history</summary>
+                  <summary>Job description history</summary>
                   <Activity
                     path={`${base()}/${selected()}/job-role-history`}
-                    title="Job role history"
+                    title="Job description history"
                   />
                 </details>
                 <details>
@@ -1329,7 +1343,7 @@ function SiliconExtras(props: {
               path: `${base()}/token-rotation-requests/${rotation()}/complete`,
               stepUp: {
                 action: "silicon.rotate_token",
-                resource: props.silicon.principal_id,
+                resource: props.silicon.silicon_id,
               },
             })
           }

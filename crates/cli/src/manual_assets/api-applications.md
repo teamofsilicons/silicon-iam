@@ -44,7 +44,7 @@ The console lists IAM permissions as checkboxes. Enter an external application's
 | Permission family | Access |
 | --- | --- |
 | `self.identity.read`, `self.profile.read` | The signed-in user's identifier/type and basic profile. |
-| Other `self.*.read` permissions | Explicit fields about that user: contacts, selected organizations, membership, capabilities, tags, job role, Silicon relationships, and effective trust. |
+| Other `self.*.read` permissions | Explicit fields about that user: contacts, selected organizations, membership, capabilities, tags, job description, Silicon relationships, and effective trust. |
 | `directory.*.read` | Specific directory listings and fields for other members of selected organizations; critical review is required. |
 | `organization.*.read` | Complete organization tag, trust, invitation, and governance data; critical review is required. |
 | `obo:{app_id}:{endpoint_id}` | A published external endpoint; its provider determines whether it is critical. |

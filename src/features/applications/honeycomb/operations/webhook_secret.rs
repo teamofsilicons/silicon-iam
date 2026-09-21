@@ -3,9 +3,9 @@ use super::*;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Input {
-    operation_id: Uuid,
+    operation_id: Id,
     expected_iam_revision: i64,
-    environment_id: Option<Uuid>,
+    environment_id: Option<Id>,
     webhook_secret: String,
 }
 pub(super) fn router() -> Router<ApiState> {
@@ -68,14 +68,14 @@ async fn rotate(
         crate::infrastructure::postgres::step_up::RequiredAssurance::VerifiedChannel,
     )
     .await?;
-    let endpoints:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM iam.application_webhook_endpoints WHERE application_id=$1 AND status IN ('active','pending_review') ORDER BY id FOR UPDATE").bind(app.id).fetch_all(&mut *tx).await.map_err(|_|ApiError::internal("webhook_rotation_endpoints"))?;
+    let endpoints:Vec<Id>=sqlx::query_scalar("SELECT id FROM iam.application_webhook_endpoints WHERE application_id=$1 AND status IN ('active','pending_review') ORDER BY id FOR UPDATE").bind(app.id).fetch_all(&mut *tx).await.map_err(|_|ApiError::internal("webhook_rotation_endpoints"))?;
     if endpoints.is_empty() {
         return Err(ApiError::conflict("application_webhook_not_configured"));
     }
     let mut version:i64=sqlx::query_scalar("SELECT COALESCE(max(secret_version),0) FROM iam.application_webhook_signing_keys WHERE application_id=$1").bind(app.id).fetch_one(&mut *tx).await.map_err(|_|ApiError::internal("webhook_rotation_version"))?;
     sqlx::query("UPDATE iam.application_webhook_signing_keys SET status='retiring',retires_at=transaction_timestamp()+interval '10 minutes' WHERE application_id=$1 AND status='active'").bind(app.id).execute(&mut *tx).await.map_err(|_|ApiError::internal("webhook_rotation_retire"))?;
     for endpoint in endpoints {
-        let id = Uuid::now_v7();
+        let id = Id::now_v7();
         version += 1;
         let encrypted = state
             .crypto

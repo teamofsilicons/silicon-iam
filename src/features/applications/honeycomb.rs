@@ -5,6 +5,7 @@ mod events;
 mod live_tests;
 pub(crate) mod operations;
 
+use crate::domain::id::Id;
 use axum::{
     Json, Router,
     extract::{FromRequestParts, Path, State},
@@ -15,7 +16,6 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use subtle::ConstantTimeEq as _;
-use uuid::Uuid;
 
 use super::{error::ApiError, validation};
 use crate::{
@@ -54,7 +54,7 @@ async fn no_store(
 
 /// This is separate from `ApplicationClient` and cannot be obtained with app credentials.
 pub(crate) struct Service {
-    pub(crate) application_id: Uuid,
+    pub(crate) application_id: Id,
 }
 
 fn valid_service_credential(value: &str, expected_hex: &str) -> bool {
@@ -103,7 +103,7 @@ impl FromRequestParts<ApiState> for Service {
         if !valid_service_credential(value, settings.credential_sha256.expose_secret()) {
             return Err(ApiError::unauthenticated());
         }
-        let application_id = sqlx::query_scalar::<_, Option<Uuid>>(
+        let application_id = sqlx::query_scalar::<_, Option<Id>>(
             "SELECT iam_private.resolve_honeycomb_application($1)",
         )
         .bind(&settings.app_id)
@@ -181,7 +181,7 @@ async fn catalog(
 #[serde(deny_unknown_fields)]
 struct InventoryFilter {
     kind: String,
-    after: Option<Uuid>,
+    after: Option<Id>,
 }
 async fn inventory(
     State(state): State<ApiState>,
@@ -201,7 +201,7 @@ async fn inventory(
         sqlx::query_scalar("SELECT iam_private.honeycomb_inventory($1,$2,$3)")
             .bind(service.application_id)
             .bind(filter.kind)
-            .bind(filter.after)
+            .bind(filter.after.map(|id| id.to_string()))
             .fetch_one(&state.pool)
             .await
             .map_err(|_| ApiError::internal("honeycomb_inventory"))?;
@@ -257,8 +257,8 @@ async fn application(
 
 #[derive(sqlx::FromRow)]
 struct WebhookDestination {
-    id: Uuid,
-    application_id: Uuid,
+    id: Id,
+    application_id: Id,
     status: String,
     url_ciphertext: Vec<u8>,
     url_nonce: Vec<u8>,
@@ -316,7 +316,7 @@ async fn enrich_webhook_record(
 async fn operation(
     State(state): State<ApiState>,
     service: Service,
-    Path(id): Path<Uuid>,
+    Path(id): Path<Id>,
 ) -> Result<Json<Value>, ApiError> {
     let value = sqlx::query_scalar::<_, Option<sqlx::types::Json<Value>>>(
         "SELECT iam_private.honeycomb_operation_status($1,$2)",

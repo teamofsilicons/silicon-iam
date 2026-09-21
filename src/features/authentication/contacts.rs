@@ -1,6 +1,6 @@
+use crate::domain::id::Id;
 use secrecy::{ExposeSecret as _, SecretString};
 use sqlx::{FromRow, Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::{
     error::AppError,
@@ -14,21 +14,21 @@ use super::model::{ContactChannel, ValidatedContact, ValidatedLoginIdentifier};
 
 #[derive(Debug)]
 pub(super) struct ResolvedCarbon {
-    pub(super) principal_id: Uuid,
+    pub(super) principal_id: Id,
     pub(super) contacts: Vec<ResolvedContact>,
 }
 
 #[derive(Debug)]
 pub(super) struct ResolvedContact {
-    pub(super) id: Uuid,
+    pub(super) id: Id,
     pub(super) channel: ContactChannel,
     pub(super) recipient: SecretString,
 }
 
 #[derive(FromRow)]
 struct ContactResolutionRow {
-    principal_id: Uuid,
-    contact_id: Uuid,
+    principal_id: Id,
+    contact_id: Id,
     contact_ciphertext: Vec<u8>,
     contact_nonce: Vec<u8>,
     contact_encryption_key_version: i16,
@@ -36,12 +36,12 @@ struct ContactResolutionRow {
 
 #[derive(FromRow)]
 struct HandleResolutionRow {
-    principal_id: Uuid,
+    principal_id: Id,
 }
 
 #[derive(FromRow)]
 struct LoginContactRow {
-    id: Uuid,
+    id: Id,
     kind: String,
     ciphertext: Vec<u8>,
     nonce: Vec<u8>,
@@ -133,7 +133,7 @@ pub(super) async fn carbon_id_available(
 pub(super) fn encrypt_contact(
     crypto: &CryptoService,
     contact: &ValidatedContact,
-    entity_id: Uuid,
+    entity_id: Id,
 ) -> Result<EncryptedValue, AppError> {
     crypto
         .encrypt(
@@ -296,7 +296,7 @@ async fn resolve_by_handle(
 pub(super) fn decrypt_contact(
     crypto: &CryptoService,
     channel: ContactChannel,
-    contact_id: Uuid,
+    contact_id: Id,
     key_version: i16,
     nonce: Vec<u8>,
     ciphertext: Vec<u8>,
@@ -348,33 +348,24 @@ pub(super) fn parse_channel(value: &str) -> Result<ContactChannel, AppError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::id::Id;
     use anyhow::ensure;
-    use sqlx::postgres::PgPoolOptions;
-    use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-    use testcontainers_modules::postgres::Postgres;
-    use uuid::Uuid;
 
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL on isolated local PostgreSQL"]
     #[allow(
         clippy::too_many_lines,
         reason = "one fresh-database test validates the resolver and related forward constraints"
     )]
     async fn signup_contact_association_includes_suspended_non_deleted_carbons()
     -> anyhow::Result<()> {
-        let container = Postgres::default().with_tag("16-alpine").start().await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let database_url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect(&database_url)
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let carbon_id = Uuid::from_u128(0x35_01);
-        let email_contact_id = Uuid::from_u128(0x35_02);
-        let phone_contact_id = Uuid::from_u128(0x35_03);
+        let carbon_id = Id::fixture("contract-test-carbon");
+        let email_contact_id = Id::from_u128(0x35_02);
+        let phone_contact_id = Id::from_u128(0x35_03);
         let email_digest = vec![0x35_u8; 32];
         let phone_digest = vec![0x36_u8; 32];
         let mut transaction = pool.begin().await?;
@@ -440,7 +431,7 @@ mod tests {
         transaction.commit().await?;
 
         let active = association_exists(&pool, &email_digest).await?;
-        let authentication_session_id = Uuid::from_u128(0x35_04);
+        let authentication_session_id = Id::from_u128(0x35_04);
         sqlx::query(
             r"
             INSERT INTO iam.authentication_sessions (
@@ -563,10 +554,10 @@ mod tests {
 
     async fn insert_step_up_challenge(
         pool: &sqlx::PgPool,
-        authentication_session_id: Uuid,
-        carbon_id: Uuid,
+        authentication_session_id: Id,
+        carbon_id: Id,
         purpose: &str,
-        resource_id: Option<Uuid>,
+        resource_id: Option<Id>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             r"
@@ -580,11 +571,11 @@ mod tests {
             )
             ",
         )
-        .bind(Uuid::now_v7())
+        .bind(Id::now_v7())
         .bind(authentication_session_id)
         .bind(carbon_id)
         .bind(purpose)
-        .bind(resource_id)
+        .bind(resource_id.map(|id| id.to_string()))
         .execute(pool)
         .await
         .map(|_| ())

@@ -3,10 +3,10 @@ use super::*;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AcceptedConfiguration {
-    operation_id: Uuid,
+    operation_id: Id,
     expected_iam_revision: i64,
     configuration_revision: i64,
-    environment_id: Option<Uuid>,
+    environment_id: Option<Id>,
     app_name: Option<String>,
     app_logo: Option<String>,
     app_ids: Vec<String>,
@@ -81,7 +81,7 @@ async fn configure(
         "create"
     };
     let accepted = json!({"org_id":org,"app_id":slug,"app_name":input.app_name,"app_logo":input.app_logo,"app_ids":input.app_ids});
-    let (_, value): (Uuid, sqlx::types::Json<Value>) =
+    let (_, value): (Id, sqlx::types::Json<Value>) =
         sqlx::query_as("SELECT * FROM iam_private.mutate_application_bundle($1,$2,$3,$4,$5)")
             .bind(&path)
             .bind(actor.subject.id)

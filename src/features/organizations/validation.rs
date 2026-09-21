@@ -1,10 +1,10 @@
 use std::{collections::HashSet, str::FromStr as _};
 
+use crate::domain::id::Id;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use http::HeaderMap;
 use serde_json::json;
 use url::Url;
-use uuid::Uuid;
 
 use crate::{
     config::RuntimeEnvironment,
@@ -17,8 +17,7 @@ use crate::{
 
 use super::model::{
     CapabilitiesReplace, DirectTagSetReplace, MembershipDirectoryPatch, OrganizationCreate,
-    OrganizationPatch, PageQuery, SiliconCreate, SiliconPatch, TagChangeRequestCreate, TagInput,
-    TrustRulePatch,
+    OrganizationPatch, PageQuery, SiliconCreate, SiliconPatch, TagInput, TrustRulePatch,
 };
 
 const MAX_CURSOR_BYTES: usize = 128;
@@ -118,7 +117,6 @@ pub(super) fn silicon_create(
         }
         None => "UTC".to_owned(),
     });
-    input.description = optional_text("description", input.description.take(), 5_000)?;
     input.job_role = job_role(std::mem::take(&mut input.job_role))?;
     input.profile_photo = optional_url("profile_photo", input.profile_photo.take(), environment)?;
     validate_unique_ids("tag_ids", &mut input.tag_ids, 100)?;
@@ -137,7 +135,6 @@ pub(super) fn silicon_patch(
     }
     if input.display_name.is_none()
         && input.timezone.is_none()
-        && input.description.is_none()
         && input.profile_photo.is_none()
         && input.reports_to_membership_id.is_none()
         && input.tag_ids.is_none()
@@ -149,9 +146,6 @@ pub(super) fn silicon_patch(
     }
     if let Some(timezone) = input.timezone.as_deref() {
         validate_timezone(timezone)?;
-    }
-    if let Some(description) = input.description.take() {
-        input.description = Some(optional_text("description", description, 5_000)?);
     }
     if let Some(profile_photo) = input.profile_photo.take() {
         input.profile_photo = Some(optional_url("profile_photo", profile_photo, environment)?);
@@ -168,27 +162,6 @@ fn validate_timezone(value: &str) -> Result<(), AppError> {
     } else {
         Err(field("timezone", "must be a valid IANA TZ identifier"))
     }
-}
-
-pub(super) fn tag_change_request(input: &mut TagChangeRequestCreate) -> Result<(), AppError> {
-    validate_unique_ids("add_tag_ids", &mut input.add_tag_ids, 100)?;
-    validate_unique_ids("remove_tag_ids", &mut input.remove_tag_ids, 100)?;
-    if input.add_tag_ids.is_empty() && input.remove_tag_ids.is_empty() {
-        return Err(field("body", "must add or remove at least one tag"));
-    }
-    if input
-        .add_tag_ids
-        .iter()
-        .any(|tag_id| input.remove_tag_ids.binary_search(tag_id).is_ok())
-    {
-        return Err(field("body", "cannot add and remove the same tag"));
-    }
-    input.reason = input
-        .reason
-        .take()
-        .map(|value| bounded_text("reason", value, 1, 2_000, true))
-        .transpose()?;
-    Ok(())
 }
 
 pub(super) fn direct_tag_set(input: &mut DirectTagSetReplace) -> Result<(), AppError> {
@@ -243,17 +216,17 @@ pub(super) fn trust_rule_patch(input: &TrustRulePatch) -> Result<(), AppError> {
 pub(super) fn job_role(value: String) -> Result<String, AppError> {
     JobRole::try_from(value)
         .map(String::from)
-        .map_err(|_| field("job_role", "must contain at most 5000 characters"))
+        .map_err(|_| field("job_description", "must contain at most 5000 characters"))
 }
 
-pub(super) fn page(query: &PageQuery) -> Result<(Option<Uuid>, i64), AppError> {
+pub(super) fn page(query: &PageQuery) -> Result<(Option<Id>, i64), AppError> {
     page_parts(query.cursor.as_deref(), query.limit)
 }
 
 pub(super) fn page_parts(
     cursor: Option<&str>,
     limit: Option<u16>,
-) -> Result<(Option<Uuid>, i64), AppError> {
+) -> Result<(Option<Id>, i64), AppError> {
     let cursor = cursor.map(decode_cursor).transpose()?;
     let limit = limit.unwrap_or(DEFAULT_PAGE_SIZE);
     if !(1..=MAX_PAGE_SIZE).contains(&limit) {
@@ -262,11 +235,11 @@ pub(super) fn page_parts(
     Ok((cursor, i64::from(limit)))
 }
 
-pub(super) fn encode_cursor(id: Uuid) -> String {
-    URL_SAFE_NO_PAD.encode(id.as_bytes())
+pub(super) fn encode_cursor(id: Id) -> String {
+    URL_SAFE_NO_PAD.encode(id.to_string())
 }
 
-pub(super) fn delivery_ids(values: &[Uuid]) -> Result<(), AppError> {
+pub(super) fn delivery_ids(values: &[Id]) -> Result<(), AppError> {
     if !(1..=100).contains(&values.len()) {
         return Err(field(
             "delivery_ids",
@@ -382,7 +355,7 @@ fn safe_url(
 
 fn validate_unique_ids(
     name: &'static str,
-    values: &mut [Uuid],
+    values: &mut [Id],
     maximum: usize,
 ) -> Result<(), AppError> {
     values.sort_unstable();
@@ -392,14 +365,18 @@ fn validate_unique_ids(
     Ok(())
 }
 
-fn decode_cursor(value: &str) -> Result<Uuid, AppError> {
+fn decode_cursor(value: &str) -> Result<Id, AppError> {
     if value.is_empty() || value.len() > MAX_CURSOR_BYTES {
         return Err(field("cursor", "has an invalid format"));
     }
     let bytes = URL_SAFE_NO_PAD
         .decode(value)
         .map_err(|_| field("cursor", "has an invalid format"))?;
-    Uuid::from_slice(&bytes).map_err(|_| field("cursor", "has an invalid format"))
+    std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|value| Id::parse(value).ok())
+        .or_else(|| Id::from_slice(&bytes).ok())
+        .ok_or_else(|| field("cursor", "has an invalid format"))
 }
 
 #[cfg(test)]
@@ -410,7 +387,7 @@ mod tests {
 
     #[test]
     fn cursor_round_trips_without_exposing_query_state() {
-        let id = Uuid::now_v7();
+        let id = Id::now_v7();
         assert!(matches!(decode_cursor(&encode_cursor(id)), Ok(decoded) if decoded == id));
     }
 
@@ -430,7 +407,6 @@ mod tests {
             silicon_id: "timezone_test".to_owned(),
             display_name: Some("Time Zone Test".to_owned()),
             timezone: Some("Mars/Olympus_Mons".to_owned()),
-            description: None,
             profile_photo: None,
             job_role: String::new(),
             reports_to_membership_id: None,
@@ -445,7 +421,6 @@ mod tests {
             silicon_id: "default_profile".to_owned(),
             display_name: None,
             timezone: None,
-            description: None,
             profile_photo: None,
             job_role: "assistant".to_owned(),
             reports_to_membership_id: None,

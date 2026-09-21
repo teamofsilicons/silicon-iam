@@ -1,5 +1,6 @@
 //! Shared plumbing for the testing-environment control plane.
 
+use crate::domain::id::Id;
 use axum::{
     body::Body,
     http::{HeaderMap, HeaderValue, StatusCode},
@@ -8,7 +9,6 @@ use axum::{
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Serialize;
 use sqlx::{PgPool, Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, TestingPlane},
@@ -30,8 +30,8 @@ use super::validation;
 /// A live environment together with the authority the caller has over it.
 pub(super) struct AdministeredEnvironment {
     pub(super) runtime_version: Option<(i64, i32)>,
-    pub(super) id: Uuid,
-    pub(super) organization_id: Uuid,
+    pub(super) id: Id,
+    pub(super) organization_id: Id,
 }
 
 pub(super) enum Claim {
@@ -66,8 +66,8 @@ pub(super) fn plane(state: &ApiState) -> Result<&TestingPlane, AppError> {
 /// not authenticate.
 pub(super) fn store_key(
     state: &ApiState,
-    organization_id: Uuid,
-    environment_id: Uuid,
+    organization_id: Id,
+    environment_id: Id,
     key: &SecretString,
 ) -> Result<StoredKey, AppError> {
     let digest = state
@@ -97,8 +97,8 @@ pub(super) fn store_key(
 /// Recovers a stored key for an authorized read.
 pub(super) fn read_key(
     state: &ApiState,
-    organization_id: Uuid,
-    environment_id: Uuid,
+    organization_id: Id,
+    environment_id: Id,
     stored: &StoredKey,
 ) -> Result<String, AppError> {
     let nonce: [u8; 12] = stored
@@ -126,7 +126,7 @@ pub(super) fn read_key(
     })
 }
 
-const fn key_encryption_context(organization_id: Uuid, environment_id: Uuid) -> EncryptionContext {
+const fn key_encryption_context(organization_id: Id, environment_id: Id) -> EncryptionContext {
     EncryptionContext::tenant(
         ProtectedField::TestingEnvironmentKey,
         organization_id,
@@ -159,7 +159,7 @@ pub(super) async fn resolve_key(
         .map(|digest| digest.as_bytes().to_vec())
         .collect::<Vec<_>>();
 
-    let resolved = sqlx::query_as::<_, (Uuid, Uuid, i16, Option<i64>, i32)>(
+    let resolved = sqlx::query_as::<_, (Id, Id, i16, Option<i64>, i32)>(
         "SELECT * FROM iam_private.resolve_testing_environment_v2($1)",
     )
     .bind(&digests)
@@ -182,7 +182,7 @@ pub(super) async fn resolve_key(
 /// environment that served a request but failed to record it will simply be
 /// touched by the next one, and failing a working request over bookkeeping
 /// would be the worse trade.
-pub(super) async fn touch(pool: &PgPool, environment_id: Uuid) {
+pub(super) async fn touch(pool: &PgPool, environment_id: Id) {
     if let Err(error) = sqlx::query("SELECT iam_private.touch_testing_environment($1)")
         .bind(environment_id)
         .execute(pool)
@@ -203,9 +203,9 @@ pub(super) async fn touch(pool: &PgPool, environment_id: Uuid) {
 /// is not a reason to leave the check implicit.
 pub(super) async fn require_administrator(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    created_by_membership_id: Uuid,
-    principal_id: Uuid,
+    organization_id: Id,
+    created_by_membership_id: Id,
+    principal_id: Id,
 ) -> Result<(), AppError> {
     let allowed = sqlx::query_scalar::<_, bool>(
         "SELECT iam_private.is_testing_environment_administrator($1, $2, $3)",
@@ -337,13 +337,13 @@ pub(super) struct AuditEvent<'a> {
     /// Who caused it; absent when the environment key alone authorized it.
     pub(super) actor: Option<ActorRef>,
     /// Parent authentication session, when the actor is interactive.
-    pub(super) authentication_session_id: Option<Uuid>,
+    pub(super) authentication_session_id: Option<Id>,
     /// Organization that owns the environment.
-    pub(super) organization_id: Uuid,
+    pub(super) organization_id: Id,
     /// Stable dotted action vocabulary.
     pub(super) action: &'static str,
     /// Environment the change applied to.
-    pub(super) environment_id: Uuid,
+    pub(super) environment_id: Id,
     /// Environment version after the change.
     pub(super) version: i64,
     /// Redacted prior state.

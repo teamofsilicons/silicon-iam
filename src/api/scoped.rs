@@ -55,22 +55,22 @@ fn is_application_session(access: &AccessContext) -> bool {
 #[cfg(test)]
 mod tests {
     use super::is_application_session;
+    use crate::domain::id::Id;
     use crate::{
         domain::actor::{ActorRef, ActorType},
         infrastructure::postgres::tokens::AccessContext,
     };
-    use uuid::Uuid;
 
     fn access() -> AccessContext {
         AccessContext {
-            token_id: Uuid::from_u128(1),
-            authentication_session_id: Uuid::from_u128(2),
+            token_id: Id::from_u128(1),
+            authentication_session_id: Id::from_u128(2),
             subject: ActorRef {
                 actor_type: ActorType::Carbon,
-                id: Uuid::from_u128(3),
+                id: Id::from_u128(3),
             },
-            client_application_id: Some(Uuid::from_u128(4)),
-            audience_application_id: Some(Uuid::from_u128(4)),
+            client_application_id: Some(Id::from_u128(4)),
+            audience_application_id: Some(Id::from_u128(4)),
             audience: "tos>scoped-iam".into(),
             organization_id: None,
             membership_id: None,
@@ -90,7 +90,7 @@ mod tests {
         token.subject.actor_type = ActorType::Service;
         assert!(!is_application_session(&token));
         token.subject.actor_type = ActorType::Carbon;
-        token.audience_application_id = Some(Uuid::from_u128(5));
+        token.audience_application_id = Some(Id::from_u128(5));
         assert!(
             !is_application_session(&token),
             "OBO target must be rejected"

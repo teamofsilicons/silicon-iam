@@ -1,9 +1,9 @@
+use crate::domain::id::Id;
 use axum::{
     extract::FromRequestParts,
     http::{header, request::Parts},
 };
 use sqlx::FromRow;
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
@@ -28,15 +28,15 @@ const IAM_SELF_SCOPE: &str = "iam.self";
     reason = "each identifier preserves the SSO actor, root session, and application audit binding"
 )]
 pub(super) struct BrowserSession {
-    pub(super) session_id: Uuid,
-    pub(super) carbon_id: Uuid,
-    pub(super) application_id: Option<Uuid>,
+    pub(super) session_id: Id,
+    pub(super) carbon_id: Id,
+    pub(super) application_id: Option<Id>,
 }
 
 #[derive(FromRow)]
 struct BrowserSessionRow {
-    session_id: Uuid,
-    carbon_id: Uuid,
+    session_id: Id,
+    carbon_id: Id,
 }
 
 impl FromRequestParts<ApiState> for BrowserSession {
@@ -58,7 +58,7 @@ impl FromRequestParts<ApiState> for BrowserSession {
         let verified =
             browser_session::verify_headers(&parts.headers, &state.settings.security.cookie_key)
                 .map_err(map_cookie_error)?;
-        let mut transaction = context::begin(state.db(), DatabaseContext::principal(Uuid::nil()))
+        let mut transaction = context::begin(state.db(), DatabaseContext::principal(Id::nil()))
             .await
             .map_err(|_| internal("sso_browser_session_context"))?;
         let row = sqlx::query_as::<_, BrowserSessionRow>(
@@ -107,7 +107,7 @@ fn from_bearer(authenticated: &Authenticated) -> Result<BrowserSession, AppError
     })
 }
 
-pub(super) fn require_first_party_carbon(access: &AccessContext) -> Result<Uuid, AppError> {
+pub(super) fn require_first_party_carbon(access: &AccessContext) -> Result<Id, AppError> {
     if access.subject.actor_type != ActorType::Carbon
         || access.audience != IAM_AUDIENCE
         || access.client_application_id.is_some()
@@ -137,7 +137,7 @@ const fn internal(category: &'static str) -> AppError {
 
 #[cfg(test)]
 mod tests {
-    use uuid::Uuid;
+    use crate::domain::id::Id;
 
     use super::{from_bearer, require_first_party_carbon};
     use crate::{
@@ -148,11 +148,11 @@ mod tests {
 
     fn access() -> AccessContext {
         AccessContext {
-            token_id: Uuid::now_v7(),
-            authentication_session_id: Uuid::now_v7(),
+            token_id: Id::now_v7(),
+            authentication_session_id: Id::now_v7(),
             subject: ActorRef {
                 actor_type: ActorType::Carbon,
-                id: Uuid::now_v7(),
+                id: Id::now_v7(),
             },
             client_application_id: None,
             audience_application_id: None,
@@ -166,7 +166,7 @@ mod tests {
 
     fn application_access() -> Authenticated {
         let mut delegated = access();
-        let application_id = Uuid::now_v7();
+        let application_id = Id::now_v7();
         delegated.client_application_id = Some(application_id);
         delegated.audience_application_id = Some(application_id);
         delegated.audience = "tos>interface".to_owned();
@@ -198,7 +198,7 @@ mod tests {
         authenticated.0.scopes = vec!["organization.sso.manage".to_owned()];
         assert!(from_bearer(&authenticated).is_err());
         authenticated.0.scopes = vec!["organizations.join".to_owned()];
-        authenticated.0.audience_application_id = Some(Uuid::now_v7());
+        authenticated.0.audience_application_id = Some(Id::now_v7());
         assert!(from_bearer(&authenticated).is_err());
         authenticated.0.audience_application_id = authenticated.0.client_application_id;
         authenticated.0.subject.actor_type = ActorType::Silicon;
@@ -212,7 +212,7 @@ mod tests {
         let direct = access();
         assert!(require_first_party_carbon(&direct).is_ok());
         let mut delegated = access();
-        delegated.client_application_id = Some(Uuid::now_v7());
+        delegated.client_application_id = Some(Id::now_v7());
         assert!(require_first_party_carbon(&delegated).is_err());
     }
 }

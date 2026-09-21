@@ -379,6 +379,10 @@ export function OperationForm(props: {
   const [values, setValues] = createSignal(initialInput),
     [error, setError] = createSignal<unknown>(),
     [busy, setBusy] = createSignal(false),
+    [approval, setApproval] = createSignal<{
+      id: string;
+      body: RecordValue | undefined;
+    }>(),
     [verify, setVerify] = createSignal(false),
     [staged, setStaged] = createSignal<RecordValue>(),
     [verifiedToken, setVerifiedToken] = createSignal("");
@@ -402,7 +406,9 @@ export function OperationForm(props: {
     } catch (e) {
       if (e instanceof ApiError && e.code.startsWith("step_up_"))
         setVerifiedToken("");
-      setError(e);
+      if (e instanceof ApiError && e.code === "approval_required") {
+        setApproval({ id: String(e.details?.approval_request_id || ""), body });
+      } else setError(e);
     } finally {
       setBusy(false);
     }
@@ -410,6 +416,10 @@ export function OperationForm(props: {
   function submit(e: SubmitEvent) {
     e.preventDefault();
     setError();
+    if (approval()) {
+      void execute(approval()!.body, verifiedToken() || undefined);
+      return;
+    }
     try {
       let body = props.operation.schema
         ? outputValues(definition, values(), initial)
@@ -451,7 +461,7 @@ export function OperationForm(props: {
               {props.operation.description}
             </p>
           </Show>
-          <Show when={props.operation.schema}>
+          <Show when={props.operation.schema && !approval()}>
             <p class="muted required-note">
               Fields marked * are required. Optional fields can be left blank.
             </p>
@@ -460,6 +470,27 @@ export function OperationForm(props: {
               values={values()}
               change={setValues}
             />
+          </Show>
+          <Show when={approval()} keyed>
+            {(pending) => (
+              <div class="notice">
+                <p>
+                  This change is waiting for approval. An eligible approver can
+                  review it in the organization’s Approvals page.
+                </p>
+                <p>
+                  Request: <code>{pending.id}</code>
+                </p>
+                <p>After approval, retry below to apply this exact change.</p>
+                <button
+                  class="button small"
+                  type="button"
+                  onClick={() => setApproval()}
+                >
+                  Edit the proposed change
+                </button>
+              </div>
+            )}
           </Show>
           <ErrorBox error={error()} />
           <div class="form-actions">
@@ -477,9 +508,11 @@ export function OperationForm(props: {
             >
               {busy()
                 ? "Saving…"
-                : props.operation.stepUp
-                  ? "Verify & continue"
-                  : props.operation.title}
+                : approval()
+                  ? "Retry approved change"
+                  : props.operation.stepUp
+                    ? "Verify & continue"
+                    : props.operation.title}
             </button>
           </div>
         </form>

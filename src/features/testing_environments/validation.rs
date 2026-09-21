@@ -1,7 +1,7 @@
 //! Input validation for the testing-environment control plane.
 
+use crate::domain::id::Id;
 use serde_json::json;
-use uuid::Uuid;
 
 use crate::{error::AppError, infrastructure::crypto::TESTING_ENVIRONMENT_KEY_LENGTH};
 
@@ -42,7 +42,7 @@ pub(super) fn patch(input: &mut EnvironmentPatch) -> Result<(), AppError> {
 /// Deleted environments are hidden by default. They remain listable for the
 /// recovery window, but an operator scanning their environments should see
 /// what is live unless they ask otherwise.
-pub(super) fn page(query: &PageQuery) -> Result<(Option<Uuid>, i64, Option<String>), AppError> {
+pub(super) fn page(query: &PageQuery) -> Result<(Option<Id>, i64, Option<String>), AppError> {
     let limit = query.limit.unwrap_or(DEFAULT_PAGE_LIMIT);
     if limit == 0 || limit > MAX_PAGE_LIMIT {
         return Err(field("limit", "must be between 1 and 100"));

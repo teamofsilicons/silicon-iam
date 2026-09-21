@@ -53,7 +53,7 @@ pub async fn run(context: &Context, command: SiliconCommand) -> Result<()> {
         }
         SiliconCommand::Create {
             handle,
-            job_role,
+            job_description,
             display_name,
             reports_to,
             tags,
@@ -67,9 +67,8 @@ pub async fn run(context: &Context, command: SiliconCommand) -> Result<()> {
                     &models::SiliconCreate {
                         silicon_id: handle.clone(),
                         display_name: Some(display_name.unwrap_or(handle)),
-                        job_role,
+                        job_description,
                         timezone: None,
-                        description: None,
                         profile_photo: None,
                         reports_to_membership_id: reports_to,
                         tag_ids: if tags.is_empty() { None } else { Some(tags) },
@@ -81,7 +80,6 @@ pub async fn run(context: &Context, command: SiliconCommand) -> Result<()> {
                 Format::Json => json(&created),
                 Format::Text => {
                     println!("Created {}.", created.silicon.silicon_id);
-                    println!("Principal ID: {}", created.silicon.principal_id);
                     println!("Membership ID: {}", created.silicon.membership_id);
                     println!("Credential: {}", created.silicon_token);
                     println!("It is shown once. Store it now; it can only be rotated.");
@@ -98,8 +96,6 @@ pub async fn run(context: &Context, command: SiliconCommand) -> Result<()> {
             silicon_id,
             display_name,
             timezone,
-            description,
-            clear_description,
             profile_photo,
             clear_profile_photo,
             reports_to,
@@ -116,7 +112,6 @@ pub async fn run(context: &Context, command: SiliconCommand) -> Result<()> {
                     &models::SiliconPatch {
                         display_name,
                         timezone,
-                        description: optional_nullable(description, clear_description),
                         profile_photo: optional_nullable(profile_photo, clear_profile_photo),
                         reports_to_membership_id: optional_nullable(reports_to, clear_reports_to),
                     },
@@ -381,12 +376,10 @@ fn report(context: &Context, silicon: &models::Silicon) -> Result<()> {
         Format::Text => {
             let mut table = Table::new(["field", "value"]);
             table.row(["silicon", &silicon.silicon_id]);
-            table.row(["principal_id", &silicon.principal_id.to_string()]);
             table.row(["display_name", &silicon.display_name]);
             table.row(["membership_id", &silicon.membership_id]);
-            table.row(["job_role", &silicon.job_role]);
+            table.row(["job_description", &silicon.job_description]);
             table.row(["timezone", &silicon.timezone]);
-            table.row(["description", &or_dash(silicon.description.as_deref())]);
             table.row(["profile_photo", &silicon.profile_photo]);
             table.row([
                 "reports_to",

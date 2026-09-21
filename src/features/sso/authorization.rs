@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::domain::id::Id;
 use axum::{
     extract::{Path, Query, State, rejection::QueryRejection},
     http::{HeaderValue, StatusCode, header},
@@ -10,7 +11,6 @@ use serde_json::json;
 use sqlx::FromRow;
 use time::OffsetDateTime;
 use url::Url;
-use uuid::Uuid;
 
 use crate::{
     api::ApiState,
@@ -45,18 +45,18 @@ const AUTHORIZATION_TTL_SECONDS: i64 = 10 * 60;
     reason = "row fields intentionally mirror the provider and database identifier names"
 )]
 struct BeginAuthorizationRow {
-    organization_id: Uuid,
-    connection_id: Uuid,
+    organization_id: Id,
+    connection_id: Id,
     provider_organization_id: String,
     provider_connection_id: String,
 }
 
 #[derive(FromRow)]
 struct CompletionRow {
-    authorization_transaction_id: Uuid,
-    organization_id: Uuid,
-    membership_id: Uuid,
-    sso_identity_id: Uuid,
+    authorization_transaction_id: Id,
+    organization_id: Id,
+    membership_id: Id,
+    sso_identity_id: Id,
     membership_created: bool,
     config_version: i64,
     return_uri_ciphertext: Vec<u8>,
@@ -66,8 +66,8 @@ struct CompletionRow {
 
 #[derive(FromRow)]
 struct MembershipActivationState {
-    organization_id: Uuid,
-    membership_id: Option<Uuid>,
+    organization_id: Id,
+    membership_id: Option<Id>,
     prior_status: Option<String>,
     prior_version: Option<i64>,
     activation_kind: String,
@@ -76,6 +76,10 @@ struct MembershipActivationState {
 #[allow(
     clippy::too_many_lines,
     reason = "authorization correlation, encrypted relay state, audit, and provider redirect form one atomic workflow"
+)]
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
 )]
 pub(super) async fn authorize(
     State(state): State<ApiState>,
@@ -116,7 +120,7 @@ pub(super) async fn authorize(
     if state_digest.key_version() != nonce_digest.key_version() {
         return Err(internal("sso_correlation_key_versions"));
     }
-    let transaction_id = Uuid::now_v7();
+    let transaction_id = Id::now_v7();
     let encrypted_return_to = state
         .crypto
         .encrypt(
@@ -200,9 +204,9 @@ pub(super) async fn authorize(
 async fn enqueue_membership_activation(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     state: &ApiState,
-    carbon_id: Uuid,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    carbon_id: Id,
+    organization_id: Id,
+    membership_id: Id,
     activation: &MembershipActivationState,
 ) -> Result<(), AppError> {
     let (version, org_role, job_role, status) = sqlx::query_as::<_, (i64, String, String, String)>(
@@ -219,7 +223,7 @@ async fn enqueue_membership_activation(
     .fetch_one(&mut **transaction)
     .await
     .map_err(support::database)?;
-    let tag_ids = sqlx::query_scalar::<_, Uuid>(
+    let tag_ids = sqlx::query_scalar::<_, Id>(
         r"
         SELECT tag_id
         FROM iam.membership_tags
@@ -245,7 +249,7 @@ async fn enqueue_membership_activation(
     });
     let after_state = json!({
         "org_role": org_role,
-        "job_role": job_role,
+        "job_description": job_role,
         "tag_ids": tag_ids,
         "status": status,
         "version": version,
@@ -306,6 +310,10 @@ async fn enqueue_membership_activation(
     .await
 }
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 async fn lock_membership_activation_state(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     browser_session: BrowserSession,
@@ -336,6 +344,10 @@ async fn lock_membership_activation_state(
 #[allow(
     clippy::too_many_lines,
     reason = "callback correlation, provider exchange, admission, audit, and redirect are explicit"
+)]
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
 )]
 pub(super) async fn callback(
     State(state): State<ApiState>,
@@ -404,8 +416,8 @@ pub(super) async fn callback(
     ) {
         return Err(internal("sso_membership_activation_kind"));
     }
-    let new_membership_id = Uuid::now_v7();
-    let new_sso_identity_id = Uuid::now_v7();
+    let new_membership_id = Id::now_v7();
+    let new_sso_identity_id = Id::now_v7();
     let completion = sqlx::query_as::<_, CompletionRow>(
         r"
         SELECT
@@ -491,6 +503,10 @@ pub(super) async fn callback(
     redirect(&return_to)
 }
 
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 async fn require_valid_callback_correlation(
     state: &ApiState,
     browser_session: BrowserSession,

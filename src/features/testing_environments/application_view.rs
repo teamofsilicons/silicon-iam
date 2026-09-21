@@ -2,6 +2,7 @@
 use sha2::Digest as _;
 
 use super::support;
+use crate::domain::id::Id;
 use crate::{
     api::ApiState,
     error::AppError,
@@ -14,7 +15,6 @@ use crate::{
 use axum::{extract::State, http::StatusCode, response::Response};
 use serde::Serialize;
 use serde_json::Value;
-use uuid::Uuid;
 
 #[derive(Serialize, sqlx::FromRow)]
 struct ApplicationView {
@@ -30,7 +30,7 @@ struct ApplicationView {
 #[derive(Serialize)]
 struct TestingContext {
     environment: EnvironmentView,
-    environment_id: Uuid,
+    environment_id: Id,
     application: ApplicationView,
     webhook_key_digest: String,
 }
@@ -63,7 +63,7 @@ pub(super) async fn get(
     .await
     .map_err(support::database)?
     .ok_or(AppError::Unauthenticated)?;
-    let key = sqlx::query_as::<_, (Uuid, Vec<u8>, Vec<u8>, i16)>(
+    let key = sqlx::query_as::<_, (Id, Vec<u8>, Vec<u8>, i16)>(
         "SELECT * FROM iam_private.get_testing_environment_obo_key($1)",
     )
     .bind(environment_id)
@@ -98,10 +98,10 @@ pub(super) async fn get(
 
 #[derive(Serialize, sqlx::FromRow)]
 struct EnvironmentView {
-    environment_id: Uuid,
+    environment_id: Id,
     #[serde(skip)]
     #[sqlx(rename = "organization_id")]
-    _organization_id: Uuid,
+    _organization_id: Id,
     org_id: String,
     name: String,
     description: Option<String>,

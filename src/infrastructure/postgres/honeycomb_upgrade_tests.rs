@@ -1,28 +1,24 @@
 //! Upgrade the previously deployed ledgers with existing production/test rows.
 #![allow(clippy::too_many_lines)]
 use super::*;
+use crate::domain::id::Id;
 use anyhow::ensure;
 use serde_json::{Value, json};
 use sqlx::postgres::PgPoolOptions;
 use std::borrow::Cow;
-use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-use testcontainers_modules::postgres::Postgres;
-use uuid::Uuid;
 
 #[tokio::test]
-#[ignore = "requires Docker"]
+#[ignore = "requires Docker or local PostgreSQL via IAM_TEST_DATABASE_ADMIN_URL"]
 async fn honeycomb_upgrade_preserves_deployed_state_and_scopes_new_tables() -> anyhow::Result<()> {
-    let container = Postgres::default().with_tag("16-alpine").start().await?;
-    let url = format!(
-        "postgres://postgres:postgres@{}:{}/postgres",
-        container.get_host().await?,
-        container.get_host_port_ipv4(5432).await?
-    );
-    let production = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&url)
-        .await?;
-    sqlx::raw_sql("CREATE ROLE silicon_iam_api NOLOGIN; CREATE ROLE silicon_iam_worker NOLOGIN; CREATE ROLE silicon_iam_key_operator NOLOGIN; CREATE ROLE iam_upgrade_runtime LOGIN PASSWORD 'synthetic-local-only'; GRANT silicon_iam_api TO iam_upgrade_runtime;").execute(&production).await?;
+    let production_database = crate::test_database::TestDatabase::start().await?;
+    let production = production_database.pool.clone();
+    let testing_database = crate::test_database::TestDatabase::start().await?;
+    let testing = testing_database.pool.clone();
+    let runtime_role = format!("iam_upgrade_{}", uuid::Uuid::now_v7().simple());
+    for pool in [&production, &testing] {
+        sqlx::raw_sql("DO $$ DECLARE name text; BEGIN FOREACH name IN ARRAY ARRAY['silicon_iam_api','silicon_iam_worker','silicon_iam_key_operator'] LOOP IF to_regrole(name) IS NULL THEN EXECUTE format('CREATE ROLE %I NOLOGIN',name); END IF; END LOOP; END $$;").execute(pool).await?;
+    }
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE ROLE {runtime_role} LOGIN PASSWORD 'synthetic-local-only'; GRANT silicon_iam_api TO {runtime_role};"))).execute(&testing).await?;
     let mut old_base = sqlx::migrate!("./migrations");
     old_base.migrations = Cow::Owned(
         old_base
@@ -47,14 +43,6 @@ async fn honeycomb_upgrade_preserves_deployed_state_and_scopes_new_tables() -> a
         !schema_is_current(&production).await?,
         "old production ledger unexpectedly current"
     );
-    sqlx::query("CREATE DATABASE testing")
-        .execute(&production)
-        .await?;
-    let testing_url = format!("{}/testing", url.trim_end_matches("/postgres"));
-    let testing = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&testing_url)
-        .await?;
     old_base.run(&testing).await?;
     let mut old_overlay = sqlx::migrate!("./migrations/testing");
     old_overlay.migrations = Cow::Owned(
@@ -95,13 +83,13 @@ async fn honeycomb_upgrade_preserves_deployed_state_and_scopes_new_tables() -> a
         "signing_key_id",
         "secret_id",
     ] {
-        other[field] = json!(Uuid::now_v7());
+        other[field] = json!(Id::now_v7());
     }
     other["app_scope"] = json!({"iam":["self.identity.read"],"external":[]});
-    let second_app: Uuid = serde_json::from_value(other["application_id"].clone())?;
+    let second_app: Id = serde_json::from_value(other["app_id"].clone())?;
     let mut tx = testing.begin().await?;
     sqlx::query("SELECT set_config('iam.testing_environment_id',$1,true)")
-        .bind(Uuid::from_u128(0xa002).to_string())
+        .bind(Id::from_u128(0xa002).to_string())
         .execute(&mut *tx)
         .await?;
     sqlx::query("SELECT iam_private.import_testing_application_configuration($1)")
@@ -122,7 +110,7 @@ async fn honeycomb_upgrade_preserves_deployed_state_and_scopes_new_tables() -> a
     );
     ensure!(
         testing_snapshot(&testing).await? == before_test,
-        "upgrade changed existing tenant identity/source UUID/test credentials"
+        "upgrade changed canonical tenant identity or existing test credentials"
     );
     ensure!(
         schema_is_current(&production).await? && testing_schema_is_current(&testing).await?,
@@ -143,37 +131,33 @@ async fn honeycomb_upgrade_preserves_deployed_state_and_scopes_new_tables() -> a
     sqlx::raw_sql(sqlx::AssertSqlSafe(grants))
         .execute(&testing)
         .await?;
-    let runtime_url = testing_url.replacen(
-        "postgres:postgres@",
-        "iam_upgrade_runtime:synthetic-local-only@",
-        1,
-    );
+    let mut runtime_url = url::Url::parse(&testing_database.url)?;
+    runtime_url
+        .set_username(&runtime_role)
+        .map_err(|()| anyhow::anyhow!("runtime username"))?;
+    runtime_url
+        .set_password(Some("synthetic-local-only"))
+        .map_err(|()| anyhow::anyhow!("runtime password"))?;
     let runtime = PgPoolOptions::new()
         .max_connections(2)
-        .connect(&runtime_url)
+        .connect(runtime_url.as_str())
         .await?;
     ensure!(
         ready_testing(&runtime).await,
         "real nonprivileged runtime readiness must pass after upgrade"
     );
-    let plan = Uuid::now_v7();
+    let plan = Id::now_v7();
     seed_plan(
         &testing,
-        Uuid::from_u128(0xa001),
-        Uuid::from_u128(0xb001),
+        Id::from_u128(0xa001),
+        Id::fixture("alpha>test"),
         plan,
     )
     .await?;
-    seed_plan(
-        &testing,
-        Uuid::from_u128(0xa002),
-        second_app,
-        Uuid::now_v7(),
-    )
-    .await?;
+    seed_plan(&testing, Id::from_u128(0xa002), second_app, Id::now_v7()).await?;
     for (env, visible) in [
-        (Uuid::from_u128(0xa001), true),
-        (Uuid::from_u128(0xa002), false),
+        (Id::from_u128(0xa001), true),
+        (Id::from_u128(0xa002), false),
     ] {
         let mut tx = runtime.begin().await?;
         sqlx::query("SELECT set_config('iam.testing_environment_id',$1,true)")
@@ -182,7 +166,7 @@ async fn honeycomb_upgrade_preserves_deployed_state_and_scopes_new_tables() -> a
             .await?;
         let record: Option<sqlx::types::Json<Value>> =
             sqlx::query_scalar("SELECT iam_private.honeycomb_publication_read($1,$2)")
-                .bind(Uuid::from_u128(0xb001))
+                .bind(Id::fixture("alpha>test"))
                 .bind(plan)
                 .fetch_one(&mut *tx)
                 .await?;
@@ -259,27 +243,51 @@ async fn honeycomb_upgrade_preserves_deployed_state_and_scopes_new_tables() -> a
         ready_testing(&runtime).await,
         "restored exact ledger failed readiness"
     );
+    runtime.close().await;
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {runtime_role}")))
+        .execute(&testing)
+        .await?;
     Ok(())
 }
 
+// Compare identity semantics across the UUID-to-canonical storage conversion,
+// retaining every credential byte, resource UUID, version and lifecycle field.
 async fn production_snapshot(pool: &PgPool) -> anyhow::Result<Value> {
-    let value:sqlx::types::Json<Value>=sqlx::query_scalar("SELECT jsonb_build_object('environments',(SELECT jsonb_agg(to_jsonb(env) ORDER BY id) FROM iam.testing_environments env),'links',(SELECT jsonb_agg(to_jsonb(link) ORDER BY environment_id,source_application_id) FROM iam.application_testing_environments link),'applications',(SELECT jsonb_agg(jsonb_build_object('id',id,'app_id',app_id,'organization_id',organization_id,'version',version,'scope',app_scope) ORDER BY id) FROM iam.applications),'secrets',(SELECT jsonb_agg(to_jsonb(secret) ORDER BY id) FROM iam.application_secrets secret))").fetch_one(pool).await?;
+    let value: sqlx::types::Json<Value> = sqlx::query_scalar(r"
+      SELECT jsonb_build_object(
+       'environments',(SELECT jsonb_agg(to_jsonb(env) ORDER BY id) FROM iam.testing_environments env),
+       'links',(SELECT jsonb_agg(to_jsonb(link)||jsonb_build_object('source_application_id',app.app_id,'target_application_id',app.app_id) ORDER BY environment_id,app.app_id)
+        FROM iam.application_testing_environments link JOIN iam.applications app ON app.id=link.source_application_id),
+       'applications',(SELECT jsonb_agg(jsonb_build_object('id',app_id,'app_id',app_id,'organization_id',organization_id,'version',version,'scope',app_scope) ORDER BY app_id) FROM iam.applications),
+       'secrets',(SELECT jsonb_agg(to_jsonb(secret)||jsonb_build_object('application_id',app.app_id,'created_by_carbon_id',carbon.carbon_id) ORDER BY secret.id)
+        FROM iam.application_secrets secret JOIN iam.applications app ON app.id=secret.application_id
+        LEFT JOIN iam.carbons carbon ON carbon.id=secret.created_by_carbon_id))
+    ").fetch_one(pool).await?;
     Ok(value.0)
 }
 async fn testing_snapshot(pool: &PgPool) -> anyhow::Result<Value> {
-    let value:sqlx::types::Json<Value>=sqlx::query_scalar("SELECT jsonb_build_object('imports',(SELECT jsonb_agg(to_jsonb(source) ORDER BY testing_environment_id,application_id) FROM iam.testing_application_imports source),'apps',(SELECT jsonb_agg(jsonb_build_object('id',id,'app_id',app_id,'org',organization_id,'env',testing_environment_id,'version',version,'source',test_imported_from_production) ORDER BY testing_environment_id,id) FROM iam.applications),'secrets',(SELECT jsonb_agg(to_jsonb(secret) ORDER BY testing_environment_id,id) FROM iam.application_secrets secret))").fetch_one(pool).await?;
+    let value: sqlx::types::Json<Value> = sqlx::query_scalar(r"
+      SELECT jsonb_build_object(
+       'imports',(SELECT jsonb_agg(to_jsonb(source)||jsonb_build_object('application_id',app.app_id,'source_application_id',app.app_id) ORDER BY source.testing_environment_id,app.app_id)
+        FROM iam.testing_application_imports source JOIN iam.applications app ON app.id=source.application_id AND app.testing_environment_id=source.testing_environment_id),
+       'apps',(SELECT jsonb_agg(jsonb_build_object('id',app_id,'app_id',app_id,'org',organization_id,'env',testing_environment_id,'version',version,'source',test_imported_from_production) ORDER BY testing_environment_id,app_id) FROM iam.applications),
+       'secrets',(SELECT jsonb_agg(to_jsonb(secret)||jsonb_build_object('application_id',app.app_id,'created_by_carbon_id',carbon.carbon_id) ORDER BY secret.testing_environment_id,secret.id)
+        FROM iam.application_secrets secret JOIN iam.applications app ON app.id=secret.application_id AND app.testing_environment_id=secret.testing_environment_id
+        LEFT JOIN iam.carbons carbon ON carbon.id=secret.created_by_carbon_id AND carbon.testing_environment_id=secret.testing_environment_id))
+    ").fetch_one(pool).await?;
     Ok(value.0)
 }
-async fn seed_plan(pool: &PgPool, env: Uuid, app: Uuid, plan: Uuid) -> anyhow::Result<()> {
-    let operation = Uuid::now_v7();
+async fn seed_plan(pool: &PgPool, env: Id, app: Id, plan: Id) -> anyhow::Result<()> {
+    let operation = Id::now_v7();
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT set_config('iam.testing_environment_id',$1,true)")
         .bind(env.to_string())
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO iam.honeycomb_publication_plans(plan_id,service_application_id,request_id,application_id,configuration_revision,configuration_digest,requested_scope,catalog_gates,reused_approvals,gates,created_by_carbon_id) VALUES($1,$2,$3,$2,1,$4,'{\"iam\":[\"self.identity.read\"],\"external\":[]}','[]','[]','[]',$5)").bind(plan).bind(app).bind(Uuid::now_v7()).bind(vec![42_u8;32]).bind(env).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO iam.honeycomb_operations(operation_id,service_application_id,actor_principal_id,operation_kind,resource_id,idempotency_digest,request_digest,state) VALUES($1,$2,$3,'publication-decision',$4,$5,$6,'accepted')").bind(operation).bind(app).bind(env).bind(plan.to_string()).bind(vec![42_u8;32]).bind(vec![43_u8;32]).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO iam.honeycomb_publication_decisions(decision_id,plan_id,provider,scopes,decision,reviewer_carbon_id) VALUES($1,$2,'honeycomb','{}','approve',$3)").bind(operation).bind(plan).bind(env).execute(&mut *tx).await?;
+    let owner: Id = sqlx::query_scalar("SELECT created_by_carbon_id FROM iam.applications WHERE id=$1 AND testing_environment_id=$2").bind(app).bind(env).fetch_one(&mut *tx).await?;
+    sqlx::query("INSERT INTO iam.honeycomb_publication_plans(plan_id,service_application_id,request_id,application_id,configuration_revision,configuration_digest,requested_scope,catalog_gates,reused_approvals,gates,created_by_carbon_id) VALUES($1,$2,$3,$2,1,$4,'{\"iam\":[\"self.identity.read\"],\"external\":[]}','[]','[]','[]',$5)").bind(plan).bind(app).bind(Id::now_v7()).bind(vec![42_u8;32]).bind(owner).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO iam.honeycomb_operations(operation_id,service_application_id,actor_principal_id,operation_kind,resource_id,idempotency_digest,request_digest,state) VALUES($1,$2,$3,'publication-decision',$4,$5,$6,'accepted')").bind(operation).bind(app).bind(owner).bind(plan.to_string()).bind(vec![42_u8;32]).bind(vec![43_u8;32]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO iam.honeycomb_publication_decisions(decision_id,plan_id,provider,scopes,decision,reviewer_carbon_id) VALUES($1,$2,'honeycomb','{}','approve',$3)").bind(operation).bind(plan).bind(owner).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }

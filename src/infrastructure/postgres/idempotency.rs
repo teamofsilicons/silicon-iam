@@ -2,12 +2,12 @@
 
 use std::{borrow::Cow, time::Duration};
 
+use crate::domain::id::Id;
 use secrecy::SecretString;
 use sha2::{Digest as _, Sha256};
 use sqlx::{Postgres, Transaction};
 use subtle::ConstantTimeEq as _;
 use thiserror::Error;
-use uuid::Uuid;
 
 use crate::{
     error::AppError,
@@ -62,7 +62,7 @@ pub enum IdempotencyClaim {
 /// Exclusive right to complete or definitively cancel one idempotent mutation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IdempotencyLease {
-    record_id: Uuid,
+    record_id: Id,
 }
 
 /// Bounded availability window for replaying an encrypted one-time-secret
@@ -91,7 +91,7 @@ pub struct ReplayResponse {
 
 #[derive(sqlx::FromRow)]
 struct ExistingRecord {
-    id: Uuid,
+    id: Id,
     request_digest: Vec<u8>,
     status: String,
     response_status: Option<i16>,
@@ -197,8 +197,8 @@ pub async fn claim(
         .find(|candidate| candidate.caller == current_caller_digest)
         .ok_or_else(|| internal("idempotency_digest_versions"))?;
 
-    let record_id = Uuid::now_v7();
-    let inserted = sqlx::query_scalar::<_, Uuid>(
+    let record_id = Id::now_v7();
+    let inserted = sqlx::query_scalar::<_, Id>(
         r"
         INSERT INTO iam.idempotency_records (
             id,
@@ -798,7 +798,7 @@ mod tests {
         let result = classify_existing(
             &crypto,
             ExistingRecord {
-                id: Uuid::now_v7(),
+                id: Id::now_v7(),
                 request_digest: digest.as_bytes().to_vec(),
                 status: "processing".to_owned(),
                 response_status: None,

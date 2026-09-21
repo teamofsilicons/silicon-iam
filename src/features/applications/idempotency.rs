@@ -1,5 +1,6 @@
 #![allow(clippy::too_many_lines)]
 
+use crate::domain::id::Id;
 use axum::http::HeaderMap;
 use secrecy::SecretString;
 use serde::{Serialize, de::DeserializeOwned};
@@ -7,7 +8,6 @@ use sha2::{Digest as _, Sha256};
 use sqlx::{FromRow, Postgres, Transaction};
 use subtle::ConstantTimeEq as _;
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::infrastructure::crypto::{
     CryptoService, DigestPurpose, EncryptedValue, EncryptionContext, ProtectedField, SecretDigest,
@@ -21,7 +21,7 @@ const SECRET_REPLAY_SECONDS: i64 = 600;
 const ADVISORY_LOCK_DOMAIN: &[u8] = b"silicon-iam:v1:application-idempotency-lock";
 
 pub(super) enum Claim<T> {
-    Acquired(Uuid),
+    Acquired(Id),
     Replay { status: u16, response: T },
 }
 
@@ -32,7 +32,7 @@ pub(super) struct Replay<T> {
 
 #[derive(FromRow)]
 struct StoredClaim {
-    id: Uuid,
+    id: Id,
     request_digest: Vec<u8>,
     status: String,
     lease_available: bool,
@@ -63,9 +63,9 @@ pub(super) async fn claim<T: DeserializeOwned>(
     let candidates = request_candidates(crypto, headers, caller_scope, canonical_request)?;
     acquire_rotation_locks(transaction, route, &candidates).await?;
 
-    let record_id = Uuid::now_v7();
+    let record_id = Id::now_v7();
     let lease_owner =
-        crate::request_context::current_request_id().unwrap_or_else(|| Uuid::now_v7().to_string());
+        crate::request_context::current_request_id().unwrap_or_else(|| Id::now_v7().to_string());
 
     for candidate in &candidates {
         if let Some(row) = find_existing(transaction, route, *candidate).await? {
@@ -91,7 +91,7 @@ pub(super) async fn claim<T: DeserializeOwned>(
         .find(|candidate| candidate.caller == current_caller_digest)
         .ok_or_else(|| ApiError::internal("idempotency_keyring_mismatch"))?;
 
-    let inserted = sqlx::query_scalar::<_, Uuid>(
+    let inserted = sqlx::query_scalar::<_, Id>(
         r"
         INSERT INTO iam.idempotency_records (
             id, digest_key_version, caller_scope_digest, route,
@@ -376,7 +376,7 @@ fn advisory_lock_id(route: &'static str, candidate: DigestCandidate) -> i64 {
 pub(super) async fn complete<T: Serialize>(
     transaction: &mut Transaction<'_, Postgres>,
     crypto: &CryptoService,
-    record_id: Uuid,
+    record_id: Id,
     response_status: u16,
     response: &T,
     one_time_secret: bool,
@@ -398,7 +398,7 @@ pub(super) async fn complete<T: Serialize>(
 pub(super) async fn complete_no_later_than<T: Serialize>(
     transaction: &mut Transaction<'_, Postgres>,
     crypto: &CryptoService,
-    record_id: Uuid,
+    record_id: Id,
     response_status: u16,
     response: &T,
     one_time_secret: bool,
@@ -419,7 +419,7 @@ pub(super) async fn complete_no_later_than<T: Serialize>(
 async fn complete_inner<T: Serialize>(
     transaction: &mut Transaction<'_, Postgres>,
     crypto: &CryptoService,
-    record_id: Uuid,
+    record_id: Id,
     response_status: u16,
     response: &T,
     one_time_secret: bool,

@@ -195,7 +195,7 @@ async fn resolve_contact(
 
 async fn enforce_resolution_rate_limits(
     state: &ApiState,
-    principal_id: uuid::Uuid,
+    principal_id: crate::domain::id::Id,
     contact: &ValidatedContact,
 ) -> Result<(), AppError> {
     let maximum = NonZeroU32::new(60).ok_or(AppError::Internal {

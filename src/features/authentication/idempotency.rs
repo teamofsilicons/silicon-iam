@@ -1,10 +1,10 @@
+use crate::domain::id::Id;
 use axum::http::HeaderMap;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
 use sqlx::{Postgres, Transaction};
-use uuid::Uuid;
 
 use crate::{
     error::AppError,
@@ -194,10 +194,10 @@ pub(super) fn digest_parts(domain: &[u8], parts: &[&[u8]]) -> [u8; 32] {
     digest.finalize().into()
 }
 
-pub(super) fn request_uuid() -> Uuid {
+pub(super) fn request_uuid() -> Id {
     crate::request_context::current_request_id()
-        .and_then(|value| Uuid::parse_str(&value).ok())
-        .unwrap_or_else(Uuid::now_v7)
+        .and_then(|value| Id::parse_str(&value).ok())
+        .unwrap_or_else(Id::now_v7)
 }
 
 #[cfg(test)]

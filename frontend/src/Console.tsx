@@ -544,7 +544,6 @@ function Account(props: {
                   "email",
                   "phone_number",
                   "timezone",
-                  "description",
                   "status",
                   "created_at",
                 ]}
@@ -629,7 +628,7 @@ function Account(props: {
                     "All IAM and related application sessions will be revoked.",
                   stepUp: {
                     action: "account.sessions_revoke_all",
-                    resource: props.session.user!.principal_id,
+                    resource: props.session.user!.carbon_id,
                   },
                 })
               }

@@ -5,6 +5,7 @@ use super::application_reads::ReadScopes;
 
 use std::{borrow::Cow, collections::BTreeSet, str::FromStr as _};
 
+use crate::domain::id::Id;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -12,18 +13,13 @@ use axum::{
     response::Response,
 };
 use secrecy::ExposeSecret as _;
-use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::{Postgres, Transaction};
 use time::{Duration, OffsetDateTime};
-use uuid::Uuid;
 
 use crate::{
     api::{ApiState, authentication::Authenticated},
-    domain::{
-        actor::ActorType,
-        organization::{Capability, OrgRole},
-    },
+    domain::organization::{Capability, OrgRole},
     error::AppError,
     infrastructure::{crypto::DigestPurpose, postgres::step_up::RequiredAssurance},
 };
@@ -33,16 +29,13 @@ use super::{
         ActorResponse, ApprovalDecisionCreate, ApprovalDecisionResponse, ApprovalQuery,
         ApprovalRequestPage, ApprovalRequestResponse, ApprovalRequirementsResponse,
         DirectJobRoleReplace, DirectTagSetReplace, MembershipResponse, PageInfo, PageQuery,
-        RoleChangeRequestCreate, RoleHistoryPage, RoleHistoryResponse, SiliconResponse,
-        SiliconTokenRotatedResponse, TagChangeRequestCreate, TagHistoryPage, TagHistoryResponse,
+        RoleHistoryPage, RoleHistoryResponse, SiliconResponse, SiliconTokenRotatedResponse,
+        TagHistoryPage, TagHistoryResponse,
     },
     support::{self, Claim, MutationEvent},
     validation,
 };
 
-const ROLE_REQUEST_ROUTE: &str = "POST /api/v1/organizations/{org_id}/role-change-requests";
-const TAG_REQUEST_ROUTE: &str =
-    "POST /api/v1/organizations/{org_id}/members/{membership_id}/tag-change-requests";
 const DIRECT_ROLE_REPLACE_ROUTE: &str =
     "PUT /api/v1/organizations/{org_id}/members/{membership_id}/job-role";
 const DIRECT_TAGS_REPLACE_ROUTE: &str =
@@ -55,22 +48,22 @@ const ROTATION_COMPLETE_ROUTE: &str = "POST /api/v1/organizations/{org_id}/silic
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct ApprovalRow {
-    id: Uuid,
+    id: Id,
     org_id: String,
     kind: String,
     status: String,
-    requested_by_principal_id: Uuid,
+    requested_by_principal_id: Id,
     requested_by_type: String,
     requested_by_public_id: String,
-    target_membership_id: Uuid,
+    target_membership_id: Id,
     previous_job_role: Option<String>,
     proposed_job_role: Option<String>,
-    previous_tag_ids: Option<Vec<Uuid>>,
-    added_tag_ids: Option<Vec<Uuid>>,
-    removed_tag_ids: Option<Vec<Uuid>>,
-    proposed_tag_ids: Option<Vec<Uuid>>,
+    previous_tag_ids: Option<Vec<Id>>,
+    added_tag_ids: Option<Vec<Id>>,
+    removed_tag_ids: Option<Vec<Id>>,
+    proposed_tag_ids: Option<Vec<Id>>,
     tag_change_reason: Option<String>,
-    silicon_id: Option<Uuid>,
+    silicon_id: Option<Id>,
     completed_at: Option<OffsetDateTime>,
     version: i64,
     created_at: OffsetDateTime,
@@ -78,8 +71,8 @@ struct ApprovalRow {
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct DecisionRow {
-    id: Uuid,
-    principal_id: Uuid,
+    id: Id,
+    principal_id: Id,
     actor_type: String,
     public_id: String,
     decision: String,
@@ -89,10 +82,7 @@ struct DecisionRow {
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct TargetMembership {
-    id: Uuid,
     principal_kind: String,
-    job_role: String,
-    status: String,
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
@@ -105,9 +95,9 @@ struct DirectTargetMembership {
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct RequirementRow {
-    id: Uuid,
+    id: Id,
     requirement_kind: String,
-    specific_membership_id: Option<Uuid>,
+    specific_membership_id: Option<Id>,
     required_capability: Option<String>,
     quorum: i16,
 }
@@ -115,32 +105,32 @@ struct RequirementRow {
 #[derive(Clone, Debug, sqlx::FromRow)]
 #[allow(clippy::struct_field_names)]
 struct RotationTarget {
-    silicon_id: Uuid,
-    membership_id: Uuid,
+    silicon_id: Id,
+    membership_id: Id,
     global_silicon_id: String,
-    credential_id: Uuid,
+    credential_id: Id,
 }
 
 struct RotationInvalidation {
-    membership_id: Uuid,
+    membership_id: Id,
     before_member: MembershipResponse,
     before_silicon: SiliconResponse,
 }
 
 struct AppliedSiliconProjection {
-    membership_id: Uuid,
+    membership_id: Id,
     before: SiliconResponse,
     action: &'static str,
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct RoleHistoryRow {
-    id: Uuid,
-    membership_id: Uuid,
+    id: Id,
+    membership_id: Id,
     old_job_role: String,
     new_job_role: String,
-    approval_request_id: Option<Uuid>,
-    requested_by_principal_id: Uuid,
+    approval_request_id: Option<Id>,
+    requested_by_principal_id: Id,
     requested_by_type: String,
     requested_by_public_id: String,
     applied_at: OffsetDateTime,
@@ -148,13 +138,13 @@ struct RoleHistoryRow {
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct TagHistoryRow {
-    id: Uuid,
-    membership_id: Uuid,
-    previous_tag_ids: Vec<Uuid>,
-    applied_tag_ids: Vec<Uuid>,
-    approval_request_id: Option<Uuid>,
+    id: Id,
+    membership_id: Id,
+    previous_tag_ids: Vec<Id>,
+    applied_tag_ids: Vec<Id>,
+    approval_request_id: Option<Id>,
     membership_version: i64,
-    requested_by_principal_id: Uuid,
+    requested_by_principal_id: Id,
     requested_by_type: String,
     requested_by_public_id: String,
     applied_at: OffsetDateTime,
@@ -162,209 +152,18 @@ struct TagHistoryRow {
 
 #[derive(Debug, sqlx::FromRow)]
 struct AppliedTagChange {
-    applied_membership_id: Uuid,
-    previous_tags: Vec<Uuid>,
-    applied_tags: Vec<Uuid>,
+    applied_membership_id: Id,
+    previous_tags: Vec<Id>,
+    applied_tags: Vec<Id>,
     resulting_membership_version: i64,
 }
 
-#[derive(Serialize)]
-struct TagChangeClaim<'a> {
-    target_membership_id: Uuid,
-    add_tag_ids: &'a [Uuid],
-    remove_tag_ids: &'a [Uuid],
-    reason: Option<&'a str>,
-}
-
 pub(super) async fn create_role_change_request(
-    State(state): State<ApiState>,
-    authenticated: Authenticated,
-    Path(org_id): Path<String>,
-    headers: HeaderMap,
-    Json(mut input): Json<RoleChangeRequestCreate>,
+    _authenticated: Authenticated,
 ) -> Result<Response, AppError> {
-    let org_id = validation::organization_id(&org_id)?.to_string();
-    input.proposed_job_role = validation::job_role(std::mem::take(&mut input.proposed_job_role))?;
-    input.reason = input
-        .reason
-        .take()
-        .map(|value| validation::bounded_text("reason", value, 0, 2_000, true))
-        .transpose()?;
-    require_silicon_governance_request(authenticated.0.subject.actor_type)?;
-    let mut scope = support::begin_scoped_organization(
-        &state,
-        &authenticated,
-        &org_id,
-        "organization.job_role_changes.request",
-    )
-    .await?;
-    let lease = match support::claim(
-        &mut scope.transaction,
-        &state,
-        &authenticated,
-        &headers,
-        ROLE_REQUEST_ROUTE,
-        &input,
-        false,
-    )
-    .await?
-    {
-        Claim::Replay(response) => return Ok(response),
-        Claim::Acquired(lease) => lease,
-    };
-    let target = lock_governance_request_target(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        input.target_membership_id,
-    )
-    .await?;
-    if target.status != "active" {
-        return Err(AppError::Conflict {
-            code: Cow::Borrowed("membership_not_active"),
-        });
-    }
-    if target.job_role == input.proposed_job_role {
-        return Err(AppError::Conflict {
-            code: Cow::Borrowed("job_role_unchanged"),
-        });
-    }
-    let duplicate = sqlx::query_scalar::<_, bool>(
-        r"
-        SELECT EXISTS (
-            SELECT 1
-            FROM iam.job_role_change_requests AS change
-            JOIN iam.approval_requests AS request
-              ON request.organization_id = change.organization_id
-             AND request.id = change.approval_request_id
-            WHERE change.organization_id = $1
-              AND change.target_membership_id = $2
-              AND change.proposed_job_role = $3
-              AND request.status IN ('pending', 'approved')
-        )
-        ",
-    )
-    .bind(scope.access.organization_id)
-    .bind(target.id)
-    .bind(&input.proposed_job_role)
-    .fetch_one(&mut *scope.transaction)
-    .await
-    .map_err(support::database)?;
-    if duplicate {
-        return Err(AppError::Conflict {
-            code: Cow::Borrowed("approval_request_exists"),
-        });
-    }
-    let request_id = Uuid::now_v7();
-    let is_carbon = target.principal_kind == "carbon";
-    sqlx::query(
-        r"
-        INSERT INTO iam.approval_requests (
-            id, organization_id, request_kind, requested_by_membership_id,
-            minimum_distinct_approvers
-        ) VALUES ($1, $2, $3, $4, $5)
-        ",
-    )
-    .bind(request_id)
-    .bind(scope.access.organization_id)
-    .bind(if is_carbon {
-        "carbon_job_role_change"
-    } else {
-        "silicon_job_role_change"
+    Err(AppError::Gone {
+        code: Cow::Borrowed("use_direct_job_description_update"),
     })
-    .bind(scope.access.membership_id)
-    .bind(if is_carbon { 2_i16 } else { 1_i16 })
-    .execute(&mut *scope.transaction)
-    .await
-    .map_err(support::database)?;
-    sqlx::query(
-        r"
-        INSERT INTO iam.job_role_change_requests (
-            approval_request_id, organization_id, target_membership_id,
-            target_principal_kind, previous_job_role, proposed_job_role
-        ) VALUES ($1, $2, $3, $4::iam.principal_kind, $5, $6)
-        ",
-    )
-    .bind(request_id)
-    .bind(scope.access.organization_id)
-    .bind(target.id)
-    .bind(&target.principal_kind)
-    .bind(&target.job_role)
-    .bind(&input.proposed_job_role)
-    .execute(&mut *scope.transaction)
-    .await
-    .map_err(support::database)?;
-    if is_carbon {
-        insert_requirement(
-            &mut scope.transaction,
-            scope.access.organization_id,
-            request_id,
-            "specific_membership",
-            Some(target.id),
-            None,
-        )
-        .await?;
-    }
-    insert_requirement(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        request_id,
-        "current_owner_or_admin",
-        None,
-        Some("roles.approve"),
-    )
-    .await?;
-    let approval = fetch_approval(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        request_id,
-    )
-    .await?;
-    support::record_mutation(
-        &mut scope.transaction,
-        &authenticated,
-        scope.access.organization_id,
-        MutationEvent {
-            action: "role_change.requested",
-            target_type: "approval_request",
-            target_id: request_id,
-            aggregate_type: "approval_request",
-            aggregate_id: request_id,
-            aggregate_version: approval.version,
-            event_type: "organization.role_change.requested.v1",
-            before_state: None,
-            after_state: Some(approval.immutable_payload.clone()),
-            metadata: json!({
-                "approval_request_id": request_id,
-                "target_membership_id": target.id,
-                "reason_present": input.reason.is_some(),
-            }),
-        },
-    )
-    .await?;
-    let body = support::finish_mutation(
-        &authenticated,
-        support::MutationView::Approval,
-        &mut scope.transaction,
-        &state,
-        lease,
-        StatusCode::CREATED,
-        &approval,
-    )
-    .await?;
-    scope
-        .transaction
-        .commit()
-        .await
-        .map_err(support::database)?;
-    support::json_response(StatusCode::CREATED, body, Some(approval.version), false)
-}
-
-fn require_silicon_governance_request(actor_type: ActorType) -> Result<(), AppError> {
-    if actor_type == ActorType::Silicon {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden)
-    }
 }
 
 pub(super) async fn replace_member_job_role(
@@ -444,7 +243,7 @@ pub(super) async fn replace_member_job_role(
     .bind(scope.access.organization_id)
     .bind(membership_id)
     .bind(scope.access.membership_id)
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(expected_version)
     .bind(&input.job_role)
     .fetch_one(&mut *scope.transaction)
@@ -592,7 +391,7 @@ pub(super) async fn replace_member_tags(
     .bind(scope.access.organization_id)
     .bind(membership_id)
     .bind(scope.access.membership_id)
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(expected_version)
     .bind(&input.tag_ids)
     .fetch_one(&mut *scope.transaction)
@@ -651,251 +450,19 @@ pub(super) async fn replace_member_tags(
 }
 
 fn require_direct_governance_control(
-    authenticated: &Authenticated,
+    _authenticated: &Authenticated,
     access: &crate::infrastructure::postgres::authorization::OrganizationAccess,
     capability: Capability,
 ) -> Result<(), AppError> {
-    if authenticated.0.subject.actor_type != ActorType::Carbon {
-        return Err(AppError::Forbidden);
-    }
-    if !matches!(access.authority.org_role, OrgRole::Owner | OrgRole::Admin) {
-        return Err(AppError::Forbidden);
-    }
     support::require_capability(access, capability)
 }
 
 pub(super) async fn create_tag_change_request(
-    State(state): State<ApiState>,
-    authenticated: Authenticated,
-    MembershipPath((org_id, membership_id)): MembershipPath,
-    headers: HeaderMap,
-    Json(mut input): Json<TagChangeRequestCreate>,
+    _authenticated: Authenticated,
 ) -> Result<Response, AppError> {
-    let org_id = validation::organization_id(&org_id)?.to_string();
-    validation::tag_change_request(&mut input)?;
-    require_silicon_governance_request(authenticated.0.subject.actor_type)?;
-    let mut scope = support::begin_scoped_organization(
-        &state,
-        &authenticated,
-        &org_id,
-        "organization.tag_changes.request",
-    )
-    .await?;
-    let claim = TagChangeClaim {
-        target_membership_id: membership_id,
-        add_tag_ids: &input.add_tag_ids,
-        remove_tag_ids: &input.remove_tag_ids,
-        reason: input.reason.as_deref(),
-    };
-    let lease = match support::claim_resource(
-        &mut scope.transaction,
-        &state,
-        &authenticated,
-        &headers,
-        TAG_REQUEST_ROUTE,
-        &membership_id.to_string(),
-        &claim,
-        false,
-    )
-    .await?
-    {
-        Claim::Replay(response) => return Ok(response),
-        Claim::Acquired(lease) => lease,
-    };
-    let target = lock_governance_request_target(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        membership_id,
-    )
-    .await?;
-    if target.status != "active" {
-        return Err(AppError::Conflict {
-            code: Cow::Borrowed("membership_not_active"),
-        });
-    }
-    if !matches!(target.principal_kind.as_str(), "carbon" | "silicon") {
-        return Err(AppError::Conflict {
-            code: Cow::Borrowed("tag_change_target_ineligible"),
-        });
-    }
-
-    let previous_tag_ids = membership_tag_ids(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        membership_id,
-    )
-    .await?;
-    let mut proposed_tag_ids = previous_tag_ids.iter().copied().collect::<BTreeSet<_>>();
-    for tag_id in &input.remove_tag_ids {
-        if !proposed_tag_ids.remove(tag_id) {
-            return Err(AppError::Conflict {
-                code: Cow::Borrowed("tag_change_not_applicable"),
-            });
-        }
-    }
-    for tag_id in &input.add_tag_ids {
-        if !proposed_tag_ids.insert(*tag_id) {
-            return Err(AppError::Conflict {
-                code: Cow::Borrowed("tag_change_not_applicable"),
-            });
-        }
-    }
-    if proposed_tag_ids.len() > 100 {
-        return Err(validation::field(
-            "add_tag_ids",
-            "would exceed the membership tag limit",
-        ));
-    }
-    let proposed_tag_ids = proposed_tag_ids.into_iter().collect::<Vec<_>>();
-    validate_active_tag_ids(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        &proposed_tag_ids,
-    )
-    .await?;
-
-    let duplicate = sqlx::query_scalar::<_, bool>(
-        r"
-        SELECT EXISTS (
-            SELECT 1
-            FROM iam.tag_change_requests AS change
-            JOIN iam.approval_requests AS request
-              ON request.organization_id = change.organization_id
-             AND request.id = change.approval_request_id
-            WHERE change.organization_id = $1
-              AND change.target_membership_id = $2
-              AND change.proposed_tag_ids = $3
-              AND request.status IN ('pending', 'approved')
-        )
-        ",
-    )
-    .bind(scope.access.organization_id)
-    .bind(membership_id)
-    .bind(&proposed_tag_ids)
-    .fetch_one(&mut *scope.transaction)
-    .await
-    .map_err(support::database)?;
-    if duplicate {
-        return Err(AppError::Conflict {
-            code: Cow::Borrowed("approval_request_exists"),
-        });
-    }
-
-    let request_id = Uuid::now_v7();
-    let is_carbon = target.principal_kind == "carbon";
-    sqlx::query(
-        r"
-        INSERT INTO iam.approval_requests (
-            id, organization_id, request_kind, requested_by_membership_id,
-            minimum_distinct_approvers
-        ) VALUES ($1, $2, $3, $4, $5)
-        ",
-    )
-    .bind(request_id)
-    .bind(scope.access.organization_id)
-    .bind(if is_carbon {
-        "carbon_tag_change"
-    } else {
-        "silicon_tag_change"
+    Err(AppError::Gone {
+        code: Cow::Borrowed("use_direct_member_tags_update"),
     })
-    .bind(scope.access.membership_id)
-    .bind(if is_carbon { 2_i16 } else { 1_i16 })
-    .execute(&mut *scope.transaction)
-    .await
-    .map_err(support::database)?;
-    sqlx::query(
-        r"
-        INSERT INTO iam.tag_change_requests (
-            approval_request_id, organization_id, target_membership_id,
-            target_principal_kind, previous_tag_ids, added_tag_ids,
-            removed_tag_ids, proposed_tag_ids, reason
-        ) VALUES ($1, $2, $3, $4::iam.principal_kind, $5, $6, $7, $8, $9)
-        ",
-    )
-    .bind(request_id)
-    .bind(scope.access.organization_id)
-    .bind(membership_id)
-    .bind(&target.principal_kind)
-    .bind(&previous_tag_ids)
-    .bind(&input.add_tag_ids)
-    .bind(&input.remove_tag_ids)
-    .bind(&proposed_tag_ids)
-    .bind(&input.reason)
-    .execute(&mut *scope.transaction)
-    .await
-    .map_err(support::database)?;
-    if is_carbon {
-        insert_requirement(
-            &mut scope.transaction,
-            scope.access.organization_id,
-            request_id,
-            "specific_membership",
-            Some(membership_id),
-            None,
-        )
-        .await?;
-    }
-    insert_requirement(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        request_id,
-        "current_owner_or_admin",
-        None,
-        Some("tags.manage"),
-    )
-    .await?;
-    let approval = fetch_approval(
-        &mut scope.transaction,
-        scope.access.organization_id,
-        request_id,
-    )
-    .await?;
-    let affected_tag_ids = previous_tag_ids
-        .iter()
-        .chain(&proposed_tag_ids)
-        .copied()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    support::record_mutation(
-        &mut scope.transaction,
-        &authenticated,
-        scope.access.organization_id,
-        MutationEvent {
-            action: "tag_change.requested",
-            target_type: "approval_request",
-            target_id: request_id,
-            aggregate_type: "approval_request",
-            aggregate_id: request_id,
-            aggregate_version: approval.version,
-            event_type: "organization.tag_change.requested.v1",
-            before_state: None,
-            after_state: Some(approval.immutable_payload.clone()),
-            metadata: json!({
-                "approval_request_id": request_id,
-                "target_membership_id": membership_id,
-                "tag_ids": affected_tag_ids,
-                "reason_present": input.reason.is_some(),
-            }),
-        },
-    )
-    .await?;
-    let body = support::finish_mutation(
-        &authenticated,
-        support::MutationView::Approval,
-        &mut scope.transaction,
-        &state,
-        lease,
-        StatusCode::CREATED,
-        &approval,
-    )
-    .await?;
-    scope
-        .transaction
-        .commit()
-        .await
-        .map_err(support::database)?;
-    support::json_response(StatusCode::CREATED, body, Some(approval.version), false)
 }
 
 pub(super) async fn list_approval_requests(
@@ -941,7 +508,7 @@ pub(super) async fn list_approval_requests(
 pub(super) async fn get_approval_request(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, request_id)): Path<(String, Uuid)>,
+    Path((org_id, request_id)): Path<(String, Id)>,
 ) -> Result<Response, AppError> {
     ReadScopes::for_actor(&authenticated).require_any(&[
         "organization.governance.read",
@@ -972,7 +539,7 @@ pub(super) async fn get_approval_request(
 pub(super) async fn decide_approval_request(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, request_id)): Path<(String, Uuid)>,
+    Path((org_id, request_id)): Path<(String, Id)>,
     headers: HeaderMap,
     Json(mut input): Json<ApprovalDecisionCreate>,
 ) -> Result<Response, AppError> {
@@ -1014,6 +581,17 @@ pub(super) async fn decide_approval_request(
         request_id,
     )
     .await?;
+    if matches!(
+        approval.kind.as_str(),
+        "carbon_job_role_change"
+            | "silicon_job_role_change"
+            | "carbon_tag_change"
+            | "silicon_tag_change"
+    ) {
+        return Err(AppError::Gone {
+            code: Cow::Borrowed("use_action_approval_workflow"),
+        });
+    }
     if approval.version != expected_version {
         return Err(precondition_failed());
     }
@@ -1039,7 +617,7 @@ pub(super) async fn decide_approval_request(
             .immutable_payload
             .get("silicon_id")
             .and_then(Value::as_str)
-            .and_then(|value| Uuid::parse_str(value).ok())
+            .and_then(|value| Id::identity(value).ok())
             .ok_or(AppError::Internal {
                 category: "rotation_approval_payload",
             })?;
@@ -1066,7 +644,7 @@ pub(super) async fn decide_approval_request(
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(scope.access.organization_id)
     .bind(request_id)
     .bind(requirement.id)
@@ -1273,17 +851,17 @@ pub(super) async fn decide_approval_request(
                 aggregate_version: membership_version,
                 event_type: "organization.membership.updated.v1",
                 before_state: Some(json!({
-                    "job_role": previous_job_role,
+                    "job_description": previous_job_role,
                     "version": membership_version - 1,
                 })),
                 after_state: Some(json!({
-                    "job_role": job_role,
+                    "job_description": job_role,
                     "version": membership_version,
                 })),
                 metadata: json!({
                     "membership_id": membership_id,
                     "approval_request_id": request_id,
-                    "changed_fields": ["job_role"],
+                    "changed_fields": ["job_description"],
                 }),
             },
         )
@@ -1588,7 +1166,7 @@ pub(super) async fn request_silicon_token_rotation(
             code: Cow::Borrowed("rotation_already_pending"),
         });
     }
-    let request_id = Uuid::now_v7();
+    let request_id = Id::now_v7();
     sqlx::query(
         r"
         INSERT INTO iam.approval_requests (
@@ -1675,7 +1253,7 @@ pub(super) async fn request_silicon_token_rotation(
 pub(super) async fn complete_silicon_token_rotation(
     State(state): State<ApiState>,
     authenticated: Authenticated,
-    Path((org_id, silicon_handle, request_id)): Path<(String, String, Uuid)>,
+    Path((org_id, silicon_handle, request_id)): Path<(String, String, Id)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let org_id = validation::organization_id(&org_id)?.to_string();
@@ -1768,7 +1346,7 @@ pub(super) async fn complete_silicon_token_rotation(
         .map_err(|_| AppError::Internal {
             category: "silicon_rotation_token_digest",
         })?;
-    let replacement_id = Uuid::now_v7();
+    let replacement_id = Id::now_v7();
     let prefix = token.expose_secret().get(..12).ok_or(AppError::Internal {
         category: "silicon_rotation_prefix",
     })?;
@@ -1832,7 +1410,7 @@ pub(super) async fn complete_silicon_token_rotation(
         ) VALUES ($1, $2, $3, $4, $5, $6)
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(scope.access.organization_id)
     .bind(target.silicon_id)
     .bind(request_id)
@@ -1945,8 +1523,8 @@ pub(super) async fn complete_silicon_token_rotation(
 
 async fn lock_direct_target(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
 ) -> Result<DirectTargetMembership, AppError> {
     sqlx::query_as::<_, DirectTargetMembership>(
         r"
@@ -1981,10 +1559,10 @@ fn require_direct_target_version(
 
 async fn lock_silicon_projection(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
 ) -> Result<(), AppError> {
-    sqlx::query_scalar::<_, Uuid>(
+    sqlx::query_scalar::<_, Id>(
         r"
         SELECT id
         FROM iam.silicons
@@ -2005,8 +1583,8 @@ async fn lock_silicon_projection(
 async fn capture_approved_silicon_projection(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
     approval_kind: &str,
 ) -> Result<Option<(SiliconResponse, &'static str)>, AppError> {
     let Some(action) = approved_silicon_projection_action(approval_kind) else {
@@ -2036,8 +1614,8 @@ fn approved_silicon_projection_action(approval_kind: &str) -> Option<&'static st
 async fn fetch_silicon_projection(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
     enabled: bool,
 ) -> Result<Option<SiliconResponse>, AppError> {
     if !enabled {
@@ -2056,8 +1634,8 @@ async fn fetch_silicon_projection(
 
 async fn touch_direct_silicon_projection(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
     enabled: bool,
 ) -> Result<(), AppError> {
     if !enabled {
@@ -2090,8 +1668,8 @@ async fn record_direct_silicon_projection(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     authenticated: &Authenticated,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
     before: Option<SiliconResponse>,
     action: &'static str,
 ) -> Result<(), AppError> {
@@ -2116,30 +1694,11 @@ async fn record_direct_silicon_projection(
 
 async fn fetch_target(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
+    organization_id: Id,
+    membership_id: Id,
 ) -> Result<TargetMembership, AppError> {
     sqlx::query_as::<_, TargetMembership>(
-        "SELECT id, principal_kind::text AS principal_kind, job_role, status FROM iam.organization_memberships WHERE organization_id = $1 AND id = $2 LIMIT 1",
-    )
-    .bind(organization_id)
-    .bind(membership_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(support::database)?
-    .ok_or(AppError::NotFound)
-}
-
-async fn lock_governance_request_target(
-    transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
-) -> Result<TargetMembership, AppError> {
-    sqlx::query_as::<_, TargetMembership>(
-        r"
-        SELECT id, principal_kind, job_role, status
-        FROM iam_private.lock_governance_request_target($1, $2)
-        ",
+        "SELECT principal_kind::text AS principal_kind FROM iam.organization_memberships WHERE organization_id = $1 AND id = $2 LIMIT 1",
     )
     .bind(organization_id)
     .bind(membership_id)
@@ -2151,10 +1710,10 @@ async fn lock_governance_request_target(
 
 async fn membership_tag_ids(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    membership_id: Uuid,
-) -> Result<Vec<Uuid>, AppError> {
-    sqlx::query_scalar::<_, Uuid>(
+    organization_id: Id,
+    membership_id: Id,
+) -> Result<Vec<Id>, AppError> {
+    sqlx::query_scalar::<_, Id>(
         r"
         SELECT assignment.tag_id
         FROM iam.membership_tags AS assignment
@@ -2171,8 +1730,8 @@ async fn membership_tag_ids(
 
 async fn validate_active_tag_ids(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    tag_ids: &[Uuid],
+    organization_id: Id,
+    tag_ids: &[Id],
 ) -> Result<(), AppError> {
     let count = sqlx::query_scalar::<_, i64>(
         r"
@@ -2196,10 +1755,10 @@ async fn validate_active_tag_ids(
 
 async fn insert_requirement(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    request_id: Uuid,
+    organization_id: Id,
+    request_id: Id,
     kind: &'static str,
-    specific_membership_id: Option<Uuid>,
+    specific_membership_id: Option<Id>,
     required_capability: Option<&'static str>,
 ) -> Result<(), AppError> {
     sqlx::query(
@@ -2210,7 +1769,7 @@ async fn insert_requirement(
         ) VALUES ($1, $2, $3, $4, $5, $6)
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(organization_id)
     .bind(request_id)
     .bind(kind)
@@ -2224,9 +1783,9 @@ async fn insert_requirement(
 
 async fn eligible_requirement(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    request_id: Uuid,
-    caller_membership_id: Uuid,
+    organization_id: Id,
+    request_id: Id,
+    caller_membership_id: Id,
     authority: &crate::domain::organization::OrganizationAuthority,
 ) -> Result<RequirementRow, AppError> {
     let requirements = sqlx::query_as::<_, RequirementRow>(
@@ -2276,8 +1835,8 @@ async fn eligible_requirement(
 
 async fn requirements_satisfied(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    request_id: Uuid,
+    organization_id: Id,
+    request_id: Id,
 ) -> Result<bool, AppError> {
     sqlx::query_scalar::<_, bool>(
         r"
@@ -2305,8 +1864,8 @@ async fn requirements_satisfied(
 
 async fn update_approval_status(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    request_id: Uuid,
+    organization_id: Id,
+    request_id: Id,
     expected_version: i64,
     status: &'static str,
 ) -> Result<(), AppError> {
@@ -2334,11 +1893,11 @@ async fn update_approval_status(
 
 async fn apply_job_role_change(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    request_id: Uuid,
+    organization_id: Id,
+    request_id: Id,
     expected_version: i64,
-) -> Result<(Uuid, String, String, i64), AppError> {
-    let payload = sqlx::query_as::<_, (Uuid, String, String)>(
+) -> Result<(Id, String, String, i64), AppError> {
+    let payload = sqlx::query_as::<_, (Id, String, String)>(
         "SELECT target_membership_id, previous_job_role, proposed_job_role FROM iam.job_role_change_requests WHERE organization_id = $1 AND approval_request_id = $2",
     )
     .bind(organization_id)
@@ -2372,7 +1931,7 @@ async fn apply_job_role_change(
         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         ",
     )
-    .bind(Uuid::now_v7())
+    .bind(Id::now_v7())
     .bind(organization_id)
     .bind(payload.0)
     .bind(request_id)
@@ -2404,8 +1963,8 @@ async fn apply_job_role_change(
 
 async fn fetch_approval(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    request_id: Uuid,
+    organization_id: Id,
+    request_id: Id,
 ) -> Result<ApprovalRequestResponse, AppError> {
     let row = sqlx::query_as::<_, ApprovalRow>(APPROVAL_BY_ID_SQL)
         .bind(organization_id)
@@ -2471,8 +2030,8 @@ async fn materialize_approval(
         .sum();
     let immutable_payload = match row.kind.as_str() {
         "carbon_job_role_change" | "silicon_job_role_change" => json!({
-            "previous_job_role": row.previous_job_role,
-            "proposed_job_role": row.proposed_job_role,
+            "previous_job_description": row.previous_job_role,
+            "proposed_job_description": row.proposed_job_role,
         }),
         "carbon_tag_change" | "silicon_tag_change" => json!({
             "previous_tag_ids": row.previous_tag_ids,
@@ -2511,7 +2070,7 @@ async fn materialize_approval(
 
 async fn decision_rows(
     transaction: &mut Transaction<'_, Postgres>,
-    request_id: Uuid,
+    request_id: Id,
 ) -> Result<Vec<DecisionRow>, AppError> {
     sqlx::query_as::<_, DecisionRow>(DECISIONS_SQL)
         .bind(request_id)
@@ -2522,7 +2081,7 @@ async fn decision_rows(
 
 async fn decision_actors(
     transaction: &mut Transaction<'_, Postgres>,
-    request_id: Uuid,
+    request_id: Id,
 ) -> Result<Vec<ActorResponse>, AppError> {
     Ok(decision_rows(transaction, request_id)
         .await?
@@ -2538,7 +2097,7 @@ async fn decision_actors(
 
 async fn fetch_rotation_target(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
     silicon_handle: &str,
 ) -> Result<RotationTarget, AppError> {
     sqlx::query_as::<_, RotationTarget>(
@@ -2567,8 +2126,8 @@ async fn fetch_rotation_target(
 
 async fn lock_rotation_target_for_approval(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    request_id: Uuid,
+    organization_id: Id,
+    request_id: Id,
 ) -> Result<RotationTarget, AppError> {
     sqlx::query_as::<_, RotationTarget>(
         r"
@@ -2606,11 +2165,11 @@ async fn lock_rotation_target_for_approval(
 
 async fn invalidate_rotation_credential(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
-    request_id: Uuid,
+    organization_id: Id,
+    request_id: Id,
     target: &RotationTarget,
 ) -> Result<(), AppError> {
-    let active_credential_id = sqlx::query_scalar::<_, Uuid>(
+    let active_credential_id = sqlx::query_scalar::<_, Id>(
         r"
         SELECT id
         FROM iam.silicon_credentials
@@ -2691,9 +2250,9 @@ async fn invalidate_rotation_credential(
 
 async fn fetch_rotation_target_for_request(
     transaction: &mut Transaction<'_, Postgres>,
-    organization_id: Uuid,
+    organization_id: Id,
     silicon_handle: &str,
-    request_id: Uuid,
+    request_id: Id,
 ) -> Result<RotationTarget, AppError> {
     sqlx::query_as::<_, RotationTarget>(
         r"
@@ -2725,7 +2284,7 @@ async fn fetch_rotation_target_for_request(
 
 async fn revoke_silicon_sessions(
     transaction: &mut Transaction<'_, Postgres>,
-    silicon_id: Uuid,
+    silicon_id: Id,
 ) -> Result<(), AppError> {
     sqlx::query(
         "UPDATE iam.authentication_sessions SET status = 'revoked', revoked_at = transaction_timestamp(), revocation_reason = 'Silicon credential rotated', version = version + 1 WHERE subject_principal_id = $1 AND status = 'active'",
@@ -2878,13 +2437,13 @@ fn take_tag_history_page(
     })
 }
 
-fn approval_payload_tag_ids(payload: &Value) -> Vec<Uuid> {
+fn approval_payload_tag_ids(payload: &Value) -> Vec<Id> {
     ["previous_tag_ids", "proposed_tag_ids"]
         .into_iter()
         .filter_map(|field| payload.get(field).and_then(Value::as_array))
         .flatten()
         .filter_map(Value::as_str)
-        .filter_map(|value| Uuid::parse_str(value).ok())
+        .filter_map(|value| Id::parse_str(value).ok())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -3042,24 +2601,10 @@ const TAG_HISTORY_SQL: &str = r"
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::id::Id;
     use anyhow::ensure;
-    use sqlx::postgres::PgPoolOptions;
-    use testcontainers::{ImageExt as _, runners::AsyncRunner as _};
-    use testcontainers_modules::postgres::Postgres;
-    use uuid::Uuid;
 
-    use super::{
-        APPROVAL_BY_ID_SQL, APPROVAL_LIST_SQL, approved_silicon_projection_action,
-        require_silicon_governance_request,
-    };
-    use crate::domain::actor::ActorType;
-
-    #[test]
-    fn only_silicons_can_create_governance_requests() {
-        assert!(require_silicon_governance_request(ActorType::Silicon).is_ok());
-        assert!(require_silicon_governance_request(ActorType::Carbon).is_err());
-        assert!(require_silicon_governance_request(ActorType::Application).is_err());
-    }
+    use super::{APPROVAL_BY_ID_SQL, APPROVAL_LIST_SQL, approved_silicon_projection_action};
 
     #[test]
     fn approved_silicon_directory_changes_emit_the_silicon_projection() {
@@ -3092,32 +2637,26 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a local Docker daemon"]
+    #[ignore = "requires isolated PostgreSQL via IAM_TEST_DATABASE_ADMIN_URL or Docker"]
     #[allow(
         clippy::too_many_lines,
         reason = "the fixture and both fixed-path direct governance transitions form one database contract test"
     )]
     async fn direct_admin_role_and_tag_control_is_atomic_and_historical() -> anyhow::Result<()> {
-        let container = Postgres::default().with_tag("16-alpine").start().await?;
-        let host = container.get_host().await?;
-        let port = container.get_host_port_ipv4(5432).await?;
-        let database_url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect(&database_url)
-            .await?;
+        let database = crate::test_database::TestDatabase::start().await?;
+        let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let owner_id = Uuid::from_u128(0x401);
-        let admin_id = Uuid::from_u128(0x402);
-        let target_id = Uuid::from_u128(0x403);
-        let organization_id = Uuid::from_u128(0x404);
-        let owner_membership_id = Uuid::from_u128(0x405);
-        let admin_membership_id = Uuid::from_u128(0x406);
-        let target_membership_id = Uuid::from_u128(0x407);
-        let tag_id = Uuid::from_u128(0x408);
-        let role_history_id = Uuid::from_u128(0x409);
-        let tag_history_id = Uuid::from_u128(0x40a);
+        let owner_id = Id::fixture("direct-owner");
+        let admin_id = Id::fixture("direct-admin");
+        let target_id = Id::fixture("direct-target");
+        let organization_id = Id::from_u128(0x404);
+        let owner_membership_id = Id::from_u128(0x405);
+        let admin_membership_id = Id::from_u128(0x406);
+        let target_membership_id = Id::from_u128(0x407);
+        let tag_id = Id::from_u128(0x408);
+        let role_history_id = Id::from_u128(0x409);
+        let tag_history_id = Id::from_u128(0x40a);
 
         let mut seed = pool.begin().await?;
         sqlx::query(
@@ -3164,7 +2703,7 @@ mod tests {
                     ) VALUES ($1, $2, $3::iam.contact_kind, $4, $5, 1, transaction_timestamp())
                     ",
                 )
-                .bind(Uuid::from_u128(0x410 + u128::from(discriminator)))
+                .bind(Id::from_u128(0x410 + u128::from(discriminator)))
                 .bind(carbon_id)
                 .bind(kind)
                 .bind(vec![discriminator; 17])
@@ -3210,8 +2749,8 @@ mod tests {
                 ($2, $3, $4, 'tags.manage', $5)
             ",
         )
-        .bind(Uuid::from_u128(0x40b))
-        .bind(Uuid::from_u128(0x40c))
+        .bind(Id::from_u128(0x40b))
+        .bind(Id::from_u128(0x40c))
         .bind(organization_id)
         .bind(admin_membership_id)
         .bind(owner_membership_id)
@@ -3268,13 +2807,13 @@ mod tests {
         .bind(target_membership_id)
         .fetch_one(&pool)
         .await?;
-        let role_history = sqlx::query_as::<_, (Option<Uuid>, Option<Uuid>)>(
+        let role_history = sqlx::query_as::<_, (Option<Id>, Option<Id>)>(
             "SELECT approval_request_id, applied_by_membership_id FROM iam.job_role_history WHERE id = $1",
         )
         .bind(role_history_id)
         .fetch_one(&pool)
         .await?;
-        let tag_history = sqlx::query_as::<_, (Option<Uuid>, Option<Uuid>, Vec<Uuid>)>(
+        let tag_history = sqlx::query_as::<_, (Option<Id>, Option<Id>, Vec<Id>)>(
             "SELECT approval_request_id, applied_by_membership_id, applied_tag_ids FROM iam.membership_tag_change_history WHERE id = $1",
         )
         .bind(tag_history_id)

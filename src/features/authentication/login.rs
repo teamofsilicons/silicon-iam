@@ -1,8 +1,8 @@
+use crate::domain::id::Id;
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::json;
 use sqlx::{FromRow, Postgres, Transaction};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{
     api::ApiState,
@@ -26,14 +26,14 @@ use super::{
 
 #[derive(FromRow)]
 struct LoginChallengeRow {
-    carbon_id: Uuid,
+    carbon_id: Id,
     status: String,
     active: bool,
 }
 
 #[derive(FromRow)]
 struct LoginChannelRow {
-    id: Uuid,
+    id: Id,
     contact_kind: String,
     code_digest: Option<Vec<u8>>,
     digest_key_version: Option<i16>,
@@ -104,7 +104,7 @@ pub(super) async fn create_challenge(
     let attempt_state =
         supersede_login_attempt_scope(&mut transaction, carbon.principal_id).await?;
 
-    let challenge_id = Uuid::now_v7();
+    let challenge_id = Id::now_v7();
     let otp = state
         .crypto
         .generate_otp()
@@ -180,7 +180,7 @@ pub(super) async fn create_challenge(
             )
             ",
         )
-        .bind(Uuid::now_v7())
+        .bind(Id::now_v7())
         .bind(challenge_id)
         .bind(carbon.principal_id)
         .bind(contact.id)
@@ -249,9 +249,9 @@ pub(super) async fn create_challenge(
 
 async fn supersede_login_attempt_scope(
     transaction: &mut Transaction<'_, Postgres>,
-    carbon_id: Uuid,
+    carbon_id: Id,
 ) -> Result<otp::AttemptState, AppError> {
-    let challenge_ids = sqlx::query_scalar::<_, Uuid>(
+    let challenge_ids = sqlx::query_scalar::<_, Id>(
         r"
         SELECT id
         FROM iam.login_challenges
@@ -343,8 +343,8 @@ async fn supersede_login_attempt_scope(
 async fn confirm_login_delivery(
     state: &ApiState,
     record_id: idempotency::Lease,
-    carbon_id: Uuid,
-    challenge_id: Uuid,
+    carbon_id: Id,
+    challenge_id: Id,
     identifier_kind: &'static str,
     receipts: &[delivery::RequiredDeliveryReceipt],
     response: &AuthSessionResponse,
@@ -441,7 +441,7 @@ async fn confirm_login_delivery(
 /// delivery.
 async fn persist_login_phone_receipts(
     transaction: &mut Transaction<'_, Postgres>,
-    challenge_id: Uuid,
+    challenge_id: Id,
     receipts: &[delivery::RequiredDeliveryReceipt],
     provider_manages_otp: bool,
 ) -> Result<(), AppError> {
@@ -480,7 +480,7 @@ async fn persist_login_phone_receipts(
 async fn fail_login_delivery(
     state: &ApiState,
     record_id: idempotency::Lease,
-    challenge_id: Uuid,
+    challenge_id: Id,
 ) -> Result<(), AppError> {
     let mut transaction = serializable(state.db(), "login_delivery_failure_transaction").await?;
     sqlx::query(
@@ -530,7 +530,7 @@ async fn fail_login_delivery(
 pub(super) async fn verify_challenge(
     state: &ApiState,
     key: &IdempotencyKey,
-    challenge_id: Uuid,
+    challenge_id: Id,
     code: SecretString,
 ) -> Result<Outcome<LoginVerificationOutcome>, AppError> {
     let bound_code = otp::bound_secret("login", challenge_id, &code);
@@ -757,7 +757,7 @@ pub(super) async fn verify_challenge(
 
 async fn lock_challenge(
     transaction: &mut Transaction<'_, Postgres>,
-    challenge_id: Uuid,
+    challenge_id: Id,
 ) -> Result<Option<LoginChallengeRow>, AppError> {
     sqlx::query_as::<_, LoginChallengeRow>(LOGIN_CHALLENGE_LOCK_QUERY)
         .bind(challenge_id)
@@ -770,7 +770,7 @@ async fn lock_challenge(
 
 async fn lock_channels(
     transaction: &mut Transaction<'_, Postgres>,
-    challenge_id: Uuid,
+    challenge_id: Id,
 ) -> Result<Vec<LoginChannelRow>, AppError> {
     sqlx::query_as::<_, LoginChannelRow>(
         r"
@@ -812,7 +812,7 @@ async fn lock_channels(
 async fn record_unknown_login_failure(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<(), AppError> {
-    let attempt_id = Uuid::now_v7();
+    let attempt_id = Id::now_v7();
     events::record(
         transaction,
         SecurityMutation {
@@ -838,8 +838,8 @@ async fn record_unknown_login_failure(
 async fn record_login_failure(
     transaction: &mut Transaction<'_, Postgres>,
     state: &ApiState,
-    challenge_id: Uuid,
-    carbon_id: Uuid,
+    challenge_id: Id,
+    carbon_id: Id,
     channels: &[LoginChannelRow],
 ) -> Result<(), AppError> {
     let channel_ids = channels

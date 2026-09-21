@@ -6,6 +6,7 @@ mod authority;
 mod imports;
 mod keys;
 pub(crate) mod testing_apps;
+use crate::domain::id::Id;
 use crate::{
     api::ApiState,
     domain::actor::{ActorRef, ActorType},
@@ -25,14 +26,13 @@ use axum::{
 use secrecy::ExposeSecret as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use uuid::Uuid;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Instruction {
-    operation_id: Uuid,
+    operation_id: Id,
     expected_iam_revision: i64,
-    environment_id: Uuid,
+    environment_id: Id,
     generation: i64,
     operation: String,
     #[serde(default, deserialize_with = "keys::deserialize")]
@@ -87,7 +87,7 @@ fn database(error: sqlx::Error) -> ApiError {
 async fn record(
     State(state): State<ApiState>,
     service: Service,
-    Path(id): Path<Uuid>,
+    Path(id): Path<Id>,
 ) -> Result<Json<Value>, ApiError> {
     let record: Option<sqlx::types::Json<Value>> =
         sqlx::query_scalar("SELECT iam_private.honeycomb_testing_record($1,$2)")
@@ -101,7 +101,7 @@ async fn record(
 async fn instruct(
     State(state): State<ApiState>,
     service: Service,
-    Path(id): Path<Uuid>,
+    Path(id): Path<Id>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response, ApiError> {
@@ -348,7 +348,7 @@ async fn instruct(
             .map_err(database)?;
     }
     let imported = if let Some(graph) = &import_graph {
-        let org: Uuid =
+        let org: Id =
             sqlx::query_scalar("SELECT iam_private.honeycomb_testing_organization($1,NULL)")
                 .bind(id)
                 .fetch_one(&mut *tx)
@@ -381,7 +381,7 @@ async fn instruct(
         let changed = imported
             .values()
             .filter(|app| app.created || app.refreshed)
-            .map(|app| app.application_id)
+            .map(|app| app.application_id.to_string())
             .collect::<Vec<_>>();
         sqlx::query("SELECT iam_private.honeycomb_testing_app_readiness($1,false)")
             .bind(changed)
@@ -450,7 +450,7 @@ async fn instruct(
     let returns_key = matches!(input.operation.as_str(), "prepare" | "rotate-key");
     if returns_key {
         let (org, digest, digest_version, ciphertext, nonce, encryption_version): (
-            Uuid,
+            Id,
             Vec<u8>,
             i16,
             Vec<u8>,

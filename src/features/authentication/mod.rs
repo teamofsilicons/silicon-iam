@@ -27,13 +27,17 @@ use crate::api::ApiState;
 
 /// Credential class that legitimately initiated a Carbon's global logout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
+)]
 pub(crate) enum LogoutTrigger {
     /// The Carbon used an IAM bearer or browser session directly.
     FirstPartyCarbon,
     /// A reviewed Application used its Carbon-bound OAuth access token.
     Application {
-        application_id: uuid::Uuid,
-        access_token_id: uuid::Uuid,
+        application_id: crate::domain::id::Id,
+        access_token_id: crate::domain::id::Id,
     },
 }
 
