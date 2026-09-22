@@ -32,7 +32,7 @@ def package(staging: Path, output: Path, app_id: str, version: str) -> None:
         root = f"targets/{target}"
         manifest["targets"][target] = {"root": root, "executables": {"iam": f"bin/{executable}"}}
         payloads.append((f"{root}/bin/{executable}", source.read_bytes(), 0o755))
-        payloads.append((f"{root}/LICENSE", (Path(__file__).resolve().parents[1] / "LICENSE").read_bytes(), 0o644))
+        payloads.append((f"{root}/LICENSE", (Path(__file__).resolve().parents[1] / "crates/cli/LICENSE").read_bytes(), 0o644))
     # JSON is valid YAML; no YAML dependency or quoting ambiguities are needed.
     payloads.insert(0, ("honeycomb.yaml", (json.dumps(manifest, indent=2) + "\n").encode(), 0o644))
     # Enumerate only binaries and release metadata; never archive a workspace or home.
