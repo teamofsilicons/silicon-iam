@@ -320,9 +320,10 @@ pub(crate) async fn exercise(
         attached["app_id"] == "test_org>testing-driver" && attached["app_secret"].is_string(),
         "attachment must return only caller's test credential"
     );
-    let rotated_import =
-        exercise_imported_rotation(app, state, admin, test_admin, credential, other, &attached)
-            .await?;
+    let rotated_import = Box::pin(exercise_imported_rotation(
+        app, state, admin, test_admin, credential, other, &attached,
+    ))
+    .await?;
     let recovery = json!({"operation_id":Id::now_v7(),"environment_id":other,"generation":1,"key_version":1,"expected_environment_revision":attached["iam_revision"]});
     let recovery_path = format!(
         "/api/v1/honeycomb/testing-environments/{other}/applications/test_org%3Etesting-driver/credential-recovery"
@@ -672,7 +673,7 @@ async fn exercise_atomic_rotation_failure(
             .as_ref()
             .err()
             .and_then(sqlx::Error::as_database_error)
-            .map(|e| e.message())
+            .map(sqlx::error::DatabaseError::message)
     );
     sqlx::query("ROLLBACK TO SAVEPOINT rotation_failure")
         .execute(&mut *tx)

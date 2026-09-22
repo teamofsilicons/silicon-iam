@@ -309,7 +309,7 @@ async fn mutate(
         || (!recovery
             && input
                 .configuration_revision
-                .is_none_or(|revision| revision < if rotation { 0 } else { 1 }))
+                .is_none_or(|revision| revision < 0 || (!rotation && revision == 0)))
         || input.expected_iam_revision < 0
         || (rotation || recovery) && input.configuration.is_some()
     {

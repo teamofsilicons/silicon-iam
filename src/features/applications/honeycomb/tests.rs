@@ -302,13 +302,15 @@ async fn management_is_authenticated_revision_bound_and_durably_replayable() -> 
     )
     .await?;
     bundles_and_reconciliation(&app, &admin, &service_secret, actor.expose_secret()).await?;
-    crate::features::testing_environments::honeycomb::testing_apps::tests::exercise(
-        &app,
-        &state,
-        &admin,
-        &test_admin,
-        &service_secret,
-        actor.expose_secret(),
+    Box::pin(
+        crate::features::testing_environments::honeycomb::testing_apps::tests::exercise(
+            &app,
+            &state,
+            &admin,
+            &test_admin,
+            &service_secret,
+            actor.expose_secret(),
+        ),
     )
     .await?;
     Ok(())
