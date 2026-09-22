@@ -31,6 +31,11 @@ class ArchiveTest(unittest.TestCase):
                 manifest = json.load(archive.extractfile('honeycomb.yaml'))
                 self.assertEqual(set(manifest['targets']), set(module.TARGETS))
                 self.assertNotIn('.env', archive.getnames())
+                cli_license = (Path(__file__).resolve().parents[1] / 'crates/cli/LICENSE').read_bytes()
+                self.assertIn(b'Apache License', cli_license)
+                self.assertIn(b'Version 2.0, January 2004', cli_license)
+                for target in module.TARGETS:
+                    self.assertEqual(archive.extractfile(f'targets/{target}/LICENSE').read(), cli_license)
             with self.assertRaises(FileExistsError):
                 module.package(root, first, 'tos>iam', '1.10.0')
 
