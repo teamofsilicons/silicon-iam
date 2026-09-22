@@ -18,7 +18,7 @@ pub fn command() -> Command {
                 .global(true)
                 .action(ArgAction::HelpLong)
                 .help_heading("Help and version")
-                .help("Show complete command help; on a subcommand, show its detailed help"),
+                .help("Show help; use `<command> --help` for details"),
         )
         .arg(
             Arg::new("version")
@@ -30,21 +30,11 @@ pub fn command() -> Command {
                 .help("Show the installed CLI version; use `iam system version` for the backend"),
         );
     command.build();
-    // Render after building so every nested command includes inherited global
-    // options and its fully qualified usage. Keep this derived from the parser.
-    let mut entries = Vec::new();
-    collect_help(&mut command, &mut Vec::new(), &mut entries);
-    let mut reference = command
-        .get_after_long_help()
-        .map(ToString::to_string)
-        .unwrap_or_default();
-    reference.push_str("\n\nComplete command reference:\n");
-    for (path, help) in entries.into_iter().skip(1) {
-        use std::fmt::Write as _;
-        let _ = write!(reference, "\n=== iam{} ===\n\n{help}\n", path_suffix(&path));
-    }
-    command = command.after_long_help(reference);
-    command
+    // Keep the root overview compact for both help spellings and `iam help`.
+    // Nested commands retain detailed help; `iam commands --json` includes
+    // every command's full help without rendering it on ordinary invocations.
+    let overview = command.render_help().to_string();
+    command.override_help(overview)
 }
 
 fn enrich(mut command: Command, path: &str) -> Command {
@@ -76,29 +66,8 @@ fn enrich(mut command: Command, path: &str) -> Command {
         let child_path = format!("{path} {}", child.get_name());
         *child = enrich(child.clone(), &child_path);
     }
-    let mut notes = notes(path);
-    if path == "iam" {
-        notes.push_str("\n\nAll commands (also available as JSON with `iam -o json commands`):\n");
-        append_paths(&command, "iam", &mut notes);
-    }
+    let notes = notes(path);
     command.after_help(notes.clone()).after_long_help(notes)
-}
-
-fn append_paths(command: &Command, path: &str, text: &mut String) {
-    use std::fmt::Write as _;
-    for child in command.get_subcommands().filter(|child| public(child)) {
-        let path = format!("{path} {}", child.get_name());
-        let description = child
-            .get_about()
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        let _ = writeln!(
-            text,
-            "  {path:<38} {}",
-            description.lines().next().unwrap_or("")
-        );
-        append_paths(child, &path, text);
-    }
 }
 
 fn public(command: &Command) -> bool {
@@ -276,7 +245,7 @@ fn notes(path: &str) -> String {
     use std::fmt::Write as _;
     let specific = match path {
         "iam" => {
-            "Start here:\n  iam login --email you@example.com\n  iam org list\n  iam config set org <organization-handle>\n  iam docs cli\n\nFor agents:\n  iam -o json commands                 Discover exact syntax without signing in\n  iam docs --search 'short-lived'       Search the bundled integration docs\n  iam --test <ENVIRONMENT_ID> <command> Use an isolated testing environment\n\nHelp, commands and docs are offline: no login, configuration writes or update checks.\nUse --output json for machine-readable results; next-step suggestions are text-only."
+            "Start here:\n  iam login --email you@example.com\n  iam org list\n  iam config set org <organization-handle>\n\nMore help (offline, no login required):\n  iam <command> --help    Options and examples for one command\n  iam commands           List every command\n  iam commands --json    Full command reference for agents\n  iam docs cli           Read the bundled CLI guide"
         }
         "iam docs" => {
             "Examples:\n  iam docs                             List available guides\n  iam docs cli                         Read the CLI guide\n  iam docs testing                     Read the testing workflow\n  iam docs --search 'webhook'           Find a contract or example\n  iam -o json docs authorization       Read a guide as JSON\n\nBundled documentation describes this installed version. No network or login is needed."

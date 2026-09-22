@@ -5,7 +5,7 @@ stateless `silicon-iam-client` Rust package. This guide describes the current of
 The hosted manual is [docs.iam.teamofsilicons.com/cli](https://docs.iam.teamofsilicons.com/cli).
 
 For local session safety and storage precedence, see [credential storage](storage.md).
-Use `iam --help` for the full command reference, `iam app scopes --help` for scope reviews,
+Use `iam --help` for a concise overview, `iam app scopes --help` for scope reviews,
 and `iam -o json commands` for machine-readable command discovery. Help and bundled docs work offline.
 
 ## Start using IAM
@@ -145,9 +145,10 @@ access to discover commands or read the bundled documentation. Local help,
 Commands read as noun then verb:
 
 ```sh
-iam --help             # full help for every command, including nested options
-iam -h                 # the same complete command reference
+iam --help             # concise command and global-option overview
+iam -h                 # the same concise overview
 iam commands           # every command, at every depth
+iam commands --json    # full help and argument metadata for every command
 iam tag --help         # one group
 iam tag delete --help  # one command's options
 iam app create         # missing required inputs: exact create help, exit 2

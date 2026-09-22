@@ -126,7 +126,7 @@ fn configured_home_is_saved_under_the_selected_base() {
 }
 
 #[test]
-fn full_help_covers_every_command_without_accessing_state() {
+fn root_help_is_compact_and_detailed_help_stays_offline() {
     let sandbox = Sandbox::new();
     let run = |args: &[&str]| {
         let output = sandbox
@@ -147,29 +147,40 @@ fn full_help_covers_every_command_without_accessing_state() {
     };
     let help = run(&["--help"]);
     assert_eq!(help, run(&["-h"]));
+    assert_eq!(help, run(&["help"]));
+    assert!(
+        help.lines().count() < 100,
+        "root help should be an overview"
+    );
+    assert!(help.contains("iam <command> --help"));
+    assert!(help.contains("iam commands --json"));
+    assert!(!help.contains("=== iam"));
     let entries: serde_json::Value = serde_json::from_str(&run(&["-o", "json", "commands"]))
         .unwrap_or_else(|error| panic!("command catalog: {error}"));
-    let normalized_help = help.split_whitespace().collect::<Vec<_>>().join(" ");
     for entry in entries.as_array().into_iter().flatten() {
         let command = entry["command"].as_str().unwrap_or_default();
         assert!(
-            help.contains(&format!("=== {command} ===")),
-            "missing {command}"
+            !entry["help"].as_str().unwrap_or_default().is_empty(),
+            "missing help for {command}"
         );
-        assert!(
-            normalized_help.contains(
-                &entry["help"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ),
-            "incomplete {command}"
-        );
+        if command.split_whitespace().count() == 2 {
+            assert!(
+                help.contains(command.trim_start_matches("iam ")),
+                "missing {command}"
+            );
+        }
     }
     let scoped = run(&["app", "create", "--help"]);
     assert!(scoped.contains("--webhook-secret"));
+    assert_eq!(scoped, run(&["app", "create", "-h"]));
+    assert_eq!(scoped, run(&["help", "app", "create"]));
+    let create = entries
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|entry| entry["command"] == "iam app create")
+        .unwrap_or_else(|| panic!("missing app create from command catalog"));
+    assert_eq!(create["help"].as_str(), Some(scoped.as_str()));
     assert!(!scoped.contains("=== iam config home ==="));
     assert!(
         !sandbox.0.exists(),
