@@ -311,6 +311,10 @@ Reads require query fields `generation`, `key_version` and
 `configuration_revision`. Configuration writes additionally carry `configuration`;
 rotation omits it and names the current configuration revision. Environment and
 application revisions are separate preconditions.
+An unchanged production import has IAM configuration revision `0`; rotation accepts
+that exact revision. Honeycomb must read the accepted IAM revision rather than
+substitute its own local configuration counter. Configuration writes still require
+a positive, increasing revision.
 
 Service-only reads are secret-free. Configuration and secret rotation also accept
 `ManagementAuthority::Environment` with the current root key, generation, key
@@ -326,6 +330,11 @@ destination needs its signing secret. Existing app configuration preserves its
 app credential; a new registration or explicit rotation returns one protected
 `app_secret`. Configuration changes leave that app pending coordinated activation.
 Target-plane receipts prevent a lost production commit from rotating twice.
+Rotation commits the active authentication digest and the encrypted credential
+used by OBO and credential recovery together. Install migration `0117` on both
+databases before starting the updated API. For a testing app affected by an older
+rotation that left a stale encrypted credential, perform one new authorized
+rotation after deployment; ordinary configuration edits do not repair credentials.
 
 Credential recovery requires service plus production app authorization, and the
 root key for an attached app. Its body carries `operation_id`, `environment_id`,

@@ -221,10 +221,15 @@ pub(crate) async fn exercise(
             crate::features::testing_environments::select_plane,
         ))
         .with_state(state.clone());
+    let audience_secret = current_obo_secret(state, admin, environment, configured_app).await?;
+    ensure!(
+        audience_secret == rotated["app_secret"],
+        "OBO returned an obsolete audience credential after test rotation"
+    );
     application_verification_selector(
         &verification_app,
         configured_app,
-        rotated["app_secret"]
+        audience_secret
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("test application secret missing"))?,
         &authorization,
@@ -315,6 +320,9 @@ pub(crate) async fn exercise(
         attached["app_id"] == "test_org>testing-driver" && attached["app_secret"].is_string(),
         "attachment must return only caller's test credential"
     );
+    let rotated_import =
+        exercise_imported_rotation(app, state, admin, test_admin, credential, other, &attached)
+            .await?;
     let recovery = json!({"operation_id":Id::now_v7(),"environment_id":other,"generation":1,"key_version":1,"expected_environment_revision":attached["iam_revision"]});
     let recovery_path = format!(
         "/api/v1/honeycomb/testing-environments/{other}/applications/test_org%3Etesting-driver/credential-recovery"
@@ -338,7 +346,7 @@ pub(crate) async fn exercise(
     let recovered: Value =
         serde_json::from_slice(&to_bytes(recovered.into_body(), 1024 * 1024).await?)?;
     ensure!(
-        status == StatusCode::OK && recovered["app_secret"] == attached["app_secret"],
+        status == StatusCode::OK && recovered["app_secret"] == rotated_import["app_secret"],
         "protected own-app credential recovery failed: {status}"
     );
     let replay = app.clone().oneshot(recover_request(&recovery)?).await?;
@@ -428,6 +436,256 @@ pub(crate) async fn exercise(
         production["iam_revision"].clone(),
     )
     .await?;
+    Ok(())
+}
+
+async fn current_obo_secret(
+    state: &ApiState,
+    admin: &sqlx::PgPool,
+    environment: Id,
+    app: &str,
+) -> anyhow::Result<Value> {
+    let organization_id: Id =
+        sqlx::query_scalar("SELECT organization_id FROM iam.testing_environments WHERE id=$1")
+            .bind(environment)
+            .fetch_one(admin)
+            .await?;
+    let context = testing_plane::scope(
+        SelectedEnvironment {
+            id: environment,
+            organization_id,
+        },
+        super::super::super::graph::obo_context(state, app),
+    )
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("audience context missing"))?;
+    Ok(context["app_secret"].clone())
+}
+
+async fn current_snapshot_secret(
+    state: &ApiState,
+    admin: &sqlx::PgPool,
+    environment: Id,
+    app: &str,
+) -> anyhow::Result<Value> {
+    let organization_id: Id =
+        sqlx::query_scalar("SELECT organization_id FROM iam.testing_environments WHERE id=$1")
+            .bind(environment)
+            .fetch_one(admin)
+            .await?;
+    testing_plane::scope(
+        SelectedEnvironment {
+            id: environment,
+            organization_id,
+        },
+        async {
+            let mut tx = context::begin(state.db(), DatabaseContext::anonymous()).await?;
+            let (id, ciphertext, nonce, key_version): (Id, Vec<u8>, Vec<u8>, i16) =
+                sqlx::query_as("SELECT * FROM iam_private.get_testing_application_secret($1)")
+                    .bind(app)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            let decrypted = state.crypto.decrypt(
+                super::super::super::graph::secret_context(environment, id),
+                &super::super::super::graph::encrypted(key_version, &nonce, ciphertext)?,
+            )?;
+            Ok(json!(std::str::from_utf8(&decrypted)?))
+        },
+    )
+    .await
+}
+
+async fn exercise_imported_rotation(
+    app: &axum::Router,
+    state: &ApiState,
+    admin: &sqlx::PgPool,
+    test_admin: &sqlx::PgPool,
+    credential: &str,
+    environment: Id,
+    imported: &Value,
+) -> anyhow::Result<Value> {
+    let app_id = "test_org>testing-driver";
+    let (revision, configuration): (i64, i64) = sqlx::query_as(
+        "SELECT version,honeycomb_configuration_revision FROM iam.applications WHERE testing_environment_id=$1 AND app_id=$2",
+    ).bind(environment).bind(app_id).fetch_one(test_admin).await?;
+    ensure!(
+        configuration == 0,
+        "unchanged import must retain IAM revision zero"
+    );
+    let path = format!(
+        "/api/v1/honeycomb/testing-environments/{environment}/applications/test_org%3Etesting-driver/secret-rotations"
+    );
+    let mut request = json!({"operation_id":Id::now_v7(),"environment_id":environment,
+        "generation":1,"key_version":1,"expected_environment_revision":imported["iam_revision"],
+        "expected_iam_revision":revision,"configuration_revision":1});
+    let mut omitted = request.clone();
+    omitted
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("mutation"))?
+        .remove("configuration_revision");
+    let (status, _) = root_method(
+        app,
+        credential,
+        Some(&"Y".repeat(32)),
+        "POST",
+        &path,
+        &omitted,
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::UNPROCESSABLE_ENTITY,
+        "rotation must explicitly name its configuration revision"
+    );
+    let (status, rejected) = root_method(
+        app,
+        credential,
+        Some(&"Y".repeat(32)),
+        "POST",
+        &path,
+        &request,
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::CONFLICT
+            && rejected["error"]["code"] == "configuration_revision_conflict",
+        "incorrect local configuration counter must fail before rotation: {status}"
+    );
+    ensure!(
+        current_snapshot_secret(state, admin, environment, app_id).await? == imported["app_secret"],
+        "rejected rotation changed the OBO credential"
+    );
+    request["operation_id"] = json!(Id::now_v7());
+    request["configuration_revision"] = json!(0);
+    let (status, rotated) = root_method(
+        app,
+        credential,
+        Some(&"Y".repeat(32)),
+        "POST",
+        &path,
+        &request,
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::OK
+            && rotated["app_secret"].is_string()
+            && rotated["app_secret"] != imported["app_secret"],
+        "unchanged import rotation failed: {status}"
+    );
+    ensure!(
+        current_snapshot_secret(state, admin, environment, app_id).await? == rotated["app_secret"],
+        "imported audience retained its pre-rotation secret"
+    );
+    let (status, replay) = root_method(
+        app,
+        credential,
+        Some(&"Y".repeat(32)),
+        "POST",
+        &path,
+        &request,
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::OK && replay == rotated,
+        "imported rotation was not replay safe"
+    );
+    exercise_atomic_rotation_failure(test_admin, environment, app_id).await?;
+    Ok(rotated)
+}
+
+async fn exercise_atomic_rotation_failure(
+    admin: &sqlx::PgPool,
+    environment: Id,
+    app: &str,
+) -> anyhow::Result<()> {
+    let mut tx = admin.begin().await?;
+    sqlx::query("SELECT set_config('iam.testing_environment_id',$1,true)")
+        .bind(environment.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let before: (i64, i64, i64) = sqlx::query_as(
+        "SELECT a.version,p.auth_epoch,(SELECT count(*) FROM iam.application_secrets s WHERE s.testing_environment_id=a.testing_environment_id AND s.application_id=a.id) FROM iam.applications a JOIN iam.principals p ON p.id=a.id AND p.testing_environment_id=a.testing_environment_id WHERE a.app_id=$1 AND a.testing_environment_id=$2",
+    ).bind(app).bind(environment).fetch_one(&mut *tx).await?;
+    let value = json!({"secret_id":Id::now_v7(),"secret_digest":"aa".repeat(32),
+        "secret_digest_version":1,"secret_prefix":"ask_abcdefgh",
+        "secret_ciphertext":"bb".repeat(48),"secret_nonce":"cc".repeat(12),"secret_key_version":1});
+    sqlx::query("SET LOCAL ROLE silicon_iam_api")
+        .execute(&mut *tx)
+        .await?;
+    for (scope, expected) in [
+        (String::new(), "testing_plane_required"),
+        (Id::now_v7().to_string(), "application_not_found"),
+    ] {
+        sqlx::query("SAVEPOINT scope_failure")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("SELECT set_config('iam.testing_environment_id',$1,true)")
+            .bind(scope)
+            .execute(&mut *tx)
+            .await?;
+        let failure = sqlx::query_scalar::<_, i64>(
+            "SELECT iam_private.honeycomb_rotate_testing_application_secret($1,$2,$3)",
+        )
+        .bind(app)
+        .bind(before.0)
+        .bind(sqlx::types::Json(&value))
+        .fetch_one(&mut *tx)
+        .await;
+        ensure!(
+            failure
+                .as_ref()
+                .err()
+                .and_then(sqlx::Error::as_database_error)
+                .is_some_and(|error| error.message() == expected),
+            "rotation escaped its selected environment"
+        );
+        sqlx::query("ROLLBACK TO SAVEPOINT scope_failure")
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("RESET ROLE").execute(&mut *tx).await?;
+    // Deliberately corrupt only this rolled-back fixture. A missing snapshot
+    // must prevent committing a new authentication digest or auth epoch.
+    sqlx::query("DELETE FROM iam.testing_application_imports WHERE application_id=$1 AND testing_environment_id=$2")
+        .bind(app).bind(environment).execute(&mut *tx).await?;
+    sqlx::query("SET LOCAL ROLE silicon_iam_api")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SAVEPOINT rotation_failure")
+        .execute(&mut *tx)
+        .await?;
+    let result = sqlx::query_scalar::<_, i64>(
+        "SELECT iam_private.honeycomb_rotate_testing_application_secret($1,$2,$3)",
+    )
+    .bind(app)
+    .bind(before.0)
+    .bind(sqlx::types::Json(value))
+    .fetch_one(&mut *tx)
+    .await;
+    ensure!(
+        result
+            .as_ref()
+            .err()
+            .and_then(sqlx::Error::as_database_error)
+            .is_some_and(|e| e.message() == "testing_application_secret_snapshot_missing"),
+        "missing snapshot was silently ignored: {:?}",
+        result
+            .as_ref()
+            .err()
+            .and_then(sqlx::Error::as_database_error)
+            .map(|e| e.message())
+    );
+    sqlx::query("ROLLBACK TO SAVEPOINT rotation_failure")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("RESET ROLE").execute(&mut *tx).await?;
+    let after: (i64, i64, i64) = sqlx::query_as(
+        "SELECT a.version,p.auth_epoch,(SELECT count(*) FROM iam.application_secrets s WHERE s.testing_environment_id=a.testing_environment_id AND s.application_id=a.id) FROM iam.applications a JOIN iam.principals p ON p.id=a.id AND p.testing_environment_id=a.testing_environment_id WHERE a.app_id=$1 AND a.testing_environment_id=$2",
+    ).bind(app).bind(environment).fetch_one(&mut *tx).await?;
+    ensure!(
+        before == after,
+        "failed rotation changed credentials or authentication state"
+    );
+    tx.rollback().await?;
     Ok(())
 }
 

@@ -2926,7 +2926,9 @@ pub struct HoneycombTestingAppMutation {
     pub expected_environment_revision: i64,
     /// The contract's `expected_iam_revision`.
     pub expected_iam_revision: i64,
-    /// The contract's `configuration_revision`.
+    /// Current accepted IAM test configuration revision for rotation (zero
+    /// for an unchanged import); configuration writes require a positive
+    /// increasing revision.
     pub configuration_revision: i64,
     /// The contract's `configuration`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

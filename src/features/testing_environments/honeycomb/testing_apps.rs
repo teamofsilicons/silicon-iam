@@ -47,7 +47,7 @@ struct Mutation {
     #[serde(default)]
     expected_iam_revision: i64,
     #[serde(default)]
-    configuration_revision: i64,
+    configuration_revision: Option<i64>,
     configuration: Option<Value>,
 }
 pub(super) fn router() -> Router<ApiState> {
@@ -306,7 +306,10 @@ async fn mutate(
     let input: Mutation = serde_json::from_slice(&body)
         .map_err(|_| ApiError::validation("instruction", "invalid test application request"))?;
     if input.environment_id != env
-        || (!recovery && input.configuration_revision <= 0)
+        || (!recovery
+            && input
+                .configuration_revision
+                .is_none_or(|revision| revision < if rotation { 0 } else { 1 }))
         || input.expected_iam_revision < 0
         || (rotation || recovery) && input.configuration.is_some()
     {
@@ -568,12 +571,22 @@ async fn rotate_in_test(
     input: &Mutation,
 ) -> Result<Value, ApiError> {
     let before = snapshot(tx, state, app).await?;
-    if before["configuration_revision"] != input.configuration_revision {
+    if before["configuration_revision"].as_i64() != input.configuration_revision {
         return Err(ApiError::conflict("configuration_revision_conflict"));
     }
     let id: Id = serde_json::from_value(before["application_id"].clone())
         .map_err(|_| ApiError::internal("testing_application_id"))?;
-    let (secret, value) = secret(state)?;
+    let (secret, mut value) = secret(state)?;
+    let encrypted = state
+        .crypto
+        .encrypt(
+            super::super::graph::secret_context(input.environment_id, id),
+            secret.expose_secret().as_bytes(),
+        )
+        .map_err(|_| ApiError::internal("testing_secret_encrypt"))?;
+    value["secret_ciphertext"] = json!(hex::encode(encrypted.ciphertext));
+    value["secret_nonce"] = json!(hex::encode(encrypted.nonce));
+    value["secret_key_version"] = json!(encrypted.key_version);
     let credential: i64 = sqlx::query_scalar(
         "SELECT iam_private.honeycomb_rotate_testing_application_secret($1,$2,$3)",
     )
@@ -583,7 +596,10 @@ async fn rotate_in_test(
     .fetch_one(&mut **tx)
     .await
     .map_err(database)?;
-    super::super::graph::record_rotated_application_secret(tx, state, id, &secret)
+    // The authorized target-plane rotation updates the recoverable OBO secret
+    // atomically with the authentication digest. This transaction is anonymous:
+    // the legacy owner-only snapshot writer cannot authorize it.
+    super::super::discovery::register(tx, id, &secret)
         .await
         .map_err(|_| ApiError::internal("testing_secret_record"))?;
     let record = snapshot(tx, state, app).await?;
@@ -739,7 +755,8 @@ async fn configure_in_test(
         .await
         .map_err(database)?;
     if fresh {
-        super::super::graph::record_rotated_application_secret(tx, state, id, &new_secret)
+        // Configuration already persisted the new encrypted snapshot.
+        super::super::discovery::register(tx, id, &new_secret)
             .await
             .map_err(|_| ApiError::internal("testing_secret_record"))?;
     }
