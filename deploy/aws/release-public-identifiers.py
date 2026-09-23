@@ -30,7 +30,7 @@ IMAGE_RE = r"[a-zA-Z0-9._:/-]+@sha256:[a-f0-9]{64}"
 CREDENTIAL_TABLES = ("authentication_sessions", "refresh_token_families", "refresh_tokens",
                      "access_tokens", "application_secrets", "silicon_credentials",
                      "application_access_keys", "application_webhook_endpoints",
-                     "application_webhook_signing_keys", "application_webhook_event_projections")
+                     "application_webhook_signing_keys", "application_webhook_event_projections", "obo_proofs")
 CHECKPOINTS = (
     "Validate immutable images, current health, configuration and both existing ledgers",
     "Stop API, scoped API and worker; save private units/environment and both database dumps",
@@ -314,7 +314,8 @@ class Release:
         # Audience is an application identity. Every other field, including
         # refresh provenance, expiry state and ciphertext, must remain identical.
         excluded = ("'subject_principal_id','client_application_id','audience_application_id',"
-                    "'application_id','created_by_carbon_id','silicon_id','audience'")
+                    "'application_id','created_by_carbon_id','silicon_id','audience',"
+                    "'issuer_application_id','consumed_by_application_id'")
         return (f"SELECT count(*)::text||':'||COALESCE(md5(string_agg("
                 f"(to_jsonb(t)-ARRAY[{excluded}])::text,'' ORDER BY (to_jsonb(t)-ARRAY[{excluded}])::text)),md5('')) FROM iam.{table} t")
 
