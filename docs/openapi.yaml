@@ -5890,7 +5890,7 @@ components:
         - admins.manage
         - sso.manage
     Membership:
-      description: Membership IDs use carbon_id[org_id] or the full silicon_id[org_id], for example saket[tos] or helper:tos[tos].
+      description: Membership IDs use `c:carbon_id[org_id]` or `si:silicon_id[org_id]`, for example `c:saket[tos]` or `si:helper[tos]`.
       type: object
       required: [id, org_id, principal, status, org_role, job_description, tags, extra_silicons, authorization_epoch, version, created_at, updated_at]
       properties:
