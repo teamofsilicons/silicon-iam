@@ -90,7 +90,7 @@ pub(super) async fn assert_selector_membership_transport(
         let target = if legacy {
             "00000000-0000-0000-0000-000000000531"
         } else {
-            "worker:test_org[test_org]"
+            "si:worker[test_org]"
         };
         // The read-only token must reach ordinary authorization after decoding,
         // rather than failing JSON/query UUID extraction or gaining write access.

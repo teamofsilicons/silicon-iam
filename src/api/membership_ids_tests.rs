@@ -72,16 +72,16 @@ async fn migrates_existing_memberships_and_serves_complete_directory() -> anyhow
     sqlx::raw_sql(r"
         BEGIN;
         INSERT INTO iam.principals(id,kind,status,activated_at)
-          SELECT 'extra_' || translate(n::text, '0', 'a'),'carbon','active',now() FROM generate_series(1,105) n;
+          SELECT 'c:extra_' || translate(n::text, '0', 'a'),'carbon','active',now() FROM generate_series(1,105) n;
         INSERT INTO iam.carbons(id,carbon_id,display_name)
-          SELECT 'extra_' || translate(n::text, '0', 'a'),'extra_' || translate(n::text, '0', 'a'),'Extra Person ' || n FROM generate_series(1,105) n;
+          SELECT 'c:extra_' || translate(n::text, '0', 'a'),'c:extra_' || translate(n::text, '0', 'a'),'Extra Person ' || n FROM generate_series(1,105) n;
         INSERT INTO iam.carbon_contacts(id,carbon_id,kind,ciphertext,nonce,encryption_key_version,verified_at)
-          SELECT md5('extra-contact-' || n || kind::text)::uuid,'extra_' || translate(n::text, '0', 'a'),kind,
+          SELECT md5('extra-contact-' || n || kind::text)::uuid,'c:extra_' || translate(n::text, '0', 'a'),kind,
             decode(repeat('02',17),'hex'),decode(repeat('12',12),'hex'),1,now()
           FROM generate_series(1,105) n CROSS JOIN (VALUES ('email'::iam.contact_kind),('phone'::iam.contact_kind)) channels(kind);
         INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role)
           SELECT md5('extra-membership-' || n)::uuid,'00000000-0000-0000-0000-000000000021',
-            'extra_' || translate(n::text, '0', 'a'),'carbon','member' FROM generate_series(1,105) n;
+            'c:extra_' || translate(n::text, '0', 'a'),'carbon','member' FROM generate_series(1,105) n;
         COMMIT;
     ").execute(&pool).await?;
     let grants = include_str!("../../deploy/postgres/runtime-grants.sql")
@@ -200,7 +200,7 @@ async fn check_http(pool: PgPool) -> anyhow::Result<()> {
     ensure!(body.as_object().is_some_and(|value| value.len() == 107));
     ensure!(body["c:test_carbon"]["membership_id"] == "c:test_carbon[test_org]");
     ensure!(body["c:test_carbon"]["display_name"] == "Test Carbon");
-    ensure!(body["extra_1a5"]["display_name"] == "Extra Person 105");
+    ensure!(body["c:extra_1a5"]["display_name"] == "Extra Person 105");
     ensure!(body["c:test_carbon"]["trust"].is_null());
     ensure!(body["si:planner_silicon"]["display_name"] == "Planner Silicon");
     ensure!(body["si:planner_silicon"]["trust"].is_object());

@@ -258,7 +258,7 @@ async fn scoped_mutations_enforce_scope_membership_capability_and_step_up() -> a
 
     let admin_membership = Id::from_u128(0x32);
     let admin_path =
-        "/api/v1/organizations/test_org/members/test_admin%5Btest_org%5D/admin-demotions"
+        "/api/v1/organizations/test_org/members/c:test_admin%5Btest_org%5D/admin-demotions"
             .to_owned();
     let target_version = sqlx::query_scalar::<_, i64>(
         "SELECT version FROM iam.organization_memberships WHERE id=$1",

@@ -47,7 +47,9 @@ def main():
     base = sorted(ROOT.joinpath("migrations").glob("*.sql"))
     overlays = sorted(ROOT.joinpath("migrations/testing").glob("*.sql"))
     before = [p for p in base if int(p.name.split("_")[0]) <= 110]
-    after = [p for p in base if int(p.name.split("_")[0]) > 110]
+    # This rehearsal checks the 0111 key conversion, before the separate
+    # 0118 public syntax cutover (covered by test-public-id-schema-migration.py).
+    after = [p for p in base if 110 < int(p.name.split("_")[0]) < 118]
     tokens = ROOT.joinpath("src/infrastructure/postgres/tokens.rs").read_text()
     authenticate = tokens.split("let row = sqlx::query_as::<_, AccessRow>(", 1)[1]
     authenticate = re.search(r'r"(.*?)",', authenticate, re.S).group(1)
@@ -85,7 +87,9 @@ def main():
                     sql += "RESET SESSION AUTHORIZATION; SELECT pg_temp.assert_identity_migration_security(); SET SESSION AUTHORIZATION \"" + database + "\";\n"
             if testing:
                 sql += "SELECT iam_private.reconcile_testing_environment_security();\n"
-            sql += include(ROOT / "deploy/postgres/runtime-grants.sql")
+            grants = ROOT.joinpath("deploy/postgres/runtime-grants.sql").read_text()
+            # 0118 adds its own AAD-only reader; the historical schema has none.
+            sql += grants.replace("        'public_id_application_contexts',\n", "")
             sql += "RESET SESSION AUTHORIZATION;\n"
             sql += assertion
             for plane in planes:

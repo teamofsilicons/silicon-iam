@@ -686,11 +686,11 @@ async fn honeycomb_application_authority_and_environment_key_are_separate() {
     let app_secret = secrecy::SecretString::from("ask_production_secret");
     let key = EnvironmentKey::new("X".repeat(32)).expect("key");
     let authority = ManagementAuthority::Application {
-        app_id: "vendor>app",
+        app_id: "vendor-app",
         app_secret: &app_secret,
         environment_key: Some(&key),
     };
-    let input:models::HoneycombTestingInstruction=serde_json::from_value(json!({"operation_id":id,"environment_id":environment,"generation":3,"expected_iam_revision":7,"expected_key_version":2,"operation":"import","app_id":"vendor>app","source_revisions":{"vendor>app":5}})).expect("input");
+    let input:models::HoneycombTestingInstruction=serde_json::from_value(json!({"operation_id":id,"environment_id":environment,"generation":3,"expected_iam_revision":7,"expected_key_version":2,"operation":"import","app_id":"vendor-app","source_revisions":{"vendor-app":5}})).expect("input");
     client
         .testing_instruction_as(&authority, &input, &Mutation::new())
         .await
@@ -701,7 +701,7 @@ async fn honeycomb_application_authority_and_environment_key_are_separate() {
     assert!(headers.contains(&format!("authorization: Bearer {service_credential}")));
     assert!(headers.contains(&format!(
         "x-honeycomb-application-authorization: Basic {}",
-        STANDARD.encode("vendor>app:ask_production_secret")
+        STANDARD.encode("vendor-app:ask_production_secret")
     )));
     assert!(headers.contains(&format!("x-honeycomb-testing-key: {}", "X".repeat(32))));
     assert!(!headers.contains("x-honeycomb-actor-token"));
@@ -728,7 +728,7 @@ async fn honeycomb_environment_authority_needs_no_testing_enable_key() {
         ManagementClient::new(base.base_url().as_str(), credential.clone().into()).expect("client");
     let key = EnvironmentKey::new("X".repeat(32)).expect("key");
     let authority = ManagementAuthority::Environment(&key);
-    let input: models::HoneycombTestingInstruction = serde_json::from_value(json!({"operation_id":id,"environment_id":environment,"generation":3,"expected_iam_revision":7,"expected_key_version":2,"operation":"import","app_id":"vendor>app","source_revisions":{"vendor>app":5}})).expect("input");
+    let input: models::HoneycombTestingInstruction = serde_json::from_value(json!({"operation_id":id,"environment_id":environment,"generation":3,"expected_iam_revision":7,"expected_key_version":2,"operation":"import","app_id":"vendor-app","source_revisions":{"vendor-app":5}})).expect("input");
     client
         .testing_instruction_as(&authority, &input, &Mutation::new())
         .await
@@ -752,14 +752,14 @@ async fn honeycomb_publication_decision_has_a_typed_exact_plan_receipt() {
     let id = Uuid::now_v7();
     let plan = Uuid::now_v7();
     let request = Uuid::now_v7();
-    let response = json!({"operation_id":id,"decision_id":id,"state":"accepted","request_id":request,"plan_id":plan,"app_id":"vendor>app","configuration_revision":4,"provider":"honeycomb","scopes":[],"decision":"approve","reason":null});
+    let response = json!({"operation_id":id,"decision_id":id,"state":"accepted","request_id":request,"plan_id":plan,"app_id":"vendor-app","configuration_revision":4,"provider":"honeycomb","scopes":[],"decision":"approve","reason":null});
     let (base, capture, server) = service(response.clone());
     let client = ManagementClient::new(
         base.base_url().as_str(),
         format!("hck_{}", "a".repeat(43)).into(),
     )
     .expect("client");
-    let input:models::HoneycombPublicationDecision=serde_json::from_value(json!({"operation_id":id,"request_id":request,"plan_id":plan,"app_id":"vendor>app","configuration_revision":4,"provider":"honeycomb","scopes":[],"decision":"approve"})).expect("input");
+    let input:models::HoneycombPublicationDecision=serde_json::from_value(json!({"operation_id":id,"request_id":request,"plan_id":plan,"app_id":"vendor-app","configuration_revision":4,"provider":"honeycomb","scopes":[],"decision":"approve"})).expect("input");
     let actor = format!("oat_{}", "b".repeat(43)).into();
     let receipt = client
         .publication_decision(&actor, &input, &Mutation::new())
@@ -772,7 +772,7 @@ async fn honeycomb_publication_decision_has_a_typed_exact_plan_receipt() {
         .expect("request");
     assert!(
         headers
-            .starts_with("POST /api/v1/honeycomb/applications/vendor%3Eapp/publication-decisions ")
+            .starts_with("POST /api/v1/honeycomb/applications/vendor-app/publication-decisions ")
     );
     assert_eq!(body["request_id"], request.to_string());
     server.join().expect("server");

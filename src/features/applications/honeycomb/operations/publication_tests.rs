@@ -34,7 +34,7 @@ pub(crate) async fn exercise(
             .bind(id).bind(encrypted.ciphertext).bind(encrypted.nonce.as_slice()).bind(encrypted.key_version).execute(admin).await?;
     }
     let name = "managed-app";
-    let prefix = "/api/v1/honeycomb/applications/test_org%3Emanaged-app";
+    let prefix = "/api/v1/honeycomb/applications/managed-app";
     let revision: i64 = sqlx::query_scalar("SELECT version FROM iam.applications WHERE app_id=$1")
         .bind(name)
         .fetch_one(admin)
@@ -414,7 +414,7 @@ pub(crate) async fn exercise(
     // A saved private config publishes at the same desired revision. Only IAM's
     // acceptance revision advances; changing content at that revision is forbidden.
     let saved_name = "saved-publication";
-    let saved_prefix = "/api/v1/honeycomb/applications/test_org%3Esaved-publication";
+    let saved_prefix = "/api/v1/honeycomb/applications/saved-publication";
     let mut saved = private.clone();
     saved["app_id"] = json!(saved_name);
     saved["operation_id"] = json!(Id::now_v7());

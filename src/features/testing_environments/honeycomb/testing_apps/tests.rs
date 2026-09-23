@@ -29,7 +29,7 @@ pub(crate) async fn exercise(
         None,
         Some(actor),
         "PUT",
-        "/api/v1/honeycomb/applications/test_org%3Etesting-driver/configuration",
+        "/api/v1/honeycomb/applications/testing-driver/configuration",
         &production,
     )
     .await?;
@@ -89,7 +89,7 @@ pub(crate) async fn exercise(
     );
     let mut revision = result["iam_revision"].as_i64().unwrap_or_default();
     let configured_app = "test-only";
-    let app_path = "test_org%3Etest-only";
+    let app_path = "test-only";
     let config_endpoint = format!(
         "/api/v1/honeycomb/testing-environments/{environment}/applications/{app_path}/configuration"
     );
@@ -342,7 +342,7 @@ pub(crate) async fn exercise(
     .await?;
     let recovery = json!({"operation_id":Id::now_v7(),"environment_id":other,"generation":1,"key_version":1,"expected_environment_revision":attached["iam_revision"]});
     let recovery_path = format!(
-        "/api/v1/honeycomb/testing-environments/{other}/applications/test_org%3Etesting-driver/credential-recovery"
+        "/api/v1/honeycomb/testing-environments/{other}/applications/testing-driver/credential-recovery"
     );
     let recover_request = |value: &Value| -> anyhow::Result<Request<Body>> {
         Ok(Request::builder()
@@ -530,7 +530,7 @@ async fn exercise_imported_rotation(
         "unchanged import must retain IAM revision zero"
     );
     let path = format!(
-        "/api/v1/honeycomb/testing-environments/{environment}/applications/test_org%3Etesting-driver/secret-rotations"
+        "/api/v1/honeycomb/testing-environments/{environment}/applications/testing-driver/secret-rotations"
     );
     let mut request = json!({"operation_id":Id::now_v7(),"environment_id":environment,
         "generation":1,"key_version":1,"expected_environment_revision":imported["iam_revision"],
@@ -1056,7 +1056,7 @@ async fn exercise_root_app_management(
     revision: &Value,
 ) -> anyhow::Result<()> {
     let endpoint = format!(
-        "/api/v1/honeycomb/testing-environments/{environment}/applications/test_org%3Eroot-only/configuration"
+        "/api/v1/honeycomb/testing-environments/{environment}/applications/root-only/configuration"
     );
     let config = json!({"org_id":"test_org","name":"Root test app","logo_url":null,"base_url":null,"visibility":"private","availability":"active","webhook":{"url":"https://root-test.example.test/webhook","secret":"z".repeat(48),"scope":["membership"]},"app_scope":{"iam":["self.identity.read"],"external":[]},"obo_endpoints":[]});
     let mut body = json!({"operation_id":Id::now_v7(),"environment_id":environment,"generation":1,"key_version":2,"expected_environment_revision":revision,"expected_iam_revision":0,"configuration_revision":1,"configuration":config});

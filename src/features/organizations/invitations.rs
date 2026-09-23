@@ -2245,7 +2245,7 @@ mod tests {
             .execute(&mut *fixture)
             .await?;
             sqlx::query(
-                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $2, $2)",
+                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $1, $2)",
             )
             .bind(principal)
             .bind(handle)
@@ -2441,7 +2441,7 @@ mod tests {
             .execute(&mut *fixture)
             .await?;
             sqlx::query(
-                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $2, $2)",
+                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $1, $2)",
             )
             .bind(principal)
             .bind(handle)
@@ -2580,7 +2580,7 @@ mod tests {
             .execute(&mut *fixture)
             .await?;
             sqlx::query(
-                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $2, $2)",
+                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $1, $2)",
             )
             .bind(principal)
             .bind(handle)

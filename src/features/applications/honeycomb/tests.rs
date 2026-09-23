@@ -151,7 +151,7 @@ async fn management_is_authenticated_revision_bound_and_durably_replayable() -> 
         "app_id":"managed-app","org_id":"test_org","name":"Managed","logo_url":null,"base_url":null,
         "visibility":"private","availability":"active","webhook":{"url":"https://managed.example.test/webhook","secret":"a".repeat(48),"scope":["membership"]},
         "app_scope":{"iam":["self.identity.read","directory.carbons.read"],"external":[]},"obo_endpoints":[],"obo_review_message":null});
-    let path = "/api/v1/honeycomb/applications/test_org%3Emanaged-app/configuration";
+    let path = "/api/v1/honeycomb/applications/managed-app/configuration";
     let request = |credential: &str,
                    actor_token: Option<&str>,
                    value: &Value,
@@ -740,7 +740,7 @@ async fn sensitive_operations(
             let mut builder = Request::builder()
                 .method("POST")
                 .uri(format!(
-                    "/api/v1/honeycomb/applications/test_org%3Emanaged-app/{suffix}"
+                    "/api/v1/honeycomb/applications/managed-app/{suffix}"
                 ))
                 .header("authorization", format!("Bearer {credential}"))
                 .header("x-honeycomb-actor-token", actor)

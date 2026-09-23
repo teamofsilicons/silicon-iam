@@ -164,30 +164,30 @@ INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES
 ('00000000-0000-0000-0000-000000000023','other_org','c:test_admin','Other Organization');
 INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES
 ('00000000-0000-0000-0000-000000000033','00000000-0000-0000-0000-000000000023','c:test_admin','carbon','owner');
-INSERT INTO iam.principals(id,kind,status,activated_at) VALUES('other_org>target','application','active',now());
+INSERT INTO iam.principals(id,kind,status,activated_at) VALUES('target','application','active',now());
 INSERT INTO iam.applications(id,app_id,organization_id,created_by_carbon_id,base_url,review_status) VALUES
-('other_org>target','other_org>target','00000000-0000-0000-0000-000000000023','c:test_admin','https://example.test','verified');
+('target','target','00000000-0000-0000-0000-000000000023','c:test_admin','https://example.test','verified');
 INSERT INTO iam.application_obo_endpoints(organization_id,application_id,endpoint_id,path,metadata_definition,critical) VALUES
-('00000000-0000-0000-0000-000000000023','other_org>target','files.read','/files','{}',false);
-UPDATE iam.applications SET app_scope='{"iam":["self.identity.read"],"external":[{"app_id":"other_org>target","endpoint_id":"files.read"}]}'
+('00000000-0000-0000-0000-000000000023','target','files.read','/files','{}',false);
+UPDATE iam.applications SET app_scope='{"iam":["self.identity.read"],"external":[{"app_id":"target","endpoint_id":"files.read"}]}'
 WHERE id='app-alpha';
-INSERT INTO iam.oauth_scope_catalog(scope,description) VALUES('obo:other_org>target:files.read','Read files');
-INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES('app-alpha','obo:other_org>target:files.read');
+INSERT INTO iam.oauth_scope_catalog(scope,description) VALUES('obo:target:files.read','Read files');
+INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES('app-alpha','obo:target:files.read');
 INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES
-('app-alpha','obo:other_org>target:files.read','c:test_carbon');
-INSERT INTO iam.access_token_scopes(access_token_id,scope) VALUES('00000000-0000-0000-0000-000000000101','obo:other_org>target:files.read');
-INSERT INTO iam.oauth_consent_grant_scopes(consent_grant_id,scope) VALUES('00000000-0000-0000-0000-000000000071','obo:other_org>target:files.read');
+('app-alpha','obo:target:files.read','c:test_carbon');
+INSERT INTO iam.access_token_scopes(access_token_id,scope) VALUES('00000000-0000-0000-0000-000000000101','obo:target:files.read');
+INSERT INTO iam.oauth_consent_grant_scopes(consent_grant_id,scope) VALUES('00000000-0000-0000-0000-000000000071','obo:target:files.read');
 SET LOCAL ROLE silicon_iam_api;
 SELECT set_config('iam.principal_id','app-alpha',true),set_config('iam.application_id','app-alpha',true),set_config('iam.organization_id','00000000-0000-0000-0000-000000000021',true);
 DO $$ BEGIN
-IF EXISTS(SELECT * FROM iam_private.lock_current_application_obo_exchange_authority('app-alpha',1,'00000000-0000-0000-0000-000000000103','c:test_carbon','carbon','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000031','other_org>target','files.read')) THEN RAISE EXCEPTION 'another app subject token accepted'; END IF;
-IF (SELECT count(*) FROM iam_private.discover_application_obo_endpoints('other_org>target')) <> 1 THEN RAISE EXCEPTION 'cross org discovery failed'; END IF;
+IF EXISTS(SELECT * FROM iam_private.lock_current_application_obo_exchange_authority('app-alpha',1,'00000000-0000-0000-0000-000000000103','c:test_carbon','carbon','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000031','target','files.read')) THEN RAISE EXCEPTION 'another app subject token accepted'; END IF;
+IF (SELECT count(*) FROM iam_private.discover_application_obo_endpoints('target')) <> 1 THEN RAISE EXCEPTION 'cross org discovery failed'; END IF;
 IF (SELECT count(*) FROM iam_private.resolve_application_obo_memberships('00000000-0000-0000-0000-000000000101','c:test_carbon',NULL)) <> 1 THEN RAISE EXCEPTION 'subject org resolver failed'; END IF;
-IF (SELECT count(*) FROM iam_private.lock_current_application_obo_exchange_authority('app-alpha',1,'00000000-0000-0000-0000-000000000101','c:test_carbon','carbon','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000031','other_org>target','files.read')) <> 1 THEN RAISE EXCEPTION 'cross org exchange failed'; END IF;
+IF (SELECT count(*) FROM iam_private.lock_current_application_obo_exchange_authority('app-alpha',1,'00000000-0000-0000-0000-000000000101','c:test_carbon','carbon','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000031','target','files.read')) <> 1 THEN RAISE EXCEPTION 'cross org exchange failed'; END IF;
 END $$;
 SELECT set_config('iam.principal_id','c:test_carbon',true);
 INSERT INTO iam.obo_proofs(id,proof_digest,digest_key_version,proof_prefix,issuer_application_id,audience_application_id,subject_principal_id,subject_kind,organization_id,membership_id,parent_access_token_id,endpoint_id,request_metadata,endpoint_version,request_method,request_path,request_body_sha256,request_signed_at,subject_auth_epoch,membership_authz_epoch,issuer_auth_epoch,audience_auth_epoch,expires_at)
-VALUES('00000000-0000-0000-0000-000000000123',decode(repeat('39',32),'hex'),1,'obo_abcdefgh','app-alpha','other_org>target','c:test_carbon','carbon','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000031','00000000-0000-0000-0000-000000000101','files.read','{}',1,'POST','/files',decode(repeat('00',32),'hex'),now(),1,1,1,1,now()+interval '300 seconds');
+VALUES('00000000-0000-0000-0000-000000000123',decode(repeat('39',32),'hex'),1,'obo_abcdefgh','app-alpha','target','c:test_carbon','carbon','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000031','00000000-0000-0000-0000-000000000101','files.read','{}',1,'POST','/files',decode(repeat('00',32),'hex'),now(),1,1,1,1,now()+interval '300 seconds');
 -- Exercise the configured default, a storage endpoint lifetime and i32 bounds.
 RESET ROLE;
 DO $$ DECLARE lifetime bigint; BEGIN
@@ -210,20 +210,20 @@ SET LOCAL ROLE silicon_iam_api;
 DO $$ BEGIN
 IF NOT iam_private.application_obo_exchange_replay_is_live('00000000-0000-0000-0000-000000000123','app-alpha','00000000-0000-0000-0000-000000000021') THEN RAISE EXCEPTION 'live replay failed'; END IF;
 END $$;
-SELECT set_config('iam.application_id','other_org>target',true),set_config('iam.principal_id','other_org>target',true);
+SELECT set_config('iam.application_id','target',true),set_config('iam.principal_id','target',true);
 DO $$ BEGIN
-IF (SELECT count(*) FROM iam_private.lookup_application_obo_proof(ARRAY[1]::smallint[],ARRAY[decode(repeat('39',32),'hex')],'other_org>target'))<>1 THEN RAISE EXCEPTION 'cross org proof lookup failed'; END IF;
+IF (SELECT count(*) FROM iam_private.lookup_application_obo_proof(ARRAY[1]::smallint[],ARRAY[decode(repeat('39',32),'hex')],'target'))<>1 THEN RAISE EXCEPTION 'cross org proof lookup failed'; END IF;
 END $$;
 SELECT set_config('iam.principal_id','c:test_carbon',true);
 DO $$ DECLARE result jsonb; BEGIN
-SELECT iam_private.get_current_application_authorization('00000000-0000-0000-0000-000000000101','c:test_carbon','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000031','other_org>target',1,'00000000-0000-0000-0000-000000000123') INTO result;
-IF result IS NULL OR result->'scopes' <> '["obo:other_org>target:files.read"]'::jsonb OR result->>'org_role' IS NOT NULL OR result->>'tags' IS NOT NULL THEN RAISE EXCEPTION 'cross org authorization data isolation failed: %',result; END IF;
+SELECT iam_private.get_current_application_authorization('00000000-0000-0000-0000-000000000101','c:test_carbon','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000031','target',1,'00000000-0000-0000-0000-000000000123') INTO result;
+IF result IS NULL OR result->'scopes' <> '["obo:target:files.read"]'::jsonb OR result->>'org_role' IS NOT NULL OR result->>'tags' IS NOT NULL THEN RAISE EXCEPTION 'cross org authorization data isolation failed: %',result; END IF;
 END $$;
 RESET ROLE;
-DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id='00000000-0000-0000-0000-000000000071' AND scope='obo:other_org>target:files.read';
+DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id='00000000-0000-0000-0000-000000000071' AND scope='obo:target:files.read';
 SET LOCAL ROLE silicon_iam_api;
 DO $$ BEGIN
-IF iam_private.get_current_application_authorization('00000000-0000-0000-0000-000000000101','c:test_carbon','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000031','other_org>target',1,'00000000-0000-0000-0000-000000000123') IS NOT NULL THEN RAISE EXCEPTION 'revoked consent remained usable'; END IF;
+IF iam_private.get_current_application_authorization('00000000-0000-0000-0000-000000000101','c:test_carbon','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000031','target',1,'00000000-0000-0000-0000-000000000123') IS NOT NULL THEN RAISE EXCEPTION 'revoked consent remained usable'; END IF;
 END $$;
 RESET ROLE;
 SELECT set_config('iam.principal_id','app-alpha',true),set_config('iam.application_id','app-alpha',true);
@@ -235,7 +235,7 @@ PERFORM iam_private.link_application_testing_environment('00000000-0000-0000-000
 IF (SELECT count(*) FROM iam_private.list_application_testing_environments(NULL,25,'active'))<>1 THEN RAISE EXCEPTION 'app environment not listed'; END IF;
 IF (SELECT version FROM iam_private.lock_application_testing_environment('00000000-0000-0000-0000-00000000a006'))<>1 THEN RAISE EXCEPTION 'environment not reusable'; END IF;
 END $$;
-SELECT set_config('iam.principal_id','other_org>target',true),set_config('iam.application_id','other_org>target',true);
+SELECT set_config('iam.principal_id','target',true),set_config('iam.application_id','target',true);
 DO $$ BEGIN
 IF EXISTS(SELECT * FROM iam_private.list_application_testing_environments(NULL,25,'active')) THEN RAISE EXCEPTION 'application environment leaked across organizations'; END IF;
 IF EXISTS(SELECT * FROM iam_private.lock_application_testing_environment('00000000-0000-0000-0000-00000000a006')) THEN RAISE EXCEPTION 'cross organization environment reuse accepted'; END IF;

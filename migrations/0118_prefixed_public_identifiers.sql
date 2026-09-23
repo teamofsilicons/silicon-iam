@@ -179,7 +179,8 @@ ALTER TABLE iam.silicons ADD CONSTRAINT silicons_canonical_identity CHECK(id=glo
 ALTER TABLE iam.applications ADD CONSTRAINT applications_canonical_identity CHECK(id=app_id),
  ADD CONSTRAINT applications_app_id_format CHECK(app_id~'^[a-z][a-z0-9_-]{0,79}$');
 CREATE FUNCTION iam_private.compute_public_silicon_id() RETURNS trigger LANGUAGE plpgsql
-SET search_path=pg_catalog AS $$ BEGIN NEW.global_silicon_id:='si:'||NEW.silicon_handle; RETURN NEW; END $$;
+SET search_path = pg_catalog
+AS $$ BEGIN NEW.global_silicon_id:='si:'||NEW.silicon_handle; RETURN NEW; END $$;
 REVOKE ALL ON FUNCTION iam_private.compute_public_silicon_id() FROM PUBLIC;
 CREATE TRIGGER silicons_compute_public_id BEFORE INSERT OR UPDATE ON iam.silicons
 FOR EACH ROW EXECUTE FUNCTION iam_private.compute_public_silicon_id();
@@ -191,6 +192,7 @@ DO $$ DECLARE r record; definition text; BEGIN
   definition:=replace(definition,'''^[a-z0-9_-]{3,50}:[a-z0-9_-]{3,50}$''','''^si:[a-z0-9_-]{3,50}$''');
   IF r.proname='create_testing_actor_login' THEN definition:=replace(definition,'''^[a-z1-9_-]{3,30}$''','''^c:[a-z0-9_-]{3,30}$'''); END IF;
   IF r.proname IN ('import_testing_application_configuration','honeycomb_configure_testing_application') THEN definition:=replace(definition,'''test_''','''c:test_'''); END IF;
+  IF r.proname IN ('resolve_scoped_iam_application','resolve_testing_scoped_iam_application') THEN definition:=replace(definition,'''tos>iam''','''iam'''); END IF;
   IF definition IS DISTINCT FROM pg_get_functiondef(r.oid) THEN EXECUTE definition; END IF;
  END LOOP;
  FOR r IN SELECT * FROM schema_id_fks LOOP EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I %s',r.conrelid::regclass,r.conname,r.definition); END LOOP;

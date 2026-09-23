@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       app_id:
-        description: Existing Honeycomb application ID (org>app)
+        description: Existing Honeycomb application ID (bare app handle)
         required: true
         type: string
 
@@ -43,7 +43,7 @@ jobs:
           import os, re
           assert re.fullmatch(r"[0-9a-f]{40}", os.environ["SOURCE_REVISION"]), "Use a full commit SHA"
           assert os.environ["SOURCE_REVISION"] == os.environ["WORKFLOW_REVISION"], "Dispatch the workflow at the source commit"
-          assert re.fullmatch(r"[a-z0-9_-]+>[a-z0-9_-]+", os.environ["APP_ID"]), "Use a qualified org>app ID"
+          assert re.fullmatch(r"[a-z][a-z0-9_-]{0,79}", os.environ["APP_ID"]), "Use a bare application ID"
           PY
       - name: Check out pinned source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0

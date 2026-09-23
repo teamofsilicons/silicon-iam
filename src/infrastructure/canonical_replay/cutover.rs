@@ -78,7 +78,6 @@ struct Payload {
 /// the entire conversion and leaves API/worker startup blocked.
 pub async fn convert(pool: &PgPool, keys: &crate::config::KeyringSettings) -> anyhow::Result<()> {
     let mut encryption = EncryptionService::from_settings(keys)?;
-    encryption.load_application_contexts(pool).await?;
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('iam:canonical-cutover',0))")
         .execute(&mut *tx)
@@ -97,6 +96,7 @@ pub async fn convert(pool: &PgPool, keys: &crate::config::KeyringSettings) -> an
         println!("Cutover already converted; no payloads changed.");
         return Ok(());
     }
+    encryption.load_canonical_cutover_contexts(pool).await?;
     let entries:Vec<Entry>=sqlx::query_as("SELECT legacy_id,public_id,testing_environment_id,actor_type FROM iam_private.canonical_replay_metadata").fetch_all(&mut *tx).await?;
     let membership_rows: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
         "SELECT membership_key,scope_key,membership_id FROM iam_private.membership_identifiers",
@@ -193,7 +193,7 @@ async fn convert_table(
                 let context = if let Some(app) = &row.application {
                     EncryptionContext::tenant(
                         ProtectedField::ApplicationWebhookEventPayload,
-                        Id::identity(app)?,
+                        Id::legacy_application_encryption_id(app)?,
                         Id::from(row.id),
                     )
                 } else {
@@ -330,7 +330,10 @@ mod tests {
             let mut migrator = sqlx::migrate::Migrator::with_migrations(
                 source
                     .iter()
-                    .filter(|migration| (migration.version < boundary) == before)
+                    // This rehearsal is specifically the 0111 canonical-key cutover.
+                    // 0118 is a separate maintenance cutover that requires these
+                    // deliberately live replay receipts to expire first.
+                    .filter(|migration| migration.version != 118 && (migration.version < boundary) == before)
                     .cloned()
                     .collect(),
             );
@@ -417,21 +420,20 @@ mod tests {
             prepare(pool).await?;
             prepare(pool).await?;
             phase(pool, testing, false).await?;
-            sqlx::raw_sql(
-                include_str!("../../../deploy/postgres/runtime-grants.sql")
-                    .trim_start_matches("\\set ON_ERROR_STOP on\n"),
-            )
-            .execute(pool)
-            .await?;
-
+            // This offline converter runs as the schema owner. Current runtime
+            // grants belong to 0118 and are checked in its own upgrade tests.
             let mut current = CryptoService::from_settings(&security)?;
             assert!(
-                current.load_application_contexts(pool).await.is_err(),
+                current
+                    .replay
+                    .load_legacy_cutover_fixture(pool)
+                    .await
+                    .is_err(),
                 "unconverted startup must fail closed"
             );
             convert(pool, &security.encryption_keys).await?;
             convert(pool, &security.encryption_keys).await?;
-            current.load_application_contexts(pool).await?;
+            current.replay.load_legacy_cutover_fixture(pool).await?;
             for (env, ids, record, projection) in rows {
                 scope(env,async {
                     let mut tx=begin(pool,env).await?;
@@ -448,7 +450,7 @@ mod tests {
                     let encrypted=EncryptedValue{ciphertext:ciphertext.0,nonce:ciphertext.1.try_into().map_err(|_|anyhow::anyhow!("nonce"))?,key_version:ciphertext.2};
                     // A pristine service without any legacy-AAD map decrypts the
                     // rewritten projection: conversion actually re-encrypted it.
-                    let plain=old.decrypt(EncryptionContext::tenant(ProtectedField::ApplicationWebhookEventPayload,Id::identity("identity-test>app")?,Id::from(projection)),&encrypted)?;
+                    let plain=old.decrypt(EncryptionContext::tenant(ProtectedField::ApplicationWebhookEventPayload,Id::legacy_application_encryption_id("identity-test>app")?,Id::from(projection)),&encrypted)?;
                     let value:serde_json::Value=serde_json::from_slice(&plain)?;assert_eq!(value["actor"]["id"],"migration-owner");assert_eq!(value["current"]["members"][0]["resource"]["membership_id"],"migration:identity-test[identity-test]");assert_eq!(value["current"]["members"][0]["resource"]["id"],ids.4.to_string());
                     let stored:(Vec<u8>,Vec<u8>,i16)=sqlx::query_as("SELECT response_ciphertext,response_nonce,response_key_version FROM iam.honeycomb_operations WHERE operation_id=$1").bind(record).fetch_one(&mut *tx).await?;
                     let plain=old.decrypt(EncryptionContext::global(ProtectedField::IdempotencySecretResponse,Id::from(record)),&EncryptedValue{ciphertext:stored.0,nonce:stored.1.try_into().map_err(|_|anyhow::anyhow!("nonce"))?,key_version:stored.2})?;

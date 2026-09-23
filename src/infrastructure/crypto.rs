@@ -553,6 +553,31 @@ impl EncryptionService {
         Ok(())
     }
 
+    /// Offline 0111 converter only: these are old application AAD contexts,
+    /// never identities accepted by authentication or the current runtime.
+    pub(crate) async fn load_canonical_cutover_contexts(
+        &mut self,
+        pool: &sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let rows: Vec<(String, Option<uuid::Uuid>, uuid::Uuid)> = sqlx::query_as(
+            "SELECT application_id, testing_environment_id, context_id FROM iam_private.application_encryption_contexts()",
+        ).fetch_all(pool).await?;
+        for (application, environment, context) in rows {
+            let key = (
+                environment.map(Id::from),
+                Id::legacy_application_encryption_id(&application)?,
+            );
+            let context = Id::from(context);
+            if let Some(previous) = self.application_contexts.insert(key, context) {
+                anyhow::ensure!(
+                    previous == context,
+                    "conflicting cutover encryption context"
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn retained_context(&self, mut context: EncryptionContext) -> EncryptionContext {
         let application_id = match context.field {
             ProtectedField::ApplicationWebhookUrl

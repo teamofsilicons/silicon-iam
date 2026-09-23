@@ -27,6 +27,10 @@ BEGIN
   fixture:=replace(fixture,'00000000-0000-0000-0000-000000000501','planner_silicon:test_org');
   fixture:=replace(fixture,'00000000-0000-0000-0000-000000000011','test_org>app-alpha');
  END IF;
+ IF to_regclass('iam_private.public_id_schema_map') IS NOT NULL THEN
+  fixture:=replace(fixture,'planner_silicon:test_org','si:planner_silicon');
+  fixture:=replace(fixture,'test_org>app-alpha','app-alpha');
+ END IF;
  EXECUTE fixture;
 END $fixture$;
 COMMIT;

@@ -102,8 +102,10 @@ impl EnvironmentManager {
                 )
                 .await
                 .map_err(support::database)?;
+                // This narrow helper checks the authenticated application's
+                // ownership without requiring organization-directory access.
                 let owns: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM iam.organizations WHERE id=$1 AND org_id=$2)",
+                    "SELECT COALESCE(iam_private.testing_environment_organization_handle($1)=$2,false)",
                 )
                 .bind(app.organization_id)
                 .bind(org_id)

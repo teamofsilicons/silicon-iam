@@ -1,4 +1,4 @@
--- The IAM-owned scoped service authenticates only its registered tos>iam
+-- The IAM-owned scoped service authenticates only its registered iam
 -- application using the trusted API database connection. There is no caller-
 -- supplied app selector and no application-secret material in this projection.
 -- Public main IAM token endpoints still authenticate ApplicationClient secrets.
@@ -20,7 +20,7 @@ AS $$
       ON organization.id = application.organization_id
      AND organization.org_id = 'tos'
      AND organization.status = 'active'
-    WHERE application.app_id = 'tos>iam'
+    WHERE application.app_id = 'iam'
       AND application.review_status = 'verified'
       AND application.deleted_at IS NULL
       AND NULLIF(current_setting('iam.testing_environment_id', true), '') IS NULL

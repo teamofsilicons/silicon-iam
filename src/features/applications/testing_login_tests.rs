@@ -47,16 +47,16 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
     crate::infrastructure::postgres::migrate_testing(&testing).await?;
     super::super::live_tests::seed_protocol_rows(&testing).await?;
     sqlx::raw_sql(r"
-        INSERT INTO iam.principals (id,kind,status,activated_at) VALUES ('oac_test_admin','carbon','active',transaction_timestamp());
-        INSERT INTO iam.carbons (id,carbon_id,display_name) VALUES ('oac_test_admin','oac_test_admin','Prefix test actor');
+        INSERT INTO iam.principals (id,kind,status,activated_at) VALUES ('c:oac_test_admin','carbon','active',transaction_timestamp());
+        INSERT INTO iam.carbons (id,carbon_id,display_name) VALUES ('c:oac_test_admin','c:oac_test_admin','Prefix test actor');
         INSERT INTO iam.carbon_contacts (id,carbon_id,kind,ciphertext,nonce,encryption_key_version,verified_at)
-        SELECT CASE WHEN kind='email' THEN '00000000-0000-0000-0000-000000000202'::uuid ELSE '00000000-0000-0000-0000-000000000203'::uuid END, 'oac_test_admin'::text, kind, ciphertext, nonce, encryption_key_version, verified_at FROM iam.carbon_contacts WHERE carbon_id='c:test_carbon';
+        SELECT CASE WHEN kind='email' THEN '00000000-0000-0000-0000-000000000202'::uuid ELSE '00000000-0000-0000-0000-000000000203'::uuid END, 'c:oac_test_admin'::text, kind, ciphertext, nonce, encryption_key_version, verified_at FROM iam.carbon_contacts WHERE carbon_id='c:test_carbon';
         INSERT INTO iam.principals (id,kind,status,activated_at) VALUES
-            ('worker:test_org','silicon','active',transaction_timestamp());
+            ('si:worker','silicon','active',transaction_timestamp());
         INSERT INTO iam.organization_memberships (id,organization_id,principal_id,principal_kind,org_role)
-        VALUES ('00000000-0000-0000-0000-000000000531','00000000-0000-0000-0000-000000000021','worker:test_org','silicon','member');
+        VALUES ('00000000-0000-0000-0000-000000000531','00000000-0000-0000-0000-000000000021','si:worker','silicon','member');
         INSERT INTO iam.silicons (id,organization_id,membership_id,organization_handle,silicon_handle,display_name,provisioning_status)
-        VALUES ('worker:test_org','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000531','test_org','worker','Worker','active');
+        VALUES ('si:worker','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000531','test_org','worker','Worker','active');
         INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES ('app-alpha','self.identity.read') ON CONFLICT DO NOTHING;
         INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES ('app-alpha','self.identity.read','c:test_carbon') ON CONFLICT DO NOTHING;
     ").execute(&testing).await?;
@@ -131,7 +131,7 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
             organization_id: Id::from_u128(0x21),
         },
         async {
-            for actor in ["c:test_carbon", "worker:test_org", "oac_test_admin"] {
+            for actor in ["c:test_carbon", "si:worker", "c:oac_test_admin"] {
                 let key = format!("actor-login-{actor}");
                 let (status, tokens) = exchange(&state, actor, &key).await?;
                 ensure!(status == StatusCode::OK, "actor exchange failed: {tokens}");

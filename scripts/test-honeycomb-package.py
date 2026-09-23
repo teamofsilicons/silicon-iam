@@ -22,14 +22,15 @@ class ArchiveTest(unittest.TestCase):
                 binary.write_bytes(b'synthetic-' + target.encode())
             (root / '.env').write_text('do-not-package')
             first, second = root / 'first.tar.gz', root / 'second.tar.gz'
-            module.package(root, first, 'tos>iam', '1.10.0')
-            module.package(root, second, 'tos>iam', '1.10.0')
+            module.package(root, first, 'iam', '1.10.0')
+            module.package(root, second, 'iam', '1.10.0')
             self.assertEqual(first.read_bytes(), second.read_bytes())
             with tarfile.open(first) as archive:
                 self.assertEqual(len(archive.getmembers()), 13)
                 self.assertTrue(all(member.isfile() for member in archive.getmembers()))
                 manifest = json.load(archive.extractfile('honeycomb.yaml'))
                 self.assertEqual(set(manifest['targets']), set(module.TARGETS))
+                self.assertEqual(manifest['app_id'], 'iam')
                 self.assertNotIn('.env', archive.getnames())
                 cli_license = (Path(__file__).resolve().parents[1] / 'crates/cli/LICENSE').read_bytes()
                 self.assertIn(b'Apache License', cli_license)
@@ -37,20 +38,27 @@ class ArchiveTest(unittest.TestCase):
                 for target in module.TARGETS:
                     self.assertEqual(archive.extractfile(f'targets/{target}/LICENSE').read(), cli_license)
             with self.assertRaises(FileExistsError):
-                module.package(root, first, 'tos>iam', '1.10.0')
+                module.package(root, first, 'iam', '1.10.0')
+
+    def test_legacy_qualified_application_id_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaisesRegex(ValueError, "bare application identifier"):
+                module.package(root, root / 'out.tar.gz', 'tos>iam', '4.0.0')
+            self.assertFalse((root / 'out.tar.gz').exists())
 
     def test_missing_or_linked_binary_cannot_be_published(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             with self.assertRaises(ValueError):
-                module.package(root, root / 'out.tar.gz', 'tos>iam', '1.10.0')
+                module.package(root, root / 'out.tar.gz', 'iam', '1.10.0')
             self.assertFalse((root / 'out.tar.gz').exists())
             directory = root / module.TARGETS[0]
             directory.mkdir()
             (root / 'secret').write_bytes(b'not-a-binary')
             (directory / 'iam').symlink_to(root / 'secret')
             with self.assertRaises(ValueError):
-                module.package(root, root / 'out.tar.gz', 'tos>iam', '1.10.0')
+                module.package(root, root / 'out.tar.gz', 'iam', '1.10.0')
 
 
 if __name__ == '__main__':

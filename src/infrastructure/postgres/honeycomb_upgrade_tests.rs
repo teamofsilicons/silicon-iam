@@ -38,7 +38,7 @@ async fn honeycomb_upgrade_preserves_deployed_state_and_scopes_new_tables() -> a
     sqlx::raw_sql(sqlx::AssertSqlSafe(legacy))
         .execute(&production)
         .await?;
-    let before = production_snapshot(&production).await?;
+    let before = expected_public_ids(production_snapshot(&production).await?);
     ensure!(
         !schema_is_current(&production).await?,
         "old production ledger unexpectedly current"
@@ -61,7 +61,10 @@ async fn honeycomb_upgrade_preserves_deployed_state_and_scopes_new_tables() -> a
         ledger == 108,
         "upgrade fixture must start from deployed 99+9 ledger"
     );
-    let fixture = include_str!("../../../tests/sql/application_testing_layer.sql");
+    // Distinct app handles keep this upgrade free of the separately tested
+    // cross-organization collision rejection. Both start in the old schema.
+    let fixture = include_str!("../../../tests/sql/application_testing_layer.sql")
+        .replace("beta>test", "beta>test-beta");
     let setup = fixture
         .split("UPDATE iam.testing_application_imports")
         .next()
@@ -86,7 +89,7 @@ async fn honeycomb_upgrade_preserves_deployed_state_and_scopes_new_tables() -> a
         other[field] = json!(Id::now_v7());
     }
     other["app_scope"] = json!({"iam":["self.identity.read"],"external":[]});
-    let second_app: Id = serde_json::from_value(other["app_id"].clone())?;
+    let second_app = Id::fixture("test");
     let mut tx = testing.begin().await?;
     sqlx::query("SELECT set_config('iam.testing_environment_id',$1,true)")
         .bind(Id::from_u128(0xa002).to_string())
@@ -97,7 +100,7 @@ async fn honeycomb_upgrade_preserves_deployed_state_and_scopes_new_tables() -> a
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    let before_test = testing_snapshot(&testing).await?;
+    let before_test = expected_public_ids(testing_snapshot(&testing).await?);
     ensure!(
         !testing_schema_is_current(&testing).await?,
         "old test ledger unexpectedly current"
@@ -110,7 +113,8 @@ async fn honeycomb_upgrade_preserves_deployed_state_and_scopes_new_tables() -> a
     );
     ensure!(
         testing_snapshot(&testing).await? == before_test,
-        "upgrade changed canonical tenant identity or existing test credentials"
+        "upgrade changed canonical tenant identity or existing test credentials: before={before_test}, after={}",
+        testing_snapshot(&testing).await?
     );
     ensure!(
         schema_is_current(&production).await? && testing_schema_is_current(&testing).await?,
@@ -284,4 +288,32 @@ async fn seed_plan(pool: &PgPool, env: Id, app: Id, plan: Id) -> anyhow::Result<
     sqlx::query("INSERT INTO iam.honeycomb_publication_decisions(decision_id,plan_id,provider,scopes,decision,reviewer_carbon_id) VALUES($1,$2,'honeycomb','{}','approve',$3)").bind(operation).bind(plan).bind(owner).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
+}
+
+// Snapshot fields contain identity references; compare the explicit public-ID
+// projection while retaining every credential byte and unrelated resource UUID.
+fn expected_public_ids(value: Value) -> Value {
+    match value {
+        Value::String(value) => {
+            let mapped = match value.as_str() {
+                "test_org>app-alpha" => "app-alpha",
+                "test_org>app-beta" => "app-beta",
+                "alpha>test" => "test",
+                "beta>test-beta" => "test-beta",
+                "test_carbon" => "c:test_carbon",
+                "test_admin" => "c:test_admin",
+                "test_gggggggggggggggggggggggg" => "c:test_gggggggggggggggggggggggg",
+                _ => return Value::String(value),
+            };
+            json!(mapped)
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(expected_public_ids).collect()),
+        Value::Object(values) => Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| (key, expected_public_ids(value)))
+                .collect(),
+        ),
+        value => value,
+    }
 }

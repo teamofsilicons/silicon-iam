@@ -83,7 +83,7 @@ BEGIN
             VALUES (application_id, 'application', 'active', transaction_timestamp());
             INSERT INTO iam.applications(id, app_id, organization_id, created_by_carbon_id,
                 review_status, base_url)
-            VALUES (application_id, org_handle || '>app-' || application_number,
+            VALUES (application_id, org_handle || '>' || org_handle || '-app-' || application_number,
                 organization_id, creator_id,
                 (ARRAY['verified', 'suspended', 'under_review'])[application_number],
                 'https://example.test');
@@ -104,7 +104,7 @@ BEGIN
             VALUES (md5(application_id::text || ':access')::uuid, 'application_access',
                 decode(md5(application_id::text || ':access') || md5(fixture_prefix),'hex'),
                 1, 'oat_abcdefgh', session_id, owner_id, 'carbon', application_id,
-                org_handle || '>app-' || application_number, application_id,
+                org_handle || '>' || org_handle || '-app-' || application_number, application_id,
                 1, 1,
                 transaction_timestamp() + interval '15 minutes');
             INSERT INTO iam.access_token_scopes(access_token_id, scope)
