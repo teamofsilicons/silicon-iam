@@ -240,8 +240,8 @@ mod tests {
         let arguments = || Arguments {
             org_id: "bootstrap_org".into(),
             carbon_id: "c:bootstrap_owner".into(),
-            iam_app_id: "bootstrap_org>iam".into(),
-            honeycomb_app_id: "bootstrap_org>honeycomb".into(),
+            iam_app_id: "iam".into(),
+            honeycomb_app_id: "honeycomb".into(),
             output: output.clone(),
         };
         bootstrap(arguments(), settings.clone()).await?;
@@ -268,7 +268,7 @@ mod tests {
             "bootstrap duplicated credentials or audit records"
         );
         let honeycomb_scopes: Vec<String> = sqlx::query_scalar(
-            "SELECT scope FROM iam.application_approved_scopes WHERE application_id=(SELECT id FROM iam.applications WHERE app_id='bootstrap_org>honeycomb') AND revoked_at IS NULL ORDER BY scope",
+            "SELECT scope FROM iam.application_approved_scopes WHERE application_id=(SELECT id FROM iam.applications WHERE app_id='honeycomb') AND revoked_at IS NULL ORDER BY scope",
         ).fetch_all(&pool).await?;
         anyhow::ensure!(
             honeycomb_scopes

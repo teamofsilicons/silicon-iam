@@ -77,10 +77,12 @@ concern release orchestration and test placement. Downloaded archive checksums,
 six native receipts, executable formats, Linux ABI, licenses and native macOS ARM
 version were verified.
 
-Honeycomb upload is pending because Briefcase is intentionally paused during
-the wider cutover. The first upload returned `503 integration_unavailable`
-with Briefcase HTTP 502. Retry the **same** saved idempotency key after Briefcase
-is healthy; do not create a second upload attempt. The upload plan, response,
-archive and provenance are retained under
-`/tmp/public-id-deployment-20260923/iam-cli-4.0.0/`. No CLI publication completion
-is claimed by this receipt.
+After Briefcase became healthy, retrying the exact saved idempotency key
+`2437c8f5-7ea5-4a64-8576-880e005b8ddb` succeeded on channel `prod`.
+Honeycomb release `3eba5c66-94bc-4ec7-8477-4173ce4fb6d1` is accepted and
+publication `82c4c695-af1b-4843-afb5-dba9097d9876` is published. The published
+archive SHA-256 is
+`d4c11befd34437c5e671012a87d36aca871041490c15eafa44d1e503dfa36ed2`.
+The first attempt's temporary Briefcase 502 did not create a second logical
+upload. The upload plan, successful receipt, archive and provenance remain
+under `/tmp/public-id-deployment-20260923/iam-cli-4.0.0/`.
