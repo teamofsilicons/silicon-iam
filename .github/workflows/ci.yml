@@ -101,7 +101,9 @@ jobs:
       - name: Verify public identifier release safety
         env:
           IAM_OPERATOR_TEST_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
-        run: python3 scripts/test-public-identifier-release.py
+        run: |
+          python3 scripts/test-public-identifier-release.py
+          python3 scripts/test-public-id-schema-migration.py --admin-url "$IAM_OPERATOR_TEST_ADMIN_URL"
 
       - name: Validate Honeycomb packaging and IAM service handoff
         run: |

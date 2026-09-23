@@ -61,6 +61,26 @@ def main():
             for path in [p for p in base if 111 <= int(p.name[:4]) < 118] + ([p for p in overlays if int(p.name[:4]) >= 9014] if testing else []):
                 sql += 'BEGIN;\n' + include(path) + 'COMMIT;\n'
             run(sql, name)
+            # Consumed proof rows contain a cross-column CHECK: the consumer
+            # must equal the audience. Changing either column alone is invalid.
+            for plane in planes:
+                scope = f"SELECT set_config('iam.testing_environment_id',md5('canonical-migration/{plane}/environment')::uuid::text,true);" if testing else ''
+                run(f'''BEGIN; {scope}
+SELECT set_config('iam.principal_id','migration:identity-test',true);
+UPDATE iam.oauth_consent_grants SET selected_membership_ids=ARRAY[membership_id];
+INSERT INTO iam.application_obo_endpoints(application_id,organization_id,endpoint_id,path)
+SELECT id,organization_id,'migration.read','/migration/read' FROM iam.applications
+WHERE id='identity-test>app' AND organization_id=md5('canonical-migration/{plane}/org')::uuid;
+INSERT INTO iam.obo_proofs(id,proof_digest,digest_key_version,proof_prefix,issuer_application_id,audience_application_id,
+subject_principal_id,subject_kind,organization_id,membership_id,parent_access_token_id,endpoint_id,endpoint_version,
+subject_auth_epoch,membership_authz_epoch,issuer_auth_epoch,audience_auth_epoch,expires_at,consumed_at,consumed_by_application_id,
+request_method,request_path,request_body_sha256,request_signed_at)
+SELECT md5('public-id-proof/{plane}')::uuid,decode(md5('public-id-proof/{plane}')||md5('public-id-proof/{plane}'),'hex'),1,'obo_abcdefgh',
+client_application_id,audience_application_id,subject_principal_id,subject_kind,organization_id,membership_id,id,'migration.read',1,
+subject_auth_epoch,membership_authz_epoch,client_auth_epoch,client_auth_epoch,now()+interval '30 seconds',now(),audience_application_id,
+'POST','/migration/read',decode(repeat('07',32),'hex'),now()
+FROM iam.access_tokens WHERE id=md5('canonical-migration/{plane}/access')::uuid;
+COMMIT;''', name)
             # Check the new names cannot silently collapse across organizations.
             # Insert a second old app with the same local handle; no credentials.
             collision_scope = "SELECT set_config('iam.testing_environment_id',md5('canonical-migration/2/environment')::uuid::text,true);" if testing else ''
@@ -83,6 +103,7 @@ COMMIT;'''
             assert run("SELECT count(*) FROM iam.applications WHERE id='app' AND app_id=id;", name).strip() == str(len(planes))
             assert run("SELECT count(*) FROM iam_private.membership_identifiers WHERE membership_id IN ('c:migration-owner[identity-test]','si:migration[identity-test]');", name).strip() == str(2*len(planes))
             assert run("SELECT count(*) FROM iam.access_tokens WHERE subject_principal_id='si:migration' AND client_application_id='app' AND audience_application_id='app' AND audience='app' AND revoked_at IS NULL;", name).strip() == str(len(planes))
+            assert run("SELECT count(*) FROM iam.obo_proofs WHERE consumed_at IS NOT NULL AND consumed_by_application_id='app' AND audience_application_id='app' AND subject_principal_id='si:migration' AND request_body_sha256=decode(repeat('07',32),'hex');", name).strip() == str(len(planes))
             assert run("SELECT count(*) FROM iam.application_webhook_endpoints WHERE application_id='app' AND url_ciphertext=decode(repeat('04',17),'hex');", name).strip() == str(len(planes))
             assert run("SELECT count(*) FROM iam.outbox_events WHERE aggregate_type='silicon' AND aggregate_id='si:migration' AND payload->'actor'->>'id'='si:migration' AND payload->>'application_id'='app';", name).strip() == str(len(planes))
             assert run("SELECT count(*) FROM iam_private.public_id_application_contexts WHERE application_id='app' AND context_id='identity-test>app';", name).strip() == str(len(planes))

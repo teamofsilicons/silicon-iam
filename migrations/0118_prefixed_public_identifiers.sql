@@ -103,15 +103,21 @@ ALTER TABLE iam.applications DROP CONSTRAINT applications_canonical_identity, DR
 -- computed field with the same projection column, without dropping dependencies.
 ALTER TABLE iam.silicons ALTER COLUMN global_silicon_id DROP EXPRESSION;
 DO $$ DECLARE r record; BEGIN
- FOR r IN SELECT c.oid::regclass relation,a.attname FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
+ -- Update all identity columns on a row together. For example, a consumed OBO
+ -- proof requires its consumer and audience to remain equal throughout cutover.
+ FOR r IN SELECT c.oid::regclass relation,
+ string_agg(format('%I=pg_temp.schema_id(%I)',a.attname,a.attname),',' ORDER BY a.attnum) assignments,
+ string_agg(format('%I IN (SELECT old_id FROM pg_temp.schema_identity_map)',a.attname),' OR ' ORDER BY a.attnum) predicate
+ FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
  WHERE c.relnamespace IN ('iam'::regnamespace,'iam_private'::regnamespace) AND c.relkind IN ('r','p') AND NOT c.relispartition
  AND a.atttypid='text'::regtype AND a.attnum>0 AND NOT a.attisdropped AND a.attgenerated=''
  AND c.relname NOT IN ('public_id_schema_map','public_id_application_contexts')
  AND (a.attname ~ '(^|_)(principal|carbon|silicon|application|actor|reviewer|subject|service)_id$'
   OR a.attname IN ('app_id','global_silicon_id','audience','public_id')
   OR (a.attname='id' AND c.relname IN ('principals','carbons','silicons','applications','service_principals')))
+ GROUP BY c.oid
  LOOP
-  EXECUTE format('UPDATE %s SET %I=pg_temp.schema_id(%I) WHERE %I IN (SELECT old_id FROM pg_temp.schema_identity_map)',r.relation,r.attname,r.attname,r.attname);
+  EXECUTE format('UPDATE %s SET %s WHERE %s',r.relation,r.assignments,r.predicate);
  END LOOP;
 END $$;
 -- Policy selectors are typed identity arrays, not arbitrary user strings.
