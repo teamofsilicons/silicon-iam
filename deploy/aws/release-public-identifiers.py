@@ -157,7 +157,9 @@ class Release:
         print(json.dumps({"checkpoint": stage, "release_directory": str(self.root)}), flush=True)
 
     def run(self, command, env=None, stdin=None, stdout=None, sensitive=False):
-        result = subprocess.run(command, env=env, stdin=stdin, stdout=stdout or subprocess.PIPE,
+        payload = stdin if isinstance(stdin, bytes) else None
+        result = subprocess.run(command, env=env, stdin=None if payload is not None else stdin,
+                                input=payload, stdout=stdout or subprocess.PIPE,
                                 stderr=subprocess.PIPE, check=False)
         if not sensitive:
             with (self.root / "operations-private.log").open("ab") as log:
@@ -185,7 +187,7 @@ class Release:
         return self.run(command, environment, stdin, stdout)
 
     def sql(self, label, query):
-        return self.pg(label, "psql", ["-X", "--no-password", "-At", "-v", "ON_ERROR_STOP=1", "-c", query]).decode().strip()
+        return self.pg(label, "psql", ["-X", "--no-password", "-At", "-v", "ON_ERROR_STOP=1", "-f", "-"], stdin=query.encode()).decode().strip()
 
     def ledger(self, label, complete=False):
         output = self.sql(label, "SELECT version,encode(checksum,'hex'),success FROM _sqlx_migrations ORDER BY version")
@@ -459,8 +461,8 @@ class Release:
                     for table in CREDENTIAL_TABLES
                 }
                 def copy_sql(query, database=database, owner=owner):
-                    return self.run(["docker", "exec", name, "psql", "-U", owner, "-d", database,
-                                     "-At", "-v", "ON_ERROR_STOP=1", "-c", query]).decode().strip()
+                    return self.run(["docker", "exec", "-i", name, "psql", "-U", owner, "-d", database,
+                                     "-At", "-v", "ON_ERROR_STOP=1", "-f", "-"], stdin=query.encode()).decode().strip()
                 self.prepare_public_ids(label, copy_sql, isolated=True)
             environment = dict(os.environ, IAM_MIGRATOR_DATABASE_URL=urls["production"],
                                IAM_TESTING_MIGRATOR_DATABASE_URL=urls["testing"])
@@ -476,8 +478,8 @@ class Release:
                 with (self.root / "runtime-grants.sql").open("rb") as source:
                     self.run(["docker", "exec", "-i", name, "psql", "-U", owner, "-d", database, "-v", "ON_ERROR_STOP=1"], stdin=source)
                 def copy_sql(query, database=database, owner=owner):
-                    return self.run(["docker", "exec", name, "psql", "-U", owner, "-d", database,
-                                     "-At", "-v", "ON_ERROR_STOP=1", "-c", query]).decode().strip()
+                    return self.run(["docker", "exec", "-i", name, "psql", "-U", owner, "-d", database,
+                                     "-At", "-v", "ON_ERROR_STOP=1", "-f", "-"], stdin=query.encode()).decode().strip()
                 self.verify_public_ids(label, copy_sql)
                 for table in CREDENTIAL_TABLES:
                     after = self.run(["docker", "exec", name, "psql", "-U", owner, "-d", database,

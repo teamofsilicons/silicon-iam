@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -19,6 +20,21 @@ spec.loader.exec_module(module)
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_large_sql_is_streamed_without_argument_size_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = object.__new__(module.Release)
+            release.root = Path(directory)
+            payload = module.replay_expiry_sql([str(uuid.uuid4()) for _ in range(3000)]).encode()
+            self.assertGreater(len(payload), 131072)
+            result = release.run([sys.executable, '-c', 'import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())'], stdin=payload)
+            self.assertEqual(result, payload)
+            def pg(label, program, arguments, stdin):
+                self.assertNotIn('-c', arguments)
+                self.assertEqual(stdin, payload)
+                return b'pass'
+            release.pg = pg
+            self.assertEqual(release.sql('production', payload.decode()), 'pass')
+
     def test_coordinator_gate_is_bound_to_exact_rehearsed_release(self):
         with tempfile.TemporaryDirectory() as directory:
             release = object.__new__(module.Release)
