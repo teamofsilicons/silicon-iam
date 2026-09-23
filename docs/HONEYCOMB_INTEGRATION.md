@@ -330,6 +330,14 @@ destination needs its signing secret. Existing app configuration preserves its
 app credential; a new registration or explicit rotation returns one protected
 `app_secret`. Configuration changes leave that app pending coordinated activation.
 Target-plane receipts prevent a lost production commit from rotating twice.
+Exact retries recover an existing receipt before checking an unrelated environment
+revision advance; current actor authorization, generation and key version still
+apply. If no target receipt exists for the operation, rotation rejects a configuration mismatch
+with `configuration_revision_conflict` before checking the environment revision.
+That rejection proves this request did not rotate. A valid configuration with a
+stale environment revision still fails with `testing_revision_or_state_conflict`
+without a mutation. Other conflicts and uncertain outcomes must remain recoverable;
+retry the original body, actor and idempotency key without changing its revisions.
 Rotation commits the active authentication digest and the encrypted credential
 used by OBO and credential recovery together. Install migration `0117` on both
 databases before starting the updated API. For a testing app affected by an older

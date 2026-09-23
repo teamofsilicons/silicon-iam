@@ -380,9 +380,6 @@ async fn mutate(
     .fetch_one(&mut *tx)
     .await
     .map_err(database)?;
-    if current_revision != Some(input.expected_environment_revision) {
-        return Err(ApiError::conflict("testing_revision_or_state_conflict"));
-    }
     sqlx::query("UPDATE iam.honeycomb_operations SET environment_id=$2 WHERE operation_id=$1")
         .bind(input.operation_id)
         .bind(env)
@@ -450,10 +447,22 @@ async fn mutate(
             test.commit().await.map_err(database)?;
             return Ok::<_, ApiError>(response);
         }
+        // An unrelated environment revision must not hide a committed target
+        // result. Without a receipt, reject a stale rotation configuration
+        // definitively before the broader environment fence. The same locked
+        // snapshot then supplies the application identity for the mutation.
+        let rotation_snapshot = if rotation {
+            Some(validate_rotation(&mut test, &state, &app, &input).await?)
+        } else {
+            None
+        };
+        if current_revision != Some(input.expected_environment_revision) {
+            return Err(ApiError::conflict("testing_revision_or_state_conflict"));
+        }
         let response = if recovery {
             recover_in_test(&mut test, &state, &app, &input).await?
-        } else if rotation {
-            rotate_in_test(&mut test, &state, &app, &input).await?
+        } else if let Some(before) = rotation_snapshot {
+            rotate_in_test(&mut test, &state, &app, &input, &before).await?
         } else {
             configure_in_test(&mut test, &state, &app, &input).await?
         };
@@ -564,7 +573,7 @@ fn secret(state: &ApiState) -> Result<(secrecy::SecretString, Value), ApiError> 
     let value = json!({"secret_id":Id::now_v7(),"secret_digest":hex::encode(digest.as_bytes()),"secret_digest_version":digest.key_version(),"secret_prefix":secret.expose_secret().chars().take(12).collect::<String>()});
     Ok((secret, value))
 }
-async fn rotate_in_test(
+async fn validate_rotation(
     tx: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     app: &str,
@@ -574,6 +583,15 @@ async fn rotate_in_test(
     if before["configuration_revision"].as_i64() != input.configuration_revision {
         return Err(ApiError::conflict("configuration_revision_conflict"));
     }
+    Ok(before)
+}
+async fn rotate_in_test(
+    tx: &mut Transaction<'_, Postgres>,
+    state: &ApiState,
+    app: &str,
+    input: &Mutation,
+    before: &Value,
+) -> Result<Value, ApiError> {
     let id: Id = serde_json::from_value(before["application_id"].clone())
         .map_err(|_| ApiError::internal("testing_application_id"))?;
     let (secret, mut value) = secret(state)?;

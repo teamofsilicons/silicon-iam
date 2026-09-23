@@ -16,6 +16,7 @@ EXCLUDED_TEST_PATHS = %w[
   src/features/applications/honeycomb/operations/publication_tests.rs
   src/features/testing_environments/honeycomb/adoption_retention_tests.rs
   src/features/testing_environments/honeycomb/testing_apps/tests.rs
+  src/features/testing_environments/honeycomb/testing_apps/rotation_recovery_tests.rs
   src/features/applications/honeycomb/tests.rs
   src/features/applications/bundle_availability_tests.rs
   src/features/applications/verification_tests.rs

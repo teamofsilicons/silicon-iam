@@ -8,6 +8,9 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use tower::ServiceExt as _;
 
+#[path = "rotation_recovery_tests.rs"]
+mod rotation_recovery;
+
 pub(crate) async fn exercise(
     app: &axum::Router,
     state: &ApiState,
@@ -249,6 +252,19 @@ pub(crate) async fn exercise(
             == rotated,
         "completed secret replay must survive an unrelated environment revision advance"
     );
+    Box::pin(rotation_recovery::exercise(
+        app,
+        state,
+        admin,
+        test_admin,
+        credential,
+        actor,
+        environment,
+        &rotate_endpoint,
+        &rotate,
+        &rotated,
+    ))
+    .await?;
     let read_path = format!(
         "/api/v1/honeycomb/testing-environments/{environment}/applications/{app_path}?generation=1&key_version=1&expected_environment_revision={revision}"
     );

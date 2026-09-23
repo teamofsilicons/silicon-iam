@@ -9,7 +9,7 @@ pub(super) static DOCUMENTS: &[Document] = &[
         topic: "honeycomb",
         title: "Honeycomb service integration and migration",
         source: "docs/HONEYCOMB_INTEGRATION.md",
-        source_sha256: "a50bf08ca2727224677cd3f0e8fe380bcb0c457d024181ba2c872aa57dcd3858",
+        source_sha256: "165a2e671d0e3301d4451aaa48478b33e0faf7e3aa88d20e7626887649f1162e",
         format: "markdown",
         aliases: &["management", "lifecycle"],
         content: include_str!("manual_assets/honeycomb.md"),
