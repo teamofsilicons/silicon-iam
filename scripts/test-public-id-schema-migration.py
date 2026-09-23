@@ -5,6 +5,7 @@ Requires a local admin URL; creates only randomly named iam_public_ids_* databas
 and migrators. Each migration runs as a NOSUPERUSER NOBYPASSRLS database owner.
 """
 import argparse
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -12,6 +13,9 @@ import uuid
 from urllib.parse import urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+_spec = importlib.util.spec_from_file_location('public_id_release', ROOT/'deploy/aws/release-public-identifiers.py')
+release = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(release)
 
 
 def main():
@@ -69,7 +73,11 @@ COMMIT;'''
             run(f'SET SESSION AUTHORIZATION {name}; BEGIN;\n'+include(ROOT/'migrations/0118_prefixed_public_identifiers.sql')+'COMMIT;', name, 'duplicate key value violates unique constraint')
             assert run("SELECT to_regclass('iam_private.public_id_schema_map') IS NULL;", name).strip() == 't'
             run(f"BEGIN; {collision_scope} DELETE FROM iam.applications WHERE app_id='other-org>app'; DELETE FROM iam.principals WHERE id='other-org>app'; COMMIT;", name)
+            fingerprints = {table: run(release.Release.credential_fingerprint_query(table), name)
+                            for table in release.CREDENTIAL_TABLES}
             run(f'SET SESSION AUTHORIZATION {name}; BEGIN;\n'+include(ROOT/'migrations/0118_prefixed_public_identifiers.sql')+'COMMIT;\n', name)
+            assert fingerprints == {table: run(release.Release.credential_fingerprint_query(table), name)
+                                    for table in release.CREDENTIAL_TABLES}, 'operator retained-credential fingerprint changed'
             assert run("SELECT count(*) FROM iam.carbons WHERE id='c:migration-owner' AND carbon_id=id;", name).strip() == str(len(planes))
             assert run("SELECT count(*) FROM iam.silicons WHERE id='si:migration' AND global_silicon_id=id;", name).strip() == str(len(planes))
             assert run("SELECT count(*) FROM iam.applications WHERE id='app' AND app_id=id;", name).strip() == str(len(planes))

@@ -98,6 +98,11 @@ jobs:
       - name: Validate runtime database grants
         run: ruby scripts/check-runtime-grants.rb
 
+      - name: Verify public identifier release safety
+        env:
+          IAM_OPERATOR_TEST_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: python3 scripts/test-public-identifier-release.py
+
       - name: Validate Honeycomb packaging and IAM service handoff
         run: |
           python3 scripts/test-honeycomb-package.py

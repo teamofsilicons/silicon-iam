@@ -14,7 +14,7 @@ iam login status --json
 iam --help
 ```
 
-For a Silicon, use `iam silicon-login --sid <si:handle>` in the official IAM
+For a Silicon, use `iam silicon-login --sid <handle:org>` in the official IAM
 CLI. Application CLIs receive only app-bound short-lived tokens. Installation
 sets up the CLI without logging in. Honeycomb manages installed CLI updates;
 see [installation and bootstrap](HONEYCOMB_RELEASE.md). Follow [the CLI guide](cli/README.md) for practical

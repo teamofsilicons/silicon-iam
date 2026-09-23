@@ -14,7 +14,7 @@ and `iam -o json commands` for machine-readable command discovery. Help and bund
 honeycomb install <configured-iam-app-id>
 iam iam --json
 iam login --carbon-id <your-carbon-id>       # Carbon: enter the IAM verification code
-# Or, for a Silicon: iam silicon-login --sid <si:handle>
+# Or, for a Silicon: iam silicon-login --sid <handle:org>
 iam login status --json
 iam --org <org> member self
 ```
@@ -27,7 +27,7 @@ arguments and related documentation. `iam commands --json` exposes the tree to a
 
 IAM is the credential issuer: Carbon verification and Silicon SID/STK login
 happen here. An application CLI must instead accept `app login '<SLT>'`, using a
-token minted by `iam login --app-id 'app'` or the IAM consent website. An
+token minted by `iam login --app-id 'org>app'` or the IAM consent website. An
 app-bound SLT cannot create an unrestricted IAM session. `iam iam --json`
 therefore reports `app_id: null` and `credential_issuer: true`; IAM does not
 invent an application registration for itself.
@@ -175,7 +175,7 @@ For example, application creation explains the returned credentials and points
 to inspecting the application, minting an SLT and exchanging it. Suggestions
 retain the selected service URL, profile, organization, testing environment
 and custom `SILICON_HOME` / `SILICON_IAM_HOME`, so a copied follow-up stays in the same context.
-They use POSIX shell quoting (including quoted `app` IDs); production
+They use POSIX shell quoting (including quoted `org>app` IDs); production
 suggestions explicitly unset `SILICON_IAM_TEST` to avoid inheriting a different
 environment. They are suggestions only: the CLI does not execute them. Secret
 values are not inserted into suggested commands; use the referenced help for
@@ -250,7 +250,7 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 | Command | Required input | Authority and important constraints |
 | --- | --- | --- |
 | `iam login` | Exactly one of `--email`, `--phone`, or `--carbon-id`, or `--app-id` to reuse a stored session; the code is prompted unless `--code` is given | Carbon login. `--app-id` without an identity reuses the existing session to mint an SLT; with an identity it first signs in. A bare `iam login` is incomplete even when signed in. It never logs the Application in directly. |
-| `iam silicon-login` | Silicon ID and STK at flags/prompts, or only `--app-id` with a stored Silicon session | `--app-id` mints an SLT; omit both credentials to reuse the current Silicon session. The owning organization is read from IAM after login. |
+| `iam silicon-login` | Silicon ID and STK at flags/prompts, or only `--app-id` with a stored Silicon session | `--app-id` mints an SLT; omit both credentials to reuse the current Silicon session. A canonical `handle:org` supplies the organization when none is selected. |
 | `iam logout` | None | Ends the current Carbon session remotely; Silicon logout is local. `--local-only` and `--all` conflict. `--all` uses step-up action `account.sessions_revoke_all` on the Carbon principal UUID, and affected sessions must satisfy the 12-hour rule. |
 | `iam whoami` | None | Requires an IAM session in the selected production or test plane. |
 | `iam step-up` | `<action> <resource-uuid>` | Carbon only. The code is prompted unless `--code` is given. The action and exact resource must match the later protected mutation. |
@@ -352,7 +352,7 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 
 | Command | Required input | Authority and important constraints |
 | --- | --- | --- |
-| `iam silicon` | `<subcommand>` | Selected-organization Silicon namespace. Use `si:handle` and select the organization with `--org`. |
+| `iam silicon` | `<subcommand>` | Selected-organization Silicon namespace. Local IDs use `--org`; canonical IDs use `handle:org`. |
 | `iam silicon list` | None | Optional tag and paging filters. |
 | `iam silicon create` | `<handle> --job-description <role>` | Requires `silicons.create`; returns the STK exactly once. A canonical ID supplies its org when none is selected and must match a selected org. |
 | `iam silicon show` | `<silicon-id>` | Accepts a local or canonical ID. |
@@ -388,7 +388,7 @@ invalidation; it grants no user permissions and does not replace OBO.
 
 | Command | Required input | Authority and important constraints |
 | --- | --- | --- |
-| `iam app` | `<subcommand>` | Application namespace. Use bare application IDs and select the owning organization with `--org` for creation. |
+| `iam app` | `<subcommand>` | Application namespace. Local IDs use `--org`; canonical IDs use `org>handle`. |
 | `iam app list` | None | Carbon session; intentionally lists Applications across every organization the Carbon can administer. `--org` does not filter this view; `--status` does. |
 | `iam app create` | `<app-id> --name <name> --webhook-url <https-url> --webhook-secret <secret> --base-url <origin>` | Current Carbon owner/admin of the owning org. The webhook secret is caller-chosen (32–512 visible ASCII); the generated client secret is returned once. Base URL is a pathless origin with no trailing slash. |
 | `iam app show` | `<app-id>` | Carbon Application administrator. |
@@ -556,7 +556,7 @@ iam app approve-webhook "$APP_ID" --step-up "$TOKEN"
 ```
 
 The assertion uses the internal UUID from `app webhook`, not the public
-`handle` ID. The CLI reads the current Application version and sends an
+`org>handle` ID. The CLI reads the current Application version and sends an
 idempotent approval with no request fields. Approval changes only the endpoint, not
 Application status or scopes. An Application itself still `under_review`
 must complete platform review separately. A missing pending endpoint or a

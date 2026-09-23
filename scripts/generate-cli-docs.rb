@@ -20,6 +20,7 @@ CATALOG = [
   ["telemetry", "Space Station collection, opt-out and delivery", "docs/TELEMETRY.md", %w[diagnostics]],
   ["building", "Build an IAM application step by step", "docs/BUILDING.md", %w[development integration]],
   ["canonical-identities", "Canonical identity migration and rollout", "docs/canonical-identity-rollout.md", %w[identity-migration]],
+  ["public-identifiers", "Prefixed actor IDs and bare application ID migration", "docs/public-id-schema-migration.md", %w[public-id-schema]],
   ["sensitive-actions", "Sensitive action policies, defaults and approvals", "docs/SENSITIVE_ACTIONS.md", %w[policies]],
   ["iam-scopes", "IAM read and mutation permissions", "docs/IAM_SCOPES.md", %w[scopes permissions]],
   ["scoped-backend", "Separate scoped IAM backend", "docs/SCOPED_BACKEND.md", []],

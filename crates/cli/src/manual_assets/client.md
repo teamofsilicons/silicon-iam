@@ -14,7 +14,7 @@ provider callbacks, and browser navigations remain outside this crate.
 
 ```toml
 [dependencies]
-silicon-iam-client = "3.1.0"
+silicon-iam-client = "4.0.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -96,7 +96,7 @@ use silicon_iam_client::{Client, Credential, Mutation};
 
 #[tokio::main]
 async fn main() -> silicon_iam_client::Result<()> {
-    let app_id = "acme>checkout";
+    let app_id = "checkout";
     let application = Client::new("https://backend.iam.teamofsilicons.com")?
         .with_credential(Credential::application(app_id, "ask_your_application_secret"));
 
@@ -124,7 +124,7 @@ receiving app's credentials to verify it. No user session or SLT is involved:
 use silicon_iam_client::{Client, Credential, models};
 
 let caller = Client::new("https://backend.iam.teamofsilicons.com")?
-    .with_credential(Credential::application("acme>checkout", caller_secret));
+    .with_credential(Credential::application("checkout", caller_secret));
 let issued = caller.app_verification()
     .issue(&models::AppAccessKeyIssue { ttl_seconds: Some(300) }).await?;
 // Send issued.app_id and issued.app_access_key to the receiving application.
@@ -342,7 +342,7 @@ verified Application's base URL, even across organizations:
 # use silicon_iam_client::{Client, Credential};
 # async fn discover(base: &str, caller_secret: &str) -> silicon_iam_client::Result<()> {
 let caller = Client::new(base)?.with_credential(Credential::application(
-    "acme>checkout",
+    "checkout",
     caller_secret,
 ));
 let billing = caller
@@ -362,7 +362,7 @@ successor during explicit webhook rotation:
 ```rust
 # use silicon_iam_client::{Client, Mutation, models};
 # async fn rotate(client: &Client, step_up: &str) -> silicon_iam_client::Result<()> {
-let app = client.applications().get("acme>checkout").await?;
+let app = client.applications().get("checkout").await?;
 let mutation = Mutation::new().step_up(step_up);
 let rotated = client
     .applications()
@@ -406,7 +406,7 @@ resource. Use the assertion and current aggregate version:
 ```rust
 # use silicon_iam_client::{Client, Mutation};
 # async fn approve(client: &Client, step_up: &str) -> silicon_iam_client::Result<()> {
-let app_id = "acme>checkout";
+let app_id = "checkout";
 let current = client.applications().webhook(app_id).await?;
 let mutation = Mutation::new().step_up(step_up);
 let webhook = client.applications()
@@ -537,7 +537,7 @@ let created = sandbox.applications().create(
     },
     &Mutation::new(),
 ).await?;
-assert_eq!(created.application.app_id, "acme>checkout");
+assert_eq!(created.application.app_id, "checkout");
 # Ok(())
 # }
 ```
@@ -580,7 +580,7 @@ both caller and target resolve in that environment:
 # async fn discover(base: &str, key: &str, secret: &str) -> silicon_iam_client::Result<()> {
 let caller = Client::new(base)?
     .with_environment(EnvironmentKey::new(key)?)
-    .with_credential(Credential::application("acme>checkout", secret));
+    .with_credential(Credential::application("checkout", secret));
 let target = caller
     .applications()
     .discover_base_url("google>drive")

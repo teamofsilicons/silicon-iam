@@ -16,7 +16,7 @@ Your app's CLI authenticates using only a short-lived token (SLT).
 3. Implement `app iam --json` with the canonical `app_id`, IAM/auth URL, docs,
    source repository and package links. This command must work before login.
 4. Implement `app login '<SLT>'`. The user obtains the token using
-   `iam login --app-id 'app' --grant-org <org>` (or the IAM consent website).
+   `iam login --app-id 'org>app' --grant-org <org>` (or the IAM consent website).
    The **application backend** exchanges the SLT with its client secret via
    `client.oauth().login(...)`; follow the exact working example in
    [Rust application login](client/login.html). Never request SID/STK,
