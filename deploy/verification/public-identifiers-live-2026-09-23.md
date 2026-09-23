@@ -86,3 +86,11 @@ archive SHA-256 is
 The first attempt's temporary Briefcase 502 did not create a second logical
 upload. The upload plan, successful receipt, archive and provenance remain
 under `/tmp/public-id-deployment-20260923/iam-cli-4.0.0/`.
+
+## Final publication and CI
+
+IAM SDK and Cargo CLI 4.0.0 are published. The six-target native package is published through Honeycomb release 3eba5c66-94bc-4ec7-8477-4173ce4fb6d1; publication 82c4c695-af1b-4843-afb5-dba9097d9876 is published. Hosted documentation has been updated and its root returns200. Documentation CI 35893874734 at 4d144aa passes; full CI 35893874827 passed after updating bootstrap fixture IDs and provisioning the shared CI roles before the migration rehearsal reuses them. No runtime code changed for these CI fixes.
+
+The previously listed IAM edge WAF migration gate is obsolete: CloudFormation silicon-iam-edge is DELETE_COMPLETE, and the current regional/global WebACL inventory has no IAM edge ACL. No obsolete edge was recreated.
+
+GitHub IAM v4.0.0 is public with the archive, provenance and binary/package checksums. All four remote asset SHA256 values matched. Its tag selects deployed backend2e770b5; the CLI native build728c2f4 has byte-identical build inputs to that revision.
