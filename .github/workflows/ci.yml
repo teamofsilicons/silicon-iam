@@ -98,18 +98,6 @@ jobs:
       - name: Validate runtime database grants
         run: ruby scripts/check-runtime-grants.rb
 
-      - name: Verify public identifier release safety
-        env:
-          IAM_OPERATOR_TEST_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
-        run: |
-          python3 scripts/test-public-identifier-release.py
-          python3 scripts/test-public-id-schema-migration.py --admin-url "$IAM_OPERATOR_TEST_ADMIN_URL"
-
-      - name: Validate Honeycomb packaging and IAM service handoff
-        run: |
-          python3 scripts/test-honeycomb-package.py
-          cargo test --locked --bin iam-bootstrap-apps bootstrap_reuses_identity_and_private_credentials -- --ignored
-
       - name: Provision restricted runtime roles
         env:
           IAM_LOCAL_API_DATABASE_PASSWORD: api-test-password
@@ -121,6 +109,18 @@ jobs:
           POSTGRES_DB: silicon_iam
           POSTGRES_USER: postgres
         run: ./deploy/postgres/init-runtime-roles.sh
+
+      - name: Verify public identifier release safety
+        env:
+          IAM_OPERATOR_TEST_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: |
+          python3 scripts/test-public-identifier-release.py
+          python3 scripts/test-public-id-schema-migration.py --admin-url "$IAM_OPERATOR_TEST_ADMIN_URL"
+
+      - name: Validate Honeycomb packaging and IAM service handoff
+        run: |
+          python3 scripts/test-honeycomb-package.py
+          cargo test --locked --bin iam-bootstrap-apps bootstrap_reuses_identity_and_private_credentials -- --ignored
 
       - name: Create the isolated testing database
         env:
