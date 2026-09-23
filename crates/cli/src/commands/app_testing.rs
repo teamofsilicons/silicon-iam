@@ -48,9 +48,7 @@ pub async fn run(context: &Context, command: AppTestingCommand) -> Result<()> {
                 "--app-secret",
             )?;
             let client = super::app::application_client(context, &app_id, &secret);
-            let (org, _) = app_id
-                .split_once('>')
-                .ok_or_else(|| CliError::Usage("Expected org>app ID".to_owned()))?;
+            let org = context.organization()?;
             let command = match command {
                 AppEnvironmentCommand::Show { environment_id } => {
                     EnvCommand::Show { environment_id }

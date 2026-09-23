@@ -357,12 +357,12 @@
   },
   "CarbonId": {
     "type": "string",
-    "pattern": "^[a-z1-9_-]{3,30}$",
+    "pattern": "^c:[a-z1-9_-]{3,30}$",
     "description": "New immutable Carbon ID; zero is not admitted."
   },
   "ExistingCarbonId": {
     "type": "string",
-    "pattern": "^[a-z0-9_-]{3,30}$",
+    "pattern": "^c:[a-z0-9_-]{3,30}$",
     "description": "Existing Carbon lookup/projection, including immutable legacy IDs containing zero."
   },
   "OrgId": {
@@ -374,21 +374,21 @@
     "minLength": 1,
     "maxLength": 80,
     "pattern": "^[a-z][a-z0-9_-]{0,79}$",
-    "description": "Local handle of 1-80 lowercase ASCII characters, starting with a letter and containing only letters, digits, underscores or hyphens. Supplied at creation; the public id becomes `{org_id}>{handle}`."
+    "description": "Local handle of 1-80 lowercase ASCII characters, starting with a letter and containing only letters, digits, underscores or hyphens. Supplied at creation; the public ID is the same bare handle."
   },
   "AppId": {
     "type": "string",
-    "pattern": "^[a-z0-9_-]{3,50}>[a-z][a-z0-9_-]{0,79}$",
-    "description": "Canonical organization-qualified Application id, `{org_id}>{handle}`; the local handle is 1-80 characters and the organization handle remains 3-50 characters."
+    "pattern": "^[a-z][a-z0-9_-]{0,79}$",
+    "description": "Globally unique bare Application handle. Owning org_id is supplied separately."
   },
   "SiliconHandle": {
     "type": "string",
     "pattern": "^[a-z0-9_-]{3,50}$",
-    "description": "Client-supplied handle component; only the resulting `{handle}:{org_id}` Silicon ID is public."
+    "description": "Client-supplied handle component; the public Silicon ID is `si:{handle}`; owning org_id is separate."
   },
   "SiliconGlobalId": {
     "type": "string",
-    "pattern": "^[a-z0-9_-]{3,50}:[a-z0-9_-]{3,50}$"
+    "pattern": "^si:[a-z0-9_-]{3,50}$"
   },
   "TimeZoneId": {
     "type": "string",
@@ -4436,6 +4436,122 @@
       }
     }
   },
+  "AppAccessKeyIssue": {
+    "type": "object",
+    "additionalProperties": false,
+    "description": "Issue an application identity key; send an empty object for the default five-minute lifetime.",
+    "properties": {
+      "ttl_seconds": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 60,
+        "maximum": 3600,
+        "default": 300,
+        "description": "Requested lifetime in seconds, from one to sixty minutes inclusive; out-of-range values are rejected."
+      }
+    }
+  },
+  "AppAccessKeyIssued": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "app_access_key",
+      "valid_till",
+      "app_id"
+    ],
+    "x-redact-debug": true,
+    "description": "Application identity key returned only at issuance. Keep this credential private and never log it.",
+    "properties": {
+      "app_access_key": {
+        "type": "string",
+        "pattern": "^aak_[A-Za-z0-9_-]{43}$",
+        "description": "Opaque random 256-bit application identity key. IAM stores only its hash."
+      },
+      "valid_till": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Absolute UTC expiry in RFC 3339 format."
+      },
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      }
+    }
+  },
+  "AppAccessKeyVerify": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "app_id",
+      "app_access_key"
+    ],
+    "x-redact-debug": true,
+    "description": "Calling application identity and key. Authenticate the receiving application separately using HTTP Basic.",
+    "properties": {
+      "app_id": {
+        "type": "string",
+        "description": "The calling application's claimed canonical app_id; a mismatch returns valid_key:false."
+      },
+      "app_access_key": {
+        "type": "string",
+        "description": "The calling application's identity key; unknown or malformed key values return valid_key:false."
+      }
+    }
+  },
+  "AppAccessKeyVerification": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "valid_key"
+    ],
+    "description": "Valid keys return app_id and valid_till from the stored record. Invalid keys return only valid_key:false.",
+    "properties": {
+      "valid_key": {
+        "type": "boolean"
+      },
+      "valid_till": {
+        "type": "string",
+        "format": "date-time",
+        "description": "Stored expiry, present only when valid_key is true."
+      },
+      "app_id": {
+        "$ref": "#/components/schemas/AppId"
+      }
+    },
+    "oneOf": [
+      {
+        "properties": {
+          "valid_key": {
+            "const": true
+          }
+        },
+        "required": [
+          "valid_till",
+          "app_id"
+        ]
+      },
+      {
+        "properties": {
+          "valid_key": {
+            "const": false
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "valid_till"
+              ]
+            },
+            {
+              "required": [
+                "app_id"
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
   "ApplicationSecretRotated": {
     "type": "object",
     "required": [
@@ -7147,7 +7263,8 @@
       "configuration_revision": {
         "type": "integer",
         "format": "int64",
-        "minimum": 1
+        "minimum": 0,
+        "description": "Current accepted IAM test configuration revision for rotation (zero for an unchanged import); configuration writes require a positive increasing revision."
       },
       "configuration": {
         "$ref": "#/components/schemas/HoneycombConfiguration"

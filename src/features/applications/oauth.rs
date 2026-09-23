@@ -2822,7 +2822,7 @@ mod tests {
     #[test]
     fn account_onboarding_still_requires_an_explicit_empty_selection() {
         let mut input = serde_json::json!({
-            "app_id": "tos>interface",
+            "app_id": "interface",
             "scope_version": 1,
             "approved_scopes": ["organizations.create"]
         });

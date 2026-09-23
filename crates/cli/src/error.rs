@@ -95,7 +95,7 @@ impl CliError {
     pub fn hint(&self) -> Option<String> {
         if matches!(self, Self::NotSignedIn) {
             return Some(
-                "Sign in with `iam login --carbon-id <carbon-id>` or `iam silicon-login --sid <handle:org>`. Keep the same --profile, --url and --test selection as this command. Application access tokens do not replace a direct IAM session."
+                "Sign in with `iam login --carbon-id <carbon-id>` or `iam silicon-login --sid <si:handle>`. Keep the same --profile, --url and --test selection as this command. Application access tokens do not replace a direct IAM session."
                     .to_owned(),
             );
         }
@@ -124,7 +124,7 @@ impl CliError {
         let api = error.api()?;
         if api.code == "invalid_client" {
             return Some(
-                "Check the quoted, qualified Application ID ('organization>application') and that Application's current --app-secret in the selected --test environment. A webhook signing secret is not an Application client secret. Application tokens come from exchanging an SLT, not from supplying Carbon or Silicon credentials."
+                "Check the bare Application ID ('application') and that Application's current --app-secret in the selected --test environment. A webhook signing secret is not an Application client secret. Application tokens come from exchanging an SLT, not from supplying Carbon or Silicon credentials."
                     .to_owned(),
             );
         }
@@ -136,7 +136,7 @@ impl CliError {
         }
         if api.is_unauthenticated() {
             return Some(
-                "For IAM account or management commands, run `iam login --carbon-id <carbon-id>` or `iam silicon-login --sid <handle:org>` again in the same --profile/--test scope. For app token/OBO commands, check the Application credential and token instead; a direct IAM login does not repair an Application secret."
+                "For IAM account or management commands, run `iam login --carbon-id <carbon-id>` or `iam silicon-login --sid <si:handle>` again in the same --profile/--test scope. For app token/OBO commands, check the Application credential and token instead; a direct IAM login does not repair an Application secret."
                     .to_owned(),
             );
         }

@@ -57,19 +57,17 @@ const fn valid_identity(bytes: &[u8]) -> bool {
     if matches!(bytes, [b's', b'e', b'r', b'v', b'i', b'c', b'e', b'/', ..]) {
         return valid_part(bytes, 8, bytes.len(), 3, 63);
     }
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'>' {
-            return valid_part(bytes, 0, index, 3, 50)
-                && valid_part(bytes, index + 1, bytes.len(), 1, 80);
-        }
-        if bytes[index] == b':' {
-            return valid_part(bytes, 0, index, 3, 50)
-                && valid_part(bytes, index + 1, bytes.len(), 3, 50);
-        }
-        index += 1;
+    if matches!(bytes, [b'c', b':', ..]) {
+        return valid_part(bytes, 2, bytes.len(), 3, 30);
     }
-    valid_part(bytes, 0, bytes.len(), 3, 30)
+    if matches!(bytes, [b's', b'i', b':', ..]) {
+        return valid_part(bytes, 3, bytes.len(), 3, 50);
+    }
+    // Application identifiers are globally unique bare handles.
+    !bytes.is_empty()
+        && bytes[0] >= b'a'
+        && bytes[0] <= b'z'
+        && valid_part(bytes, 0, bytes.len(), 1, 80)
 }
 
 impl IdentityId {
@@ -104,6 +102,23 @@ impl Id {
     /// Rejects values which are not canonical identity handles.
     pub fn identity(value: &str) -> Result<Self, InvalidIdentity> {
         IdentityId::parse(value).map(Self::Identity)
+    }
+
+    /// AAD-only decoder for pre-schema application contexts, never public identity input.
+    pub(crate) fn legacy_application_encryption_id(value: &str) -> Result<Self, InvalidIdentity> {
+        let (org, app) = value.split_once('>').ok_or(InvalidIdentity)?;
+        if !valid_part(org.as_bytes(), 0, org.len(), 3, 50)
+            || !valid_part(app.as_bytes(), 0, app.len(), 1, 80)
+            || value.len() > 131
+        {
+            return Err(InvalidIdentity);
+        }
+        let mut bytes = [0; 131];
+        bytes[..value.len()].copy_from_slice(value.as_bytes());
+        Ok(Self::Identity(IdentityId {
+            bytes,
+            length: u8::try_from(value.len()).map_err(|_| InvalidIdentity)?,
+        }))
     }
 
     /// Creates an opaque resource UUID, never an identity handle.
@@ -277,7 +292,7 @@ mod tests {
 
     #[test]
     fn identities_are_the_public_handles_and_do_not_accept_uuid_keys() -> anyhow::Result<()> {
-        for handle in ["saket", "chef:bricks", "tos>iam", "service/iam-worker"] {
+        for handle in ["c:saket", "si:chef", "iam", "service/iam-worker"] {
             let identity = Id::identity(handle)?;
             assert_eq!(identity.to_string(), handle);
             assert_eq!(serde_json::to_string(&identity)?, format!("\"{handle}\""));
@@ -298,15 +313,15 @@ mod tests {
         }
         for handle in [
             "a".repeat(30),
-            format!("{}:{}", "s".repeat(50), "o".repeat(50)),
-            format!("{}>{}", "o".repeat(50), "a".repeat(80)),
+            format!("si:{}", "s".repeat(50)),
+            "a".repeat(80),
             format!("service/{}", "s".repeat(63)),
         ] {
             assert!(IdentityId::parse(&handle).is_ok());
         }
         for handle in [
-            "a".repeat(31),
-            format!("{}:org", "s".repeat(51)),
+            "a".repeat(81),
+            format!("si:{}", "s".repeat(51)),
             format!("org>{}", "a".repeat(81)),
             format!("service/{}", "s".repeat(64)),
         ] {
@@ -321,7 +336,7 @@ mod tests {
     async fn postgres_keeps_identity_text_distinct_from_resource_uuid() -> anyhow::Result<()> {
         let database = crate::test_database::TestDatabase::start().await?;
         let pool = database.pool.clone();
-        let identity = Id::identity("chef:bricks")?;
+        let identity = Id::identity("si:chef")?;
         let resource = Id::now_v7();
         let decoded_identity: Id = sqlx::query_scalar("SELECT $1::text")
             .bind(identity)
@@ -342,7 +357,7 @@ mod tests {
         );
 
         let mut connection = pool.acquire().await?;
-        sqlx::query("CREATE TEMP TABLE canonical_identity_test (id text PRIMARY KEY CHECK (id = 'chef:bricks'))").execute(&mut *connection).await?;
+        sqlx::query("CREATE TEMP TABLE canonical_identity_test (id text PRIMARY KEY CHECK (id = 'si:chef'))").execute(&mut *connection).await?;
         sqlx::query("INSERT INTO canonical_identity_test(id) VALUES($1)")
             .bind(identity)
             .execute(&mut *connection)

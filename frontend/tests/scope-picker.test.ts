@@ -17,18 +17,18 @@ const iam: ScopeDescriptor = {
   app_id: null,
 };
 const external: ScopeDescriptor = {
-  scope: "obo:outside>drive:files.read",
+  scope: "obo:drive:files.read",
   description: "Read files",
   critical: false,
-  app_id: "outside>drive",
+  app_id: "drive",
 };
 
 test("IAM checkboxes preserve unloaded and unavailable external selections", () => {
   const original = {
     ...defaultAppScope(),
     external: [
-      { app_id: "outside>drive", endpoint_id: "files.read" },
-      { app_id: "unavailable>app", endpoint_id: "old.endpoint" },
+      { app_id: "drive", endpoint_id: "files.read" },
+      { app_id: "app", endpoint_id: "old.endpoint" },
     ],
   };
   const snapshot = structuredClone(original);
@@ -42,13 +42,13 @@ test("IAM checkboxes preserve unloaded and unavailable external selections", () 
 test("external checkbox changes preserve IAM scopes and other applications", () => {
   const original = {
     ...defaultAppScope(),
-    external: [{ app_id: "other>app", endpoint_id: "files.read" }],
+    external: [{ app_id: "app", endpoint_id: "files.read" }],
   };
   const checked = toggleScope(original, external, true);
   assert.deepEqual(checked.iam, original.iam);
   assert.deepEqual(checked.external, [
     ...original.external,
-    { app_id: "outside>drive", endpoint_id: "files.read" },
+    { app_id: "drive", endpoint_id: "files.read" },
   ]);
   assert.deepEqual(toggleScope(checked, external, false), original);
 });
@@ -57,21 +57,21 @@ test("critical approval labels identify IAM or the exact receiving application",
   assert.equal(scopeApprovalLabel(iam), "This would require approval from IAM");
   assert.equal(
     scopeApprovalLabel({ ...external, critical: true }),
-    "This would require approval from outside>drive",
+    "This would require approval from drive",
   );
   assert.equal(scopeApprovalLabel(external), "Non-critical");
 });
 
 test("catalog lookup accepts valid empty and noncritical external scopes without mixing apps", () => {
   assert.deepEqual(scopeCatalog([], "empty>app"), []);
-  assert.deepEqual(scopeCatalog([external], "outside>drive"), [external]);
+  assert.deepEqual(scopeCatalog([external], "drive"), [external]);
   assert.throws(() => scopeCatalog([external], null));
   assert.throws(() => scopeCatalog([external], "wrong>app"));
-  assert.throws(() => scopeCatalog([external, external], "outside>drive"));
+  assert.throws(() => scopeCatalog([external, external], "drive"));
   assert.throws(() =>
     scopeCatalog(
       [{ ...external, scope: "obo:wrong>app:files.read" }],
-      "outside>drive",
+      "drive",
     ),
   );
 });
@@ -81,7 +81,7 @@ test("generic application edit round-trips typed checkbox values and empty selec
   const initial = {
     app_scope: {
       ...defaultAppScope(),
-      external: [{ app_id: "outside>drive", endpoint_id: "files.read" }],
+      external: [{ app_id: "drive", endpoint_id: "files.read" }],
     },
     webhook_scope: ["membership", "trust"],
   };
@@ -118,8 +118,8 @@ test("late lookup successes and errors cannot replace the latest application res
     return deferred.promise;
   });
   const old = lookup.run("old>app");
-  const latest = lookup.run("outside>drive");
-  requests.get("outside>drive")!.resolve([external]);
+  const latest = lookup.run("drive");
+  requests.get("drive")!.resolve([external]);
   assert.deepEqual(await latest, [external]);
   requests.get("old>app")!.resolve([]);
   assert.equal(await old, undefined);

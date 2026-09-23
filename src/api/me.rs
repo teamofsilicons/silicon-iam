@@ -1009,21 +1009,21 @@ mod tests {
         let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let carbon_id = Id::fixture("projection-carbon");
-        let retained_application_id = Id::fixture("projection-org>projection-retained");
-        let before_only_application_id = Id::fixture("projection-org>projection-before");
+        let carbon_id = Id::fixture("c:projection-carbon");
+        let retained_application_id = Id::fixture("projection-retained");
+        let before_only_application_id = Id::fixture("projection-before");
         let session_id = Id::from_u128(0x304);
         let retained_consent_id = Id::from_u128(0x305);
         let before_only_consent_id = Id::from_u128(0x306);
         let organization_id = Id::from_u128(0x320);
         let carbon_membership_id = Id::from_u128(0x321);
         let shared_tag_id = Id::from_u128(0x322);
-        let silicon_id = Id::fixture("subscriber:projection-org");
+        let silicon_id = Id::fixture("si:subscriber");
         let silicon_membership_id = Id::from_u128(0x324);
         let silicon_endpoint_id = Id::from_u128(0x325);
         let silicon_signing_key_id = Id::from_u128(0x326);
         let silicon_subscription_id = Id::from_u128(0x327);
-        let full_silicon_id = Id::fixture("full-subscriber:projection-org");
+        let full_silicon_id = Id::fixture("si:full-subscriber");
         let full_silicon_membership_id = Id::from_u128(0x329);
         let full_silicon_endpoint_id = Id::from_u128(0x32a);
         let full_silicon_signing_key_id = Id::from_u128(0x32b);
@@ -1046,7 +1046,7 @@ mod tests {
               ('{silicon_id}', 'silicon', 'active', transaction_timestamp()),
               ('{full_silicon_id}', 'silicon', 'active', transaction_timestamp());
             INSERT INTO iam.carbons (id, carbon_id, display_name)
-            VALUES ('{carbon_id}', 'projection-carbon', 'Captured');
+            VALUES ('{carbon_id}', 'c:projection-carbon', 'Captured');
             INSERT INTO iam.carbon_contacts (
                 id, carbon_id, kind, ciphertext, nonce, encryption_key_version, verified_at
             ) VALUES
@@ -1078,10 +1078,10 @@ mod tests {
             INSERT INTO iam.applications (
                 id, app_id, organization_id, created_by_carbon_id, review_status, base_url
             ) VALUES
-              ('{retained_application_id}', 'projection-org>projection-retained',
+              ('{retained_application_id}', 'projection-retained',
                '{organization_id}', '{carbon_id}', 'verified',
                'https://retained.example.test/api'),
-              ('{before_only_application_id}', 'projection-org>projection-before',
+              ('{before_only_application_id}', 'projection-before',
                '{organization_id}', '{carbon_id}', 'verified',
                'https://before.example.test/api');
             INSERT INTO iam.application_requested_scopes (application_id, scope) VALUES

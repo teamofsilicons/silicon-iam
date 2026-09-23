@@ -20,10 +20,12 @@ pub struct CarbonId(String);
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum CarbonIdError {
     /// Identifier has an invalid length.
-    #[error("carbon_id must be between 3 and 30 ASCII characters")]
+    #[error("carbon_id must be c: followed by a 3-30 character handle")]
     Length,
     /// Identifier contains an unsupported character.
-    #[error("carbon_id may contain only lowercase letters, digits 1-9, hyphens, and underscores")]
+    #[error(
+        "carbon_id must start with c:; its handle permits lowercase letters, digits 1-9, hyphens, and underscores"
+    )]
     Characters,
 }
 
@@ -34,19 +36,30 @@ impl CarbonId {
         &self.0
     }
 
-    fn parse(value: &str) -> Result<Self, CarbonIdError> {
+    /// Validates an existing Carbon ID, including grandfathered handles containing zero.
+    /// # Errors
+    /// Rejects missing prefixes, invalid lengths and unsupported characters.
+    pub fn existing(value: &str) -> Result<Self, CarbonIdError> {
+        Self::parse(value, true)
+    }
+
+    fn parse(value: &str, legacy_zero: bool) -> Result<Self, CarbonIdError> {
         if value != value.trim() {
             return Err(CarbonIdError::Characters);
         }
         let normalized = value.to_ascii_lowercase();
-        if !(3..=30).contains(&normalized.len()) {
+        let handle = normalized
+            .strip_prefix("c:")
+            .ok_or(CarbonIdError::Characters)?;
+        if !(3..=30).contains(&handle.len()) {
             return Err(CarbonIdError::Length);
         }
 
-        if !normalized
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || matches!(byte, b'1'..=b'9' | b'-' | b'_'))
-        {
+        if !handle.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || matches!(byte, b'1'..=b'9' | b'-' | b'_')
+                || (legacy_zero && byte == b'0')
+        }) {
             return Err(CarbonIdError::Characters);
         }
 
@@ -72,7 +85,7 @@ impl FromStr for CarbonId {
     type Err = CarbonIdError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value)
+        Self::parse(value, false)
     }
 }
 
@@ -108,10 +121,10 @@ mod tests {
 
     #[test]
     fn carbon_id_is_normalized() {
-        let carbon_id = CarbonId::from_str("Saket_213");
+        let carbon_id = CarbonId::from_str("C:Saket_213");
         assert_eq!(
             carbon_id.map(|value| value.to_string()),
-            Ok("saket_213".to_owned())
+            Ok("c:saket_213".to_owned())
         );
     }
 

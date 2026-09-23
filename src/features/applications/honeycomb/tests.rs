@@ -60,7 +60,7 @@ async fn management_is_authenticated_revision_bound_and_durably_replayable() -> 
     settings.providers.allow_local_providers = true;
     let service_secret = format!("hck_{}", "a".repeat(43));
     settings.honeycomb = Some(HoneycombSettings {
-        app_id: "test_org>app-alpha".into(),
+        app_id: "app-alpha".into(),
         credential_sha256: hex::encode(Sha256::digest(service_secret.as_bytes())).into(),
         scheduled_testing: false,
         retire_legacy_writers: false,
@@ -148,7 +148,7 @@ async fn management_is_authenticated_revision_bound_and_durably_replayable() -> 
     let app = super::router().with_state(state.clone());
     let id = Id::now_v7();
     let configuration = json!({"operation_id":id,"expected_iam_revision":0,"configuration_revision":1,"environment_id":null,
-        "app_id":"test_org>managed-app","org_id":"test_org","name":"Managed","logo_url":null,"base_url":null,
+        "app_id":"managed-app","org_id":"test_org","name":"Managed","logo_url":null,"base_url":null,
         "visibility":"private","availability":"active","webhook":{"url":"https://managed.example.test/webhook","secret":"a".repeat(48),"scope":["membership"]},
         "app_scope":{"iam":["self.identity.read","directory.carbons.read"],"external":[]},"obo_endpoints":[],"obo_review_message":null});
     let path = "/api/v1/honeycomb/applications/test_org%3Emanaged-app/configuration";
@@ -220,7 +220,7 @@ async fn management_is_authenticated_revision_bound_and_durably_replayable() -> 
         replay == body,
         "lost-response replay changed the credential or effective configuration"
     );
-    let basis:String=sqlx::query_scalar("SELECT approved.approval_basis FROM iam.application_approved_scopes approved JOIN iam.applications app ON app.id=approved.application_id WHERE app.app_id='test_org>managed-app' AND approved.scope='directory.carbons.read' AND approved.revoked_at IS NULL").fetch_one(&admin).await?;
+    let basis:String=sqlx::query_scalar("SELECT approved.approval_basis FROM iam.application_approved_scopes approved JOIN iam.applications app ON app.id=approved.application_id WHERE app.app_id='managed-app' AND approved.scope='directory.carbons.read' AND approved.revoked_at IS NULL").fetch_one(&admin).await?;
     ensure!(
         basis == "private_exemption",
         "private scope must not be recorded as provider approval"
@@ -256,7 +256,7 @@ async fn management_is_authenticated_revision_bound_and_durably_replayable() -> 
         expired.get("app_secret").is_none() && expired["secret_replay_expired"] == true,
         "expired replay must not reveal or regenerate the secret"
     );
-    let count:i64=sqlx::query_scalar("SELECT count(*) FROM iam.application_secrets secret JOIN iam.applications app ON app.id=secret.application_id WHERE app.app_id='test_org>managed-app'").fetch_one(&admin).await?;
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM iam.application_secrets secret JOIN iam.applications app ON app.id=secret.application_id WHERE app.app_id='managed-app'").fetch_one(&admin).await?;
     ensure!(count == 1, "replay created a second secret");
     let status_request = Request::builder()
         .uri(format!("/api/v1/honeycomb/operations/{id}"))
@@ -369,26 +369,26 @@ async fn lifecycle(
             input["expected_key_version"] = json!(key_version);
         }
         if operation == "activate-apps" {
-            input["app_ids"] = json!(["test_org>managed-app"]);
+            input["app_ids"] = json!(["managed-app"]);
         }
         if operation == "import" {
             if import_count == 1 {
-                input["refresh_app_ids"] = json!(["test_org>managed-app"]);
-                sqlx::query("UPDATE iam.applications SET app_name='Refreshed source',version=version+1 WHERE app_id='test_org>managed-app'").execute(admin).await?;
+                input["refresh_app_ids"] = json!(["managed-app"]);
+                sqlx::query("UPDATE iam.applications SET app_name='Refreshed source',version=version+1 WHERE app_id='managed-app'").execute(admin).await?;
             }
             if import_count == 2 {
-                sqlx::query("UPDATE iam.applications SET app_name='Unaccepted newer source',version=version+1 WHERE app_id='test_org>managed-app'").execute(admin).await?;
+                sqlx::query("UPDATE iam.applications SET app_name='Unaccepted newer source',version=version+1 WHERE app_id='managed-app'").execute(admin).await?;
             }
             let mut source: i64 = sqlx::query_scalar(
-                "SELECT version FROM iam.applications WHERE app_id='test_org>managed-app'",
+                "SELECT version FROM iam.applications WHERE app_id='managed-app'",
             )
             .fetch_one(admin)
             .await?;
             if import_count == 2 {
                 source = sqlx::query_scalar("SELECT source_revision FROM iam.testing_application_imports WHERE application_id=$1").bind(imported_id).fetch_one(test_admin).await?;
             }
-            input["app_id"] = json!("test_org>managed-app");
-            input["source_revisions"] = json!({"test_org>managed-app":source});
+            input["app_id"] = json!("managed-app");
+            input["source_revisions"] = json!({"managed-app":source});
         }
         let request = || {
             Request::builder()
@@ -462,22 +462,22 @@ async fn lifecycle(
                 .execute(&mut *transaction)
                 .await?;
             sqlx::query("SELECT iam_private.honeycomb_testing_activate_apps($1)")
-                .bind(vec!["test_org>managed-app"])
+                .bind(vec!["managed-app"])
                 .execute(&mut *transaction)
                 .await?;
             transaction.commit().await?;
         }
         if operation == "import" {
             let current = result["app_secret"].as_str().unwrap_or_default();
-            let row: (Id,String,i64) = sqlx::query_as("SELECT app.id,app.app_name,import.source_revision FROM iam.applications app JOIN iam.testing_application_imports import ON import.application_id=app.id WHERE app.app_id='test_org>managed-app' AND app.testing_environment_id=$1").bind(environment).fetch_one(test_admin).await?;
+            let row: (Id,String,i64) = sqlx::query_as("SELECT app.id,app.app_name,import.source_revision FROM iam.applications app JOIN iam.testing_application_imports import ON import.application_id=app.id WHERE app.app_id='managed-app' AND app.testing_environment_id=$1").bind(environment).fetch_one(test_admin).await?;
             if import_count == 0 {
                 // Point at a different valid canonical source identity so policy
                 // lookup alone cannot hide a credential-reuse bug, then
                 // exercise interrupted-phase retry.
                 let actual_source:Id=sqlx::query_scalar("SELECT source_application_id FROM iam.testing_application_imports WHERE application_id=$1").bind(row.0).fetch_one(test_admin).await?;
-                sqlx::query("UPDATE iam.testing_application_imports SET source_application_id=$2 WHERE application_id=$1").bind(row.0).bind(Id::fixture("test_org>app-alpha")).execute(test_admin).await?;
+                sqlx::query("UPDATE iam.testing_application_imports SET source_application_id=$2 WHERE application_id=$1").bind(row.0).bind(Id::fixture("app-alpha")).execute(test_admin).await?;
                 let mismatch_id = Id::now_v7();
-                let mismatch = json!({"operation_id":mismatch_id,"environment_id":environment,"expected_iam_revision":revision,"generation":generation,"operation":"import","app_id":"test_org>managed-app","source_revisions":input["source_revisions"]});
+                let mismatch = json!({"operation_id":mismatch_id,"environment_id":environment,"expected_iam_revision":revision,"generation":generation,"operation":"import","app_id":"managed-app","source_revisions":input["source_revisions"]});
                 let mismatch_request = || -> anyhow::Result<Request<Body>> {
                     Ok(Request::builder()
                         .method("POST")
@@ -517,7 +517,7 @@ async fn lifecycle(
                     "configuration refresh retained stale metadata"
                 );
                 ensure!(
-                    Some(row.2) == input["source_revisions"]["test_org>managed-app"].as_i64(),
+                    Some(row.2) == input["source_revisions"]["managed-app"].as_i64(),
                     "source revision not recorded"
                 );
             }
@@ -556,7 +556,7 @@ async fn lifecycle(
         }
         if operation == "prepare" {
             let unavailable_id = Id::now_v7();
-            let unavailable = json!({"operation_id":unavailable_id,"environment_id":environment,"expected_iam_revision":revision,"generation":generation,"operation":"import","app_id":"test_org>missing-source","source_revisions":{"test_org>missing-source":1}});
+            let unavailable = json!({"operation_id":unavailable_id,"environment_id":environment,"expected_iam_revision":revision,"generation":generation,"operation":"import","app_id":"missing-source","source_revisions":{"missing-source":1}});
             let response = app
                 .clone()
                 .oneshot(
@@ -723,11 +723,10 @@ async fn sensitive_operations(
             "application.webhook_secret.rotate",
         ),
     ] {
-        let (resource, revision): (Id, i64) = sqlx::query_as(
-            "SELECT id,version FROM iam.applications WHERE app_id='test_org>managed-app'",
-        )
-        .fetch_one(admin)
-        .await?;
+        let (resource, revision): (Id, i64) =
+            sqlx::query_as("SELECT id,version FROM iam.applications WHERE app_id='managed-app'")
+                .fetch_one(admin)
+                .await?;
         let id = Id::now_v7();
         let mut input = json!({"operation_id":id,"expected_iam_revision":revision});
         if suffix == "webhook-approvals" {
@@ -763,9 +762,9 @@ async fn sensitive_operations(
             .crypto
             .digest_secret(DigestPurpose::StepUpAssertion, &secret)?;
         let challenge = Id::now_v7();
-        sqlx::query("INSERT INTO iam.step_up_challenges(id,authentication_session_id,carbon_id,purpose,resource_id,channel,challenge_digest,digest_key_version,status,expires_at,consumed_at) VALUES($1,$2,$3,$4,$5,'email',$6,1,'completed',transaction_timestamp()+interval '5 minutes',transaction_timestamp())").bind(challenge).bind(Id::from_u128(0x41)).bind(Id::fixture("test_carbon")).bind(action).bind(resource.to_string()).bind(vec![3u8;32]).execute(admin).await?;
+        sqlx::query("INSERT INTO iam.step_up_challenges(id,authentication_session_id,carbon_id,purpose,resource_id,channel,challenge_digest,digest_key_version,status,expires_at,consumed_at) VALUES($1,$2,$3,$4,$5,'email',$6,1,'completed',transaction_timestamp()+interval '5 minutes',transaction_timestamp())").bind(challenge).bind(Id::from_u128(0x41)).bind(Id::fixture("c:test_carbon")).bind(action).bind(resource.to_string()).bind(vec![3u8;32]).execute(admin).await?;
         let assertion = Id::now_v7();
-        sqlx::query("INSERT INTO iam.step_up_assertions(id,step_up_challenge_id,authentication_session_id,carbon_id,purpose,token_prefix,token_digest,digest_key_version,assurance_level,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,2,transaction_timestamp()+interval '5 minutes')").bind(assertion).bind(challenge).bind(Id::from_u128(0x41)).bind(Id::fixture("test_carbon")).bind(action).bind(secret.expose_secret().chars().take(12).collect::<String>()).bind(digest.as_bytes().as_slice()).bind(digest.key_version()).execute(admin).await?;
+        sqlx::query("INSERT INTO iam.step_up_assertions(id,step_up_challenge_id,authentication_session_id,carbon_id,purpose,token_prefix,token_digest,digest_key_version,assurance_level,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,2,transaction_timestamp()+interval '5 minutes')").bind(assertion).bind(challenge).bind(Id::from_u128(0x41)).bind(Id::fixture("c:test_carbon")).bind(action).bind(secret.expose_secret().chars().take(12).collect::<String>()).bind(digest.as_bytes().as_slice()).bind(digest.key_version()).execute(admin).await?;
         let result = app
             .clone()
             .oneshot(request(Some(secret.expose_secret()))?)
@@ -800,7 +799,7 @@ async fn bundles_and_reconciliation(
 ) -> anyhow::Result<()> {
     sqlx::query("UPDATE iam.organizations SET trusted_org=true,allow_bundled_applications=true WHERE org_id='test_org'").execute(admin).await?;
     let id = Id::now_v7();
-    let body = json!({"operation_id":id,"expected_iam_revision":0,"configuration_revision":1,"app_name":"Bundle","app_ids":["test_org>managed-app"]});
+    let body = json!({"operation_id":id,"expected_iam_revision":0,"configuration_revision":1,"app_name":"Bundle","app_ids":["managed-app"]});
     let request = || -> anyhow::Result<Request<Body>> {
         Ok(Request::builder()
             .method("PUT")
@@ -848,11 +847,10 @@ async fn bundles_and_reconciliation(
     sqlx::query("SET LOCAL ROLE silicon_iam_worker")
         .execute(&mut *tx)
         .await?;
-    let events: Vec<(Id, i32, sqlx::types::Json<Value>)> = sqlx::query_as(
-        "SELECT * FROM iam_private.claim_honeycomb_management_events('test_org>app-alpha')",
-    )
-    .fetch_all(&mut *tx)
-    .await?;
+    let events: Vec<(Id, i32, sqlx::types::Json<Value>)> =
+        sqlx::query_as("SELECT * FROM iam_private.claim_honeycomb_management_events('app-alpha')")
+            .fetch_all(&mut *tx)
+            .await?;
     ensure!(
         !events.is_empty(),
         "management notifications were not queued"

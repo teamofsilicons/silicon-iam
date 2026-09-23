@@ -163,13 +163,15 @@ async fn assert_shared_contract_catalog(pool: &sqlx::PgPool) -> anyhow::Result<(
 /// endpoint, signing-key, secret and environment UUIDs remain unchanged.
 pub(super) fn canonical_testing_layer_fixture() -> String {
     include_str!("../../../tests/sql/application_testing_layer.sql")
-        .replace("00000000-0000-0000-0000-00000000b001", "alpha>test")
-        .replace("00000000-0000-0000-0000-00000000b002", "beta>test")
-        .replace("00000000-0000-0000-0000-000000000011", "test_org>app-alpha")
-        .replace("00000000-0000-0000-0000-000000000012", "test_org>app-beta")
+        .replace("alpha>test", "test")
+        .replace("beta>test", "test-beta")
+        .replace("00000000-0000-0000-0000-00000000b001", "test")
+        .replace("00000000-0000-0000-0000-00000000b002", "test-beta")
+        .replace("00000000-0000-0000-0000-000000000011", "app-alpha")
+        .replace("00000000-0000-0000-0000-000000000012", "app-beta")
         .replace(
-            "ARRAY['alpha>test','beta>test']::uuid[]",
-            "ARRAY['alpha>test','beta>test']::text[]",
+            "ARRAY['test','test-beta']::uuid[]",
+            "ARRAY['test','test-beta']::text[]",
         )
-        .replace("ARRAY['beta>test']::uuid[]", "ARRAY['beta>test']::text[]")
+        .replace("ARRAY['test-beta']::uuid[]", "ARRAY['test-beta']::text[]")
 }

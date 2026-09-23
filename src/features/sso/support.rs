@@ -726,7 +726,7 @@ mod tests {
             },
             client_application_id: Some(Id::from_u128(4)),
             audience_application_id: Some(Id::from_u128(4)),
-            audience: "tos>interface".to_owned(),
+            audience: "interface".to_owned(),
             organization_id: None,
             membership_id: None,
             scopes: vec![

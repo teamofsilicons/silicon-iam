@@ -42,11 +42,11 @@ By default, set the profile_photo to: https://iris.teamofsilicons.com/pfp/carbon
 
 The verified_email and verified_phone_number both need to be present in that session_id for it to be able to create the account. And also check once that the verified_email and verified_phone_number is not already associated to another account. 
 
-`carbon_id` is the unique identifier for that carbon account. Also make an endpoint for checking if the carbon_id is availaible, which just returns. `available: True/False`.
+`carbon_id` is the globally unique public identifier for that carbon account, in the form `c:{carbon_id}`, for example `c:saket`. Also make an endpoint for checking if the carbon_id is availaible, which just returns. `available: True/False`.
 
-For the `carbon_id`, the `carbon_id` can't have `: or ; or >`, spaces are not allowed, Special Symbols & Emojis are not allowed, Unicode/Diacritics are not allowed. 
+For the `carbon_id`, the `c:` prefix is required. The handle after this prefix cannot contain `:`, `;`, `>`, spaces, special symbols, emojis, Unicode or diacritics. 
 
-`carbon_id` would be a-z, 1-9, -, _, case-insensitive, 3-30 characters long. 
+The Carbon handle after `c:` would be a-z, 1-9, -, _, case-insensitive, 3-30 characters long; the prefix does not count toward that length. 
 
 Each carbon would also have a timezone associated to them, the timezone would be in `tz identifier` format. 
 
@@ -78,7 +78,7 @@ For when an org_admin is created by default they have all the rights except the 
 The org admins should be able to invite carbon's into the organisation, while inviting a carbon it would need to define:
 `carbon_id/email` - any of the given one's can be used to identify the user. There should also be endpoints to fetch a carbon_id via their email or phone number itself for the registered carbons. For the carbon_id/email invited into the org, mail to the email adress of the carbon with all the required info to join the organisation. And the link to `{frontend_url}/join/{org_id}`. It isn't possible to invite an carbon_id that doesen't exist yet. For the carbon_id invited mail on the registered email adress, say if it's invited via email so the entered email would get the request. 
 
-There should also be an search carbon endpoint which shows me via fuzzy search the carbon_id i might likely be looking for based on our system. So say i wrote `sak` and out of all the carbon_id's you suggest `saket, sakamm, saket2103`, etc. Show upwards to 10 suggestions, the range of suggestions can be 0 to 10 inclusive of the limits.  
+There should also be an search carbon endpoint which shows me via fuzzy search the carbon_id i might likely be looking for based on our system. So say i wrote `sak` and out of all the carbon_id's you suggest `c:saket, c:sakamm, c:saket2103`, etc. Show upwards to 10 suggestions, the range of suggestions can be 0 to 10 inclusive of the limits.  
 
 `role` - what's the role of this carbon in the organisation
 
@@ -100,9 +100,9 @@ An sent invite would have a TTL of 48 hours, after that it becomes invalid. For 
 
 For inviting an silicon, it's the process by which a silicon is created in the system, this is the identity of a silicon in an organisation. For each silicon it would have `silicon_id, profile_photo, role, reports_to, tags`. 
 
-For the `silicon_id`, for the request recieved, add `:{org_id}` at the end of it. This would become the global id of a silicon. For eg, for a `silicon_id` requested `head_of_growth` from the org `tos`, it would become `head_of_growth:tos`. The final registered silicon_id must always have `:` in it. So there's no concept of local silicon id, there's just a single global silicon id that has `:org_name` attached to it in the end. 
+The public `silicon_id` is `si:{silicon_id}`, for example `si:head_of_growth` for a Silicon belonging to `tos`. The `si:` prefix is required and appears exactly once. The handle must be globally unique across organisations. Store the Silicon's owning organisation separately as `org_id`; do not append it to the ID. 
 
-The client supplies a Silicon handle component. It is not independently addressable. The only public Silicon ID is `{handle}:{org_id}`.
+The client supplies the complete public Silicon ID, `si:{silicon_id}`. Its handle component is not independently addressable.
 
 For the pfp keep https://iris.teamofsilicons.com/pfp/silicon?id={silicon_id}&level={level} - for the level it's like the organisation structure, how many heads above it, so check for reports_to, if reports__to is just 1 and the silicon above it reports to no one do level=2, similarly continue down the scale. Set the pfp url to this by default. 
 
@@ -129,7 +129,7 @@ For each application, IAM provides identity, authentication and authorization. A
 
 IAM keeps app_id, org_id, app_name and app_logo used during login, webhook_url, the protected webhook signing secret, webhook_scope, base_url, requested and effective app_scope, OBO definitions and the application's accepted availability and private/public status. IAM generates the app_secret, stores its verification hash and returns the secret only through the protected creation response for the authorized owner. Base_url is optional unless the application exposes OBO endpoints.
 
-The app_id is always org_id>local_app_id, so for eg tos>briefcase. Use the organisation's ID, not its display name. The app_id and owning organisation cannot be changed through a configuration update. Organisations own their apps; the creator is recorded for audit and does not retain separate ownership.
+The app_id is the bare, globally unique application ID, for example `briefcase`. Store the owning organisation separately as `org_id` rather than including it in the app_id. The app_id and owning organisation cannot be changed through a configuration update. Organisations own their apps; the creator is recorded for audit and does not retain separate ownership.
 
 Webhook_scope selects which authorized notification categories the application receives. It is separate from the permissions requested during login.
 
@@ -163,7 +163,7 @@ During migration preserve existing app and environment IDs, ownership, credentia
 
 # How would login work for configured apps
 
-For configured . pplications, it can trigger a login which would bring them to [`auth_base_url`/login?app_id="silicon-briefcase"&redirect_uri="localhost:3000"]
+For configured . pplications, it can trigger a login which would bring them to [`auth_base_url`/login?app_id="briefcase"&redirect_uri="localhost:3000"]
 
 in iam if the user is already logged in, move on to the next step. Otherwise prompt the login.
 
@@ -376,7 +376,7 @@ and another is - not trusted or needs approval or trusted
 
 For carbons i could assign the carbon a trust based on their tag, for example for all the silicons in tech tag they are internal and trusted, but for any other silicon they are internal and not trusted.  
 
-or it could be silicon specifc, in tech tag they are internal and trusted, but internal and needs approval for tech-deployment-silicon:tos. 
+or it could be silicon specifc, in tech tag they are internal and trusted, but internal and needs approval for si:tech-deployment-silicon. 
 
 by default keep it internal and not trusted. 
 
@@ -435,7 +435,7 @@ When a carbon triggers logout from any given service, it would trigger a logout 
 
 IAM keeps the accepted base_url, OBO endpoints, requested and effective external scopes and approval records. These support discovery, consent, proof generation and verification.
 
-For all the apps, it should also be possible for inter app communications. Before allowing an OBO request to go forward, IAM must check that the calling application has the exact action it wants to perform in its effective app scope. This means the target app_id and endpoint_id must be declared in app_scope.external, accepted by IAM, included in the user's current consent for the selected organisation, and approved by the provider if critical and the calling app is public. If the calling app is private, IAM instead checks its accepted private status and current owning-organisation membership and grant; provider approval is not required, but the exact endpoint scope and OBO proof are still required. So say Honeycomb wants to upload a file to briefcase, it must have `tos>briefcase` and `files.upload` in scope; having another briefcase endpoint in scope is not enough. If that action is missing, waiting for an approval required for public access, revoked or not consented to, IAM must reject the exchange without issuing a proof. IAM must check this again when the receiving application verifies the proof, so an action removed from scope after issuance cannot still be performed with an older proof.
+For all the apps, it should also be possible for inter app communications. Before allowing an OBO request to go forward, IAM must check that the calling application has the exact action it wants to perform in its effective app scope. This means the target app_id and endpoint_id must be declared in app_scope.external, accepted by IAM, included in the user's current consent for the selected organisation, and approved by the provider if critical and the calling app is public. If the calling app is private, IAM instead checks its accepted private status and current owning-organisation membership and grant; provider approval is not required, but the exact endpoint scope and OBO proof are still required. So say Honeycomb wants to upload a file to briefcase, it must have `briefcase` and `files.upload` in scope; having another briefcase endpoint in scope is not enough. If that action is missing, waiting for an approval required for public access, revoked or not consented to, IAM must reject the exchange without issuing a proof. IAM must check this again when the receiving application verifies the proof, so an action removed from scope after issuance cannot still be performed with an older proof.
 
 Application A sends an request to IAm to do OBO for Application B, along with the request it attaches an hash of (`HMAC-SHA256(app_secret,timestamp + "." + method + "." + path + "." + body_sha256 + "." + idempotency_key)`) and the request it wants to send to application b and the metadata (this is just the metadata and not the actual request, so say for files it doesen't actually send the file), if the request endpoint exists (checked against IAM's latest accepted configuration) and the metadata is also valid it returns a proof_token to Application A that is valid for one successful verification or the endpoint's configured TTL (whichever happens first), with a default TTL of 5 minutes (300 seconds) from issuance. Application A then requests Application B with the proof_token and the actual request (so if there's a file it would include the actual file here) while sending this request the details of the request would all be hashed. Application B would then request IAm to validate all the requests and once validated then only would it execute the task if the proof has not expired and has not already been consumed. IAM consumes the proof on successful verification.  
 
@@ -530,7 +530,7 @@ IAM provides isolated identity and authentication inside testing environments ma
 
 Each environment has an environment_id, owning organisation, revision, key version and cleaning generation. Test data stays in a separate database from production, with every record associated with its environment_id. Preparing an environment starts with no production users, sessions or business data.
 
-For requested app imports, preserve the original app_id and owning organisation, copy the specified configuration revision and generate fresh test app_secrets. So google>drive remains google>drive inside the test organisation google. Test root authority can create test owners without changing production ownership. A test-only app cannot claim an existing production app_id. Configuration refreshes must be explicit; production changes do not silently change test records.
+For requested app imports, preserve the original app_id and owning organisation, copy the specified configuration revision and generate fresh test app_secrets. For example, importing `drive`, owned by `google`, keeps app_id `drive` and org_id `google` inside the test environment. Test root authority can create test owners without changing production ownership. A test-only app cannot claim an existing production app_id. Configuration refreshes must be explicit; production changes do not silently change test records.
 
 ### Test Authentication
 
@@ -706,3 +706,9 @@ We ship highly configurable apps with sensible defaults. Very much like VS Code.
 # Updates
 
 Honeycomb manages updates for its installed IAM CLI through `honeycomb update <configured-iam-app-id>` and any automatic update policy configured in Honeycomb. IAM must not run a second independent updater that can conflict with it. The IAM app release supplies the combined CLI archive; updating the CLI does not itself deploy or migrate the IAM backend.
+
+# Identifier schema
+
+Silicon IDs use `si:{silicon_id}` (for example `si:cos`), Carbon IDs use `c:{carbon_id}` (for example `c:saket`), and application IDs use the bare `{app_id}` (for example `briefcase`). The components after `si:` and `c:` are handles; each prefix appears exactly once. Silicon IDs and application IDs do not contain an organisation component. Organisation membership and application ownership are stored separately under `org_id`.
+
+Outside the schema patterns above, fields and standalone placeholders named `silicon_id`, `sid`, `carbon_id`, or `cid` carry the complete prefixed public ID; `app_id` carries the bare application ID. This applies to authentication, API and CLI inputs and outputs, configuration, permissions, URLs, events and stored identity references. Where a CLI selector uses `@`, it precedes the complete ID, such as `@si:cos` or `@c:saket`.

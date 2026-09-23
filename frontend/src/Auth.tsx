@@ -121,7 +121,7 @@ export default function Auth(props: {
           setStep(contact === "email" ? "phone" : "profile");
         } else if (step() === "profile") {
           await send("POST", `${path}/complete`, {
-            carbon_id: carbon(),
+            carbon_id: carbon().startsWith("c:") ? carbon() : `c:${carbon()}`,
             display_name: name().trim(),
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           });
@@ -353,7 +353,7 @@ export default function Auth(props: {
                     <input
                       autofocus
                       required
-                      pattern="[a-z1-9_\-]{3,30}"
+                      pattern="(c:)?[a-z1-9_\-]{3,30}"
                       maxlength="30"
                       value={carbon()}
                       onInput={(e) => setCarbon(e.currentTarget.value)}

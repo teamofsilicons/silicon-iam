@@ -23,9 +23,9 @@ use serde_json::{Value, json};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::sync::Arc;
 use tower::ServiceExt as _;
-const APP: Id = Id::fixture("test_org>app-alpha");
-const OWNER: Id = Id::fixture("test_carbon");
-const MEMBER: Id = Id::fixture("test_admin");
+const APP: Id = Id::fixture("app-alpha");
+const OWNER: Id = Id::fixture("c:test_carbon");
+const MEMBER: Id = Id::fixture("c:test_admin");
 const MEMBER_MEMBERSHIP: Id = Id::from_u128(0x32);
 
 #[test]
@@ -39,7 +39,7 @@ fn delegated_creation_requires_exact_carbon_application_and_selected_org() {
         },
         client_application_id: Some(APP),
         audience_application_id: Some(APP),
-        audience: "test_org>app-alpha".into(),
+        audience: "app-alpha".into(),
         organization_id: None,
         membership_id: None,
         scopes: vec![CREATE_SCOPE.into()],
@@ -403,7 +403,7 @@ async fn seed_bearer(
         .bind(session_id).bind(subject).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO iam.oauth_consent_grants(id,application_id,subject_principal_id,subject_kind,parent_authentication_session_id,selected_membership_ids) VALUES($1,$2,$3,'carbon',$4,ARRAY[$5]::uuid[])")
         .bind(consent_id).bind(APP).bind(subject).bind(session_id).bind(membership).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO iam.access_tokens(id,token_class,token_digest,digest_key_version,token_prefix,authentication_session_id,subject_principal_id,subject_kind,client_application_id,audience,audience_application_id,subject_auth_epoch,client_auth_epoch,expires_at) VALUES($1,'application_access',$2,1,$3,$4,$5,'carbon',$6,'test_org>app-alpha',$6,1,1,transaction_timestamp()+interval '15 minutes')")
+    sqlx::query("INSERT INTO iam.access_tokens(id,token_class,token_digest,digest_key_version,token_prefix,authentication_session_id,subject_principal_id,subject_kind,client_application_id,audience,audience_application_id,subject_auth_epoch,client_auth_epoch,expires_at) VALUES($1,'application_access',$2,1,$3,$4,$5,'carbon',$6,'app-alpha',$6,1,1,transaction_timestamp()+interval '15 minutes')")
         .bind(token_id).bind(digest.as_bytes().as_slice()).bind(&token.expose_secret()[..12]).bind(session_id).bind(subject).bind(APP).execute(&mut *tx).await?;
     for scope in scopes {
         sqlx::query(
@@ -468,19 +468,19 @@ async fn exercise_test_login(
             &auth,
             "login",
             Some(root),
-            &json!({"slt":"test_carbon"}),
+            &json!({"slt":"c:test_carbon"}),
             None,
             "before-import-world-0001"
         )
         .await?
         .0 == StatusCode::FORBIDDEN
     );
-    sqlx::raw_sql("UPDATE iam.applications SET test_imported_from_production=true WHERE id='tos>iam'; INSERT INTO iam.testing_application_imports(application_id,source_application_id,secret_ciphertext,secret_nonce,secret_key_version) VALUES('tos>iam','tos>iam',decode(repeat('11',17),'hex'),decode(repeat('22',12),'hex'),1);").execute(&testing).await?;
+    sqlx::raw_sql("UPDATE iam.applications SET test_imported_from_production=true WHERE id='iam'; INSERT INTO iam.testing_application_imports(application_id,source_application_id,secret_ciphertext,secret_nonce,secret_key_version) VALUES('iam','iam',decode(repeat('11',17),'hex'),decode(repeat('22',12),'hex'),1);").execute(&testing).await?;
     let (status, tokens) = auth_call(
         &auth,
         "login",
         Some(root),
-        &json!({"slt":"test_carbon"}),
+        &json!({"slt":"c:test_carbon"}),
         None,
         "imported-world-login-0001",
     )
@@ -499,7 +499,7 @@ async fn exercise_test_login(
             &auth,
             "login",
             Some(root),
-            &json!({"slt":"test_carbon"}),
+            &json!({"slt":"c:test_carbon"}),
             None,
             "imported-world-login-0001"
         )
@@ -511,7 +511,7 @@ async fn exercise_test_login(
             &auth,
             "login",
             Some(other_root),
-            &json!({"slt":"test_carbon"}),
+            &json!({"slt":"c:test_carbon"}),
             None,
             "other-world-login-0001"
         )
@@ -523,7 +523,7 @@ async fn exercise_test_login(
             &auth,
             "login",
             None,
-            &json!({"slt":"test_carbon"}),
+            &json!({"slt":"c:test_carbon"}),
             None,
             "production-actor-login-0001"
         )
@@ -649,12 +649,12 @@ async fn auth_call(
 
 async fn seed_scoped_registration(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     sqlx::raw_sql(r"
-        INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES ('00000000-0000-0000-0000-000000000022','tos','test_carbon','Scoped test organization');
-        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role,job_role) VALUES ('00000000-0000-0000-0000-000000000033','00000000-0000-0000-0000-000000000022','test_carbon','carbon','owner','');
-        INSERT INTO iam.principals(id,kind,status,activated_at) VALUES ('tos>iam','application','active',transaction_timestamp());
-        INSERT INTO iam.applications(id,app_id,organization_id,created_by_carbon_id,review_status,base_url) VALUES ('tos>iam','tos>iam','00000000-0000-0000-0000-000000000022','test_carbon','verified','https://scoped.backend.iam.teamofsilicons.com');
-        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES ('tos>iam','self.organizations.read');
-        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES ('tos>iam','self.organizations.read','test_carbon');
+        INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES ('00000000-0000-0000-0000-000000000022','tos','c:test_carbon','Scoped test organization');
+        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role,job_role) VALUES ('00000000-0000-0000-0000-000000000033','00000000-0000-0000-0000-000000000022','c:test_carbon','carbon','owner','');
+        INSERT INTO iam.principals(id,kind,status,activated_at) VALUES ('iam','application','active',transaction_timestamp());
+        INSERT INTO iam.applications(id,app_id,organization_id,created_by_carbon_id,review_status,base_url) VALUES ('iam','iam','00000000-0000-0000-0000-000000000022','c:test_carbon','verified','https://scoped.backend.iam.teamofsilicons.com');
+        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES ('iam','self.organizations.read');
+        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES ('iam','self.organizations.read','c:test_carbon');
     ").execute(pool).await?;
     Ok(())
 }

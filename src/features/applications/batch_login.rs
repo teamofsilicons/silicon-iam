@@ -187,7 +187,7 @@ mod tests {
         BatchLoginRequest {
             applications: (0..count)
                 .map(|i| BatchLoginSelection {
-                    app_id: format!("tos>app-{i}"),
+                    app_id: format!("app-{i}"),
                     org_ids: vec!["tos".to_owned()],
                     scope_version: 1,
                     approved_scopes: vec!["self.identity.read".to_owned()],

@@ -18,14 +18,13 @@ use uuid::Uuid;
 
 pub use super::models_manual::*;
 
-/// Canonical organization-qualified Application id, `{org_id}>{handle}`; the
-/// local handle is 1-80 characters and the organization handle remains 3-50
-/// characters.
+/// Globally unique bare Application handle. Owning org_id is supplied
+/// separately.
 pub type AppId = String;
 
 /// Local handle of 1-80 lowercase ASCII characters, starting with a letter
 /// and containing only letters, digits, underscores or hyphens. Supplied at
-/// creation; the public id becomes `{org_id}>{handle}`.
+/// creation; the public ID is the same bare handle.
 pub type ApplicationHandle = String;
 
 /// Scope-projected response for an ordinary application mutation. Write
@@ -77,8 +76,8 @@ pub type OrgId = String;
 /// Contract alias for `SiliconGlobalId`.
 pub type SiliconGlobalId = String;
 
-/// Client-supplied handle component; only the resulting `{handle}:{org_id}`
-/// Silicon ID is public.
+/// Client-supplied handle component; the public Silicon ID is `si:{handle}`;
+/// owning org_id is separate.
 pub type SiliconHandle = String;
 
 /// Root authority for one environment. Anyone holding it can do anything

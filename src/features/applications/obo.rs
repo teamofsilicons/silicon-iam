@@ -1190,7 +1190,7 @@ mod tests {
         let client = ApplicationClient {
             identity: crate::features::applications::security::ApplicationIdentity {
                 application_id: Id::from_u128(1),
-                app_id: "tos>files".to_owned(),
+                app_id: "files".to_owned(),
                 organization_id: Id::from_u128(2),
                 auth_epoch: 1,
             },

@@ -8,6 +8,13 @@ use crate::{Client, Mutation, Paging, Result, models};
 pub struct Silicons<'a>(pub(super) &'a Client);
 
 impl Silicons<'_> {
+    /// Reads the authenticated Silicon and its authoritative owning organization.
+    /// # Errors
+    /// Requires an authenticated Silicon session.
+    pub async fn me(&self) -> Result<models::Silicon> {
+        self.0.get(&["me"]).await
+    }
+
     /// The organization's Silicons.
     ///
     /// # Errors

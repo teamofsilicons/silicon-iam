@@ -1503,11 +1503,10 @@ mod tests {
         let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let actor_id = crate::domain::id::Id::fixture("projection-owner");
-        let silicon_id = crate::domain::id::Id::fixture("helper:projection-org");
-        let full_application_id = crate::domain::id::Id::fixture("projection-org>projection-full");
-        let profile_application_id =
-            crate::domain::id::Id::fixture("projection-org>projection-profile");
+        let actor_id = crate::domain::id::Id::fixture("c:projection-owner");
+        let silicon_id = crate::domain::id::Id::fixture("si:helper");
+        let full_application_id = crate::domain::id::Id::fixture("projection-full");
+        let profile_application_id = crate::domain::id::Id::fixture("projection-profile");
         let actor_membership_id = crate::domain::id::Id::from_u128(0xa05);
         let silicon_membership_id = crate::domain::id::Id::from_u128(0xa06);
         let organization_id = crate::domain::id::Id::from_u128(0xa07);
@@ -1518,11 +1517,11 @@ mod tests {
         let profile_endpoint_id = crate::domain::id::Id::from_u128(0xa0c);
         let full_signing_key_id = crate::domain::id::Id::from_u128(0xa0d);
         let profile_signing_key_id = crate::domain::id::Id::from_u128(0xa0e);
-        let removed_silicon_id = crate::domain::id::Id::fixture("removed:projection-org");
+        let removed_silicon_id = crate::domain::id::Id::fixture("si:removed");
         let removed_membership_id = crate::domain::id::Id::from_u128(0xa21);
-        let child_silicon_id = crate::domain::id::Id::fixture("child:projection-org");
+        let child_silicon_id = crate::domain::id::Id::fixture("si:child");
         let child_membership_id = crate::domain::id::Id::from_u128(0xa23);
-        let grandchild_silicon_id = crate::domain::id::Id::fixture("grandchild:projection-org");
+        let grandchild_silicon_id = crate::domain::id::Id::fixture("si:grandchild");
         let grandchild_membership_id = crate::domain::id::Id::from_u128(0xa25);
         let removed_session_id = crate::domain::id::Id::from_u128(0xa26);
         let seed = format!(
@@ -1536,7 +1535,7 @@ mod tests {
               ('{full_application_id}', 'application', 'active', transaction_timestamp()),
               ('{profile_application_id}', 'application', 'active', transaction_timestamp());
             INSERT INTO iam.carbons (id, carbon_id, display_name)
-            VALUES ('{actor_id}', 'projection-owner', 'Projection owner');
+            VALUES ('{actor_id}', 'c:projection-owner', 'Projection owner');
             INSERT INTO iam.carbon_contacts (
                 id, carbon_id, kind, ciphertext, nonce, encryption_key_version, verified_at
             ) VALUES
@@ -1573,9 +1572,9 @@ mod tests {
             INSERT INTO iam.applications (
                 id, app_id, organization_id, created_by_carbon_id, review_status, base_url
             ) VALUES
-              ('{full_application_id}', 'projection-org>projection-full', '{organization_id}',
+              ('{full_application_id}', 'projection-full', '{organization_id}',
                '{actor_id}', 'verified', 'https://full.example.test/api'),
-              ('{profile_application_id}', 'projection-org>projection-profile',
+              ('{profile_application_id}', 'projection-profile',
                '{organization_id}', '{actor_id}', 'verified',
                'https://profile.example.test/api');
             INSERT INTO iam.application_requested_scopes (application_id, scope) VALUES
@@ -1903,7 +1902,7 @@ mod tests {
         ensure!(full_member["current"]["members"][0]["principal"]["display_name"] == "Captured");
         ensure!(
             full_member["current"]["members"][0]["principal"]["profile_photo"]
-                == "https://iris.teamofsilicons.com/pfp/silicon?id=helper:projection-org&level=1"
+                == "https://iris.teamofsilicons.com/pfp/silicon?id=si:helper&level=1"
         );
         ensure!(
             full_member["current"]["members"][0]

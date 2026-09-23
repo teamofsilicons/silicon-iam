@@ -117,7 +117,7 @@ pub(super) async fn exercise(
         "recovery or rejected requests rotated credentials again"
     );
     ensure!(
-        current_snapshot_secret(state, admin, environment, "test_org>test-only").await?
+        current_snapshot_secret(state, admin, environment, "test-only").await?
             == accepted["app_secret"],
         "recovery changed the recoverable application credential"
     );
@@ -136,7 +136,7 @@ async fn credential_state(
     environment: Id,
 ) -> anyhow::Result<(i64, i64, i64)> {
     Ok(sqlx::query_as(
-        "SELECT a.version,p.auth_epoch,(SELECT count(*) FROM iam.application_secrets s WHERE s.testing_environment_id=a.testing_environment_id AND s.application_id=a.id) FROM iam.applications a JOIN iam.principals p ON p.id=a.id AND p.testing_environment_id=a.testing_environment_id WHERE a.app_id='test_org>test-only' AND a.testing_environment_id=$1",
+        "SELECT a.version,p.auth_epoch,(SELECT count(*) FROM iam.application_secrets s WHERE s.testing_environment_id=a.testing_environment_id AND s.application_id=a.id) FROM iam.applications a JOIN iam.principals p ON p.id=a.id AND p.testing_environment_id=a.testing_environment_id WHERE a.app_id='test-only' AND a.testing_environment_id=$1",
     ).bind(environment).fetch_one(admin).await?)
 }
 

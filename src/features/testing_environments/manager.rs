@@ -91,10 +91,7 @@ impl EnvironmentManager {
                 })
             }
             Self::Application(app) => {
-                if app.app_id.split_once('>').map(|(org, _)| org) != Some(org_id) {
-                    return Err(AppError::NotFound);
-                }
-                let transaction = context::begin(
+                let mut transaction = context::begin(
                     &state.pool,
                     DatabaseContext {
                         principal_id: Some(app.application_id),
@@ -105,6 +102,17 @@ impl EnvironmentManager {
                 )
                 .await
                 .map_err(support::database)?;
+                let owns: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM iam.organizations WHERE id=$1 AND org_id=$2)",
+                )
+                .bind(app.organization_id)
+                .bind(org_id)
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(support::database)?;
+                if !owns {
+                    return Err(AppError::NotFound);
+                }
                 Ok(Scope {
                     transaction,
                     organization_id: app.organization_id,

@@ -526,8 +526,8 @@ mod tests {
     #[test]
     fn dependency_edges_are_deduplicated_without_losing_distinct_apps() {
         let result = dependencies(&json!({"external": [
-            {"app_id":"tos>files", "endpoint_id":"read"},
-            {"app_id":"tos>files", "endpoint_id":"write"},
+            {"app_id":"files", "endpoint_id":"read"},
+            {"app_id":"files", "endpoint_id":"write"},
             {"app_id":"other>search", "endpoint_id":"query"}
         ]}));
         assert_eq!(result.ok().map(|value| value.len()), Some(2));

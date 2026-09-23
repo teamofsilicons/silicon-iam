@@ -16,7 +16,7 @@ use crate::{
     },
 };
 
-const APP: Id = Id::fixture("test_org>app-alpha");
+const APP: Id = Id::fixture("app-alpha");
 const SESSION: Id = Id::from_u128(0x41);
 const ENVIRONMENT: Id = Id::from_u128(0x801);
 
@@ -198,7 +198,7 @@ async fn issue(
         client,
         TokenSubject {
             session_id: SESSION,
-            principal_id: Id::fixture("test_carbon"),
+            principal_id: Id::fixture("c:test_carbon"),
             subject_kind: "carbon".to_owned(),
             subject_auth_epoch: 1,
             organization_id: None,
@@ -206,7 +206,7 @@ async fn issue(
             membership_authz_epoch: None,
             consent_grant_id: Id::from_u128(0x71),
             org_id: None,
-            subject_public_id: "test_carbon".to_owned(),
+            subject_public_id: "c:test_carbon".to_owned(),
         },
         &["self.organizations.read".to_owned()],
         parent.map(|p| p.0),

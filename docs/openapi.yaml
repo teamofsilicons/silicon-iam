@@ -5362,11 +5362,11 @@ components:
       description: Six-digit code with a ten-minute expiry; ten failed verifications trigger a 60-second reusable-challenge cooldown.
     CarbonId:
       type: string
-      pattern: '^[a-z1-9_-]{3,30}$'
+      pattern: '^c:[a-z1-9_-]{3,30}$'
       description: New immutable Carbon ID; zero is not admitted.
     ExistingCarbonId:
       type: string
-      pattern: '^[a-z0-9_-]{3,30}$'
+      pattern: '^c:[a-z0-9_-]{3,30}$'
       description: Existing Carbon lookup/projection, including immutable legacy IDs containing zero.
     OrgId: { type: string, pattern: '^[a-z0-9_-]{3,50}$' }
     ApplicationHandle:
@@ -5374,16 +5374,16 @@ components:
       minLength: 1
       maxLength: 80
       pattern: '^[a-z][a-z0-9_-]{0,79}$'
-      description: Local handle of 1-80 lowercase ASCII characters, starting with a letter and containing only letters, digits, underscores or hyphens. Supplied at creation; the public id becomes `{org_id}>{handle}`.
+      description: Local handle of 1-80 lowercase ASCII characters, starting with a letter and containing only letters, digits, underscores or hyphens. Supplied at creation; the public ID is the same bare handle.
     AppId:
       type: string
-      pattern: '^[a-z0-9_-]{3,50}>[a-z][a-z0-9_-]{0,79}$'
-      description: Canonical organization-qualified Application id, `{org_id}>{handle}`; the local handle is 1-80 characters and the organization handle remains 3-50 characters.
+      pattern: '^[a-z][a-z0-9_-]{0,79}$'
+      description: Globally unique bare Application handle. Owning org_id is supplied separately.
     SiliconHandle:
       type: string
       pattern: '^[a-z0-9_-]{3,50}$'
-      description: Client-supplied handle component; only the resulting `{handle}:{org_id}` Silicon ID is public.
-    SiliconGlobalId: { type: string, pattern: '^[a-z0-9_-]{3,50}:[a-z0-9_-]{3,50}$' }
+      description: Client-supplied handle component; the public Silicon ID is `si:{handle}`; owning org_id is separate.
+    SiliconGlobalId: { type: string, pattern: '^si:[a-z0-9_-]{3,50}$' }
     TimeZoneId:
       type: string
       minLength: 1

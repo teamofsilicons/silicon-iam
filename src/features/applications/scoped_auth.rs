@@ -1,4 +1,4 @@
-//! The scoped service completes its own `tos>iam` login without distributing
+//! The scoped service completes its own `iam` login without distributing
 //! the application's secret. Only this router can create its internal identity;
 //! the public main-IAM protocol still requires `ApplicationClient` Basic auth.
 
@@ -34,7 +34,7 @@ use super::{
     security::{ApplicationIdentity, enforce_request_rate_limit},
 };
 
-const APP_ID: &str = "tos>iam";
+const APP_ID: &str = "iam";
 const MAX_BODY_BYTES: usize = 4_096;
 
 pub(crate) fn router() -> Router<ApiState> {

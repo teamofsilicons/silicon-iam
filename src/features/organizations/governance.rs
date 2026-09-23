@@ -2328,12 +2328,11 @@ async fn revoke_silicon_sessions(
     Ok(())
 }
 
-fn validate_global_silicon(value: &str, org_id: &str) -> Result<(), AppError> {
-    let Some((local, suffix)) = value.rsplit_once(':') else {
+fn validate_global_silicon(value: &str, _org_id: &str) -> Result<(), AppError> {
+    let Some(local) = value.strip_prefix("si:") else {
         return Err(validation::field("silicon_id", "has an invalid format"));
     };
-    if suffix != org_id
-        || local.len() < 3
+    if local.len() < 3
         || local.len() > 50
         || !local.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
@@ -2647,9 +2646,9 @@ mod tests {
         let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let owner_id = Id::fixture("direct-owner");
-        let admin_id = Id::fixture("direct-admin");
-        let target_id = Id::fixture("direct-target");
+        let owner_id = Id::fixture("c:direct-owner");
+        let admin_id = Id::fixture("c:direct-admin");
+        let target_id = Id::fixture("c:direct-target");
         let organization_id = Id::from_u128(0x404);
         let owner_membership_id = Id::from_u128(0x405);
         let admin_membership_id = Id::from_u128(0x406);
@@ -2677,9 +2676,9 @@ mod tests {
             r"
             INSERT INTO iam.carbons (id, carbon_id, display_name)
             VALUES
-                ($1, 'direct-owner', 'Direct Owner'),
-                ($2, 'direct-admin', 'Direct Admin'),
-                ($3, 'direct-target', 'Direct Target')
+                ($1, 'c:direct-owner', 'Direct Owner'),
+                ($2, 'c:direct-admin', 'Direct Admin'),
+                ($3, 'c:direct-target', 'Direct Target')
             ",
         )
         .bind(owner_id)

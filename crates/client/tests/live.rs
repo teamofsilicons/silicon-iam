@@ -740,7 +740,7 @@ async fn batch_login_is_atomic_and_application_bound() {
             client
                 .with_environment(key.clone())
                 .auth()
-                .batch_login_organizations(&["tos>app".to_owned()])
+                .batch_login_organizations(&["app".to_owned()])
                 .await
                 .is_err()
         );

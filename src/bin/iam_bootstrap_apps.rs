@@ -23,10 +23,10 @@ struct Arguments {
     /// Active Carbon owner of the selected organization.
     #[arg(long)]
     carbon_id: String,
-    /// Canonical org>app identity to create or reuse for IAM.
+    /// Canonical bare app identity to create or reuse for IAM.
     #[arg(long)]
     iam_app_id: String,
-    /// Distinct canonical org>app identity for Honeycomb.
+    /// Distinct canonical bare app identity for Honeycomb.
     #[arg(long)]
     honeycomb_app_id: String,
     /// Protected file retained across bootstrap retries; never print or publish it.
@@ -59,13 +59,12 @@ async fn bootstrap(input: Arguments, settings: Settings) -> anyhow::Result<()> {
     );
     for id in [&input.iam_app_id, &input.honeycomb_app_id] {
         anyhow::ensure!(
-            id.split_once('>')
-                .is_some_and(|(org, app)| org == input.org_id
-                    && !app.is_empty()
-                    && app.bytes().all(|byte| byte.is_ascii_lowercase()
-                        || byte.is_ascii_digit()
-                        || matches!(byte, b'_' | b'-'))),
-            "app IDs must use the selected organization and canonical lowercase handles"
+            (1..=80).contains(&id.len())
+                && id.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+                && id.bytes().all(|byte| byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'_' | b'-')),
+            "app IDs must be bare canonical lowercase handles"
         );
     }
     let crypto = CryptoService::from_settings(&settings.security)?;
@@ -224,11 +223,11 @@ mod tests {
         let mut settings = Settings::from_env()?;
         settings.database.url = url.into();
         postgres::register_runtime_key_versions(&pool, &settings.security).await?;
-        let actor = Id::identity("bootstrap_owner")?;
+        let actor = Id::identity("c:bootstrap_owner")?;
         let org = Id::now_v7();
         let mut tx = pool.begin().await?;
         sqlx::query("INSERT INTO iam.principals(id,kind,status,activated_at) VALUES($1,'carbon','active',transaction_timestamp())").bind(actor).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO iam.carbons(id,carbon_id,display_name) VALUES($1,'bootstrap_owner','Owner')").bind(actor).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO iam.carbons(id,carbon_id,display_name) VALUES($1,'c:bootstrap_owner','Owner')").bind(actor).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES($1,'bootstrap_org',$2,'Bootstrap')").bind(org).bind(actor).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES($1,$2,$3,'carbon','owner')").bind(Id::now_v7()).bind(org).bind(actor).execute(&mut *tx).await?;
         for (index, kind) in ["email", "phone"].iter().enumerate() {
@@ -240,7 +239,7 @@ mod tests {
         let output = directory.join("credentials.json");
         let arguments = || Arguments {
             org_id: "bootstrap_org".into(),
-            carbon_id: "bootstrap_owner".into(),
+            carbon_id: "c:bootstrap_owner".into(),
             iam_app_id: "bootstrap_org>iam".into(),
             honeycomb_app_id: "bootstrap_org>honeycomb".into(),
             output: output.clone(),

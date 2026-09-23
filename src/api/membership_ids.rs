@@ -62,10 +62,12 @@ fn membership_org(id: &str) -> Option<&str> {
     if !handle(org, 50) {
         return None;
     }
-    let valid = actor.split_once(':').map_or_else(
-        || handle(actor, 30),
-        |(silicon, owner)| handle(silicon, 50) && owner == org,
-    );
+    let valid = actor
+        .strip_prefix("c:")
+        .is_some_and(|value| handle(value, 30))
+        || actor
+            .strip_prefix("si:")
+            .is_some_and(|value| handle(value, 50));
     valid.then_some(org)
 }
 
@@ -403,22 +405,22 @@ mod tests {
 
     #[test]
     fn public_responses_remove_redundant_principal_keys_recursively() {
-        let mut value = json!({"principal_id":"saket","carbon_id":"saket","items":[{"actor":{"principal_id":"chef:bricks","public_id":"chef:bricks","type":"silicon"}}]});
+        let mut value = json!({"principal_id":"saket","carbon_id":"saket","items":[{"actor":{"principal_id":"si:chef","public_id":"si:chef","type":"silicon"}}]});
         assert!(remove_principal_ids(&mut value));
         assert_eq!(
             value,
-            json!({"carbon_id":"saket","items":[{"actor":{"public_id":"chef:bricks","type":"silicon"}}]})
+            json!({"carbon_id":"saket","items":[{"actor":{"public_id":"si:chef","type":"silicon"}}]})
         );
         assert!(!remove_principal_ids(&mut value));
     }
 
     #[test]
     fn generic_webhook_actors_keep_their_canonical_identity() {
-        let mut value = json!({"actor":{"type":"carbon","principal_id":"saket"},"subject_principal_id":"chef:bricks"});
+        let mut value = json!({"actor":{"type":"carbon","principal_id":"saket"},"subject_principal_id":"si:chef"});
         assert!(remove_principal_ids(&mut value));
         assert_eq!(
             value,
-            json!({"actor":{"type":"carbon","id":"saket"},"subject_id":"chef:bricks"})
+            json!({"actor":{"type":"carbon","id":"saket"},"subject_id":"si:chef"})
         );
     }
 
@@ -440,8 +442,8 @@ mod tests {
 
     #[test]
     fn canonical_ids_distinguish_carbons_and_full_silicon_ids() {
-        assert_eq!(membership_org("saket[tos]"), Some("tos"));
-        assert_eq!(membership_org("head_of_growth:tos[tos]"), Some("tos"));
+        assert_eq!(membership_org("c:saket[tos]"), Some("tos"));
+        assert_eq!(membership_org("si:head_of_growth[tos]"), Some("tos"));
         for invalid in [
             "saket",
             "saket[]",

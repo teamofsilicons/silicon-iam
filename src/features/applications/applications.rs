@@ -2286,7 +2286,7 @@ mod tests {
             .execute(&pool)
             .await?;
 
-        let carbon_id = Id::fixture("owner-under-rls");
+        let carbon_id = Id::fixture("c:owner-under-rls");
         let organization_id = Id::from_u128(0x51_02);
         let membership_id = Id::from_u128(0x51_03);
 
@@ -2303,7 +2303,7 @@ mod tests {
         sqlx::query(
             r"
             INSERT INTO iam.carbons (id, carbon_id, display_name)
-            VALUES ($1, 'owner-under-rls', 'Owner Under Row Security')
+            VALUES ($1, 'c:owner-under-rls', 'Owner Under Row Security')
             ",
         )
         .bind(carbon_id)
@@ -2382,7 +2382,7 @@ mod tests {
         );
 
         // A Carbon with no membership must still be refused.
-        let stranger = Id::fixture("outside-under-rls");
+        let stranger = Id::fixture("c:outside-under-rls");
         ensure!(
             super::resolve_creation_organization(&mut resolving, stranger, "tos")
                 .await

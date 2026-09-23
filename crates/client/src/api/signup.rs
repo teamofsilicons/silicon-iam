@@ -20,8 +20,13 @@ use crate::{Client, Mutation, Result, models};
 /// # Errors
 ///
 /// Returns an error unless the ID matches the creation contract's
-/// `^[a-z1-9_-]{3,30}$` syntax. In particular, digit zero is not allowed.
+/// `^c:[a-z1-9_-]{3,30}$` syntax. In particular, digit zero is not allowed.
 pub fn validate_carbon_id(value: &str) -> Result<()> {
+    let Some(value) = value.strip_prefix("c:") else {
+        return Err(crate::Error::Invalid(
+            "Carbon ID must start with c:".to_owned(),
+        ));
+    };
     if (3..=30).contains(&value.len())
         && value
             .bytes()

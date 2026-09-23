@@ -573,7 +573,7 @@ mod tests {
             ",
         )
         .bind(Id::from_u128(0x50_01))
-        .bind(Id::fixture("invitation-carbon"))
+        .bind(Id::fixture("c:invitation-carbon"))
         .fetch_all(&pool)
         .await?;
 

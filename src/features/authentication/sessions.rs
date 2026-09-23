@@ -1555,10 +1555,10 @@ mod tests {
             .digest_secret(DigestPurpose::ApplicationAccessToken, &raw_app_a_token)
             .map_err(|error| anyhow::anyhow!("logout test token digest failed: {error}"))?;
 
-        let carbon_id = Id::fixture("logout-carbon");
+        let carbon_id = Id::fixture("c:logout-carbon");
         let session_id = Id::from_u128(0x36_02);
-        let app_a = Id::fixture("logout-org>logout-app-a");
-        let app_b = Id::fixture("logout-org>logout-app-b");
+        let app_a = Id::fixture("logout-app-a");
+        let app_b = Id::fixture("logout-app-b");
         let token_a = Id::from_u128(0x36_05);
         let token_b = Id::from_u128(0x36_06);
         let grant_a = Id::from_u128(0x36_07);
@@ -1597,7 +1597,7 @@ mod tests {
         .execute(&pool)
         .await?;
         sqlx::query(
-            "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, 'logout-carbon', 'Logout Carbon')",
+            "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, 'c:logout-carbon', 'Logout Carbon')",
         )
         .bind(carbon_id)
         .execute(&pool)
@@ -1659,9 +1659,9 @@ mod tests {
                 id, app_id, organization_id, created_by_carbon_id,
                 app_name, review_status, base_url
             ) VALUES
-                ($1, 'logout-org>logout-app-a', $4, $3, 'Logout App A', 'verified',
+                ($1, 'logout-app-a', $4, $3, 'Logout App A', 'verified',
                  'https://logout-a.example.test/api'),
-                ($2, 'logout-org>logout-app-b', $4, $3, 'Logout App B', 'verified',
+                ($2, 'logout-app-b', $4, $3, 'Logout App B', 'verified',
                  'https://logout-b.example.test/api')
             ",
         )
@@ -1798,11 +1798,11 @@ mod tests {
                 subject_auth_epoch, client_auth_epoch, created_at, expires_at
             ) VALUES
                 ($1, 'application_access', $7, 1,
-                    'oat_AAAAAAAA', $5, $6, 'carbon', $3, 'logout-org>logout-app-a', $3,
+                    'oat_AAAAAAAA', $5, $6, 'carbon', $3, 'logout-app-a', $3,
                     1, 1, transaction_timestamp(),
                     transaction_timestamp() + interval '30 minutes'),
                 ($2, 'application_access', decode(repeat('b2', 32), 'hex'), 1,
-                    'oat_BBBBBBBB', $5, $6, 'carbon', $4, 'logout-org>logout-app-b', $4,
+                    'oat_BBBBBBBB', $5, $6, 'carbon', $4, 'logout-app-b', $4,
                     1, 1, transaction_timestamp() - interval '1 hour',
                     transaction_timestamp() - interval '30 minutes')
             ",
@@ -2061,7 +2061,7 @@ mod tests {
         crate::infrastructure::postgres::migrate(&pool).await?;
 
         let rows = sqlx::query(super::LOGIN_HISTORY_QUERY)
-            .bind(Id::fixture("history-carbon"))
+            .bind(Id::fixture("c:history-carbon"))
             .bind(["login.success".to_owned(), "login.failure".to_owned()])
             .bind(None::<time::OffsetDateTime>)
             .bind(None::<Id>)
@@ -2073,7 +2073,7 @@ mod tests {
 
         // The cursor branch plans a different comparison, so it is exercised too.
         let paged = sqlx::query(super::LOGIN_HISTORY_QUERY)
-            .bind(Id::fixture("history-carbon"))
+            .bind(Id::fixture("c:history-carbon"))
             .bind(["login.success".to_owned()])
             .bind(Some(datetime!(2026-09-02 12:00 UTC)))
             .bind(Some(Id::from_u128(0x5e_02)))

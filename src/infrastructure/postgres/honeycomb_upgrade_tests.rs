@@ -147,13 +147,7 @@ async fn honeycomb_upgrade_preserves_deployed_state_and_scopes_new_tables() -> a
         "real nonprivileged runtime readiness must pass after upgrade"
     );
     let plan = Id::now_v7();
-    seed_plan(
-        &testing,
-        Id::from_u128(0xa001),
-        Id::fixture("alpha>test"),
-        plan,
-    )
-    .await?;
+    seed_plan(&testing, Id::from_u128(0xa001), Id::fixture("test"), plan).await?;
     seed_plan(&testing, Id::from_u128(0xa002), second_app, Id::now_v7()).await?;
     for (env, visible) in [
         (Id::from_u128(0xa001), true),
@@ -166,7 +160,7 @@ async fn honeycomb_upgrade_preserves_deployed_state_and_scopes_new_tables() -> a
             .await?;
         let record: Option<sqlx::types::Json<Value>> =
             sqlx::query_scalar("SELECT iam_private.honeycomb_publication_read($1,$2)")
-                .bind(Id::fixture("alpha>test"))
+                .bind(Id::fixture("test"))
                 .bind(plan)
                 .fetch_one(&mut *tx)
                 .await?;

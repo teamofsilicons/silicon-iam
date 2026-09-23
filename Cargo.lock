@@ -2813,7 +2813,7 @@ dependencies = [
 
 [[package]]
 name = "silicon-iam"
-version = "3.0.3"
+version = "4.0.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2855,7 +2855,7 @@ dependencies = [
 
 [[package]]
 name = "silicon-iam-cli"
-version = "3.1.2"
+version = "4.0.0"
 dependencies = [
  "clap",
  "http",
@@ -2874,7 +2874,7 @@ dependencies = [
 
 [[package]]
 name = "silicon-iam-client"
-version = "3.1.0"
+version = "4.0.0"
 dependencies = [
  "base64 0.22.1",
  "hex",

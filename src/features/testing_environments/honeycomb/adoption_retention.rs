@@ -61,7 +61,12 @@ impl Retention {
             ));
         }
         for app in &self.retired_apps {
-            if app.len() > 200 || !app.contains('>') {
+            if !(1..=80).contains(&app.len())
+                || !app.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+                || !app.bytes().all(|b| {
+                    b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-')
+                })
+            {
                 return Err(ApiError::validation(
                     "retired_apps",
                     "qualified app IDs are required",
@@ -370,10 +375,10 @@ mod tests {
             expected_iam_revision: 1,
             generation: 1,
             key_version: 1,
-            retired_apps: vec!["tos>honeycomb".into()],
+            retired_apps: vec!["honeycomb".into()],
         };
         assert!(input.validate(id).is_ok());
-        input.retired_apps.push("tos>honeycomb".into());
+        input.retired_apps.push("honeycomb".into());
         assert!(input.validate(id).is_err());
         input.retired_apps.pop();
         input.generation = 0;

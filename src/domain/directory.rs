@@ -15,7 +15,7 @@ pub struct OrganizationId(String);
 #[serde(try_from = "String", into = "String")]
 pub struct SiliconHandle(String);
 
-/// Application's immutable, globally qualified public identifier.
+/// Application's immutable, globally unique bare public identifier.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ApplicationId(String);
@@ -83,7 +83,7 @@ impl_handle!(OrganizationId, 50, false);
 impl_handle!(SiliconHandle, 50, false);
 
 impl ApplicationId {
-    /// Returns the normalized qualified Application ID.
+    /// Returns the normalized bare Application ID.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -94,15 +94,7 @@ impl FromStr for ApplicationId {
     type Err = DirectoryValueError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value != value.trim() || value.matches('>').count() != 1 {
-            return Err(DirectoryValueError::Characters);
-        }
-        let Some((organization_handle, local_id)) = value.split_once('>') else {
-            return Err(DirectoryValueError::Characters);
-        };
-        let organization_handle = validate_handle(organization_handle, 50, false)?;
-        let local_id = validate_handle(local_id, 80, true)?;
-        Ok(Self(format!("{organization_handle}>{local_id}")))
+        validate_handle(value, 80, true).map(Self)
     }
 }
 
@@ -163,7 +155,7 @@ fn validate_handle(
         return Err(DirectoryValueError::Characters);
     }
     let normalized = value.to_ascii_lowercase();
-    if !(3..=max_length).contains(&normalized.len()) {
+    if !((if first_must_be_letter { 1 } else { 3 })..=max_length).contains(&normalized.len()) {
         return Err(DirectoryValueError::Length);
     }
     if first_must_be_letter
@@ -201,17 +193,17 @@ mod tests {
     }
 
     #[test]
-    fn application_ids_are_qualified_and_normalized() {
+    fn application_ids_are_bare_and_normalized() {
         assert_eq!(
-            ApplicationId::from_str("team>1app"),
+            ApplicationId::from_str("1app"),
             Err(DirectoryValueError::FirstCharacter)
         );
         assert_eq!(
-            ApplicationId::from_str("Team>IAM_App").map(|value| value.to_string()),
-            Ok("team>iam_app".to_owned())
+            ApplicationId::from_str("IAM_App").map(|value| value.to_string()),
+            Ok("iam_app".to_owned())
         );
         assert_eq!(
-            ApplicationId::from_str("iam_app"),
+            ApplicationId::from_str("team>iam_app"),
             Err(DirectoryValueError::Characters)
         );
         assert_eq!(

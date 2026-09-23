@@ -166,11 +166,11 @@ pub async fn silicon_login(context: &Context, args: SiliconLoginArgs) -> Result<
     let sid = match args.sid {
         Some(value) => value,
         None => prompt(
-            "Silicon ID (handle:org): ",
-            "Supply --sid <handle:org> and --stk <token> for noninteractive Silicon sign-in. With an existing Silicon session, use only --app-id to mint an SLT without entering credentials again.",
+            "Silicon ID (si:handle): ",
+            "Supply --sid <si:handle> and --stk <token> for noninteractive Silicon sign-in. With an existing Silicon session, use only --app-id to mint an SLT without entering credentials again.",
         )?,
     };
-    let (sid, org) = context.silicon_identity(&sid)?;
+    let sid = context.silicon_id(&sid, "")?;
     // Prompted rather than flagged by default so the token stays out of shell
     // history and out of the process table.
     let stk = match args.stk {
@@ -211,7 +211,7 @@ pub async fn silicon_login(context: &Context, args: SiliconLoginArgs) -> Result<
         .await;
     }
 
-    let signed_in = authenticated.silicons().get(&org, &sid).await?;
+    let signed_in = authenticated.silicons().me().await?;
     report_silicon_login(context, &signed_in)
 }
 
@@ -595,8 +595,7 @@ pub async fn whoami(context: &Context) -> Result<()> {
     let session = context.session()?;
     let client = context.authenticated().await?;
     if session.actor_type == SessionActor::Silicon {
-        let (silicon_id, org) = context.silicon_identity(&session.actor_id)?;
-        let silicon = client.silicons().get(&org, &silicon_id).await?;
+        let silicon = client.silicons().me().await?;
         return match context.format {
             Format::Json => json(&silicon),
             Format::Text => {
@@ -721,7 +720,10 @@ const fn step_up_action(action: StepUpActionArg) -> models::StepUpAction {
 ///
 /// Returns an error when a contact is rejected, a code is wrong, or the handle
 /// is taken.
-pub async fn signup(context: &Context, args: SignupArgs) -> Result<()> {
+pub async fn signup(context: &Context, mut args: SignupArgs) -> Result<()> {
+    if !args.carbon_id.starts_with("c:") {
+        args.carbon_id = format!("c:{}", args.carbon_id);
+    }
     let client = context.anonymous();
     let session = client.signup().start(&context.mutation()).await?.session_id;
 
@@ -850,8 +852,7 @@ pub async fn login_status(context: &Context) -> Result<()> {
         }
         let client = context.authenticated().await?;
         if session.actor_type == SessionActor::Silicon {
-            let (sid, org) = context.silicon_identity(&session.actor_id)?;
-            client.silicons().get(&org, &sid).await?;
+            client.silicons().me().await?;
         } else {
             client.carbons().me().await?;
         }
@@ -894,7 +895,7 @@ mod tests {
 
     fn choices(allow_empty: bool) -> models::LoginOrganizations {
         models::LoginOrganizations {
-            app_id: "tos>interface".into(),
+            app_id: "interface".into(),
             app_name: None,
             scope_version: 1,
             consent_required: true,

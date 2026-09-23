@@ -125,17 +125,21 @@ async fn seed(pool: &PgPool) -> anyhow::Result<()> {
     let canonical: bool = sqlx::query_scalar("SELECT atttypid='text'::regtype FROM pg_attribute WHERE attrelid='iam.principals'::regclass AND attname='id'").fetch_one(pool).await?;
     if canonical {
         for (legacy, identity) in [
-            ("00000000-0000-0000-0000-000000000001", "test_carbon"),
-            ("00000000-0000-0000-0000-000000000002", "test_admin"),
-            ("00000000-0000-0000-0000-000000000011", "test_org>app-alpha"),
-            ("00000000-0000-0000-0000-000000000012", "test_org>app-beta"),
-            (
-                "00000000-0000-0000-0000-000000000013",
-                "pagination_org>app-gamma",
-            ),
+            ("00000000-0000-0000-0000-000000000001", "c:test_carbon"),
+            ("00000000-0000-0000-0000-000000000002", "c:test_admin"),
+            ("00000000-0000-0000-0000-000000000011", "app-alpha"),
+            ("00000000-0000-0000-0000-000000000012", "app-beta"),
+            ("00000000-0000-0000-0000-000000000013", "app-gamma"),
         ] {
             seed = seed.replace(legacy, identity);
         }
+    }
+    let prefixed: bool =
+        sqlx::query_scalar("SELECT to_regclass('iam_private.public_id_schema_map') IS NOT NULL")
+            .fetch_one(pool)
+            .await?;
+    if prefixed {
+        seed = seed.replace("pagination_org>app-gamma", "app-gamma");
     }
     sqlx::raw_sql(sqlx::AssertSqlSafe(seed))
         .execute(pool)
@@ -147,7 +151,7 @@ async fn runtime(tx: &mut Transaction<'_, Postgres>, actor: u128) -> anyhow::Res
     sqlx::query("SET LOCAL ROLE silicon_iam_api")
         .execute(&mut **tx)
         .await?;
-    sqlx::query("SELECT set_config('iam.principal_id',$1,true),set_config('iam.organization_id','',true),set_config('iam.application_id','',true)").bind(if actor == 1 { "test_carbon" } else { "test_admin" }).execute(&mut **tx).await?;
+    sqlx::query("SELECT set_config('iam.principal_id',$1,true),set_config('iam.organization_id','',true),set_config('iam.application_id','',true)").bind(if actor == 1 { "c:test_carbon" } else { "c:test_admin" }).execute(&mut **tx).await?;
     Ok(())
 }
 
@@ -215,7 +219,7 @@ async fn assert_eligibility(pool: &PgPool) -> anyhow::Result<()> {
             None,
         ),
         (
-            "UPDATE iam.principals SET status='suspended',suspended_at=transaction_timestamp() WHERE id='test_admin'",
+            "UPDATE iam.principals SET status='suspended',suspended_at=transaction_timestamp() WHERE id='c:test_admin'",
             None,
         ),
     ] {
@@ -230,7 +234,7 @@ async fn assert_eligibility(pool: &PgPool) -> anyhow::Result<()> {
     }
     let mut tx = pool.begin().await?;
     runtime(&mut tx, 1).await?;
-    sqlx::query("SELECT set_config('iam.application_id','test_org>app-alpha',true)")
+    sqlx::query("SELECT set_config('iam.application_id','app-alpha',true)")
         .execute(&mut *tx)
         .await?;
     ensure!(
@@ -254,9 +258,9 @@ async fn assert_pages(pool: &PgPool) -> anyhow::Result<()> {
         .map_err(api_error)?;
     ensure!(org == Some(Id::from_u128(0x21)));
     let mut cursor: Option<(OffsetDateTime, Id)> = None;
-    for expected in ["test_org>app-beta", "test_org>app-alpha"] {
+    for expected in ["app-beta", "app-alpha"] {
         let rows = sqlx::query_as::<_, ApplicationView>(APPLICATION_LIST_QUERY)
-            .bind(Id::fixture("test_carbon"))
+            .bind(Id::fixture("c:test_carbon"))
             .bind(None::<String>)
             .bind(cursor.map(|value| value.0))
             .bind(cursor.map(|value| value.1.to_string()))

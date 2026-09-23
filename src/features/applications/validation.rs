@@ -29,25 +29,31 @@ pub(super) fn local_app_id(value: &str) -> Result<(), ApiError> {
 }
 
 pub(super) fn app_id(value: &str) -> Result<(), ApiError> {
-    let Some((organization_handle, local_id)) = value.split_once('>') else {
+    local_app_id(value)
+}
+
+// Bundles retain their organization-qualified namespace.
+pub(super) fn bundle_id(value: &str) -> Result<(), ApiError> {
+    let Some((organization, handle)) = value.split_once('>') else {
         return Err(ApiError::validation(
-            "app_id",
-            "must be a qualified Application ID in the form 'organization>application'",
+            "bundle_id",
+            "must be organization>bundle",
         ));
     };
-    if value.matches('>').count() != 1
-        || org_id(organization_handle).is_err()
-        || local_app_id(local_id).is_err()
-    {
-        return Err(ApiError::validation(
-            "app_id",
-            "must be a qualified Application ID in the form 'organization>application'",
-        ));
-    }
-    Ok(())
+    org_id(organization)?;
+    local_app_id(handle)
 }
 
 pub(super) fn qualify_app_id(
+    organization_handle: &str,
+    local_id: &str,
+) -> Result<String, ApiError> {
+    org_id(organization_handle)?;
+    app_id(local_id)?;
+    Ok(local_id.to_owned())
+}
+
+pub(super) fn qualify_bundle_id(
     organization_handle: &str,
     local_id: &str,
 ) -> Result<String, ApiError> {
@@ -296,7 +302,7 @@ pub(super) fn login(query: &model::LoginQuery) -> Result<(), ApiError> {
         app_id(value)?;
     }
     if let Some(value) = &query.bundle_id {
-        app_id(value)?;
+        bundle_id(value)?;
     }
     if let Some(value) = &query.redirect_uri {
         redirect_uri(value)?;
@@ -594,12 +600,12 @@ mod tests {
         assert!(local_app_id("1bad").is_err());
         assert!(local_app_id(&format!("a{}", "b".repeat(79))).is_ok());
         assert!(local_app_id(&format!("a{}", "b".repeat(80))).is_err());
-        assert!(app_id("good_org>good_app-1").is_ok());
-        assert!(app_id("good_app-1").is_err());
+        assert!(app_id("good_org>good_app-1").is_err());
+        assert!(app_id("good_app-1").is_ok());
         assert!(app_id("good_org>bad>app").is_err());
         assert_eq!(
             qualify_app_id("tos", "briefcase").ok().as_deref(),
-            Some("tos>briefcase")
+            Some("briefcase")
         );
     }
 

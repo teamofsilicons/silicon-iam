@@ -27,9 +27,9 @@ use crate::{
     },
 };
 
-const OWNER: Id = Id::fixture("test_carbon");
-const MEMBER: Id = Id::fixture("plain_member");
-const APP: Id = Id::fixture("test_org>app-alpha");
+const OWNER: Id = Id::fixture("c:test_carbon");
+const MEMBER: Id = Id::fixture("c:plain_member");
+const APP: Id = Id::fixture("app-alpha");
 const ORG: Id = Id::from_u128(0x21);
 const OWNER_MEMBERSHIP: Id = Id::from_u128(0x31);
 const MEMBER_MEMBERSHIP: Id = Id::from_u128(0x33);
@@ -365,14 +365,14 @@ async fn seed_directory(pool: &PgPool) -> anyhow::Result<()> {
     sqlx::raw_sql(r"
         BEGIN;
         UPDATE iam.organizations SET trusted_org=true WHERE id='00000000-0000-0000-0000-000000000021';
-        INSERT INTO iam.principals(id,kind,status,activated_at) VALUES('plain_member','carbon','active',transaction_timestamp());
-        INSERT INTO iam.carbons(id,carbon_id,display_name) VALUES('plain_member','plain_member','Plain member');
+        INSERT INTO iam.principals(id,kind,status,activated_at) VALUES('c:plain_member','carbon','active',transaction_timestamp());
+        INSERT INTO iam.carbons(id,carbon_id,display_name) VALUES('c:plain_member','c:plain_member','Plain member');
         INSERT INTO iam.carbon_contacts(id,carbon_id,kind,ciphertext,nonce,encryption_key_version,verified_at) VALUES
-          ('00000000-0000-0000-0000-000000000301','plain_member','email',decode(repeat('31',17),'hex'),decode(repeat('32',12),'hex'),1,transaction_timestamp()),
-          ('00000000-0000-0000-0000-000000000302','plain_member','phone',decode(repeat('33',17),'hex'),decode(repeat('34',12),'hex'),1,transaction_timestamp());
-        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES('00000000-0000-0000-0000-000000000033','00000000-0000-0000-0000-000000000021','plain_member','carbon','member');
-        INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES('00000000-0000-0000-0000-000000000022','other_org','test_carbon','Not selected');
-        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES('00000000-0000-0000-0000-000000000034','00000000-0000-0000-0000-000000000022','test_carbon','carbon','owner');
+          ('00000000-0000-0000-0000-000000000301','c:plain_member','email',decode(repeat('31',17),'hex'),decode(repeat('32',12),'hex'),1,transaction_timestamp()),
+          ('00000000-0000-0000-0000-000000000302','c:plain_member','phone',decode(repeat('33',17),'hex'),decode(repeat('34',12),'hex'),1,transaction_timestamp());
+        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES('00000000-0000-0000-0000-000000000033','00000000-0000-0000-0000-000000000021','c:plain_member','carbon','member');
+        INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES('00000000-0000-0000-0000-000000000022','other_org','c:test_carbon','Not selected');
+        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES('00000000-0000-0000-0000-000000000034','00000000-0000-0000-0000-000000000022','c:test_carbon','carbon','owner');
         INSERT INTO iam.organization_tags(id,organization_id,name,normalized_name,created_by_membership_id) VALUES('00000000-0000-0000-0000-000000000051','00000000-0000-0000-0000-000000000021','Initial tag','initial_tag','00000000-0000-0000-0000-000000000031');
         COMMIT;
     ").execute(pool).await?;
@@ -404,7 +404,7 @@ async fn seed_bearer(
         .bind(session_id).bind(subject).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO iam.oauth_consent_grants(id,application_id,subject_principal_id,subject_kind,parent_authentication_session_id,selected_membership_ids) VALUES($1,$2,$3,'carbon',$4,ARRAY[$5]::uuid[])")
         .bind(consent_id).bind(APP).bind(subject).bind(session_id).bind(membership).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO iam.access_tokens(id,token_class,token_digest,digest_key_version,token_prefix,authentication_session_id,subject_principal_id,subject_kind,client_application_id,audience,audience_application_id,subject_auth_epoch,client_auth_epoch,expires_at) VALUES($1,'application_access',$2,1,$3,$4,$5,'carbon',$6,'test_org>app-alpha',$6,1,1,transaction_timestamp()+interval '15 minutes')")
+    sqlx::query("INSERT INTO iam.access_tokens(id,token_class,token_digest,digest_key_version,token_prefix,authentication_session_id,subject_principal_id,subject_kind,client_application_id,audience,audience_application_id,subject_auth_epoch,client_auth_epoch,expires_at) VALUES($1,'application_access',$2,1,$3,$4,$5,'carbon',$6,'app-alpha',$6,1,1,transaction_timestamp()+interval '15 minutes')")
         .bind(token_id).bind(digest.as_bytes().as_slice()).bind(&token.expose_secret()[..12]).bind(session_id).bind(subject).bind(APP).execute(&mut *tx).await?;
     for scope in scopes {
         sqlx::query(
@@ -513,7 +513,7 @@ fn scope_gates_reject_external_obo_and_preserve_carbon_only_onboarding() {
         },
         client_application_id: Some(APP),
         audience_application_id: Some(APP),
-        audience: "test_org>app-alpha".to_owned(),
+        audience: "app-alpha".to_owned(),
         organization_id: None,
         membership_id: None,
         scopes: vec![
@@ -532,7 +532,7 @@ fn scope_gates_reject_external_obo_and_preserve_carbon_only_onboarding() {
         assert!(super::support::require_scoped_carbon(&actor, onboarding).is_err());
         actor.0.subject.actor_type = ActorType::Carbon;
     }
-    actor.0.audience_application_id = Some(Id::fixture("test_org>app-beta"));
+    actor.0.audience_application_id = Some(Id::fixture("app-beta"));
     assert!(
         super::support::require_application_scope(&actor, "organization.profile.update").is_err()
     );
@@ -554,7 +554,7 @@ fn projection_actor(scopes: &[&str]) -> Authenticated {
         },
         client_application_id: Some(APP),
         audience_application_id: Some(APP),
-        audience: "test_org>app-alpha".into(),
+        audience: "app-alpha".into(),
         organization_id: None,
         membership_id: None,
         scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
@@ -613,7 +613,7 @@ fn mutation_self_projection_and_authorization_use_self_field_permissions() {
     use super::support::{MutationView, mutation_projection};
     let member = json!({
         "id":"membership", "version":3,
-        "principal":{"type":"carbon", "public_id":"test_carbon"},
+        "principal":{"type":"carbon", "public_id":"c:test_carbon"},
         "job_description":"private role", "org_role":"admin", "capabilities":["members.invite"]
     });
     let actor = projection_actor(&[

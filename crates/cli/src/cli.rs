@@ -275,7 +275,7 @@ pub struct SiliconLoginArgs {
     /// Explicitly share all current active organizations, never future memberships.
     #[arg(long, requires = "app_id")]
     pub all_orgs: bool,
-    /// Silicon ID, in `handle:org` form. With only --app-id, reuse the stored Silicon session.
+    /// Silicon ID, in `si:handle` form. With only --app-id, reuse the stored Silicon session.
     #[arg(long = "sid")]
     pub sid: Option<String>,
     /// Silicon token. Prompted for when omitted, so it stays out of shell history.
@@ -1017,7 +1017,7 @@ pub enum SiliconCommand {
     },
     /// Create a Silicon, returning its credential once.
     Create {
-        /// Local handle using --org, or canonical `handle:org`. A canonical ID
+        /// Local handle using --org, or canonical `si:handle`. A canonical ID
         /// supplies its organization when none is selected and must match one
         /// that is selected.
         handle: String,
@@ -1036,7 +1036,7 @@ pub enum SiliconCommand {
     },
     /// Show one Silicon.
     Show {
-        /// Local handle, or global `handle:org`; local uses --org.
+        /// Local handle, or global `si:handle`; local uses --org.
         silicon_id: String,
     },
     /// Update a Silicon's directory configuration.
@@ -1054,7 +1054,7 @@ pub enum SiliconCommand {
             .multiple(true)
     ))]
     Update {
-        /// Local handle, or global `handle:org`; local uses --org.
+        /// Local handle, or global `si:handle`; local uses --org.
         silicon_id: String,
         /// New display name.
         #[arg(long)]
@@ -1078,7 +1078,7 @@ pub enum SiliconCommand {
     /// Remove a Silicon. Needs --step-up: action
     /// `organization.authorization_change`, resource = its membership ID.
     Remove {
-        /// Local handle, or global `handle:org`; local uses --org.
+        /// Local handle, or global `si:handle`; local uses --org.
         silicon_id: String,
         /// Active Silicon membership to inherit anyone reporting to it.
         #[arg(long)]
@@ -1087,26 +1087,26 @@ pub enum SiliconCommand {
     /// Request credential rotation. Needs --step-up: action
     /// `silicon.rotate_token`, resource = the Silicon principal UUID.
     RotateRequest {
-        /// Local handle, or global `handle:org`; local uses --org.
+        /// Local handle, or global `si:handle`; local uses --org.
         silicon_id: String,
     },
     /// Complete an approved rotation. Needs --step-up: action
     /// `silicon.rotate_token`, resource = the Silicon principal UUID.
     RotateComplete {
-        /// Local handle, or global `handle:org`; local uses --org.
+        /// Local handle, or global `si:handle`; local uses --org.
         silicon_id: String,
         /// The approved request.
         request_id: Uuid,
     },
     /// Show the webhook endpoint.
     Webhook {
-        /// Local handle, or global `handle:org`; local uses --org.
+        /// Local handle, or global `si:handle`; local uses --org.
         silicon_id: String,
     },
     /// Configure or replace the webhook endpoint. Needs --step-up: action
     /// `organization.silicon_webhook.redirect`, resource = its membership ID.
     SetWebhook {
-        /// Local handle, or global `handle:org`; local uses --org.
+        /// Local handle, or global `si:handle`; local uses --org.
         silicon_id: String,
         /// HTTPS endpoint to deliver to.
         #[arg(long = "webhook-url")]
@@ -1115,18 +1115,18 @@ pub enum SiliconCommand {
     /// Remove the webhook endpoint. Needs --step-up: action
     /// `organization.silicon_webhook.redirect`, resource = its membership ID.
     DeleteWebhook {
-        /// Local handle, or global `handle:org`; local uses --org.
+        /// Local handle, or global `si:handle`; local uses --org.
         silicon_id: String,
     },
     /// Show the webhook subscription.
     Subscription {
-        /// Local handle, or global `handle:org`; local uses --org.
+        /// Local handle, or global `si:handle`; local uses --org.
         silicon_id: String,
     },
     /// Replace the webhook subscription. Needs --step-up: action
     /// `organization.silicon_webhook.redirect`, resource = its membership ID.
     SetSubscription {
-        /// Local handle, or global `handle:org`; local uses --org.
+        /// Local handle, or global `si:handle`; local uses --org.
         silicon_id: String,
         /// `all` for every event, or `selected` with --topic.
         #[arg(long, default_value = "all", value_parser = ["all", "selected"])]
@@ -1153,12 +1153,12 @@ pub enum SiliconCommand {
     /// Remove the webhook subscription. Needs --step-up: action
     /// `organization.silicon_webhook.redirect`, resource = its membership ID.
     DeleteSubscription {
-        /// Local handle, or global `handle:org`; local uses --org.
+        /// Local handle, or global `si:handle`; local uses --org.
         silicon_id: String,
     },
     /// List deliveries that exhausted their retries.
     DeadLetters {
-        /// Local handle, or global `handle:org`; local uses --org.
+        /// Local handle, or global `si:handle`; local uses --org.
         silicon_id: String,
         /// Paging.
         #[command(flatten)]
@@ -1166,7 +1166,7 @@ pub enum SiliconCommand {
     },
     /// Re-queue dead-lettered deliveries.
     Replay {
-        /// Local handle, or global `handle:org`; local uses --org.
+        /// Local handle, or global `si:handle`; local uses --org.
         silicon_id: String,
         /// Deliveries to replay.
         #[arg(long = "delivery", value_name = "DELIVERY_ID", required = true)]
@@ -1202,9 +1202,7 @@ pub enum AppCommand {
     },
     /// Register an application, returning its generated client secret once.
     Create {
-        /// Local handle using --org, or canonical `org>handle`. A canonical ID
-        /// supplies its organization when none is selected and must match one
-        /// that is selected.
+        /// Bare application handle. The owning organization is selected with --org.
         app_id: String,
         /// Display name.
         #[arg(long)]
@@ -1241,15 +1239,15 @@ pub enum AppCommand {
     },
     /// Show one application.
     Show {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
     },
     /// Activate a verified application's pending webhook. Requires a direct
     /// Carbon session as owning-org owner/admin or an IAM applications.review
     /// reviewer, and --step-up for action `application.webhook.approve`,
-    /// resource = the internal Application UUID. Does not grant scopes.
+    /// resource = the Application ID. Does not grant scopes.
     ApproveWebhook {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
     },
     /// Update an application.
@@ -1271,7 +1269,7 @@ pub enum AppCommand {
             .multiple(true)
     ))]
     Update {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
         /// New display name.
         #[arg(long)]
@@ -1307,15 +1305,15 @@ pub enum AppCommand {
         testing_idle_days: Option<u16>,
     },
     /// Rotate the client secret. Needs --step-up: action
-    /// `application.client_secret.rotate`, resource = the Application UUID.
+    /// `application.client_secret.rotate`, resource = the Application ID.
     RotateSecret {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
     },
     /// Rotate the webhook signing secret. Needs --step-up: action
-    /// `application.webhook_secret.rotate`, resource = the Application UUID.
+    /// `application.webhook_secret.rotate`, resource = the Application ID.
     RotateWebhookSecret {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
         /// Caller-chosen secret: 32-512 non-whitespace ASCII characters. IAM never generates it.
         #[arg(long)]
@@ -1323,9 +1321,9 @@ pub enum AppCommand {
     },
     /// Discover an application's base URL as another application.
     Discover {
-        /// Target local handle or canonical `org>handle`; local uses --org.
+        /// Target bare app ID.
         app_id: String,
-        /// Requester local handle or canonical `org>handle`; local uses --org.
+        /// Requester bare app ID.
         #[arg(long = "as-app-id", value_name = "APP_ID")]
         requester_app_id: String,
         /// Requester's application secret. Prompted for when omitted.
@@ -1383,12 +1381,12 @@ pub enum AppCommand {
     },
     /// Show the webhook endpoint.
     Webhook {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
     },
     /// Propose a webhook endpoint.
     SetWebhook {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
         /// HTTPS endpoint to deliver to.
         #[arg(long = "webhook-url")]
@@ -1400,7 +1398,7 @@ pub enum AppCommand {
     },
     /// List deliveries that exhausted their retries.
     DeadLetters {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
         /// Paging.
         #[command(flatten)]
@@ -1408,7 +1406,7 @@ pub enum AppCommand {
     },
     /// Re-queue dead-lettered deliveries.
     Replay {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
         /// Deliveries to replay.
         #[arg(long = "delivery", value_name = "DELIVERY_ID", required = true)]
@@ -1416,7 +1414,7 @@ pub enum AppCommand {
     },
     /// Show logins performed through an application.
     History {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
         /// Paging.
         #[command(flatten)]
@@ -1738,7 +1736,7 @@ pub enum AppEnvironmentCommand {
 pub enum AppVerificationCommand {
     /// Issue a new identity key; prints its secret value and expiry once.
     Issue {
-        /// Issuing local handle or canonical `org>handle`; local uses --org.
+        /// Issuing bare app ID.
         app_id: String,
         /// Lifetime in seconds, 60–3600 inclusive. Defaults to 300 at IAM.
         #[arg(long, value_parser = clap::value_parser!(i64).range(60..=3600))]
@@ -1749,9 +1747,9 @@ pub enum AppVerificationCommand {
     },
     /// Verify a calling application's identity using the receiving app's credentials.
     Verify {
-        /// Calling local handle or canonical `org>handle`; local uses --org.
+        /// Calling bare app ID.
         app_id: String,
-        /// Receiving local handle or canonical `org>handle`; local uses --org.
+        /// Receiving bare app ID.
         #[arg(long = "as-app-id", value_name = "APP_ID")]
         receiver_app_id: String,
         /// Calling application's key. Prompted for when omitted.
@@ -1778,7 +1776,7 @@ pub enum AppTokenCommand {
     /// tokens return no organization snapshot. No webhook or directory edit is
     /// needed. The backend must support authorization snapshots.
     Authorization {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
         /// Application access token. Prompted for when omitted.
         #[arg(long)]
@@ -1799,7 +1797,7 @@ pub enum AppTokenCommand {
     /// not the same as an inactive token. The backend must support authorization
     /// snapshots for unscoped logins.
     Authorizations {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
         /// Application access token. Prompted for when omitted.
         #[arg(long)]
@@ -1810,7 +1808,7 @@ pub enum AppTokenCommand {
     },
     /// Exchange a single-use short-lived token for an Application session.
     Exchange {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
         /// Short-lived token. Prompted for when omitted.
         #[arg(long)]
@@ -1825,7 +1823,7 @@ pub enum AppTokenCommand {
     },
     /// Rotate an Application refresh token and its access token.
     Refresh {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
         /// Refresh token. Prompted for when omitted.
         #[arg(long)]
@@ -1840,7 +1838,7 @@ pub enum AppTokenCommand {
     },
     /// Ask IAM for a token's current, authoritative state.
     Introspect {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
         /// Access or refresh token. Prompted for when omitted.
         #[arg(long)]
@@ -1857,7 +1855,7 @@ pub enum AppTokenCommand {
     },
     /// Revoke one access token, or the complete family of a refresh token.
     Revoke {
-        /// Local handle, or canonical `org>handle`; local uses --org.
+        /// Bare globally unique app ID.
         app_id: String,
         /// Access or refresh token. Prompted for when omitted.
         #[arg(long)]
@@ -1889,9 +1887,9 @@ pub enum AppTokenType {
 pub enum AppOboCommand {
     /// Discover an Application's callable OBO endpoint catalog.
     Endpoints {
-        /// Audience local handle or canonical `org>handle`; local uses --org.
+        /// Audience bare app ID.
         audience_app_id: String,
-        /// Requester local handle or canonical `org>handle`; local uses --org.
+        /// Requester bare app ID.
         #[arg(long = "as-app-id", value_name = "APP_ID")]
         requester_app_id: String,
         /// Requester's Application secret. Prompted for when omitted.
@@ -1900,11 +1898,11 @@ pub enum AppOboCommand {
     },
     /// Bind a single-use proof to one exact downstream request.
     Exchange {
-        /// Audience local handle or canonical `org>handle`; local uses --org.
+        /// Audience bare app ID.
         audience_app_id: String,
         /// Registered endpoint identifier from `app obo endpoints`.
         endpoint_id: String,
-        /// Requester local handle or canonical `org>handle`; local uses --org.
+        /// Requester bare app ID.
         #[arg(long = "as-app-id", value_name = "APP_ID")]
         requester_app_id: String,
         /// Requester's Application secret. Prompted for when omitted.
@@ -1936,7 +1934,7 @@ pub enum AppOboCommand {
     },
     /// Consume and verify an OBO proof as its audience Application.
     Verify {
-        /// Audience local handle or canonical `org>handle`; local uses --org.
+        /// Audience bare app ID.
         audience_app_id: String,
         /// Audience Application secret. Prompted for when omitted.
         #[arg(long)]
@@ -2201,7 +2199,7 @@ mod tests {
     fn app_verification_issuance_bounds_the_optional_lifetime() {
         use clap::Parser as _;
 
-        let base = ["iam", "app", "verification", "issue", "acme>checkout"];
+        let base = ["iam", "app", "verification", "issue", "checkout"];
         assert!(matches!(
             Cli::try_parse_from(base),
             Ok(Cli {
@@ -2226,7 +2224,7 @@ mod tests {
     fn app_verification_requires_a_separate_receiving_application() {
         use clap::Parser as _;
 
-        let base = ["iam", "app", "verification", "verify", "acme>checkout"];
+        let base = ["iam", "app", "verification", "verify", "checkout"];
         assert!(Cli::try_parse_from(base).is_err());
         assert!(matches!(
             Cli::try_parse_from(base.into_iter().chain(["--as-app-id", "vendor>billing"])),
@@ -2234,7 +2232,7 @@ mod tests {
                 command: super::Command::App(super::AppCommand::Verification(
                     super::AppVerificationCommand::Verify { app_id, receiver_app_id, .. }
                 )), ..
-            }) if app_id == "acme>checkout" && receiver_app_id == "vendor>billing"
+            }) if app_id == "checkout" && receiver_app_id == "vendor>billing"
         ));
     }
 
@@ -2247,7 +2245,7 @@ mod tests {
             "app",
             "bundle",
             "update",
-            "acme>workspace",
+            "workspace",
             "--clear-logo",
         ]);
         assert!(matches!(
@@ -2269,14 +2267,14 @@ mod tests {
                 "app",
                 "bundle",
                 "update",
-                "acme>workspace",
+                "workspace",
                 "--clear-logo",
                 "--logo",
                 "https://example.test/logo.svg"
             ])
             .is_err()
         );
-        assert!(Cli::try_parse_from(["iam", "app", "bundle", "update", "acme>workspace"]).is_err());
+        assert!(Cli::try_parse_from(["iam", "app", "bundle", "update", "workspace"]).is_err());
     }
 
     #[test]
@@ -2391,7 +2389,7 @@ mod tests {
             "iam",
             "app",
             "set-webhook",
-            "acme>console",
+            "console",
             "--webhook-url",
             "https://hooks.example/app",
         ]);
@@ -2896,15 +2894,15 @@ mod tests {
     fn application_token_protocol_is_reachable_without_putting_secrets_in_argv() {
         use clap::Parser as _;
 
-        assert!(Cli::try_parse_from(["iam", "app", "token", "exchange", "acme>checkout"]).is_ok());
-        assert!(Cli::try_parse_from(["iam", "app", "token", "refresh", "acme>checkout"]).is_ok());
+        assert!(Cli::try_parse_from(["iam", "app", "token", "exchange", "checkout"]).is_ok());
+        assert!(Cli::try_parse_from(["iam", "app", "token", "refresh", "checkout"]).is_ok());
         assert!(
             Cli::try_parse_from([
                 "iam",
                 "app",
                 "token",
                 "revoke",
-                "acme>checkout",
+                "checkout",
                 "--token-type",
                 "refresh-token",
             ])
@@ -2916,7 +2914,7 @@ mod tests {
                 "app",
                 "token",
                 "introspect",
-                "acme>checkout",
+                "checkout",
                 "--token-type",
                 "access-token",
             ])
@@ -2934,9 +2932,9 @@ mod tests {
                 "app",
                 "obo",
                 "endpoints",
-                "acme>billing",
+                "billing",
                 "--as-app-id",
-                "acme>checkout",
+                "checkout",
             ])
             .is_ok()
         );
@@ -2946,10 +2944,10 @@ mod tests {
                 "app",
                 "obo",
                 "exchange",
-                "acme>billing",
+                "billing",
                 "invoices.create",
                 "--as-app-id",
-                "acme>checkout",
+                "checkout",
                 "--method",
                 "post",
                 "--body-file",
@@ -2963,7 +2961,7 @@ mod tests {
                 "app",
                 "obo",
                 "verify",
-                "acme>billing",
+                "billing",
                 "--method",
                 "POST",
                 "--path",
@@ -2977,10 +2975,10 @@ mod tests {
                 "app",
                 "obo",
                 "exchange",
-                "acme>billing",
+                "billing",
                 "invoices.create",
                 "--as-app-id",
-                "acme>checkout",
+                "checkout",
                 "--method",
                 "POST",
                 "--body",

@@ -118,7 +118,14 @@ impl Client {
     /// # Errors
     /// Rejects malformed application credentials locally.
     pub fn with_testing_application(&self, app_id: &str, secret: &str) -> Result<Self> {
-        if !app_id.contains('>')
+        if !(1..=80).contains(&app_id.len())
+            || !app_id
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_lowercase)
+            || !app_id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
             || secret.len() != 47
             || !secret.starts_with("ask_")
             || !secret[4..]
@@ -938,7 +945,7 @@ mod tests {
         };
         let Ok(client) = Client::builder("https://example.test").and_then(|builder| {
             builder
-                .credential(Credential::application("acme>caller", "ask_secret"))
+                .credential(Credential::application("caller", "ask_secret"))
                 .environment(environment)
                 .build()
         }) else {

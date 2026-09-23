@@ -33,7 +33,7 @@
 //! use silicon_iam_client::{Client, Credential, Mutation};
 //!
 //! # async fn run() -> silicon_iam_client::Result<()> {
-//! let app_id = "acme>checkout";
+//! let app_id = "checkout";
 //! let application = Client::new("https://backend.iam.teamofsilicons.com")?
 //!     .with_credential(Credential::application(app_id, "ask_example"));
 //! let tokens = application

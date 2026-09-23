@@ -48,9 +48,9 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
     .execute(&pool)
     .await
     .context("unscoped membership disclosure and renewed consent")?;
-    let app = Id::fixture("test_org>app-alpha");
-    let target = Id::fixture("test_org>app-beta");
-    let actor = Id::fixture("test_carbon");
+    let app = Id::fixture("app-alpha");
+    let target = Id::fixture("app-beta");
+    let actor = Id::fixture("c:test_carbon");
     let org = Id::from_u128(0x21);
     sqlx::query("INSERT INTO iam.application_obo_endpoints(organization_id,application_id,endpoint_id,path,metadata_definition,critical) VALUES($1,$2,'files.read','/files','{}',true),($1,$2,'files.list','/files/list','{}',false)").bind(org).bind(target).execute(&pool).await?;
     let mut tx = pool.begin().await?;
@@ -58,7 +58,7 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
         .execute(&mut *tx)
         .await?;
     sqlx::query("SELECT set_config('iam.principal_id',$1,true),set_config('iam.organization_id',$2,true),set_config('iam.application_id',$3,true)").bind(actor.to_string()).bind(org.to_string()).bind(app.to_string()).execute(&mut *tx).await?;
-    let scope = json!({"iam":["self.identity.read","self.profile.read"],"external":[{"app_id":"test_org>app-beta","endpoint_id":"files.read"},{"app_id":"test_org>app-beta","endpoint_id":"files.list"}]});
+    let scope = json!({"iam":["self.identity.read","self.profile.read"],"external":[{"app_id":"app-beta","endpoint_id":"files.read"},{"app_id":"app-beta","endpoint_id":"files.list"}]});
     sqlx::query("SELECT iam_private.configure_application_scopes($1,$2,$3)")
         .bind(app)
         .bind(Json(&scope))
@@ -70,7 +70,7 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
     ensure!(
         active
             == vec![
-                "obo:test_org>app-beta:files.list",
+                "obo:app-beta:files.list",
                 "self.identity.read",
                 "self.profile.read"
             ],
@@ -109,7 +109,7 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
         detail["messages"].as_array().context("messages")?.len() == 2,
         "initial instructions and request message missing"
     );
-    ensure!(detail["target_app_id"] == "test_org>app-beta");
+    ensure!(detail["target_app_id"] == "app-beta");
     let context = detail["current_scope_context"]
         .as_array()
         .context("scope context")?;
@@ -117,7 +117,7 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
         context.len() == 2,
         "review context must include non-critical scopes but exclude IAM scopes"
     );
-    ensure!(context[0]["scope"] == "obo:test_org>app-beta:files.list");
+    ensure!(context[0]["scope"] == "obo:app-beta:files.list");
     ensure!(context[0]["critical"] == false && context[0]["in_review"] == false);
     ensure!(context[1]["in_review"] == true);
     let messages = detail["messages"].as_array().context("messages")?;
@@ -173,7 +173,7 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
     .fetch_all(&pool)
     .await?;
     ensure!(
-        notifications == vec![(Id::fixture("test_admin"), 3), (actor, 3)],
+        notifications == vec![(Id::fixture("c:test_admin"), 3), (actor, 3)],
         "submission, decision, and reply must each email the owner and admin once, even when both apps share an organization"
     );
     Ok(())

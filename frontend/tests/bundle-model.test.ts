@@ -98,12 +98,12 @@ test("new bundle payload includes its logo and unique selected member applicatio
     bundleFormPayload({
       name: " Workspace ",
       logo: "https://example.com/logo.png",
-      appIds: ["org>a", "org>a", "org>b"],
+      appIds: ["a", "a", "b"],
     }),
     {
       app_name: "Workspace",
       app_logo: "https://example.com/logo.png",
-      app_ids: ["org>a", "org>b"],
+      app_ids: ["a", "b"],
     },
   );
   assert.throws(() =>
@@ -115,7 +115,7 @@ test("bundle edit preserves untouched logo and members, updates URLs and clears 
   const original = {
     app_name: "Workspace",
     app_logo: "https://example.com/old.png",
-    app_ids: ["org>a", "org>b"],
+    app_ids: ["a", "b"],
   };
   const draft = {
     name: "Workspace",
@@ -138,13 +138,13 @@ test("bundle edit preserves untouched logo and members, updates URLs and clears 
     app_logo: null,
   });
   assert.deepEqual(
-    bundleFormPayload({ ...draft, appIds: ["org>b"] }, original),
-    { app_ids: ["org>b"] },
+    bundleFormPayload({ ...draft, appIds: ["b"] }, original),
+    { app_ids: ["b"] },
   );
   assert.deepEqual(original, {
     app_name: "Workspace",
     app_logo: "https://example.com/old.png",
-    app_ids: ["org>a", "org>b"],
+    app_ids: ["a", "b"],
   });
 });
 

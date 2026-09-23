@@ -39,38 +39,38 @@ async fn seed_history(pool: &PgPool) -> anyhow::Result<()> {
         BEGIN;
         INSERT INTO iam.organizations (id, org_id, created_by_carbon_id, name)
         VALUES ('00000000-0000-0000-0000-000000000022', 'other_org',
-                'test_admin', 'Other Organization');
+                'c:test_admin', 'Other Organization');
         INSERT INTO iam.organization_memberships
             (id, organization_id, principal_id, principal_kind, org_role)
         VALUES ('00000000-0000-0000-0000-000000000033',
                 '00000000-0000-0000-0000-000000000022',
-                'test_admin', 'carbon', 'owner');
+                'c:test_admin', 'carbon', 'owner');
         INSERT INTO iam.principals (id, kind, status, activated_at)
-        VALUES ('test_silicon:other_org', 'silicon', 'active', transaction_timestamp());
+        VALUES ('si:test_silicon', 'silicon', 'active', transaction_timestamp());
         INSERT INTO iam.organization_memberships
             (id, organization_id, principal_id, principal_kind, org_role)
         VALUES ('00000000-0000-0000-0000-000000000531',
                 '00000000-0000-0000-0000-000000000022',
-                'test_silicon:other_org', 'silicon', 'member');
+                'si:test_silicon', 'silicon', 'member');
         INSERT INTO iam.silicons
             (id, organization_id, membership_id, organization_handle, silicon_handle, display_name, provisioning_status)
-        VALUES ('test_silicon:other_org',
+        VALUES ('si:test_silicon',
                 '00000000-0000-0000-0000-000000000022',
                 '00000000-0000-0000-0000-000000000531', 'other_org', 'test_silicon', 'Test Silicon', 'active');
         INSERT INTO iam.authentication_events
             (id, event_type, outcome, subject_principal_id, subject_kind, application_id, organization_id, request_id)
         VALUES
           ('00000000-0000-0000-0000-000000000601', 'oauth.authorization', 'success',
-           'test_carbon', 'carbon',
-           'test_org>app-alpha', '00000000-0000-0000-0000-000000000021',
+           'c:test_carbon', 'carbon',
+           'app-alpha', '00000000-0000-0000-0000-000000000021',
            '00000000-0000-0000-0000-000000000611'),
           ('00000000-0000-0000-0000-000000000602', 'oauth.token_exchange', 'failure',
-           'test_silicon:other_org', 'silicon',
-           'test_org>app-alpha', '00000000-0000-0000-0000-000000000022',
+           'si:test_silicon', 'silicon',
+           'app-alpha', '00000000-0000-0000-0000-000000000022',
            '00000000-0000-0000-0000-000000000612'),
           ('00000000-0000-0000-0000-000000000603', 'oauth.token_exchange', 'success',
-           'test_silicon:other_org', 'silicon',
-           'test_org>app-beta', '00000000-0000-0000-0000-000000000022',
+           'si:test_silicon', 'silicon',
+           'app-beta', '00000000-0000-0000-0000-000000000022',
            '00000000-0000-0000-0000-000000000613');
         COMMIT;
     ").execute(pool).await?;
@@ -86,7 +86,7 @@ async fn seed_history(pool: &PgPool) -> anyhow::Result<()> {
 }
 
 async fn assert_history(pool: &PgPool, testing: bool) -> anyhow::Result<()> {
-    let actor_id = Id::fixture("test_carbon");
+    let actor_id = Id::fixture("c:test_carbon");
     let mut tx = pool.begin().await?;
     sqlx::query("SET LOCAL ROLE silicon_iam_api")
         .execute(&mut *tx)
@@ -95,11 +95,11 @@ async fn assert_history(pool: &PgPool, testing: bool) -> anyhow::Result<()> {
         .bind(actor_id.to_string())
         .execute(&mut *tx)
         .await?;
-    let app = resolve_readable_app(&mut tx, actor_id, "test_org>app-alpha", false)
+    let app = resolve_readable_app(&mut tx, actor_id, "app-alpha", false)
         .await
         .map_err(history_error)?;
     let hidden: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM iam.silicons WHERE id='test_silicon:other_org'")
+        sqlx::query_scalar("SELECT count(*) FROM iam.silicons WHERE id='si:test_silicon'")
             .fetch_one(&mut *tx)
             .await?;
     ensure!(
@@ -115,7 +115,7 @@ async fn assert_history(pool: &PgPool, testing: bool) -> anyhow::Result<()> {
     );
     let hidden_event = &events[0];
     ensure!(hidden_event.actor.actor_type == "silicon" && hidden_event.actor.public_id.is_none());
-    ensure!(hidden_event.actor.principal_id == Id::fixture("test_silicon:other_org"));
+    ensure!(hidden_event.actor.principal_id == Id::fixture("si:test_silicon"));
     ensure!(hidden_event.org_id.is_none() && !hidden_event.success);
     ensure!(hidden_event.event_type == "oauth_token_exchange");
     ensure!(hidden_event.request_id == Id::from_u128(0x612).to_string());
@@ -132,7 +132,7 @@ async fn assert_history(pool: &PgPool, testing: bool) -> anyhow::Result<()> {
     )
     .await
     .map_err(history_error)?;
-    ensure!(next.len() == 1 && next[0].actor.public_id.as_deref() == Some("test_carbon"));
+    ensure!(next.len() == 1 && next[0].actor.public_id.as_deref() == Some("c:test_carbon"));
     ensure!(next[0].success && next[0].id != hidden_event.id);
     if testing {
         sqlx::query("SELECT set_config('iam.testing_environment_id','00000000-0000-0000-0000-000000000802',true)")
@@ -142,8 +142,7 @@ async fn assert_history(pool: &PgPool, testing: bool) -> anyhow::Result<()> {
             .execute(&mut *tx)
             .await?;
     }
-    let Err(error) = resolve_readable_app(&mut tx, actor_id, "test_org>app-alpha", false).await
-    else {
+    let Err(error) = resolve_readable_app(&mut tx, actor_id, "app-alpha", false).await else {
         anyhow::bail!("an unavailable application must not authorize history access");
     };
     ensure!(error.into_response().status() == StatusCode::NOT_FOUND);

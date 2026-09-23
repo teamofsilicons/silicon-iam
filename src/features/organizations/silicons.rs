@@ -133,11 +133,10 @@ pub(super) async fn create_silicon(
         .map_err(|_| AppError::Internal {
             category: "silicon_token_digest",
         })?;
-    let principal_id = Id::identity(&format!("{}:{org_id}", input.silicon_id)).map_err(|_| {
-        AppError::Internal {
+    let principal_id =
+        Id::identity(&format!("si:{}", input.silicon_id)).map_err(|_| AppError::Internal {
             category: "canonical_silicon_identity",
-        }
-    })?;
+        })?;
     let membership_id = Id::now_v7();
     sqlx::query(
         r"
@@ -148,7 +147,7 @@ pub(super) async fn create_silicon(
     .bind(principal_id)
     .execute(&mut *scope.transaction)
     .await
-    .map_err(support::database)?;
+    .map_err(|error| support::conflict_from_database(error, "silicon_id_unavailable"))?;
     sqlx::query(
         r"
         INSERT INTO iam.organization_memberships (
@@ -216,7 +215,7 @@ pub(super) async fn create_silicon(
     let silicon = fetch_silicon(
         &mut scope.transaction,
         scope.access.organization_id,
-        &format!("{}:{org_id}", input.silicon_id),
+        &format!("si:{}", input.silicon_id),
         &silicon_profile_base(&state)?,
     )
     .await?;
@@ -1081,13 +1080,10 @@ pub(super) fn silicon_profile_base(state: &ApiState) -> Result<String, AppError>
         })
 }
 
-pub(super) fn validate_global_silicon_id(value: &str, org_id: &str) -> Result<(), AppError> {
-    let Some((handle, suffix)) = value.rsplit_once(':') else {
+pub(super) fn validate_global_silicon_id(value: &str, _org_id: &str) -> Result<(), AppError> {
+    let Some(handle) = value.strip_prefix("si:") else {
         return Err(validation::field("silicon_id", "has an invalid format"));
     };
-    if suffix != org_id {
-        return Err(AppError::NotFound);
-    }
     let mut synthetic = SiliconCreate {
         silicon_id: handle.to_owned(),
         display_name: Some(handle.to_owned()),
@@ -1277,12 +1273,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn global_silicon_ids_are_bound_to_the_route_organization() {
-        assert!(validate_global_silicon_id("worker:acme", "acme").is_ok());
-        assert!(matches!(
-            validate_global_silicon_id("worker:other", "acme"),
-            Err(AppError::NotFound)
-        ));
+    fn global_silicon_ids_do_not_encode_the_route_organization() {
+        assert!(validate_global_silicon_id("si:worker", "acme").is_ok());
+        assert!(validate_global_silicon_id("si:worker", "other").is_ok());
+        assert!(validate_global_silicon_id("worker:acme", "acme").is_err());
         assert!(validate_global_silicon_id("worker", "acme").is_err());
     }
 
@@ -1295,14 +1289,14 @@ mod tests {
         let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let owner_id = Id::fixture("hierarchy-owner");
+        let owner_id = Id::fixture("c:hierarchy-owner");
         let organization_id = Id::from_u128(0xb02);
         let owner_membership_id = Id::from_u128(0xb03);
-        let root_id = Id::fixture("root:hierarchy-org");
+        let root_id = Id::fixture("si:root");
         let root_membership_id = Id::from_u128(0xb05);
-        let child_id = Id::fixture("child:hierarchy-org");
+        let child_id = Id::fixture("si:child");
         let child_membership_id = Id::from_u128(0xb07);
-        let grandchild_id = Id::fixture("grandchild:hierarchy-org");
+        let grandchild_id = Id::fixture("si:grandchild");
         let grandchild_membership_id = Id::from_u128(0xb09);
         let seed = format!(
             r"
@@ -1314,7 +1308,7 @@ mod tests {
               ('{child_id}', 'silicon', 'active', transaction_timestamp()),
               ('{grandchild_id}', 'silicon', 'active', transaction_timestamp());
             INSERT INTO iam.carbons (id, carbon_id, display_name)
-            VALUES ('{owner_id}', 'hierarchy-owner', 'Hierarchy Owner');
+            VALUES ('{owner_id}', 'c:hierarchy-owner', 'Hierarchy Owner');
             INSERT INTO iam.carbon_contacts (
                 id, carbon_id, kind, ciphertext, nonce, encryption_key_version, verified_at
             ) VALUES

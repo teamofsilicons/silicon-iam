@@ -30,12 +30,8 @@ async fn rotate(
     let actor = service.actor(&state, &headers).await?;
     let mut tx = begin(&state, &actor).await?;
     security::lock_step_up_actor(&mut tx, actor.subject.id).await?;
-    manager(
-        &mut tx,
-        &actor,
-        path.split_once('>').map_or("", |(org, _)| org),
-    )
-    .await?;
+    let org = application_org(&mut tx, &path).await?;
+    manager(&mut tx, &actor, &org).await?;
     if let Some(response) = claim(
         &mut tx,
         &state,

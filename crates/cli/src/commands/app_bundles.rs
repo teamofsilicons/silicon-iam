@@ -70,7 +70,7 @@ pub async fn run(context: &Context, command: AppBundleCommand) -> Result<()> {
             name,
             logo,
         } => {
-            let (app_id, org_id) = context.application_creation_identity(&bundle_id)?;
+            let (app_id, org_id) = context.bundle_creation_identity(&bundle_id)?;
             let bundle = client
                 .bundles()
                 .create(
@@ -87,7 +87,7 @@ pub async fn run(context: &Context, command: AppBundleCommand) -> Result<()> {
             json(&bundle)
         }
         AppBundleCommand::Show { bundle_id } => {
-            let bundle_id = context.application_id(&bundle_id)?;
+            let bundle_id = context.bundle_id(&bundle_id)?;
             json(&client.bundles().get(&bundle_id).await?)
         }
         AppBundleCommand::Update {
@@ -97,7 +97,7 @@ pub async fn run(context: &Context, command: AppBundleCommand) -> Result<()> {
             logo,
             clear_logo,
         } => {
-            let bundle_id = context.application_id(&bundle_id)?;
+            let bundle_id = context.bundle_id(&bundle_id)?;
             let current = client.bundles().get(&bundle_id).await?;
             json(
                 &client
@@ -120,7 +120,7 @@ pub async fn run(context: &Context, command: AppBundleCommand) -> Result<()> {
             )
         }
         AppBundleCommand::Delete { bundle_id } => {
-            let bundle_id = context.application_id(&bundle_id)?;
+            let bundle_id = context.bundle_id(&bundle_id)?;
             let current = client.bundles().get(&bundle_id).await?;
             client
                 .bundles()
@@ -140,7 +140,7 @@ pub async fn run(context: &Context, command: AppBundleCommand) -> Result<()> {
             all_orgs,
             approve_scopes,
         } => {
-            let bundle_id = context.application_id(&bundle_id)?;
+            let bundle_id = context.bundle_id(&bundle_id)?;
             let choices = client.auth().bundle_login_organizations(&bundle_id).await?;
             if context.format == Format::Text {
                 println!(

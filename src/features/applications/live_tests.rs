@@ -16,13 +16,13 @@ use crate::infrastructure::testing_plane::{self, SelectedEnvironment};
 
 use super::applications::ensure_application_id_available_for_testing;
 
-const CARBON_ID: Id = Id::fixture("test_carbon");
-const ADMIN_CARBON_ID: Id = Id::fixture("test_admin");
+const CARBON_ID: Id = Id::fixture("c:test_carbon");
+const ADMIN_CARBON_ID: Id = Id::fixture("c:test_admin");
 const ORGANIZATION_ID: Id = Id::from_u128(0x21);
 const OWNER_MEMBERSHIP_ID: Id = Id::from_u128(0x31);
 const ADMIN_MEMBERSHIP_ID: Id = Id::from_u128(0x32);
-const APP_A_ID: Id = Id::fixture("test_org>app-alpha");
-const APP_B_ID: Id = Id::fixture("test_org>app-beta");
+const APP_A_ID: Id = Id::fixture("app-alpha");
+const APP_B_ID: Id = Id::fixture("app-beta");
 const CONSENT_ID: Id = Id::from_u128(0x71);
 const FAMILY_ID: Id = Id::from_u128(0x91);
 const SECOND_FAMILY_ID: Id = Id::from_u128(0x93);
@@ -73,7 +73,7 @@ async fn private_application_authority_and_endpoint_lifetime(pool: &PgPool) -> a
     .execute(&mut *tx)
     .await?;
     let public = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM iam_private.discover_application_origin('test_org>app-alpha',NULL)",
+        "SELECT count(*) FROM iam_private.discover_application_origin('app-alpha',NULL)",
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -86,7 +86,7 @@ async fn private_application_authority_and_endpoint_lifetime(pool: &PgPool) -> a
         .execute(&mut *tx)
         .await?;
     let hidden = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM iam_private.discover_application_origin('test_org>app-alpha',NULL)",
+        "SELECT count(*) FROM iam_private.discover_application_origin('app-alpha',NULL)",
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -189,7 +189,7 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
             $1, $2, $3, $4, 'silicon', $5, $6
         ) AS authority
     ";
-    let silicon_id = Id::fixture("test_silicon:test_org");
+    let silicon_id = Id::fixture("si:test_silicon");
     let membership_id = Id::from_u128(0x531);
     let parent_id = Id::from_u128(0x541);
     let second_parent_id = Id::from_u128(0x542);
@@ -199,24 +199,24 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
     sqlx::raw_sql(
         r"
         INSERT INTO iam.principals (id, kind, status, activated_at)
-        VALUES ('test_silicon:test_org', 'silicon', 'active',
+        VALUES ('si:test_silicon', 'silicon', 'active',
                 transaction_timestamp());
         INSERT INTO iam.organization_memberships (
             id, organization_id, principal_id, principal_kind, org_role
         ) VALUES ('00000000-0000-0000-0000-000000000531',
                   '00000000-0000-0000-0000-000000000021',
-                  'test_silicon:test_org', 'silicon', 'member');
+                  'si:test_silicon', 'silicon', 'member');
         INSERT INTO iam.silicons (
             id, organization_id, membership_id, organization_handle, silicon_handle,
             display_name, provisioning_status
-        ) VALUES ('test_silicon:test_org',
+        ) VALUES ('si:test_silicon',
                   '00000000-0000-0000-0000-000000000021',
                   '00000000-0000-0000-0000-000000000531', 'test_org', 'test_silicon',
                   'Test Silicon', 'active');
         INSERT INTO iam.authentication_sessions (
             id, subject_principal_id, subject_kind, authentication_method,
             assurance_level, subject_auth_epoch, idle_expires_at, absolute_expires_at
-        ) SELECT id, 'test_silicon:test_org', 'silicon',
+        ) SELECT id, 'si:test_silicon', 'silicon',
                  'silicon_credential', 1, 1,
                  transaction_timestamp() + interval '1 day',
                  transaction_timestamp() + interval '2 days'
@@ -228,14 +228,14 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
             selected_membership_ids
         ) VALUES (
             '00000000-0000-0000-0000-000000000571',
-            'test_org>app-alpha',
-            'test_silicon:test_org', 'silicon', NULL, NULL,
+            'app-alpha',
+            'si:test_silicon', 'silicon', NULL, NULL,
             '00000000-0000-0000-0000-000000000541',
             ARRAY['00000000-0000-0000-0000-000000000531'::uuid]
         ), (
             '00000000-0000-0000-0000-000000000572',
-            'test_org>app-alpha',
-            'test_silicon:test_org', 'silicon',
+            'app-alpha',
+            'si:test_silicon', 'silicon',
             '00000000-0000-0000-0000-000000000021',
             '00000000-0000-0000-0000-000000000531',
             '00000000-0000-0000-0000-000000000541',
@@ -261,7 +261,7 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
             .fetch_optional(&mut *transaction)
             .await?
             .context("a live Silicon login lost its OAuth subject authority")?;
-        ensure!(authority["subject_public_id"] == "test_silicon:test_org");
+        ensure!(authority["subject_public_id"] == "si:test_silicon");
         ensure!(authority["subject_auth_epoch"] == 1);
         ensure!(
             authority["org_id"] == serde_json::json!(organization.map(|_| "test_org"))
@@ -368,15 +368,15 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
     for (label, mutation) in [
         (
             "principal epoch change",
-            "UPDATE iam.principals SET auth_epoch = auth_epoch + 1 WHERE id = 'test_silicon:test_org'",
+            "UPDATE iam.principals SET auth_epoch = auth_epoch + 1 WHERE id = 'si:test_silicon'",
         ),
         (
             "suspended principal",
-            "UPDATE iam.principals SET status = 'suspended', suspended_at = transaction_timestamp() WHERE id = 'test_silicon:test_org'",
+            "UPDATE iam.principals SET status = 'suspended', suspended_at = transaction_timestamp() WHERE id = 'si:test_silicon'",
         ),
         (
             "inactive Silicon",
-            "UPDATE iam.silicons SET provisioning_status = 'hook_error' WHERE id = 'test_silicon:test_org'",
+            "UPDATE iam.silicons SET provisioning_status = 'hook_error' WHERE id = 'si:test_silicon'",
         ),
         (
             "suspended organization",
@@ -589,7 +589,7 @@ async fn selected_login_additions_preserve_existing_organizations(
     // OBO resolves the calling Application's own organization for an unscoped
     // parent, and refuses a subject who is not an active member of it.
     sqlx::query(
-        "INSERT INTO iam.access_token_scopes (access_token_id, scope) VALUES ($1, 'obo:test_org>app-beta:trust.manage')",
+        "INSERT INTO iam.access_token_scopes (access_token_id, scope) VALUES ($1, 'obo:app-beta:trust.manage')",
     )
     .bind(unscoped_token)
     .execute(&mut *transaction)
@@ -693,7 +693,7 @@ async fn obo_exchange_authority(
         SELECT endpoint_version
         FROM iam_private.lock_current_application_obo_exchange_authority(
             $1, 1, $2, $3, 'carbon'::iam.principal_kind, $4, $5,
-            'test_org>app-beta', 'trust.manage'
+            'app-beta', 'trust.manage'
         )
         ",
     )
@@ -812,7 +812,7 @@ async fn direct_test_creation_rejects_a_production_application_id(
     production_pool: &PgPool,
 ) -> anyhow::Result<()> {
     ensure!(
-        ensure_application_id_available_for_testing(production_pool, "test_org>app-alpha")
+        ensure_application_id_available_for_testing(production_pool, "app-alpha")
             .await
             .is_ok(),
         "the production create path must not reject its own identifiers"
@@ -823,7 +823,7 @@ async fn direct_test_creation_rejects_a_production_application_id(
             id: Id::from_u128(0x501),
             organization_id: ORGANIZATION_ID,
         },
-        ensure_application_id_available_for_testing(production_pool, "test_org>app-alpha"),
+        ensure_application_id_available_for_testing(production_pool, "app-alpha"),
     )
     .await
     else {
@@ -854,7 +854,7 @@ async fn qualified_application_directory_and_webhook_rotation_are_consistent(
     .fetch_one(pool)
     .await?;
     ensure!(
-        app_id == "test_org>app-alpha" && base_url == "https://alpha.example.test/api",
+        app_id == "app-alpha" && base_url == "https://alpha.example.test/api",
         "Application directory fields were not stored in their canonical form"
     );
 
@@ -1005,7 +1005,7 @@ async fn pending_webhook_application_is_importable(pool: &PgPool) -> anyhow::Res
     let imported_endpoint = sqlx::query_scalar::<_, Id>(
         "SELECT source_webhook_endpoint_id FROM iam_private.get_testing_application_import($1)",
     )
-    .bind("test_org>app-beta")
+    .bind("app-beta")
     .fetch_optional(&mut *transaction)
     .await?;
     ensure!(
@@ -1019,9 +1019,9 @@ async fn pending_webhook_application_is_importable(pool: &PgPool) -> anyhow::Res
 async fn authorized_application_organization_projection_is_exact(
     pool: &PgPool,
 ) -> anyhow::Result<()> {
-    let reviewer_id = Id::fixture("test_reviewer");
+    let reviewer_id = Id::fixture("c:test_reviewer");
     let other_organization_id = Id::from_u128(0x22);
-    let other_application_id = Id::fixture("other_org>app-gamma");
+    let other_application_id = Id::fixture("app-gamma");
     let mut transaction = pool.begin().await?;
     sqlx::query(
         r"
@@ -1035,7 +1035,7 @@ async fn authorized_application_organization_projection_is_exact(
     .execute(&mut *transaction)
     .await?;
     sqlx::query(
-        "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, 'test_reviewer', 'Test Reviewer')",
+        "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, 'c:test_reviewer', 'Test Reviewer')",
     )
     .bind(reviewer_id)
     .execute(&mut *transaction)
@@ -1064,7 +1064,7 @@ async fn authorized_application_organization_projection_is_exact(
         r"
         INSERT INTO iam.applications (
             id, app_id, organization_id, created_by_carbon_id, review_status, base_url
-        ) VALUES ($1, 'other_org>app-gamma', $2, $3, 'verified',
+        ) VALUES ($1, 'app-gamma', $2, $3, 'verified',
                   'https://gamma.example.test/api')
         ",
     )
@@ -1703,7 +1703,7 @@ async fn application_scope_revocation_contains_existing_access(
     )
     .bind(APP_A_ID)
     .bind(CARBON_ID)
-    .bind(vec!["obo:test_org>app-beta:trust.manage".to_owned()])
+    .bind(vec!["obo:app-beta:trust.manage".to_owned()])
     .fetch_all(&mut *transaction)
     .await?;
     ensure!(
@@ -2039,7 +2039,7 @@ async fn stale_obo_parent_authority_is_rejected(pool: &PgPool) -> anyhow::Result
          AND membership.principal_kind = parent.subject_kind
         JOIN iam.access_token_scopes AS token_scope
           ON token_scope.access_token_id = parent.id
-         AND token_scope.scope = 'obo:test_org>app-beta:trust.manage'
+         AND token_scope.scope = 'obo:app-beta:trust.manage'
         WHERE parent.id = $1
         ",
     )
@@ -2071,7 +2071,7 @@ async fn stale_obo_parent_authority_is_rejected(pool: &PgPool) -> anyhow::Result
              AND parent.membership_authz_epoch = membership.authz_epoch
             JOIN iam.access_token_scopes AS token_scope
               ON token_scope.access_token_id = parent.id
-             AND token_scope.scope = 'obo:test_org>app-beta:trust.manage'
+             AND token_scope.scope = 'obo:app-beta:trust.manage'
             WHERE parent.id = $1
         )
         ",
@@ -2232,8 +2232,8 @@ pub(crate) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
           ('00000000-0000-0000-0000-000000000011', 'application', 'active', transaction_timestamp()),
           ('00000000-0000-0000-0000-000000000012', 'application', 'active', transaction_timestamp());
         INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES
-          ('00000000-0000-0000-0000-000000000001', 'test_carbon', 'Test Carbon'),
-          ('00000000-0000-0000-0000-000000000002', 'test_admin', 'Test Admin');
+          ('00000000-0000-0000-0000-000000000001', 'c:test_carbon', 'Test Carbon'),
+          ('00000000-0000-0000-0000-000000000002', 'c:test_admin', 'Test Admin');
         INSERT INTO iam.carbon_contacts (
             id, carbon_id, kind, ciphertext, nonce, encryption_key_version, verified_at
         ) VALUES
@@ -2272,11 +2272,11 @@ pub(crate) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
         INSERT INTO iam.applications (
             id, app_id, organization_id, created_by_carbon_id, review_status, base_url
         ) VALUES
-          ('00000000-0000-0000-0000-000000000011', 'test_org>app-alpha',
+          ('00000000-0000-0000-0000-000000000011', 'app-alpha',
            '00000000-0000-0000-0000-000000000021',
            '00000000-0000-0000-0000-000000000001', 'verified',
            'https://alpha.example.test/api'),
-          ('00000000-0000-0000-0000-000000000012', 'test_org>app-beta',
+          ('00000000-0000-0000-0000-000000000012', 'app-beta',
            '00000000-0000-0000-0000-000000000021',
            '00000000-0000-0000-0000-000000000001', 'verified',
            'https://beta.example.test/api');
@@ -2441,7 +2441,7 @@ pub(crate) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             decode(repeat('10', 32), 'hex'), 1, 'oat_abcdefgh',
             '00000000-0000-0000-0000-000000000041',
             '00000000-0000-0000-0000-000000000001', 'carbon',
-            '00000000-0000-0000-0000-000000000011', 'test_org>app-alpha',
+            '00000000-0000-0000-0000-000000000011', 'app-alpha',
             '00000000-0000-0000-0000-000000000011', 1, 1,
             transaction_timestamp() + interval '15 minutes'
         );
@@ -2456,7 +2456,7 @@ pub(crate) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             decode(repeat('12', 32), 'hex'), 1, 'oat_ijklmnop',
             '00000000-0000-0000-0000-000000000041',
             '00000000-0000-0000-0000-000000000001', 'carbon',
-            '00000000-0000-0000-0000-000000000011', 'test_org>app-alpha',
+            '00000000-0000-0000-0000-000000000011', 'app-alpha',
             '00000000-0000-0000-0000-000000000011',
             '00000000-0000-0000-0000-000000000021',
             '00000000-0000-0000-0000-000000000031', 1, 1, 1,
@@ -2472,13 +2472,13 @@ pub(crate) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             decode(repeat('14', 32), 'hex'), 1, 'oat_qrstuvwx',
             '00000000-0000-0000-0000-000000000041',
             '00000000-0000-0000-0000-000000000001', 'carbon',
-            '00000000-0000-0000-0000-000000000012', 'test_org>app-beta',
+            '00000000-0000-0000-0000-000000000012', 'app-beta',
             '00000000-0000-0000-0000-000000000012', 1, 1,
             transaction_timestamp() + interval '15 minutes'
         );
         INSERT INTO iam.access_token_scopes (access_token_id, scope) VALUES
           ('00000000-0000-0000-0000-000000000101', 'self.organizations.read'),
-          ('00000000-0000-0000-0000-000000000102', 'obo:test_org>app-beta:trust.manage'),
+          ('00000000-0000-0000-0000-000000000102', 'obo:app-beta:trust.manage'),
           ('00000000-0000-0000-0000-000000000103', 'self.organizations.read');
         INSERT INTO iam.application_obo_endpoints (
             organization_id, application_id, endpoint_id, path, metadata_definition
@@ -2487,10 +2487,10 @@ pub(crate) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             '00000000-0000-0000-0000-000000000012',
             'trust.manage', '/v1/trust', '{"reason":{"type":"string"}}'
         );
-        INSERT INTO iam.oauth_scope_catalog(scope,description,sensitive) VALUES ('obo:test_org>app-beta:trust.manage','Manage trust',false);
-        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES('00000000-0000-0000-0000-000000000011','obo:test_org>app-beta:trust.manage');
-        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES('00000000-0000-0000-0000-000000000011','obo:test_org>app-beta:trust.manage','00000000-0000-0000-0000-000000000001');
-        INSERT INTO iam.oauth_consent_grant_scopes(consent_grant_id,scope) VALUES('00000000-0000-0000-0000-000000000071','obo:test_org>app-beta:trust.manage');
+        INSERT INTO iam.oauth_scope_catalog(scope,description,sensitive) VALUES ('obo:app-beta:trust.manage','Manage trust',false);
+        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES('00000000-0000-0000-0000-000000000011','obo:app-beta:trust.manage');
+        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES('00000000-0000-0000-0000-000000000011','obo:app-beta:trust.manage','00000000-0000-0000-0000-000000000001');
+        INSERT INTO iam.oauth_consent_grant_scopes(consent_grant_id,scope) VALUES('00000000-0000-0000-0000-000000000071','obo:app-beta:trust.manage');
         SELECT set_config('iam.principal_id', '00000000-0000-0000-0000-000000000001', true),
                set_config('iam.application_id', '00000000-0000-0000-0000-000000000011', true);
         INSERT INTO iam.obo_proofs (
@@ -2525,10 +2525,10 @@ pub(crate) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             "('__owner_email_contact__',\n           '00000000-0000-0000-0000-000000000001', 'email'",
         );
         for (old, current) in [
-            ("00000000-0000-0000-0000-000000000001", "test_carbon"),
-            ("00000000-0000-0000-0000-000000000002", "test_admin"),
-            ("00000000-0000-0000-0000-000000000011", "test_org>app-alpha"),
-            ("00000000-0000-0000-0000-000000000012", "test_org>app-beta"),
+            ("00000000-0000-0000-0000-000000000001", "c:test_carbon"),
+            ("00000000-0000-0000-0000-000000000002", "c:test_admin"),
+            ("00000000-0000-0000-0000-000000000011", "app-alpha"),
+            ("00000000-0000-0000-0000-000000000012", "app-beta"),
         ] {
             fixture = fixture.replace(old, current);
         }
@@ -2536,6 +2536,17 @@ pub(crate) async fn seed_protocol_rows(pool: &PgPool) -> anyhow::Result<()> {
             "__owner_email_contact__",
             "00000000-0000-0000-0000-000000000002",
         );
+    }
+    let prefixed: bool =
+        sqlx::query_scalar("SELECT to_regclass('iam_private.public_id_schema_map') IS NOT NULL")
+            .fetch_one(pool)
+            .await?;
+    if !prefixed {
+        fixture = fixture
+            .replace("c:test_carbon", "test_carbon")
+            .replace("c:test_admin", "test_admin")
+            .replace("app-alpha", "test_org>app-alpha")
+            .replace("app-beta", "test_org>app-beta");
     }
     sqlx::raw_sql(sqlx::AssertSqlSafe(fixture))
         .execute(pool)
@@ -2549,7 +2560,7 @@ async fn cross_organization_login_selection_reports_private_restriction(
     pool: &PgPool,
 ) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
-    sqlx::raw_sql("INSERT INTO iam.organizations(id,org_id,name,created_by_carbon_id) VALUES ('00000000-0000-0000-0000-000000000621','second_org','Second','test_carbon'); INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES ('00000000-0000-0000-0000-000000000631','00000000-0000-0000-0000-000000000621','test_carbon','carbon','owner');").execute(&mut *tx).await?;
+    sqlx::raw_sql("INSERT INTO iam.organizations(id,org_id,name,created_by_carbon_id) VALUES ('00000000-0000-0000-0000-000000000621','second_org','Second','c:test_carbon'); INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role) VALUES ('00000000-0000-0000-0000-000000000631','00000000-0000-0000-0000-000000000621','c:test_carbon','carbon','owner');").execute(&mut *tx).await?;
     sqlx::query(
         "SELECT set_config('iam.principal_id',$1,true),set_config('iam.application_id','',true)",
     )
