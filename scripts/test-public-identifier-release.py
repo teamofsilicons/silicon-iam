@@ -19,6 +19,38 @@ spec.loader.exec_module(module)
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_coordinator_gate_is_bound_to_exact_rehearsed_release(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = object.__new__(module.Release)
+            release.root = Path(directory)
+            gate = release.root / 'go.json'
+            release.args = SimpleNamespace(await_cutover_file=gate, revision='a' * 40, image='example@sha256:' + 'b' * 64)
+            release.state = {}
+            expected = {'release_directory': str(release.root), 'revision': release.args.revision, 'image': release.args.image}
+            gate.write_text(json.dumps({**expected, 'release_directory': '/stale-release'}))
+            gate.chmod(0o600)
+            with patch.object(Path, 'lstat', return_value=SimpleNamespace(st_uid=0, st_mode=0o100600)):
+                with self.assertRaisesRegex(RuntimeError, 'does not match'):
+                    release.consume_cutover_gate()
+                self.assertTrue(gate.exists())
+                gate.write_text(json.dumps(expected))
+                release.consume_cutover_gate()
+            self.assertFalse(gate.exists())
+            self.assertEqual(release.state['coordinator_gate_consumed'], expected)
+
+    def test_coordinator_gate_rejects_nonprivate_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = object.__new__(module.Release)
+            release.root = Path(directory)
+            gate = release.root / 'go.json'
+            gate.write_text('{}')
+            release.args = SimpleNamespace(await_cutover_file=gate)
+            release.state = {}
+            with patch.object(Path, 'lstat', return_value=SimpleNamespace(st_uid=0, st_mode=0o100644)):
+                with self.assertRaisesRegex(RuntimeError, 'private root-owned'):
+                    release.consume_cutover_gate()
+            self.assertTrue(gate.exists())
+
     def test_only_mapped_field_changes_and_secret_bytes_stay_identical(self):
         original = '# retained\r\nIAM_HONEYCOMB_APP_ID=tos>honeycomb\r\nKEY=contains-tos>honeycomb=secret\r\nOTHER=value\n'
         expected = original.replace('IAM_HONEYCOMB_APP_ID=tos>honeycomb', 'IAM_HONEYCOMB_APP_ID=honeycomb')

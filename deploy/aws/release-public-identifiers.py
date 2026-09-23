@@ -225,6 +225,29 @@ class Release:
             running = self.run(["docker", "ps", "--filter", f"name=^silicon-iam-{service}$", "--format", "{{.ID}}"]).decode().strip()
             require(not running, "IAM writer container remains running")
 
+    def consume_cutover_gate(self):
+        path = getattr(self.args, 'await_cutover_file', None)
+        if path is None:
+            require(getattr(self.args, "consumer_cutover_ready", False) is True,
+                    "Coordinated consumer cutover gate is not ready")
+            return
+        # Complete the expensive copy rehearsal before the coordinator pauses
+        # consumers. An exact unique release directory prevents stale GO reuse.
+        self.checkpoint('awaiting-coordinator-cutover-gate')
+        deadline = time.monotonic() + 1800
+        while not path.exists():
+            require(time.monotonic() < deadline, "Timed out waiting for coordinator; live IAM unchanged")
+            time.sleep(1)
+        metadata = path.lstat()
+        require(not path.is_symlink() and metadata.st_uid == 0 and metadata.st_mode & 0o077 == 0,
+                "Cutover gate must be a private root-owned regular file")
+        require(path.is_file(), "Cutover gate must be a regular file")
+        expected = {'release_directory': str(self.root), 'revision': self.args.revision, 'image': self.args.image}
+        require(json.loads(path.read_text()) == expected, "Cutover gate does not match this rehearsed release")
+        path.unlink()
+        self.state['coordinator_gate_consumed'] = expected
+        self.checkpoint('coordinator-cutover-gate-consumed')
+
     def prepare_public_ids(self, label, sql, isolated=False):
         # A copy rehearsal can expire replay windows only in its isolated DB.
         # Live expiry is a separately authorized choice after verified backups.
@@ -530,7 +553,7 @@ class Release:
         self.checkpoint("preflight-complete")
         if self.args.rehearse_only:
             return
-        require(getattr(self.args, "consumer_cutover_ready", False) is True, "Coordinated consumer cutover gate is not ready")
+        self.consume_cutover_gate()
         # From this checkpoint failures leave all writers stopped for operator review.
         self.state["services_stopped"] = True
         self.checkpoint("stopping-writers")
@@ -633,6 +656,7 @@ def main():
     parser.add_argument("--source", type=Path, default=Path.cwd(), help="Git checkout used only for --write-manifest")
     parser.add_argument("--revision", help="Full Git SHA used only for --write-manifest")
     parser.add_argument("--rehearse-only", action="store_true", help="Verify backups and migrate isolated restored copies; leave live services and databases untouched")
+    parser.add_argument("--await-cutover-file", type=Path, help="After successful rehearsal, wait for the coordinator's private root-owned GO receipt for this exact release directory")
     options = parser.parse_args()
     if options.write_manifest:
         if not options.revision or options.rehearse_only:
@@ -642,6 +666,9 @@ def main():
     args = argparse.Namespace(**json.loads(options.settings.read_text()))
     args.migration_manifest = Path(args.migration_manifest)
     args.rehearse_only = options.rehearse_only
+    if options.rehearse_only and options.await_cutover_file:
+        parser.error("--await-cutover-file cannot be combined with --rehearse-only")
+    args.await_cutover_file = options.await_cutover_file
     with open("/run/silicon-iam-contract-release.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         original_config = {path: path.read_bytes() for path in Path('/etc/silicon-iam').glob('*.env')}
