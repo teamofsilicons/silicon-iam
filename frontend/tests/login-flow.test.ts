@@ -15,22 +15,22 @@ import { gateway } from "../server/gateway.ts";
 
 test("single and 100-app URLs are unambiguous and bounded", () => {
   assert.deepEqual(
-    loginApplications(new URLSearchParams({ app_id: "tos>briefcase" })),
-    { ids: ["tos>briefcase"], batch: false },
+    loginApplications(new URLSearchParams({ app_id: "briefcase" })),
+    { ids: ["briefcase"], batch: false },
   );
-  const ids = Array.from({ length: 100 }, (_, i) => `tos>app-${i}`);
+  const ids = Array.from({ length: 100 }, (_, i) => `app-${i}`);
   assert.deepEqual(
     loginApplications(new URLSearchParams({ app_ids: ids.join(",") })),
     { ids, batch: true },
   );
   for (const query of [
     "app_ids=",
-    "app_ids=tos>a,tos>a",
-    "app_ids=tos>a,",
-    "app_id=tos>a&app_ids=tos>b",
-    "app_ids=tos>a&app_ids=tos>b",
-    "app_ids=tos>a&org_ids=tos",
-    `app_ids=${[...ids, "tos>extra"].join(",")}`,
+    "app_ids=a,a",
+    "app_ids=a,",
+    "app_id=a&app_ids=b",
+    "app_ids=a&app_ids=b",
+    "app_ids=a&org_ids=tos",
+    `app_ids=${[...ids, "extra"].join(",")}`,
   ])
     assert.throws(() => loginApplications(new URLSearchParams(query)), query);
 });
@@ -39,8 +39,8 @@ test("callbacks preserve state and carry batch credentials only in the fragment"
     "https://frontend.example/callback?state=opaque&slt=old",
   )!;
   const items = [
-    { app_id: "tos>a", slt: "token-a", expires_in: 120 },
-    { app_id: "other>b", slt: "token-b", expires_in: 120 },
+    { app_id: "a", slt: "token-a", expires_in: 120 },
+    { app_id: "b", slt: "token-b", expires_in: 120 },
   ];
   const result = new URL(tokenDestination(url, items, true));
   assert.equal(result.searchParams.get("state"), "opaque");
@@ -71,7 +71,7 @@ test("signed-out continuation preserves the entire batch and callback", async ()
   };
   for (const path of ["/auth/continue", "/api/v1/login"]) {
     const url = new URL(path, env.AUTH_ORIGIN);
-    url.searchParams.set("app_ids", "tos>a,tos>b");
+    url.searchParams.set("app_ids", "a,b");
     url.searchParams.set(
       "redirect_uri",
       "https://frontend.example/callback?state=original",
@@ -80,7 +80,7 @@ test("signed-out continuation preserves the entire batch and callback", async ()
     assert.equal(response.status, 303);
     const target = new URL(response.headers.get("location")!);
     assert.equal(target.pathname, "/login");
-    assert.equal(target.searchParams.get("app_ids"), "tos>a,tos>b");
+    assert.equal(target.searchParams.get("app_ids"), "a,b");
     assert.equal(
       target.searchParams.get("redirect_uri"),
       "https://frontend.example/callback?state=original",
@@ -118,12 +118,12 @@ test("continuation preserves invalid duplicates and empty selections for rejecti
   for (const path of ["/auth/continue", "/api/v1/login"]) {
     const response = await gateway(
       new Request(
-        `${env.AUTH_ORIGIN}${path}?app_ids=tos>a&app_ids=tos>b&org_ids=`,
+        `${env.AUTH_ORIGIN}${path}?app_ids=a&app_ids=b&org_ids=`,
       ),
       env,
     );
     const target = new URL(response.headers.get("location")!);
-    assert.deepEqual(target.searchParams.getAll("app_ids"), ["tos>a", "tos>b"]);
+    assert.deepEqual(target.searchParams.getAll("app_ids"), ["a", "b"]);
     assert.equal(target.searchParams.get("org_ids"), "");
     assert.throws(() => loginApplications(target.searchParams));
   }
@@ -136,8 +136,8 @@ test("bundle URLs are exclusive and survive session continuation", async () => {
   );
   for (const query of [
     "bundle_id=",
-    "bundle_id=tos>suite&app_id=tos>app",
-    "bundle_id=tos>suite&app_ids=tos>a",
+    "bundle_id=tos>suite&app_id=app",
+    "bundle_id=tos>suite&app_ids=a",
     "bundle_id=tos>a&bundle_id=tos>b",
     "bundle_id=tos>a&org_id=tos",
   ])
@@ -168,10 +168,10 @@ test("permission approval preserves exact published scopes and rejects incomplet
       app_id: null,
     },
     {
-      scope: "obo:outside>drive:files.read",
+      scope: "obo:drive:files.read",
       description: "Read files",
       critical: true,
-      app_id: "outside>drive",
+      app_id: "drive",
     },
   ];
   const selected = selectedScope(
@@ -180,7 +180,7 @@ test("permission approval preserves exact published scopes and rejects incomplet
   );
   assert.deepEqual(selected, {
     iam: ["self.identity.read"],
-    external: [{ app_id: "outside>drive", endpoint_id: "files.read" }],
+    external: [{ app_id: "drive", endpoint_id: "files.read" }],
   });
   assert.deepEqual(
     scopeNames(selected),
@@ -199,47 +199,47 @@ test("permission approval preserves exact published scopes and rejects incomplet
 
 test("account onboarding requires explicit IAM eligibility for every empty selection", () => {
   const onboarding = {
-    app_id: "tos>interface",
+    app_id: "interface",
     allow_empty_organization_selection: true,
   };
   const ordinary = {
-    app_id: "tos>files",
+    app_id: "files",
     allow_empty_organization_selection: false,
   };
   assert.equal(
-    canApproveOrganizationSelections([onboarding], { "tos>interface": [] }),
+    canApproveOrganizationSelections([onboarding], { "interface": [] }),
     true,
   );
   assert.equal(canApproveOrganizationSelections([onboarding], {}), false);
   assert.equal(
-    canApproveOrganizationSelections([ordinary], { "tos>files": [] }),
+    canApproveOrganizationSelections([ordinary], { "files": [] }),
     false,
   );
   assert.equal(
-    canApproveOrganizationSelections([{ app_id: "tos>old-api" }], {
-      "tos>old-api": [],
+    canApproveOrganizationSelections([{ app_id: "old-api" }], {
+      "old-api": [],
     }),
     false,
   );
   assert.equal(canApproveOrganizationSelections([], {}), false);
   assert.equal(
     canApproveOrganizationSelections([onboarding, ordinary], {
-      "tos>interface": [],
-      "tos>files": [],
+      "interface": [],
+      "files": [],
     }),
     false,
   );
   assert.equal(
     canApproveOrganizationSelections([onboarding, ordinary], {
-      "tos>interface": [],
-      "tos>files": ["work"],
+      "interface": [],
+      "files": ["work"],
     }),
     true,
   );
   assert.equal(
     canApproveOrganizationSelections(
       [onboarding, { ...ordinary, allow_empty_organization_selection: true }],
-      { "tos>interface": [], "tos>files": [] },
+      { "interface": [], "files": [] },
     ),
     true,
   );

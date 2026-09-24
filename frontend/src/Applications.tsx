@@ -318,7 +318,7 @@ export default function Applications(props: {
                             class="primary-link"
                             href={`/applications?app=${segment(app.app_id)}`}
                           >
-                            {app.app_name || app.app_id.split(">")[1]}
+                            {app.app_name || app.app_id}
                           </a>
                           <small>
                             <code>{app.app_id}</code>

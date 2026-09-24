@@ -363,7 +363,7 @@ mod tests {
         let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let carbon_id = Id::fixture("contract-test-carbon");
+        let carbon_id = Id::fixture("c:contract-test-carbon");
         let email_contact_id = Id::from_u128(0x35_02);
         let phone_contact_id = Id::from_u128(0x35_03);
         let email_digest = vec![0x35_u8; 32];
@@ -392,7 +392,7 @@ mod tests {
         sqlx::query(
             r"
             INSERT INTO iam.carbons (id, carbon_id, display_name)
-            VALUES ($1, 'contract-test-carbon', 'Contract Test Carbon')
+            VALUES ($1, 'c:contract-test-carbon', 'Contract Test Carbon')
             ",
         )
         .bind(carbon_id)

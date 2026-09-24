@@ -14,9 +14,9 @@ use crate::infrastructure::{
     testing_plane::{self, SelectedEnvironment},
 };
 
-const SOURCE: Id = Id::fixture("test_org>app-alpha");
+const SOURCE: Id = Id::fixture("app-alpha");
 const OWNER_ORG: Id = Id::from_u128(0x21);
-const APP: Id = Id::fixture("test_org>app-alpha");
+const APP: Id = Id::fixture("app-alpha");
 const ENVIRONMENT: Id = Id::from_u128(0xa001);
 
 #[tokio::test]
@@ -213,7 +213,7 @@ async fn org_version(pool: &PgPool) -> anyhow::Result<i64> {
 fn config(application_id: Id) -> Value {
     json!({
         "application_id":application_id,"source_application_id":SOURCE,
-        "app_id":"test_org>app-alpha","org_id":"test_org","organization_name":"Imported organization",
+        "app_id":"app-alpha","org_id":"test_org","organization_name":"Imported organization",
         "app_name":"Imported Interface","base_url":"https://example.test",
         "app_scope":{"iam":["self.identity.read","organizations.create","organizations.join","organization.sso.manage"],"external":[]},
         "webhook_scope":["full"],"testing_idle_days":30,"obo_endpoints":[],

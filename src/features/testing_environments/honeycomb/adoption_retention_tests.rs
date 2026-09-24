@@ -24,9 +24,11 @@ async fn adoption_preserves_identity_and_retention_erases_only_exact_apps() -> a
         .await?;
     crate::features::applications::live_tests::seed_protocol_rows(&pool).await?;
     let adoption = include_str!("../../../../tests/sql/honeycomb_adoption.sql")
-        .replace("00000000-0000-0000-0000-000000000001", "test_carbon")
-        .replace("00000000-0000-0000-0000-000000000011", "test_org>app-alpha")
-        .replace("00000000-0000-0000-0000-00000000b001", "test_org>app-alpha");
+        .replace("test_org>app-alpha", "app-alpha")
+        .replace("test_org>app-beta", "app-beta")
+        .replace("00000000-0000-0000-0000-000000000001", "c:test_carbon")
+        .replace("00000000-0000-0000-0000-000000000011", "app-alpha")
+        .replace("00000000-0000-0000-0000-00000000b001", "app-alpha");
     sqlx::raw_sql(sqlx::AssertSqlSafe(adoption))
         .execute(&pool)
         .await?;
@@ -67,7 +69,7 @@ async fn adoption_preserves_identity_and_retention_erases_only_exact_apps() -> a
     sqlx::raw_sql("SELECT iam_private.set_testing_runtime_state('00000000-0000-0000-0000-00000000a001',1,1,true); SET LOCAL ROLE silicon_iam_api;").execute(&mut *connection).await?;
     let environment = Id::from_u128(0xa001);
     let operation = Id::from_u128(0xf001);
-    let sql = "SELECT iam_private.erase_testing_applications($1,$2,ARRAY['alpha>test'],1,1)";
+    let sql = "SELECT iam_private.erase_testing_applications($1,$2,ARRAY['test'],1,1)";
     let count: i64 = sqlx::query_scalar(sql)
         .bind(environment)
         .bind(operation)
@@ -85,7 +87,7 @@ async fn adoption_preserves_identity_and_retention_erases_only_exact_apps() -> a
         .await?;
     ensure!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM iam.applications WHERE app_id='alpha>test' AND testing_environment_id='00000000-0000-0000-0000-00000000a001'"
+            "SELECT count(*) FROM iam.applications WHERE app_id='test' AND testing_environment_id='00000000-0000-0000-0000-00000000a001'"
         )
         .fetch_one(&mut *connection)
         .await?
@@ -94,7 +96,7 @@ async fn adoption_preserves_identity_and_retention_erases_only_exact_apps() -> a
     );
     ensure!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM iam.applications WHERE app_id='beta>test'"
+            "SELECT count(*) FROM iam.applications WHERE app_id='test-beta'"
         )
         .fetch_one(&mut *connection)
         .await?
@@ -103,14 +105,14 @@ async fn adoption_preserves_identity_and_retention_erases_only_exact_apps() -> a
     );
     ensure!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM iam.application_secrets WHERE application_id='beta>test'"
+            "SELECT count(*) FROM iam.application_secrets WHERE application_id='test-beta'"
         )
         .fetch_one(&mut *connection)
         .await?
             == 1,
         "other app credential survives"
     );
-    ensure!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM iam.applications WHERE app_id='alpha>test' AND testing_environment_id='00000000-0000-0000-0000-00000000a002'").fetch_one(&mut *connection).await?==1,"same app handle in another environment survives");
+    ensure!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM iam.applications WHERE app_id='test' AND testing_environment_id='00000000-0000-0000-0000-00000000a002'").fetch_one(&mut *connection).await?==1,"same app handle in another environment survives");
     sqlx::query("SELECT iam_private.import_testing_application_configuration($1)")
         .bind(sqlx::types::Json(&original))
         .execute(&mut *connection)
@@ -130,7 +132,7 @@ async fn adoption_preserves_identity_and_retention_erases_only_exact_apps() -> a
     sqlx::raw_sql("RESET ROLE")
         .execute(&mut *connection)
         .await?;
-    ensure!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM iam.applications WHERE app_id='alpha>test' AND testing_environment_id='00000000-0000-0000-0000-00000000a001'").fetch_one(&mut *connection).await?==1,"late retry cannot erase a fresh import");
+    ensure!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM iam.applications WHERE app_id='test' AND testing_environment_id='00000000-0000-0000-0000-00000000a001'").fetch_one(&mut *connection).await?==1,"late retry cannot erase a fresh import");
     sqlx::raw_sql("ROLLBACK").execute(&mut *connection).await?;
     Ok(())
 }

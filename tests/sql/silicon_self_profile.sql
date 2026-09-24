@@ -2,27 +2,27 @@
 -- Reproduces a Silicon member with no capabilities, as used by ordinary apps.
 BEGIN;
 INSERT INTO iam.principals(id, kind, status, activated_at) VALUES
- ('self-profile-owner', 'carbon', 'active', now()),
- ('self:self-profile-test', 'silicon', 'active', now()),
- ('peer:self-profile-test', 'silicon', 'active', now());
+ ('c:self-profile-owner', 'carbon', 'active', now()),
+ ('si:self', 'silicon', 'active', now()),
+ ('si:peer', 'silicon', 'active', now());
 INSERT INTO iam.carbons(id, carbon_id, display_name) VALUES
- ('self-profile-owner', 'self-profile-owner', 'Owner');
+ ('c:self-profile-owner', 'c:self-profile-owner', 'Owner');
 INSERT INTO iam.organizations(id, org_id, created_by_carbon_id, name) VALUES
- ('01090000-0000-0000-0000-000000000010', 'self-profile-test', 'self-profile-owner', 'Self Profile Test');
+ ('01090000-0000-0000-0000-000000000010', 'self-profile-test', 'c:self-profile-owner', 'Self Profile Test');
 INSERT INTO iam.organization_memberships(id, organization_id, principal_id, principal_kind, org_role) VALUES
- ('01090000-0000-0000-0000-000000000011', '01090000-0000-0000-0000-000000000010', 'self-profile-owner', 'carbon', 'owner'),
- ('01090000-0000-0000-0000-000000000012', '01090000-0000-0000-0000-000000000010', 'self:self-profile-test', 'silicon', 'member'),
- ('01090000-0000-0000-0000-000000000013', '01090000-0000-0000-0000-000000000010', 'peer:self-profile-test', 'silicon', 'member');
+ ('01090000-0000-0000-0000-000000000011', '01090000-0000-0000-0000-000000000010', 'c:self-profile-owner', 'carbon', 'owner'),
+ ('01090000-0000-0000-0000-000000000012', '01090000-0000-0000-0000-000000000010', 'si:self', 'silicon', 'member'),
+ ('01090000-0000-0000-0000-000000000013', '01090000-0000-0000-0000-000000000010', 'si:peer', 'silicon', 'member');
 INSERT INTO iam.silicons(id, organization_id, membership_id, organization_handle, silicon_handle, display_name) VALUES
- ('self:self-profile-test', '01090000-0000-0000-0000-000000000010', '01090000-0000-0000-0000-000000000012', 'self-profile-test', 'self', 'Self'),
- ('peer:self-profile-test', '01090000-0000-0000-0000-000000000010', '01090000-0000-0000-0000-000000000013', 'self-profile-test', 'peer', 'Peer');
-SELECT set_config('iam.principal_id', 'self:self-profile-test', true),
+ ('si:self', '01090000-0000-0000-0000-000000000010', '01090000-0000-0000-0000-000000000012', 'self-profile-test', 'self', 'Self'),
+ ('si:peer', '01090000-0000-0000-0000-000000000010', '01090000-0000-0000-0000-000000000013', 'self-profile-test', 'peer', 'Peer');
+SELECT set_config('iam.principal_id', 'si:self', true),
        set_config('iam.organization_id', '01090000-0000-0000-0000-000000000010', true);
 SET LOCAL ROLE silicon_iam_api;
 DO $$
 DECLARE
     v_org constant uuid := '01090000-0000-0000-0000-000000000010';
-    v_self constant text := 'self:self-profile-test';
+    v_self constant text := 'si:self';
     v_member constant uuid := '01090000-0000-0000-0000-000000000012';
     v_count integer;
 BEGIN
@@ -76,12 +76,12 @@ BEGIN
         RAISE EXCEPTION 'cleared profile projection incorrect';
     END IF;
     BEGIN
-        PERFORM iam_private.lock_silicon_self_profile(v_org, 'peer:self-profile-test');
+        PERFORM iam_private.lock_silicon_self_profile(v_org, 'si:peer');
         RAISE EXCEPTION 'self helper locked another Silicon';
     EXCEPTION WHEN insufficient_privilege THEN NULL;
     END;
     BEGIN
-        PERFORM iam_private.update_silicon_self_profile(v_org, 'peer:self-profile-test', 1, NULL, 'Asia/Kolkata', false, NULL, false, NULL);
+        PERFORM iam_private.update_silicon_self_profile(v_org, 'si:peer', 1, NULL, 'Asia/Kolkata', false, NULL, false, NULL);
         RAISE EXCEPTION 'self helper edited another Silicon';
     EXCEPTION WHEN insufficient_privilege THEN NULL;
     END;
@@ -99,7 +99,7 @@ WHERE id = '01090000-0000-0000-0000-000000000012';
 SET LOCAL ROLE silicon_iam_api;
 DO $$ BEGIN
     BEGIN
-        PERFORM iam_private.lock_silicon_self_profile('01090000-0000-0000-0000-000000000010', 'self:self-profile-test');
+        PERFORM iam_private.lock_silicon_self_profile('01090000-0000-0000-0000-000000000010', 'si:self');
         RAISE EXCEPTION 'inactive membership retained self-profile authority';
     EXCEPTION WHEN insufficient_privilege THEN NULL;
     END;

@@ -62,7 +62,7 @@ async fn scope_catalog_validates_applications_without_disclosing_other_environme
             .bind(environment)
             .execute(&mut *tx)
             .await?;
-        assert_not_found(&mut tx, "test_org>app-beta").await?;
+        assert_not_found(&mut tx, "app-beta").await?;
         let iam = catalog_items(&mut tx, None).await.map_err(catalog_error)?;
         ensure!(
             iam.len() == super::scopes::IAM_SCOPES.len()
@@ -135,9 +135,9 @@ async fn seed_catalog_endpoints_and_grants(pool: &PgPool) -> anyhow::Result<()> 
             organization_id, application_id, endpoint_id, path, critical, status, retired_at
         ) VALUES
           ('00000000-0000-0000-0000-000000000021',
-           'test_org>app-beta', 'files.delete', '/files/delete', true, 'active', NULL),
+           'app-beta', 'files.delete', '/files/delete', true, 'active', NULL),
           ('00000000-0000-0000-0000-000000000021',
-           'test_org>app-beta', 'files.legacy', '/files/legacy', false, 'retired', transaction_timestamp());
+           'app-beta', 'files.legacy', '/files/legacy', false, 'retired', transaction_timestamp());
         ",
     )
     .execute(pool)
@@ -171,15 +171,15 @@ async fn assert_catalog_choices(pool: &PgPool) -> anyhow::Result<()> {
         iam.len() == super::scopes::IAM_SCOPES.len()
             && iam.iter().all(|scope| scope.app_id.is_none())
     );
-    let empty = catalog_items(&mut tx, Some("test_org>app-alpha"))
+    let empty = catalog_items(&mut tx, Some("app-alpha"))
         .await
         .map_err(catalog_error)?;
     ensure!(
         empty.is_empty(),
         "valid empty catalog must remain a success"
     );
-    assert_not_found(&mut tx, "test_org>missing-app").await?;
-    let external = catalog_items(&mut tx, Some("test_org>app-beta"))
+    assert_not_found(&mut tx, "missing-app").await?;
+    let external = catalog_items(&mut tx, Some("app-beta"))
         .await
         .map_err(catalog_error)?;
     ensure!(
@@ -189,25 +189,25 @@ async fn assert_catalog_choices(pool: &PgPool) -> anyhow::Result<()> {
     ensure!(
         external
             .iter()
-            .all(|scope| scope.app_id.as_deref() == Some("test_org>app-beta"))
+            .all(|scope| scope.app_id.as_deref() == Some("app-beta"))
     );
-    ensure!(external[0].scope == "obo:test_org>app-beta:files.delete" && external[0].critical);
-    ensure!(external[1].scope == "obo:test_org>app-beta:trust.manage" && !external[1].critical);
+    ensure!(external[0].scope == "obo:app-beta:files.delete" && external[0].critical);
+    ensure!(external[1].scope == "obo:app-beta:trust.manage" && !external[1].critical);
     tx.rollback().await?;
 
     for state in ["under_review", "suspended", "deleted"] {
         let mut tx = pool.begin().await?;
-        sqlx::query("UPDATE iam.applications SET review_status=$1, deleted_at=CASE WHEN $1='deleted' THEN transaction_timestamp() END WHERE app_id='test_org>app-beta'")
+        sqlx::query("UPDATE iam.applications SET review_status=$1, deleted_at=CASE WHEN $1='deleted' THEN transaction_timestamp() END WHERE app_id='app-beta'")
             .bind(state).execute(&mut *tx).await?;
         select_runtime_actor(&mut tx).await?;
-        assert_not_found(&mut tx, "test_org>app-beta").await?;
+        assert_not_found(&mut tx, "app-beta").await?;
         tx.rollback().await?;
     }
     let mut tx = pool.begin().await?;
-    sqlx::query("UPDATE iam.principals SET status='suspended', suspended_at=transaction_timestamp() WHERE id='test_org>app-beta'")
+    sqlx::query("UPDATE iam.principals SET status='suspended', suspended_at=transaction_timestamp() WHERE id='app-beta'")
         .execute(&mut *tx).await?;
     select_runtime_actor(&mut tx).await?;
-    assert_not_found(&mut tx, "test_org>app-beta").await?;
+    assert_not_found(&mut tx, "app-beta").await?;
     tx.rollback().await?;
     Ok(())
 }
@@ -216,7 +216,7 @@ async fn select_runtime_actor(tx: &mut Transaction<'_, Postgres>) -> anyhow::Res
     sqlx::query("SET LOCAL ROLE silicon_iam_api")
         .execute(&mut **tx)
         .await?;
-    sqlx::query("SELECT set_config('iam.principal_id','test_carbon',true),set_config('iam.organization_id','',true)")
+    sqlx::query("SELECT set_config('iam.principal_id','c:test_carbon',true),set_config('iam.organization_id','',true)")
         .execute(&mut **tx).await?;
     Ok(())
 }
@@ -234,8 +234,8 @@ fn catalog_error(error: super::error::ApiError) -> anyhow::Error {
 }
 
 const POLICY_ORG: Id = Id::from_u128(0x21);
-const POLICY_APP: Id = Id::fixture("test_org>app-alpha");
-const POLICY_ACTOR: Id = Id::fixture("test_carbon");
+const POLICY_APP: Id = Id::fixture("app-alpha");
+const POLICY_ACTOR: Id = Id::fixture("c:test_carbon");
 const RESTRICTED_SCOPE: &str = "organization.invitations.create";
 
 async fn assert_policy_concurrency(pool: &PgPool) -> anyhow::Result<()> {
@@ -432,10 +432,10 @@ async fn uncommitted_application_grant_holds_organization_policy(
     pool: &PgPool,
 ) -> anyhow::Result<()> {
     restore_policy(pool).await?;
-    let application = Id::fixture("test_org>policy-race-new");
+    let application = Id::fixture("policy-race-new");
     let mut creation = begin_policy_transaction(pool).await?;
     let creation_pid = backend_pid(&mut creation).await?;
-    insert_uncommitted_application(&mut creation, application, "test_org>policy-race-new").await?;
+    insert_uncommitted_application(&mut creation, application, "policy-race-new").await?;
     select_runtime_actor(&mut creation).await?;
     configure_restricted_scope(&mut creation, application).await?;
     sqlx::query("INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES($1,$2,$3)")
@@ -464,15 +464,14 @@ async fn new_application_grant_rechecks_policy_after_wait(pool: &PgPool) -> anyh
     let creation_pid = backend_pid(&mut creation).await?;
     insert_uncommitted_application(
         &mut creation,
-        Id::fixture("test_org>policy-race-blocked"),
-        "test_org>policy-race-blocked",
+        Id::fixture("policy-race-blocked"),
+        "policy-race-blocked",
     )
     .await?;
     select_runtime_actor(&mut creation).await?;
     let creation = tokio::spawn(async move {
         let result =
-            configure_restricted_scope(&mut creation, Id::fixture("test_org>policy-race-blocked"))
-                .await;
+            configure_restricted_scope(&mut creation, Id::fixture("policy-race-blocked")).await;
         finish_transaction(creation, result).await
     });
     wait_for_blocker(pool, creation_pid, revocation_pid).await?;
@@ -482,6 +481,6 @@ async fn new_application_grant_rechecks_policy_after_wait(pool: &PgPool) -> anyh
         matches!(result, Err(sqlx::Error::Database(ref error)) if error.code().as_deref() == Some("42501")),
         "a grant waiting on policy revocation must recheck the committed policy: {result:?}"
     );
-    assert_no_policy_authority(pool, Id::fixture("test_org>policy-race-blocked")).await?;
+    assert_no_policy_authority(pool, Id::fixture("policy-race-blocked")).await?;
     Ok(())
 }

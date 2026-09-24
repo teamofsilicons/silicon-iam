@@ -18,7 +18,7 @@ use crate::{
     },
 };
 
-const APP: Id = Id::fixture("test_org>app-alpha");
+const APP: Id = Id::fixture("app-alpha");
 const ENVIRONMENT: Id = Id::from_u128(0x801);
 
 #[tokio::test]
@@ -47,18 +47,18 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
     crate::infrastructure::postgres::migrate_testing(&testing).await?;
     super::super::live_tests::seed_protocol_rows(&testing).await?;
     sqlx::raw_sql(r"
-        INSERT INTO iam.principals (id,kind,status,activated_at) VALUES ('oac_test_admin','carbon','active',transaction_timestamp());
-        INSERT INTO iam.carbons (id,carbon_id,display_name) VALUES ('oac_test_admin','oac_test_admin','Prefix test actor');
+        INSERT INTO iam.principals (id,kind,status,activated_at) VALUES ('c:oac_test_admin','carbon','active',transaction_timestamp());
+        INSERT INTO iam.carbons (id,carbon_id,display_name) VALUES ('c:oac_test_admin','c:oac_test_admin','Prefix test actor');
         INSERT INTO iam.carbon_contacts (id,carbon_id,kind,ciphertext,nonce,encryption_key_version,verified_at)
-        SELECT CASE WHEN kind='email' THEN '00000000-0000-0000-0000-000000000202'::uuid ELSE '00000000-0000-0000-0000-000000000203'::uuid END, 'oac_test_admin'::text, kind, ciphertext, nonce, encryption_key_version, verified_at FROM iam.carbon_contacts WHERE carbon_id='test_carbon';
+        SELECT CASE WHEN kind='email' THEN '00000000-0000-0000-0000-000000000202'::uuid ELSE '00000000-0000-0000-0000-000000000203'::uuid END, 'c:oac_test_admin'::text, kind, ciphertext, nonce, encryption_key_version, verified_at FROM iam.carbon_contacts WHERE carbon_id='c:test_carbon';
         INSERT INTO iam.principals (id,kind,status,activated_at) VALUES
-            ('worker:test_org','silicon','active',transaction_timestamp());
+            ('si:worker','silicon','active',transaction_timestamp());
         INSERT INTO iam.organization_memberships (id,organization_id,principal_id,principal_kind,org_role)
-        VALUES ('00000000-0000-0000-0000-000000000531','00000000-0000-0000-0000-000000000021','worker:test_org','silicon','member');
+        VALUES ('00000000-0000-0000-0000-000000000531','00000000-0000-0000-0000-000000000021','si:worker','silicon','member');
         INSERT INTO iam.silicons (id,organization_id,membership_id,organization_handle,silicon_handle,display_name,provisioning_status)
-        VALUES ('worker:test_org','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000531','test_org','worker','Worker','active');
-        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES ('test_org>app-alpha','self.identity.read') ON CONFLICT DO NOTHING;
-        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES ('test_org>app-alpha','self.identity.read','test_carbon') ON CONFLICT DO NOTHING;
+        VALUES ('si:worker','00000000-0000-0000-0000-000000000021','00000000-0000-0000-0000-000000000531','test_org','worker','Worker','active');
+        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES ('app-alpha','self.identity.read') ON CONFLICT DO NOTHING;
+        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES ('app-alpha','self.identity.read','c:test_carbon') ON CONFLICT DO NOTHING;
     ").execute(&testing).await?;
     let grants = include_str!("../../../deploy/postgres/runtime-grants.sql")
         .lines()
@@ -110,7 +110,7 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
     ))
     .await?;
     ensure!(
-        exchange(&state, "test_carbon", "production-actor-login")
+        exchange(&state, "c:test_carbon", "production-actor-login")
             .await?
             .0
             == StatusCode::BAD_REQUEST
@@ -121,7 +121,7 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
         .bind(ENVIRONMENT.to_string())
         .execute(&mut *tx)
         .await?;
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM iam_private.create_testing_actor_login($1,1,'test_carbon',$2,$3,1800)")
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM iam_private.create_testing_actor_login($1,1,'c:test_carbon',$2,$3,1800)")
         .bind(APP).bind(Id::now_v7()).bind(Id::now_v7()).fetch_one(&mut *tx).await?;
     ensure!(count == 0);
     tx.rollback().await?;
@@ -131,7 +131,7 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
             organization_id: Id::from_u128(0x21),
         },
         async {
-            for actor in ["test_carbon", "worker:test_org", "oac_test_admin"] {
+            for actor in ["c:test_carbon", "si:worker", "c:oac_test_admin"] {
                 let key = format!("actor-login-{actor}");
                 let (status, tokens) = exchange(&state, actor, &key).await?;
                 ensure!(status == StatusCode::OK, "actor exchange failed: {tokens}");
@@ -153,7 +153,7 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
                 let (refresh_status, refreshed) = request_tokens(
                     &state,
                     AppTokenForm {
-                        app_id: Some("test_org>app-alpha".to_owned()),
+                        app_id: Some("app-alpha".to_owned()),
                         slt: None,
                         refresh_token: tokens["refresh_token"].as_str().map(str::to_owned),
                     },
@@ -172,7 +172,7 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
                 "other:world",
                 "oac_bad",
                 "ort_bad",
-                " test_carbon",
+                " c:test_carbon",
             ]
             .into_iter()
             .enumerate()
@@ -186,7 +186,7 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
             }
             // Mint a real one-time code through the existing IAM path and exchange it.
             let mut tx =
-                context::begin(state.db(), DatabaseContext::principal(Id::fixture("test_carbon"))).await?;
+                context::begin(state.db(), DatabaseContext::principal(Id::fixture("c:test_carbon"))).await?;
             let scopes = vec!["self.identity.read".to_owned()];
             let (_, code) = mint_short_lived_token(
                 &mut tx,
@@ -194,7 +194,7 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
                 MintSubject {
                     application_id: APP,
                     session_id: Id::from_u128(0x41),
-                    principal_id: Id::fixture("test_carbon"),
+                    principal_id: Id::fixture("c:test_carbon"),
                     subject_kind: "carbon",
                     organization_id: None,
                     membership_id: None,
@@ -225,8 +225,8 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
                     == StatusCode::BAD_REQUEST
             );
             sqlx::query("UPDATE iam.principals SET status = 'suspended', suspended_at = transaction_timestamp() WHERE id = $1")
-                .bind(Id::fixture("test_carbon")).execute(&testing).await?;
-            ensure!(exchange(&state, "test_carbon", "suspended-actor-login").await?.0 == StatusCode::BAD_REQUEST);
+                .bind(Id::fixture("c:test_carbon")).execute(&testing).await?;
+            ensure!(exchange(&state, "c:test_carbon", "suspended-actor-login").await?.0 == StatusCode::BAD_REQUEST);
             anyhow::Ok(())
         },
     ))
@@ -238,7 +238,7 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
         },
         async {
             ensure!(
-                exchange(&state, "test_carbon", "other-environment-login")
+                exchange(&state, "c:test_carbon", "other-environment-login")
                     .await?
                     .0
                     == StatusCode::BAD_REQUEST
@@ -262,7 +262,7 @@ async fn exchange(state: &ApiState, slt: &str, key: &str) -> anyhow::Result<(Sta
     request_tokens(
         state,
         AppTokenForm {
-            app_id: Some("test_org>app-alpha".to_owned()),
+            app_id: Some("app-alpha".to_owned()),
             slt: Some(slt.to_owned()),
             refresh_token: None,
         },
@@ -281,7 +281,7 @@ async fn request_tokens(
     let client = ApplicationClient {
         identity: crate::features::applications::security::ApplicationIdentity {
             application_id: APP,
-            app_id: "test_org>app-alpha".to_owned(),
+            app_id: "app-alpha".to_owned(),
             organization_id: Id::from_u128(0x21),
             auth_epoch: 1,
         },

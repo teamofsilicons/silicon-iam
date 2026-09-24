@@ -61,11 +61,8 @@ async fn scope_decision(
     let mut tx = begin(&state, &actor).await?;
     // Reviewer authority is checked before replay, and again under the mutation locks.
     if let Some(provider) = &input.target_app_id {
-        let org = provider
-            .split_once('>')
-            .map(|(org, _)| org)
-            .ok_or_else(ApiError::not_found)?;
-        manager(&mut tx, &actor, org).await?;
+        let org = application_org(&mut tx, provider).await?;
+        manager(&mut tx, &actor, &org).await?;
     } else {
         security::require_platform_capability(&mut tx, actor.subject.id, "applications.review")
             .await?;
@@ -141,14 +138,8 @@ async fn webhook_approval(
     .await
     .map_err(|_| ApiError::internal("honeycomb_webhook_reviewer"))?;
     if !reviewer {
-        manager(
-            &mut tx,
-            &actor,
-            path.split_once('>')
-                .map(|(org, _)| org)
-                .ok_or_else(ApiError::not_found)?,
-        )
-        .await?;
+        let org = application_org(&mut tx, &path).await?;
+        manager(&mut tx, &actor, &org).await?;
     }
     if let Some(response) = claim(
         &mut tx,

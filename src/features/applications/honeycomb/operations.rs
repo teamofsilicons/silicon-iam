@@ -334,9 +334,8 @@ fn validate_configuration(path: &str, input: &AcceptedConfiguration) -> Result<(
         1,
         10000,
     )?;
-    if input.app_id != path
-        || path.split_once('>').map(|(org, _)| org) != Some(input.org_id.as_str())
-    {
+    validation::org_id(&input.org_id)?;
+    if input.app_id != path {
         return Err(ApiError::conflict("application_identity_immutable"));
     }
     if input.environment_id.is_some() {
@@ -532,7 +531,7 @@ async fn apply_configuration(
     }
     if fresh {
         sqlx::query("INSERT INTO iam.principals(id,kind,status,activated_at) VALUES($1,'application','active',transaction_timestamp())")
-            .bind(app).execute(&mut **tx).await.map_err(|_|ApiError::internal("honeycomb_application_principal"))?;
+            .bind(app).execute(&mut **tx).await.map_err(|_|ApiError::conflict("application_already_exists"))?;
         sqlx::query("INSERT INTO iam.applications(id,app_id,organization_id,created_by_carbon_id,review_status,visibility) VALUES($1,$2,$3,$4,CASE WHEN $5='private' THEN 'verified' ELSE 'under_review' END,$5)")
             .bind(app).bind(&input.app_id).bind(organization).bind(actor.subject.id).bind(&input.visibility).execute(&mut **tx).await.map_err(|_|ApiError::conflict("application_already_exists"))?;
     }
@@ -699,11 +698,8 @@ async fn rotate(
     let actor = service.actor(&state, &headers).await?;
     let mut tx = begin(&state, &actor).await?;
     security::lock_step_up_actor(&mut tx, actor.subject.id).await?;
-    let org = path
-        .split_once('>')
-        .map(|(org, _)| org)
-        .ok_or_else(ApiError::not_found)?;
-    manager(&mut tx, &actor, org).await?;
+    let org = application_org(&mut tx, &path).await?;
+    manager(&mut tx, &actor, &org).await?;
     if let Some(response) = claim(
         &mut tx,
         &state,
@@ -764,4 +760,13 @@ pub(crate) fn validate_test_configuration(value: &Value) -> Result<(), ApiError>
     let input: AcceptedConfiguration = serde_json::from_value(value)
         .map_err(|_| ApiError::validation("configuration", "invalid accepted configuration"))?;
     validate_configuration(&input.app_id, &input)
+}
+
+/// Resolve ownership from the authorized database relationship, never the public handle.
+async fn application_org(
+    tx: &mut Transaction<'_, Postgres>,
+    app_id: &str,
+) -> Result<String, ApiError> {
+    sqlx::query_scalar("SELECT org.org_id FROM iam.applications app JOIN iam.organizations org ON org.id=app.organization_id WHERE app.app_id=$1 AND app.deleted_at IS NULL")
+        .bind(app_id).fetch_optional(&mut **tx).await.map_err(|_| ApiError::internal("application_owner_lookup"))?.ok_or_else(ApiError::not_found)
 }

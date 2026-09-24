@@ -98,11 +98,6 @@ jobs:
       - name: Validate runtime database grants
         run: ruby scripts/check-runtime-grants.rb
 
-      - name: Validate Honeycomb packaging and IAM service handoff
-        run: |
-          python3 scripts/test-honeycomb-package.py
-          cargo test --locked --bin iam-bootstrap-apps bootstrap_reuses_identity_and_private_credentials -- --ignored
-
       - name: Provision restricted runtime roles
         env:
           IAM_LOCAL_API_DATABASE_PASSWORD: api-test-password
@@ -114,6 +109,18 @@ jobs:
           POSTGRES_DB: silicon_iam
           POSTGRES_USER: postgres
         run: ./deploy/postgres/init-runtime-roles.sh
+
+      - name: Verify public identifier release safety
+        env:
+          IAM_OPERATOR_TEST_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: |
+          python3 scripts/test-public-identifier-release.py
+          python3 scripts/test-public-id-schema-migration.py --admin-url "$IAM_OPERATOR_TEST_ADMIN_URL"
+
+      - name: Validate Honeycomb packaging and IAM service handoff
+        run: |
+          python3 scripts/test-honeycomb-package.py
+          cargo test --locked --bin iam-bootstrap-apps bootstrap_reuses_identity_and_private_credentials -- --ignored
 
       - name: Create the isolated testing database
         env:
@@ -142,15 +149,15 @@ jobs:
             ('contact_lookup_hmac', 1, 'active');
           INSERT INTO iam.principals (id, kind, status, activated_at)
           VALUES (
-            'ci_admin',
+            'c:ci_admin',
             'carbon',
             'active',
             transaction_timestamp()
           );
           INSERT INTO iam.carbons (id, carbon_id, display_name)
           VALUES (
-            'ci_admin',
-            'ci_admin',
+            'c:ci_admin',
+            'c:ci_admin',
             'CI Administrator'
           );
           INSERT INTO iam.carbon_contacts (
@@ -165,7 +172,7 @@ jobs:
           VALUES
             (
               '22222222-2222-7222-8222-222222222222',
-              'ci_admin',
+              'c:ci_admin',
               'email',
               decode(repeat('01', 17), 'hex'),
               decode(repeat('02', 12), 'hex'),
@@ -174,7 +181,7 @@ jobs:
             ),
             (
               '33333333-3333-7333-8333-333333333333',
-              'ci_admin',
+              'c:ci_admin',
               'phone',
               decode(repeat('03', 17), 'hex'),
               decode(repeat('04', 12), 'hex'),
@@ -202,8 +209,8 @@ jobs:
             );
           COMMIT;
           SQL
-          cargo run --quiet --locked --bin iam-bootstrap-admin -- --carbon-id ci_admin
-          if cargo run --quiet --locked --bin iam-bootstrap-admin -- --carbon-id ci_admin \
+          cargo run --quiet --locked --bin iam-bootstrap-admin -- --carbon-id c:ci_admin
+          if cargo run --quiet --locked --bin iam-bootstrap-admin -- --carbon-id c:ci_admin \
             >/tmp/silicon-iam-bootstrap-replay.log 2>&1; then
             cat /tmp/silicon-iam-bootstrap-replay.log
             exit 1

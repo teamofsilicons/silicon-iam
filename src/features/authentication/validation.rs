@@ -69,8 +69,7 @@ pub(super) fn login_identifier(
     match (input.email, input.phone_number, input.carbon_id) {
         (Some(value), None, None) => email(value).map(ValidatedLoginIdentifier::Contact),
         (None, Some(value), None) => phone(value).map(ValidatedLoginIdentifier::Contact),
-        (None, None, Some(value)) => value
-            .parse::<CarbonId>()
+        (None, None, Some(value)) => CarbonId::existing(&value)
             .map(ValidatedLoginIdentifier::CarbonId)
             .map_err(|_| validation("carbon_id", "has an invalid format")),
         _ => Err(validation(
@@ -195,7 +194,7 @@ mod tests {
     #[test]
     fn signup_profiles_require_a_real_tzdb_identifier() {
         let valid = SignupCompletionInput {
-            carbon_id: "timezone_test".to_owned(),
+            carbon_id: "c:timezone_test".to_owned(),
             display_name: "Time Zone Test".to_owned(),
             timezone: Some("Asia/Kolkata".to_owned()),
             profile_photo: None,
@@ -206,7 +205,7 @@ mod tests {
         ));
 
         let invalid = SignupCompletionInput {
-            carbon_id: "timezone_test".to_owned(),
+            carbon_id: "c:timezone_test".to_owned(),
             display_name: "Time Zone Test".to_owned(),
             timezone: Some("Mars/Olympus_Mons".to_owned()),
             profile_photo: None,
@@ -214,7 +213,7 @@ mod tests {
         assert!(signup_completion(invalid, false).is_err());
 
         let defaulted = SignupCompletionInput {
-            carbon_id: "timezone_test".to_owned(),
+            carbon_id: "c:timezone_test".to_owned(),
             display_name: "Time Zone Test".to_owned(),
             timezone: None,
             profile_photo: None,

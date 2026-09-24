@@ -739,8 +739,8 @@ mod tests {
             topics: SiliconWebhookTopic::ALL.to_vec(),
             tag_filter: None,
         };
-        let first = replace_claim_request(organization_id, Id::fixture("first:acme"), &input);
-        let second = replace_claim_request(organization_id, Id::fixture("second:acme"), &input);
+        let first = replace_claim_request(organization_id, Id::fixture("si:first"), &input);
+        let second = replace_claim_request(organization_id, Id::fixture("si:second"), &input);
         assert_ne!(first, second);
     }
 
@@ -754,8 +754,8 @@ mod tests {
         crate::infrastructure::postgres::migrate(&pool).await?;
 
         let organization_id = Id::from_u128(0x41_01);
-        let creator_id = Id::fixture("tag-filter-owner");
-        let silicon_id = Id::fixture("subscriber:tag-filter-test");
+        let creator_id = Id::fixture("c:tag-filter-owner");
+        let silicon_id = Id::fixture("si:subscriber");
         let membership_id = Id::from_u128(0x41_04);
         let endpoint_id = Id::from_u128(0x41_05);
         let signing_key_id = Id::from_u128(0x41_06);

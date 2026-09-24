@@ -26,7 +26,7 @@ async fn configure(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    validation::app_id(&path)?;
+    validation::bundle_id(&path)?;
     let input: AcceptedConfiguration = decode(&body)?;
     if input.environment_id.is_some() {
         return Err(ApiError::forbidden("use_testing_lifecycle_integration"));

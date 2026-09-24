@@ -33,8 +33,8 @@ pub(crate) async fn exercise(
         sqlx::query("UPDATE iam.carbon_contacts SET ciphertext=$2,nonce=$3,encryption_key_version=$4 WHERE id=$1")
             .bind(id).bind(encrypted.ciphertext).bind(encrypted.nonce.as_slice()).bind(encrypted.key_version).execute(admin).await?;
     }
-    let name = "test_org>managed-app";
-    let prefix = "/api/v1/honeycomb/applications/test_org%3Emanaged-app";
+    let name = "managed-app";
+    let prefix = "/api/v1/honeycomb/applications/managed-app";
     let revision: i64 = sqlx::query_scalar("SELECT version FROM iam.applications WHERE app_id=$1")
         .bind(name)
         .fetch_one(admin)
@@ -170,7 +170,7 @@ pub(crate) async fn exercise(
             == StatusCode::FORBIDDEN,
         "owner approved validator gate"
     );
-    let reviewer = Id::fixture("test_carbon");
+    let reviewer = Id::fixture("c:test_carbon");
     let validator_grant = Id::now_v7();
     sqlx::query("INSERT INTO iam.platform_role_grants(id,carbon_id,role,grant_source) VALUES($1,$3,'application_reviewer','bootstrap'),($2,$3,'honeycomb_validator','bootstrap')")
         .bind(Id::now_v7()).bind(validator_grant).bind(reviewer).execute(admin).await?;
@@ -413,8 +413,8 @@ pub(crate) async fn exercise(
     );
     // A saved private config publishes at the same desired revision. Only IAM's
     // acceptance revision advances; changing content at that revision is forbidden.
-    let saved_name = "test_org>saved-publication";
-    let saved_prefix = "/api/v1/honeycomb/applications/test_org%3Esaved-publication";
+    let saved_name = "saved-publication";
+    let saved_prefix = "/api/v1/honeycomb/applications/saved-publication";
     let mut saved = private.clone();
     saved["app_id"] = json!(saved_name);
     saved["operation_id"] = json!(Id::now_v7());

@@ -176,7 +176,7 @@ export function ScopePicker(props: {
         >
           <input
             value={appId()}
-            placeholder="organization>application"
+            placeholder="application"
             onInput={(event) => {
               lookup.invalidate();
               setAppId(event.currentTarget.value);

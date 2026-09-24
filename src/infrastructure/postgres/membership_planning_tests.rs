@@ -12,8 +12,8 @@ use serde_json::Value;
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgPoolOptions};
 use tokio::{sync::Barrier, task::JoinSet};
 
-const SUBJECT: Id = Id::fixture("test_carbon");
-const APPLICATION: Id = Id::fixture("test_org>app-alpha");
+const SUBJECT: Id = Id::fixture("c:test_carbon");
+const APPLICATION: Id = Id::fixture("app-alpha");
 const MEMBER: Id = Id::from_u128(0x31);
 const WORLD: Id = Id::from_u128(0xa001);
 const MIGRATION: &str =
@@ -38,7 +38,7 @@ const CARBON_BOUND: Check = Check {
     ..CARBON
 };
 const SILICON: Check = Check {
-    principal: Id::fixture("planner_silicon:test_org"),
+    principal: Id::fixture("si:planner_silicon"),
     application: None,
     token: Id::from_u128(0x551),
     membership: Id::from_u128(0x531),
@@ -255,7 +255,7 @@ async fn authority_matrix(
     }
     for input in [
         Check {
-            principal: Id::fixture("test_admin"),
+            principal: Id::fixture("c:test_admin"),
             ..CARBON
         },
         Check {
@@ -264,7 +264,7 @@ async fn authority_matrix(
         },
         Check {
             principal: APPLICATION,
-            application: Some(Id::fixture("test_org>app-beta")),
+            application: Some(Id::fixture("app-beta")),
             ..CARBON
         },
         Check {
@@ -309,12 +309,12 @@ async fn authority_matrix(
         ),
         (
             "stale subject epoch",
-            "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='test_carbon'",
+            "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='c:test_carbon'",
             CARBON,
         ),
         (
             "stale client epoch",
-            "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='test_org>app-alpha'",
+            "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='app-alpha'",
             CARBON,
         ),
         (

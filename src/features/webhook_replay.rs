@@ -438,8 +438,8 @@ mod tests {
         let pool = database.pool.clone();
         crate::infrastructure::postgres::migrate(&pool).await?;
 
-        let application_id = Id::fixture("replay-org>app-main");
-        let other_application_id = Id::fixture("replay-org>app-other");
+        let application_id = Id::fixture("app-main");
+        let other_application_id = Id::fixture("app-other");
         let endpoint_id = Id::from_u128(0x44_03);
         let other_endpoint_id = Id::from_u128(0x44_04);
         let logout_event_id = Id::from_u128(0x44_05);
@@ -448,7 +448,7 @@ mod tests {
         let profile_recipient_id = Id::from_u128(0x44_08);
         let logout_delivery_id = Id::from_u128(0x44_09);
         let profile_delivery_id = Id::from_u128(0x44_0a);
-        let subject_id = Id::fixture("replay-carbon");
+        let subject_id = Id::fixture("c:replay-carbon");
 
         let mut transaction = pool.begin().await?;
         // This routing-boundary test bypasses unrelated Application and key

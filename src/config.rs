@@ -418,21 +418,18 @@ fn honeycomb_settings() -> Result<Option<HoneycombSettings>, SettingsError> {
         return Ok(None);
     }
     let app_id = app.ok_or(SettingsError::Missing("IAM_HONEYCOMB_APP_ID"))?;
-    let valid = app_id.split_once('>').is_some_and(|(org, app)| {
-        !org.is_empty()
-            && !app.is_empty()
-            && [org, app].iter().all(|part| {
-                part.bytes().all(|byte| {
-                    byte.is_ascii_lowercase()
-                        || byte.is_ascii_digit()
-                        || matches!(byte, b'_' | b'-')
-                })
-            })
-    });
+    let valid = (1..=80).contains(&app_id.len())
+        && app_id
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_lowercase)
+        && app_id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+        });
     if !valid {
         return Err(SettingsError::Invalid {
             name: "IAM_HONEYCOMB_APP_ID",
-            reason: "expected a canonical org>app identifier".into(),
+            reason: "expected a bare application handle".into(),
         });
     }
     let digest = digest.ok_or(SettingsError::Missing("IAM_HONEYCOMB_CREDENTIAL_SHA256"))?;

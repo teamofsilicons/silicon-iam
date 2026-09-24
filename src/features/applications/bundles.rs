@@ -261,7 +261,7 @@ pub(super) async fn get(
     Path(path): Path<BundlePath>,
 ) -> Result<Response, ApiError> {
     let actor = require_carbon(&access)?;
-    validation::app_id(&path.bundle_id)?;
+    validation::bundle_id(&path.bundle_id)?;
     let mut tx = context::begin(state.db(), DatabaseContext::principal(actor))
         .await
         .map_err(|_| ApiError::internal("bundle_context"))?;
@@ -285,7 +285,7 @@ pub(super) async fn create(
     validation::local_app_id(&input.app_id)?;
     validation::batch_app_ids(input.app_ids.iter().map(String::as_str))?;
     metadata(input.app_name.as_deref(), input.app_logo.as_deref())?;
-    let id = validation::qualify_app_id(&input.org_id, &input.app_id)?;
+    let id = validation::qualify_bundle_id(&input.org_id, &input.app_id)?;
     mutate(
         &state,
         &access,
@@ -352,7 +352,7 @@ async fn mutate(
     input: Value,
 ) -> Result<Response, ApiError> {
     let actor = require_carbon(access)?;
-    validation::app_id(id)?;
+    validation::bundle_id(id)?;
     let required_version = if action == "create" {
         0
     } else {
@@ -525,7 +525,7 @@ pub(super) async fn organizations(
     Path(path): Path<BundlePath>,
 ) -> Result<Json<Value>, ApiError> {
     oauth::require_direct_login(&access)?;
-    validation::app_id(&path.bundle_id)?;
+    validation::bundle_id(&path.bundle_id)?;
     let mut tx = context::begin(state.db(), DatabaseContext::principal(access.subject.id))
         .await
         .map_err(|_| ApiError::internal("bundle_context"))?;
@@ -547,7 +547,7 @@ pub(super) async fn issue(
     Json(input): Json<BatchLoginRequest>,
 ) -> Result<Response, ApiError> {
     oauth::require_direct_login(&access)?;
-    validation::app_id(&path.bundle_id)?;
+    validation::bundle_id(&path.bundle_id)?;
     batch_login::validate(&input)?;
     let mut tx = context::begin(state.db(), DatabaseContext::principal(access.subject.id))
         .await
@@ -595,19 +595,19 @@ mod tests {
     fn bundle_handoff_rejects_omitted_added_and_duplicate_members() {
         let mut request = BatchLoginRequest {
             applications: vec![BatchLoginSelection {
-                app_id: "tos>files".into(),
+                app_id: "files".into(),
                 org_ids: vec!["work".into()],
                 scope_version: 1,
                 approved_scopes: vec!["self.identity.read".into()],
             }],
             redirect_uri: None,
         };
-        let expected = vec!["tos>files".into()];
+        let expected = vec!["files".into()];
         assert!(selections(&expected, &request).is_ok());
-        assert!(selections(&["tos>files".into(), "tos>notes".into()], &request).is_err());
+        assert!(selections(&["files".into(), "notes".into()], &request).is_err());
         request.applications.push(request.applications[0].clone());
         assert!(selections(&expected, &request).is_err());
-        request.applications[1].app_id = "outside>notes".into();
+        request.applications[1].app_id = "other-notes".into();
         assert!(selections(&expected, &request).is_err());
     }
     #[test]

@@ -449,7 +449,7 @@
                                       "Statements": [
                                         {
                                           "ByteMatchStatement": {
-                                            "SearchString": "tos>briefcase",
+                                            "SearchString": "briefcase",
                                             "FieldToMatch": {
                                               "SingleQueryArgument": {
                                                 "Name": "app_id"
@@ -488,7 +488,7 @@
                                       "Statements": [
                                         {
                                           "ByteMatchStatement": {
-                                            "SearchString": "tos>remind",
+                                            "SearchString": "remind",
                                             "FieldToMatch": {
                                               "SingleQueryArgument": {
                                                 "Name": "app_id"

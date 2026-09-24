@@ -15,8 +15,8 @@ TARGETS = (
 
 
 def package(staging: Path, output: Path, app_id: str, version: str) -> None:
-    if not re.fullmatch(r"[a-z0-9_-]+>[a-z0-9_-]+", app_id):
-        raise ValueError("app-id must be a qualified org>app identifier")
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,79}", app_id):
+        raise ValueError("app-id must be a bare application identifier")
     if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
         raise ValueError("version must be a stable semantic version, e.g. 1.9.1")
     manifest = {"format_version": 1, "app_id": app_id, "version": version,

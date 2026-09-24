@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn webhook_approval_accepts_a_canonical_application_identity() {
         let mut payload = serde_json::json!({
-            "application_id": "acme>billing",
+            "application_id": "billing",
             "active_url": null,
             "pending_url": "https://hooks.example.test/iam",
             "status": "pending_review",
@@ -381,7 +381,7 @@ mod tests {
         else {
             panic!("the canonical application identity must decode for webhook approval");
         };
-        assert_eq!(webhook.application_id.as_deref(), Some("acme>billing"));
+        assert_eq!(webhook.application_id.as_deref(), Some("billing"));
         payload["application_id"] = serde_json::Value::Null;
         let Ok(webhook) = serde_json::from_value::<crate::models::ApplicationWebhook>(payload)
         else {
@@ -397,7 +397,7 @@ mod tests {
         };
         let error = client
             .applications()
-            .import_from_production("acme>billing", &Mutation::new())
+            .import_from_production("billing", &Mutation::new())
             .await;
         assert!(
             matches!(error, Err(Error::Invalid(message)) if message.contains("only possible in a testing environment"))

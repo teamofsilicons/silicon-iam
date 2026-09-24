@@ -42,21 +42,21 @@ async fn migrates_existing_memberships_and_serves_complete_directory() -> anyhow
         .fetch_all(&pool).await?;
     ensure!(rows.len() == 3);
     ensure!(
-        rows.iter().any(|(_, id)| id == "test_admin[test_org]"),
+        rows.iter().any(|(_, id)| id == "c:test_admin[test_org]"),
         "removed membership was not migrated"
     );
     ensure!(
         rows.iter()
-            .any(|(_, id)| id == "planner_silicon:test_org[test_org]")
+            .any(|(_, id)| id == "si:planner_silicon[test_org]")
     );
     let key = Id::from_u128(0x31);
     let mut tx = pool.begin().await?;
-    let mut body = json!({"membership_id": "test_carbon[test_org]", "extra_silicon_membership_ids": ["planner_silicon:test_org[test_org]"], "first_silicon_membership_id": null});
+    let mut body = json!({"membership_id": "c:test_carbon[test_org]", "extra_silicon_membership_ids": ["si:planner_silicon[test_org]"], "first_silicon_membership_id": null});
     decode(&mut tx, &mut body).await?;
     ensure!(body["membership_id"] == key.to_string());
     encode(&mut tx, &mut body).await?;
-    ensure!(body["membership_id"] == "test_carbon[test_org]");
-    ensure!(body["extra_silicon_membership_ids"][0] == "planner_silicon:test_org[test_org]");
+    ensure!(body["membership_id"] == "c:test_carbon[test_org]");
+    ensure!(body["extra_silicon_membership_ids"][0] == "si:planner_silicon[test_org]");
     ensure!(
         decode(&mut tx, &mut json!({"membership_id": key}))
             .await
@@ -64,7 +64,7 @@ async fn migrates_existing_memberships_and_serves_complete_directory() -> anyhow
     );
     sqlx::query("SELECT set_config('iam.testing_environment_id','00000000-0000-0000-0000-00000000a001',true)").execute(&mut *tx).await?;
     ensure!(
-        resolve(&mut tx, &["test_carbon[test_org]".into()], &[key])
+        resolve(&mut tx, &["c:test_carbon[test_org]".into()], &[key])
             .await?
             .is_empty()
     );
@@ -72,16 +72,16 @@ async fn migrates_existing_memberships_and_serves_complete_directory() -> anyhow
     sqlx::raw_sql(r"
         BEGIN;
         INSERT INTO iam.principals(id,kind,status,activated_at)
-          SELECT 'extra_' || translate(n::text, '0', 'a'),'carbon','active',now() FROM generate_series(1,105) n;
+          SELECT 'c:extra_' || translate(n::text, '0', 'a'),'carbon','active',now() FROM generate_series(1,105) n;
         INSERT INTO iam.carbons(id,carbon_id,display_name)
-          SELECT 'extra_' || translate(n::text, '0', 'a'),'extra_' || translate(n::text, '0', 'a'),'Extra Person ' || n FROM generate_series(1,105) n;
+          SELECT 'c:extra_' || translate(n::text, '0', 'a'),'c:extra_' || translate(n::text, '0', 'a'),'Extra Person ' || n FROM generate_series(1,105) n;
         INSERT INTO iam.carbon_contacts(id,carbon_id,kind,ciphertext,nonce,encryption_key_version,verified_at)
-          SELECT md5('extra-contact-' || n || kind::text)::uuid,'extra_' || translate(n::text, '0', 'a'),kind,
+          SELECT md5('extra-contact-' || n || kind::text)::uuid,'c:extra_' || translate(n::text, '0', 'a'),kind,
             decode(repeat('02',17),'hex'),decode(repeat('12',12),'hex'),1,now()
           FROM generate_series(1,105) n CROSS JOIN (VALUES ('email'::iam.contact_kind),('phone'::iam.contact_kind)) channels(kind);
         INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role)
           SELECT md5('extra-membership-' || n)::uuid,'00000000-0000-0000-0000-000000000021',
-            'extra_' || translate(n::text, '0', 'a'),'carbon','member' FROM generate_series(1,105) n;
+            'c:extra_' || translate(n::text, '0', 'a'),'carbon','member' FROM generate_series(1,105) n;
         COMMIT;
     ").execute(&pool).await?;
     let grants = include_str!("../../deploy/postgres/runtime-grants.sql")
@@ -129,14 +129,14 @@ async fn migrates_existing_memberships_and_serves_complete_directory() -> anyhow
     .await?;
     let mut tx = testing.begin().await?;
     ensure!(
-        resolve(&mut tx, &["test_carbon[test_org]".into()], &[])
+        resolve(&mut tx, &["c:test_carbon[test_org]".into()], &[])
             .await?
             .len()
             == 1
     );
     sqlx::query("SELECT set_config('iam.testing_environment_id','00000000-0000-0000-0000-00000000a002',true)").execute(&mut *tx).await?;
     ensure!(
-        resolve(&mut tx, &["test_carbon[test_org]".into()], &[key])
+        resolve(&mut tx, &["c:test_carbon[test_org]".into()], &[key])
             .await?
             .is_empty()
     );
@@ -169,7 +169,7 @@ async fn check_http(pool: PgPool) -> anyhow::Result<()> {
         authentication_session_id: Id::from_u128(0x41),
         subject: ActorRef {
             actor_type: ActorType::Carbon,
-            id: Id::fixture("test_carbon"),
+            id: Id::fixture("c:test_carbon"),
         },
         client_application_id: None,
         audience_application_id: None,
@@ -198,15 +198,15 @@ async fn check_http(pool: PgPool) -> anyhow::Result<()> {
     let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await?)?;
     ensure!(status.is_success(), "directory details: {status} {body}");
     ensure!(body.as_object().is_some_and(|value| value.len() == 107));
-    ensure!(body["test_carbon"]["membership_id"] == "test_carbon[test_org]");
-    ensure!(body["test_carbon"]["display_name"] == "Test Carbon");
-    ensure!(body["extra_1a5"]["display_name"] == "Extra Person 105");
-    ensure!(body["test_carbon"]["trust"].is_null());
-    ensure!(body["planner_silicon:test_org"]["display_name"] == "Planner Silicon");
-    ensure!(body["planner_silicon:test_org"]["trust"].is_object());
+    ensure!(body["c:test_carbon"]["membership_id"] == "c:test_carbon[test_org]");
+    ensure!(body["c:test_carbon"]["display_name"] == "Test Carbon");
+    ensure!(body["c:extra_1a5"]["display_name"] == "Extra Person 105");
+    ensure!(body["c:test_carbon"]["trust"].is_null());
+    ensure!(body["si:planner_silicon"]["display_name"] == "Planner Silicon");
+    ensure!(body["si:planner_silicon"]["trust"].is_object());
     for path in [
-        "test_carbon%5Btest_org%5D",
-        "planner_silicon:test_org%5Btest_org%5D",
+        "c:test_carbon%5Btest_org%5D",
+        "si:planner_silicon%5Btest_org%5D",
     ] {
         let response = app
             .clone()
@@ -262,9 +262,9 @@ async fn check_http(pool: PgPool) -> anyhow::Result<()> {
         .await?;
     ensure!(response.status().is_client_error());
     let mut application = actor;
-    application.0.client_application_id = Some(Id::fixture("test_org>app-alpha"));
-    application.0.audience_application_id = Some(Id::fixture("test_org>app-alpha"));
-    application.0.audience = "test_org>app-alpha".into();
+    application.0.client_application_id = Some(Id::fixture("app-alpha"));
+    application.0.audience_application_id = Some(Id::fixture("app-alpha"));
+    application.0.audience = "app-alpha".into();
     application.0.scopes = vec!["directory.carbons.read".into()];
     let response = make_app(application.clone())
         .oneshot(
@@ -281,7 +281,7 @@ async fn check_http(pool: PgPool) -> anyhow::Result<()> {
             .as_object()
             .is_some_and(|members| members.len() == 106)
     );
-    ensure!(limited.get("planner_silicon:test_org").is_none());
+    ensure!(limited.get("si:planner_silicon").is_none());
     for member in limited
         .as_object()
         .context("directory dictionary")?

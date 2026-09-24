@@ -6,9 +6,9 @@ use anyhow::{Context as _, ensure};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgPoolOptions};
 
-const SUBJECT: Id = Id::fixture("test_carbon");
-const ISSUER: Id = Id::fixture("test_org>app-alpha");
-const RECIPIENT: Id = Id::fixture("other_org>target");
+const SUBJECT: Id = Id::fixture("c:test_carbon");
+const ISSUER: Id = Id::fixture("app-alpha");
+const RECIPIENT: Id = Id::fixture("target");
 const ORG: Id = Id::from_u128(0x21);
 const MEMBER: Id = Id::from_u128(0x31);
 const TOKEN: Id = Id::from_u128(0x101);
@@ -19,7 +19,7 @@ const DISCLOSURES: [&str; 3] = [
     "self.membership.read",
     "self.tags.read",
 ];
-const ENDPOINT: &str = "obo:other_org>target:files.read";
+const ENDPOINT: &str = "obo:target:files.read";
 
 #[derive(Clone, Copy)]
 struct Snapshot {
@@ -96,7 +96,7 @@ fn assert_disclosures(value: &Value, omitted: Option<&str>) -> anyhow::Result<()
     if omitted == Some("self.identity.read") {
         ensure!(value.get("actor_type").is_none() && value.get("public_id").is_none());
     } else {
-        ensure!(value["actor_type"] == "carbon" && value["public_id"] == "test_carbon");
+        ensure!(value["actor_type"] == "carbon" && value["public_id"] == "c:test_carbon");
     }
     if omitted == Some("self.membership.read") {
         ensure!(value["org_role"].is_null());
@@ -199,12 +199,12 @@ async fn disclosure_matrix(pool: &PgPool, world: Option<Id>) -> anyhow::Result<(
             ),
             (
                 "issuer approval",
-                "UPDATE iam.application_approved_scopes SET revoked_at=now(),revoked_by_carbon_id='test_carbon' WHERE application_id=$1 AND scope=$2",
+                "UPDATE iam.application_approved_scopes SET revoked_at=now(),revoked_by_carbon_id='c:test_carbon' WHERE application_id=$1 AND scope=$2",
                 ISSUER,
             ),
             (
                 "recipient approval",
-                "UPDATE iam.application_approved_scopes SET revoked_at=now(),revoked_by_carbon_id='test_carbon' WHERE application_id=$1 AND scope=$2",
+                "UPDATE iam.application_approved_scopes SET revoked_at=now(),revoked_by_carbon_id='c:test_carbon' WHERE application_id=$1 AND scope=$2",
                 RECIPIENT,
             ),
         ] {
@@ -259,7 +259,7 @@ async fn disclosure_matrix(pool: &PgPool, world: Option<Id>) -> anyhow::Result<(
 async fn retained_boundaries(pool: &PgPool, world: Option<Id>) -> anyhow::Result<()> {
     for input in [
         Snapshot {
-            recipient: Id::fixture("test_org>app-beta"),
+            recipient: Id::fixture("app-beta"),
             ..Snapshot::default()
         },
         Snapshot {
@@ -285,12 +285,12 @@ async fn retained_boundaries(pool: &PgPool, world: Option<Id>) -> anyhow::Result
         "UPDATE iam.access_tokens SET revoked_at=now(),revocation_reason='test' WHERE id='00000000-0000-0000-0000-000000000101'",
         "UPDATE iam.obo_proofs SET revoked_at=now() WHERE id='00000000-0000-0000-0000-000000000123'",
         "UPDATE iam.oauth_consent_grants SET status='revoked',revoked_at=now() WHERE id='00000000-0000-0000-0000-000000000071'",
-        "DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id='00000000-0000-0000-0000-000000000071' AND scope='obo:other_org>target:files.read'",
+        "DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id='00000000-0000-0000-0000-000000000071' AND scope='obo:target:files.read'",
         "UPDATE iam.organization_memberships SET authz_epoch=authz_epoch+1 WHERE id='00000000-0000-0000-0000-000000000031'",
-        "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='test_carbon'",
-        "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='test_org>app-alpha'",
-        "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='other_org>target'",
-        "UPDATE iam.application_obo_endpoints SET version=version+1 WHERE application_id='other_org>target'",
+        "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='c:test_carbon'",
+        "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='app-alpha'",
+        "UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id='target'",
+        "UPDATE iam.application_obo_endpoints SET version=version+1 WHERE application_id='target'",
     ] {
         let mut tx = pool.begin().await?;
         sqlx::raw_sql(sqlx::AssertSqlSafe(query))

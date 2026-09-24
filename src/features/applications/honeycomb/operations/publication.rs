@@ -246,8 +246,8 @@ async fn reviewer(
         }
         other => {
             validation::app_id(other)?;
-            let (org, _) = other.split_once('>').ok_or_else(ApiError::not_found)?;
-            manager(tx, actor, org).await?;
+            let org = application_org(tx, other).await?;
+            manager(tx, actor, &org).await?;
         }
     }
     Ok(())

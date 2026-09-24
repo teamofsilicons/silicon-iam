@@ -78,7 +78,7 @@ async fn short_lived_token_sends_the_reviewed_version_and_exact_permission_set()
     client
         .auth()
         .short_lived_token_for_organizations(
-            "acme>checkout",
+            "checkout",
             &["customer".to_owned()],
             17,
             &approved,
@@ -90,7 +90,7 @@ async fn short_lived_token_sends_the_reviewed_version_and_exact_permission_set()
     assert!(headers.starts_with("POST /api/v1/app-auth/short-lived-tokens "));
     assert_eq!(
         body,
-        json!({"app_id":"acme>checkout","org_ids":["customer"],"scope_version":17,"approved_scopes":approved})
+        json!({"app_id":"checkout","org_ids":["customer"],"scope_version":17,"approved_scopes":approved})
     );
     server.join().expect("mock completed");
 }
@@ -99,7 +99,7 @@ async fn short_lived_token_sends_the_reviewed_version_and_exact_permission_set()
 async fn a_review_decision_carries_concurrency_and_replay_protection() {
     let request_id = Uuid::from_u128(7);
     let response = json!({
-        "id": request_id, "app_id":"acme>checkout", "target_app_id":null,
+        "id": request_id, "app_id":"checkout", "target_app_id":null,
         "scopes":["directory.carbons.read"], "status":"denied", "version":3,
         "created_at":"2026-09-12T00:00:00Z", "updated_at":"2026-09-12T00:00:00Z",
         "can_decide":true, "messages":[{"id":Uuid::nil(),"author":{"principal_id":Uuid::nil(),"type":"system","public_id":"iam"},"message":"Explain each critical scope.","created_at":"2026-09-12T00:00:00Z"}]
@@ -145,14 +145,11 @@ async fn application_testing_keeps_the_production_credential_out_of_its_payload(
     let environment_id = Uuid::from_u128(11);
     let (client, capture, server) = service(json!({
         "environment_id":environment_id,"org_id":"acme","name":"checkout integration",
-        "description":null,"iam_test_key":"0123456789abcdefghijklmnopqrstuv","app_id":"acme>checkout",
+        "description":null,"iam_test_key":"0123456789abcdefghijklmnopqrstuv","app_id":"checkout",
         "app_secret":"ask_isolated_test_secret","dependencies":["vendor>drive","vendor>mail"],
         "secret_replay_expires_at":"2026-09-12T00:10:00Z"
     }));
-    let client = client.with_credential(Credential::application(
-        "acme>checkout",
-        "production-secret",
-    ));
+    let client = client.with_credential(Credential::application("checkout", "production-secret"));
     let result = client
         .applications()
         .create_testing_environment(
@@ -194,14 +191,11 @@ async fn app_verification_issuance_uses_basic_auth_without_secret_replay() {
 
     for lifetime in [None, Some(60), Some(3600)] {
         let (client, capture, server) = service(json!({
-            "app_id":"acme>checkout", "app_access_key":"aak_generated_secret",
+            "app_id":"checkout", "app_access_key":"aak_generated_secret",
             "valid_till":"2026-09-22T00:05:00Z"
         }));
         let issued = client
-            .with_credential(Credential::application(
-                "acme>checkout",
-                "ask_issuer_secret",
-            ))
+            .with_credential(Credential::application("checkout", "ask_issuer_secret"))
             .app_verification()
             .issue(&models::AppAccessKeyIssue {
                 ttl_seconds: lifetime,
@@ -214,7 +208,7 @@ async fn app_verification_issuance_uses_basic_auth_without_secret_replay() {
         assert!(headers.starts_with("POST /api/v1/app-verification/keys "));
         assert!(headers.contains(&format!(
             "authorization: Basic {}\r\n",
-            STANDARD.encode("acme>checkout:ask_issuer_secret")
+            STANDARD.encode("checkout:ask_issuer_secret")
         )));
         assert!(!headers.to_ascii_lowercase().contains("idempotency-key:"));
         assert_eq!(
@@ -231,13 +225,13 @@ async fn app_verification_uses_receiver_credentials_and_keeps_the_testing_contex
 
     for valid in [false, true] {
         let response = if valid {
-            json!({"valid_key":true,"app_id":"acme>checkout","valid_till":"2026-09-22T00:05:00Z"})
+            json!({"valid_key":true,"app_id":"checkout","valid_till":"2026-09-22T00:05:00Z"})
         } else {
             json!({"valid_key":false})
         };
         let (client, capture, server) = service(response);
         let input = models::AppAccessKeyVerify {
-            app_id: "acme>checkout".to_owned(),
+            app_id: "checkout".to_owned(),
             app_access_key: "aak_calling_key".to_owned(),
         };
         let verified = client
@@ -253,7 +247,7 @@ async fn app_verification_uses_receiver_credentials_and_keeps_the_testing_contex
             .await
             .expect("check calling app identity");
         assert_eq!(verified.valid_key, valid);
-        assert_eq!(verified.app_id.as_deref(), valid.then_some("acme>checkout"));
+        assert_eq!(verified.app_id.as_deref(), valid.then_some("checkout"));
         assert_eq!(verified.valid_till.is_some(), valid);
         assert!(!format!("{input:?}").contains("aak_calling_key"));
         let (headers, body) = capture.recv().expect("captured verification");
@@ -269,7 +263,7 @@ async fn app_verification_uses_receiver_credentials_and_keeps_the_testing_contex
         assert!(!headers.to_ascii_lowercase().contains("idempotency-key:"));
         assert_eq!(
             body,
-            json!({"app_id":"acme>checkout", "app_access_key":"aak_calling_key"})
+            json!({"app_id":"checkout", "app_access_key":"aak_calling_key"})
         );
         server.join().expect("mock completed");
     }
@@ -293,10 +287,10 @@ async fn app_verification_rejects_invalid_lifetimes_before_sending() {
 async fn app_verification_rejects_incomplete_or_inconsistent_identity_responses() {
     for response in [
         json!({"valid_key":true}),
-        json!({"valid_key":true,"app_id":"acme>checkout"}),
+        json!({"valid_key":true,"app_id":"checkout"}),
         json!({"valid_key":true,"valid_till":"2026-09-22T00:05:00Z"}),
         json!({"valid_key":true,"app_id":"other>app","valid_till":"2026-09-22T00:05:00Z"}),
-        json!({"valid_key":false,"app_id":"acme>checkout"}),
+        json!({"valid_key":false,"app_id":"checkout"}),
         json!({"valid_key":false,"valid_till":"2026-09-22T00:05:00Z"}),
         json!({"valid_key":false,"app_id":null}),
         json!({"valid_key":false,"valid_till":null}),
@@ -309,7 +303,7 @@ async fn app_verification_rejects_incomplete_or_inconsistent_identity_responses(
             ))
             .app_verification()
             .verify(&models::AppAccessKeyVerify {
-                app_id: "acme>checkout".to_owned(),
+                app_id: "checkout".to_owned(),
                 app_access_key: "aak_calling_key".to_owned(),
             })
             .await;
@@ -458,7 +452,7 @@ async fn bundle_logo_updates_distinguish_preserving_setting_and_clearing() {
     ] {
         let (client, capture, server) = service(json!({
             "id": Uuid::from_u128(17), "bundle_id": "acme>workspace", "org_id": "acme",
-            "app_name": "Workspace", "app_logo": expected, "app_ids": ["acme>billing"],
+            "app_name": "Workspace", "app_logo": expected, "app_ids": ["billing"],
             "version": 5, "created_at": "2026-09-12T00:00:00Z", "updated_at": "2026-09-12T01:00:00Z"
         }));
         let updated = client
@@ -494,7 +488,7 @@ async fn application_login_history_preserves_events_with_private_actor_identifie
         "items": [{
             "id": Uuid::from_u128(24),
             "actor": {"type": "silicon", "public_id": null},
-            "app_id": "acme>workspace", "org_id": "customer",
+            "app_id": "workspace", "org_id": "customer",
             "event_type": "oauth_token_exchange", "success": true,
             "request_id": "history-private-actor", "occurred_at": "2026-09-12T00:00:00Z"
         }],
@@ -502,14 +496,14 @@ async fn application_login_history_preserves_events_with_private_actor_identifie
     }));
     let history = client
         .applications()
-        .login_history("acme>workspace", &silicon_iam_client::Paging::new())
+        .login_history("workspace", &silicon_iam_client::Paging::new())
         .await
         .expect("private actor identifier must not invalidate the history page");
     assert_eq!(history.items.len(), 1);
     assert!(history.items[0].actor.public_id.is_none());
     assert!(history.items[0].success);
     let (headers, _) = capture.recv().expect("captured history request");
-    assert!(headers.starts_with("GET /api/v1/applications/acme%3Eworkspace/login-history "));
+    assert!(headers.starts_with("GET /api/v1/applications/workspace/login-history "));
     server.join().expect("mock completed");
 }
 
@@ -659,7 +653,7 @@ async fn honeycomb_service_keeps_actor_and_step_up_separate_on_the_wire() {
         Mutation::with_key(IdempotencyKey::parse(id.to_string()).expect("idempotency key"))
             .step_up("sup_test_assertion");
     let receipt = client
-        .rotate_secret("test_org>app", &actor.clone().into(), &input, &mutation)
+        .rotate_secret("app", &actor.clone().into(), &input, &mutation)
         .await
         .expect("rotation receipt");
     assert_eq!(receipt.credential_version, Some(2));
@@ -692,11 +686,11 @@ async fn honeycomb_application_authority_and_environment_key_are_separate() {
     let app_secret = secrecy::SecretString::from("ask_production_secret");
     let key = EnvironmentKey::new("X".repeat(32)).expect("key");
     let authority = ManagementAuthority::Application {
-        app_id: "vendor>app",
+        app_id: "vendor-app",
         app_secret: &app_secret,
         environment_key: Some(&key),
     };
-    let input:models::HoneycombTestingInstruction=serde_json::from_value(json!({"operation_id":id,"environment_id":environment,"generation":3,"expected_iam_revision":7,"expected_key_version":2,"operation":"import","app_id":"vendor>app","source_revisions":{"vendor>app":5}})).expect("input");
+    let input:models::HoneycombTestingInstruction=serde_json::from_value(json!({"operation_id":id,"environment_id":environment,"generation":3,"expected_iam_revision":7,"expected_key_version":2,"operation":"import","app_id":"vendor-app","source_revisions":{"vendor-app":5}})).expect("input");
     client
         .testing_instruction_as(&authority, &input, &Mutation::new())
         .await
@@ -707,7 +701,7 @@ async fn honeycomb_application_authority_and_environment_key_are_separate() {
     assert!(headers.contains(&format!("authorization: Bearer {service_credential}")));
     assert!(headers.contains(&format!(
         "x-honeycomb-application-authorization: Basic {}",
-        STANDARD.encode("vendor>app:ask_production_secret")
+        STANDARD.encode("vendor-app:ask_production_secret")
     )));
     assert!(headers.contains(&format!("x-honeycomb-testing-key: {}", "X".repeat(32))));
     assert!(!headers.contains("x-honeycomb-actor-token"));
@@ -734,7 +728,7 @@ async fn honeycomb_environment_authority_needs_no_testing_enable_key() {
         ManagementClient::new(base.base_url().as_str(), credential.clone().into()).expect("client");
     let key = EnvironmentKey::new("X".repeat(32)).expect("key");
     let authority = ManagementAuthority::Environment(&key);
-    let input: models::HoneycombTestingInstruction = serde_json::from_value(json!({"operation_id":id,"environment_id":environment,"generation":3,"expected_iam_revision":7,"expected_key_version":2,"operation":"import","app_id":"vendor>app","source_revisions":{"vendor>app":5}})).expect("input");
+    let input: models::HoneycombTestingInstruction = serde_json::from_value(json!({"operation_id":id,"environment_id":environment,"generation":3,"expected_iam_revision":7,"expected_key_version":2,"operation":"import","app_id":"vendor-app","source_revisions":{"vendor-app":5}})).expect("input");
     client
         .testing_instruction_as(&authority, &input, &Mutation::new())
         .await
@@ -758,14 +752,14 @@ async fn honeycomb_publication_decision_has_a_typed_exact_plan_receipt() {
     let id = Uuid::now_v7();
     let plan = Uuid::now_v7();
     let request = Uuid::now_v7();
-    let response = json!({"operation_id":id,"decision_id":id,"state":"accepted","request_id":request,"plan_id":plan,"app_id":"vendor>app","configuration_revision":4,"provider":"honeycomb","scopes":[],"decision":"approve","reason":null});
+    let response = json!({"operation_id":id,"decision_id":id,"state":"accepted","request_id":request,"plan_id":plan,"app_id":"vendor-app","configuration_revision":4,"provider":"honeycomb","scopes":[],"decision":"approve","reason":null});
     let (base, capture, server) = service(response.clone());
     let client = ManagementClient::new(
         base.base_url().as_str(),
         format!("hck_{}", "a".repeat(43)).into(),
     )
     .expect("client");
-    let input:models::HoneycombPublicationDecision=serde_json::from_value(json!({"operation_id":id,"request_id":request,"plan_id":plan,"app_id":"vendor>app","configuration_revision":4,"provider":"honeycomb","scopes":[],"decision":"approve"})).expect("input");
+    let input:models::HoneycombPublicationDecision=serde_json::from_value(json!({"operation_id":id,"request_id":request,"plan_id":plan,"app_id":"vendor-app","configuration_revision":4,"provider":"honeycomb","scopes":[],"decision":"approve"})).expect("input");
     let actor = format!("oat_{}", "b".repeat(43)).into();
     let receipt = client
         .publication_decision(&actor, &input, &Mutation::new())
@@ -778,7 +772,7 @@ async fn honeycomb_publication_decision_has_a_typed_exact_plan_receipt() {
         .expect("request");
     assert!(
         headers
-            .starts_with("POST /api/v1/honeycomb/applications/vendor%3Eapp/publication-decisions ")
+            .starts_with("POST /api/v1/honeycomb/applications/vendor-app/publication-decisions ")
     );
     assert_eq!(body["request_id"], request.to_string());
     server.join().expect("server");

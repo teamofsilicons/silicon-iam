@@ -38,7 +38,7 @@ export function loginApplications(params: URLSearchParams): {
     !ids.length ||
     ids.length > 100 ||
     new Set(ids).size !== ids.length ||
-    ids.some((id) => !/^[a-z0-9_-]{3,50}>[a-z][a-z0-9_-]{0,79}$/.test(id))
+    ids.some((id) => !/^[a-z][a-z0-9_-]{0,79}$/.test(id))
   )
     throw new Error("Choose between 1 and 100 unique, valid application IDs.");
   return { ids, batch };

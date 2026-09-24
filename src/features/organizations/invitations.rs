@@ -1675,8 +1675,7 @@ async fn validate_invitation_references(
 fn validate_invitation(input: &mut CarbonInviteCreate) -> Result<(), AppError> {
     match (input.carbon_id.as_mut(), input.email.as_mut()) {
         (Some(carbon_id), None) => {
-            *carbon_id = carbon_id
-                .parse::<CarbonId>()
+            *carbon_id = CarbonId::existing(carbon_id)
                 .map_err(|_| validation::field("carbon_id", "has an invalid format"))?
                 .to_string();
         }
@@ -2027,14 +2026,14 @@ mod tests {
 
     #[test]
     fn invitation_code_send_scope_is_stable_and_tenant_qualified() {
-        let carbon_id = Id::fixture("invitee");
+        let carbon_id = Id::fixture("c:invitee");
 
         let scope = invitation_code_send_scope(carbon_id, "acme");
 
         assert_eq!(scope, invitation_code_send_scope(carbon_id, "acme"));
         assert_ne!(
             scope,
-            invitation_code_send_scope(Id::fixture("other-invitee"), "acme")
+            invitation_code_send_scope(Id::fixture("c:other-invitee"), "acme")
         );
         assert_ne!(scope, invitation_code_send_scope(carbon_id, "other-org"));
     }
@@ -2050,14 +2049,14 @@ mod tests {
     }
 
     #[test]
-    fn invitation_redirects_use_qualified_application_ids() {
+    fn invitation_redirects_use_bare_application_ids() {
         assert_eq!(
-            "Team>Billing_App"
+            "Billing_App"
                 .parse::<ApplicationId>()
                 .map(|app_id| app_id.to_string()),
-            Ok("team>billing_app".to_owned())
+            Ok("billing_app".to_owned())
         );
-        assert!("billing_app".parse::<ApplicationId>().is_err());
+        assert!("team>billing_app".parse::<ApplicationId>().is_err());
         assert!("team>1billing".parse::<ApplicationId>().is_err());
     }
 
@@ -2135,7 +2134,7 @@ mod tests {
         .bind(challenge_id)
         .bind(Id::from_u128(0x36_02))
         .bind(Id::from_u128(0x36_03))
-        .bind(Id::fixture("recipient"))
+        .bind(Id::fixture("c:recipient"))
         .bind(Id::from_u128(0x36_05))
         .execute(&mut *transaction)
         .await?;
@@ -2206,8 +2205,8 @@ mod tests {
             .execute(&pool)
             .await?;
 
-        let admin = Id::fixture("admin");
-        let recipient = Id::fixture("recipient");
+        let admin = Id::fixture("c:admin");
+        let recipient = Id::fixture("c:recipient");
         let organization = Id::from_u128(0x52_03);
         let admin_membership = Id::from_u128(0x52_04);
         let invitation = Id::from_u128(0x52_05);
@@ -2246,7 +2245,7 @@ mod tests {
             .execute(&mut *fixture)
             .await?;
             sqlx::query(
-                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $2, $2)",
+                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $1, $2)",
             )
             .bind(principal)
             .bind(handle)
@@ -2399,8 +2398,8 @@ mod tests {
             .execute(&pool)
             .await?;
 
-        let admin = Id::fixture("admin");
-        let recipient = Id::fixture("recipient");
+        let admin = Id::fixture("c:admin");
+        let recipient = Id::fixture("c:recipient");
         let organization = Id::from_u128(0x52_03);
         let admin_membership = Id::from_u128(0x52_04);
         let invitation = Id::from_u128(0x52_05);
@@ -2442,7 +2441,7 @@ mod tests {
             .execute(&mut *fixture)
             .await?;
             sqlx::query(
-                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $2, $2)",
+                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $1, $2)",
             )
             .bind(principal)
             .bind(handle)
@@ -2581,7 +2580,7 @@ mod tests {
             .execute(&mut *fixture)
             .await?;
             sqlx::query(
-                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $2, $2)",
+                "INSERT INTO iam.carbons (id, carbon_id, display_name) VALUES ($1, $1, $2)",
             )
             .bind(principal)
             .bind(handle)

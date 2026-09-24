@@ -468,13 +468,16 @@ mod tests {
     #[test]
     fn silicon_identity_includes_type_without_granting_profile_or_hierarchy() {
         let granted = vec!["self.identity.read".to_owned()];
-        let projected = ReadScopes(Some(&granted)).silicon(json!({
-            "silicon_id":"acme>worker","display_name":"Worker","reports_to_membership_id":"parent",
-            "tags":[{"id":"private"}],"version":2
-        }), true);
+        let projected = ReadScopes(Some(&granted)).silicon(
+            json!({
+                "silicon_id":"worker","display_name":"Worker","reports_to_membership_id":"parent",
+                "tags":[{"id":"private"}],"version":2
+            }),
+            true,
+        );
         assert_eq!(
             projected,
-            json!({"silicon_id":"acme>worker","type":"silicon","version":2})
+            json!({"silicon_id":"worker","type":"silicon","version":2})
         );
     }
 

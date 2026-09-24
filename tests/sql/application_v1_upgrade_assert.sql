@@ -17,7 +17,7 @@ BEGIN
         fixture_prefix := 'v1_upgrade_' || environment_number;
         expected_environment := md5(fixture_prefix || ':environment')::uuid;
         PERFORM set_config('iam.testing_environment_id', expected_environment::text, true);
-        SELECT id INTO STRICT expected_owner FROM iam.carbons WHERE carbon_id=fixture_prefix || '_owner';
+        SELECT id INTO STRICT expected_owner FROM iam.carbons WHERE carbon_id=CASE WHEN to_regclass('iam_private.public_id_schema_map') IS NULL THEN '' ELSE 'c:' END || fixture_prefix || '_owner';
         IF NOT EXISTS (
             SELECT 1 FROM iam.authentication_sessions session
             WHERE session.id = md5(fixture_prefix || ':session')::uuid
@@ -39,7 +39,7 @@ BEGIN
         END IF;
         FOR application_number IN 1..3 LOOP
             legacy_application := md5(fixture_prefix || ':app:' || application_number)::uuid;
-            SELECT id INTO STRICT expected_application FROM iam.applications WHERE app_id=fixture_prefix || '>app-' || application_number;
+            SELECT id INTO STRICT expected_application FROM iam.applications WHERE app_id=CASE WHEN to_regclass('iam_private.public_id_schema_map') IS NULL THEN fixture_prefix || '>' ELSE '' END || fixture_prefix || '-app-' || application_number;
             SELECT * INTO STRICT app_record FROM iam.applications WHERE id = expected_application;
             IF app_record.review_status <> (ARRAY['verified','suspended','under_review'])[application_number]
                 OR app_record.version <> 2

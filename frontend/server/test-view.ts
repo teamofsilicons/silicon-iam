@@ -24,7 +24,7 @@ export async function testApplicationView(
   const { app_id, app_secret, iam_test_key } = input as Record<string, unknown>;
   if (
     typeof app_id !== "string" ||
-    !/^[a-z0-9_-]+>[a-z0-9_-]+$/.test(app_id) ||
+    !/^[a-z][a-z0-9_-]{0,79}$/.test(app_id) ||
     app_id.length > 200 ||
     typeof app_secret !== "string" ||
     !/^[\x21-\x7e]{16,512}$/.test(app_secret) ||

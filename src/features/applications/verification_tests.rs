@@ -31,8 +31,8 @@ use crate::{
     },
 };
 
-const APP_A: &str = "test_org>app-alpha";
-const APP_B: &str = "test_org>app-beta";
+const APP_A: &str = "app-alpha";
+const APP_B: &str = "app-beta";
 
 #[test]
 fn key_requests_require_integer_lifetimes_and_redact_invalid_results() -> anyhow::Result<()> {
@@ -280,7 +280,7 @@ async fn credentials(pool: &PgPool, state: &ApiState, app: &str) -> anyhow::Resu
         .crypto
         .digest_secret(DigestPurpose::ApplicationSecret, &secret)?;
     sqlx::query("UPDATE iam.application_secrets AS secret SET status='retired',retired_at=clock_timestamp() WHERE application_id=$1 AND status IN('active','retiring') AND (to_jsonb(secret)->>'testing_environment_id') IS NOT DISTINCT FROM NULLIF(current_setting('iam.testing_environment_id',true),'')").bind(app).execute(pool).await?;
-    sqlx::query("INSERT INTO iam.application_secrets(id,application_id,secret_version,secret_prefix,secret_digest,pepper_key_version,created_by_carbon_id) SELECT $1,$2,COALESCE(max(secret_version),0)+1,'ask_testing0',$3,$4,'test_carbon' FROM iam.application_secrets secret WHERE application_id=$2 AND (to_jsonb(secret)->>'testing_environment_id') IS NOT DISTINCT FROM NULLIF(current_setting('iam.testing_environment_id',true),'')")
+    sqlx::query("INSERT INTO iam.application_secrets(id,application_id,secret_version,secret_prefix,secret_digest,pepper_key_version,created_by_carbon_id) SELECT $1,$2,COALESCE(max(secret_version),0)+1,'ask_testing0',$3,$4,'c:test_carbon' FROM iam.application_secrets secret WHERE application_id=$2 AND (to_jsonb(secret)->>'testing_environment_id') IS NOT DISTINCT FROM NULLIF(current_setting('iam.testing_environment_id',true),'')")
         .bind(Id::now_v7()).bind(app).bind(digest.as_bytes().as_slice()).bind(digest.key_version()).execute(pool).await?;
     Ok(secret.expose_secret().to_owned())
 }

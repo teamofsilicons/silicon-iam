@@ -25,7 +25,7 @@ fn credentials_are_typed_and_never_accept_an_app_selector() -> anyhow::Result<()
     ] {
         assert!(require_credential(invalid, "oac_").is_err());
     }
-    assert!(serde_json::from_value::<Login>(json!({"slt":slt,"app_id":"tos>other"})).is_err());
+    assert!(serde_json::from_value::<Login>(json!({"slt":slt,"app_id":"other"})).is_err());
     assert!(serde_json::from_value::<Refresh>(json!({"refresh_token":"x","token":"y"})).is_err());
     let access = format!("oat_{}", "b".repeat(43));
     let mut headers = HeaderMap::new();
@@ -43,7 +43,7 @@ fn credentials_are_typed_and_never_accept_an_app_selector() -> anyhow::Result<()
 #[test]
 fn introspection_requires_the_same_ordinary_application_and_actor() {
     let client = ApplicationIdentity {
-        application_id: Id::fixture("tos>iam"),
+        application_id: Id::fixture("iam"),
         app_id: APP_ID.into(),
         organization_id: Id::from_u128(2),
         auth_epoch: 1,
@@ -219,7 +219,7 @@ async fn scoped_slt_lifecycle_preserves_issuer_and_authorization_boundaries() ->
     let identity = service_identity(&state, "test", "synthetic-resolver-probe")
         .await
         .map_err(|error| anyhow::anyhow!("{error:?}"))?;
-    assert_eq!(identity.application_id, Id::fixture("tos>iam"));
+    assert_eq!(identity.application_id, Id::fixture("iam"));
     assert_eq!(identity.app_id, APP_ID);
     let restricted_can_choose: bool = sqlx::query_scalar("SELECT has_function_privilege('scoped_untrusted','iam_private.resolve_scoped_iam_application()','execute')").fetch_one(&admin).await?;
     assert!(!restricted_can_choose);
@@ -325,7 +325,7 @@ async fn scoped_slt_lifecycle_preserves_issuer_and_authorization_boundaries() ->
         .1["active"]
             == false
     );
-    let unrelated = issued_slt(&state, "test_org>app-alpha").await?;
+    let unrelated = issued_slt(&state, "app-alpha").await?;
     ensure!(
         call(
             &app,
@@ -341,8 +341,8 @@ async fn scoped_slt_lifecycle_preserves_issuer_and_authorization_boundaries() ->
     // The same wrong-app SLT remains redeemable by the proper main-IAM client.
     let other_client = super::super::security::ApplicationClient {
         identity: ApplicationIdentity {
-            application_id: Id::fixture("test_org>app-alpha"),
-            app_id: "test_org>app-alpha".into(),
+            application_id: Id::fixture("app-alpha"),
+            app_id: "app-alpha".into(),
             organization_id: Id::from_u128(0x21),
             auth_epoch: 1,
         },
@@ -355,7 +355,7 @@ async fn scoped_slt_lifecycle_preserves_issuer_and_authorization_boundaries() ->
         other_client,
         headers,
         axum::Form(AppTokenForm {
-            app_id: Some("test_org>app-alpha".into()),
+            app_id: Some("app-alpha".into()),
             slt: Some(unrelated),
             refresh_token: None,
         }),
@@ -545,18 +545,18 @@ async fn call(
 
 async fn seed_scoped_registration(pool: &sqlx::PgPool) -> anyhow::Result<()> {
     sqlx::raw_sql(r"
-        INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES ('00000000-0000-0000-0000-000000000022','tos','test_carbon','Scoped test organization');
-        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role,job_role) VALUES ('00000000-0000-0000-0000-000000000033','00000000-0000-0000-0000-000000000022','test_carbon','carbon','owner','');
-        INSERT INTO iam.principals(id,kind,status,activated_at) VALUES ('tos>iam','application','active',transaction_timestamp());
-        INSERT INTO iam.applications(id,app_id,organization_id,created_by_carbon_id,review_status,base_url) VALUES ('tos>iam','tos>iam','00000000-0000-0000-0000-000000000022','test_carbon','verified','https://scoped.backend.iam.teamofsilicons.com');
-        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES ('tos>iam','self.organizations.read');
-        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES ('tos>iam','self.organizations.read','test_carbon');
+        INSERT INTO iam.organizations(id,org_id,created_by_carbon_id,name) VALUES ('00000000-0000-0000-0000-000000000022','tos','c:test_carbon','Scoped test organization');
+        INSERT INTO iam.organization_memberships(id,organization_id,principal_id,principal_kind,org_role,job_role) VALUES ('00000000-0000-0000-0000-000000000033','00000000-0000-0000-0000-000000000022','c:test_carbon','carbon','owner','');
+        INSERT INTO iam.principals(id,kind,status,activated_at) VALUES ('iam','application','active',transaction_timestamp());
+        INSERT INTO iam.applications(id,app_id,organization_id,created_by_carbon_id,review_status,base_url) VALUES ('iam','iam','00000000-0000-0000-0000-000000000022','c:test_carbon','verified','https://scoped.backend.iam.teamofsilicons.com');
+        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES ('iam','self.organizations.read');
+        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id) VALUES ('iam','self.organizations.read','c:test_carbon');
     ").execute(pool).await?;
     Ok(())
 }
 
 async fn issued_slt(state: &ApiState, app_id: &str) -> anyhow::Result<String> {
-    let carbon = Id::fixture("test_carbon");
+    let carbon = Id::fixture("c:test_carbon");
     let mut tx = context::begin(state.db(), DatabaseContext::principal(carbon)).await?;
     let application_id: Id = sqlx::query_scalar("SELECT id FROM iam.applications WHERE app_id=$1")
         .bind(app_id)

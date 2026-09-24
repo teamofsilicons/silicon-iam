@@ -97,7 +97,7 @@ fn service(
 fn issue_prints_the_key_without_requiring_or_storing_a_user_session() {
     let store = Store::new();
     let issued = json!({
-        "app_id":"acme>checkout", "app_access_key":"aak_cli_generated_key",
+        "app_id":"checkout", "app_access_key":"aak_cli_generated_key",
         "valid_till":"2026-09-22T00:05:00Z"
     });
     let (url, captured, task) = service(200, issued.clone());
@@ -105,7 +105,7 @@ fn issue_prints_the_key_without_requiring_or_storing_a_user_session() {
         .command(&url)
         .args([
             "issue",
-            "acme>checkout",
+            "checkout",
             "--ttl-seconds",
             "60",
             "--app-secret",
@@ -122,7 +122,7 @@ fn issue_prints_the_key_without_requiring_or_storing_a_user_session() {
         .recv_timeout(Duration::from_secs(5))
         .expect("request");
     assert!(headers.starts_with("POST /api/v1/app-verification/keys "));
-    assert!(headers.contains("authorization: Basic YWNtZT5jaGVja291dDphc2tfaXNzdWVy\r\n"));
+    assert!(headers.contains("authorization: Basic Y2hlY2tvdXQ6YXNrX2lzc3Vlcg==\r\n"));
     assert_eq!(body, json!({"ttl_seconds":60}));
     let result: Value = serde_json::from_slice(&output.stdout).expect("issued JSON");
     assert_eq!(result["app_access_key"], issued["app_access_key"]);
@@ -138,7 +138,7 @@ fn verify_uses_the_receiver_and_keeps_invalid_keys_distinct_from_authentication_
         let store = Store::new();
         let response = match valid {
             Some(true) => {
-                json!({"valid_key":true,"app_id":"acme>checkout","valid_till":"2026-09-22T00:05:00Z"})
+                json!({"valid_key":true,"app_id":"checkout","valid_till":"2026-09-22T00:05:00Z"})
             }
             Some(false) => json!({"valid_key":false}),
             None => {
@@ -150,9 +150,9 @@ fn verify_uses_the_receiver_and_keeps_invalid_keys_distinct_from_authentication_
             .command(&url)
             .args([
                 "verify",
-                "acme>checkout",
+                "checkout",
                 "--as-app-id",
-                "vendor>billing",
+                "billing",
                 "--app-secret",
                 "ask_receiver",
                 "--app-access-key",
@@ -170,10 +170,10 @@ fn verify_uses_the_receiver_and_keeps_invalid_keys_distinct_from_authentication_
             .recv_timeout(Duration::from_secs(5))
             .expect("request");
         assert!(headers.starts_with("POST /api/v1/app-verification/verify "));
-        assert!(headers.contains("authorization: Basic dmVuZG9yPmJpbGxpbmc6YXNrX3JlY2VpdmVy\r\n"));
+        assert!(headers.contains("authorization: Basic YmlsbGluZzphc2tfcmVjZWl2ZXI=\r\n"));
         assert_eq!(
             body,
-            json!({"app_id":"acme>checkout","app_access_key":"aak_caller_key"})
+            json!({"app_id":"checkout","app_access_key":"aak_caller_key"})
         );
         if let Some(valid) = valid {
             let result: Value = serde_json::from_slice(&output.stdout).expect("verification JSON");

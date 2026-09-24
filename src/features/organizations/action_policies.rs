@@ -712,12 +712,12 @@ mod tests {
     #[test]
     fn silicon_self_profile_gate_keeps_hierarchy_separately_controlled() {
         let request = request(
-            "/api/v1/organizations/bricks/silicons/chef%3Abricks",
+            "/api/v1/organizations/bricks/silicons/si%3Achef",
             "/api/v1/organizations/{org_id}/silicons/{silicon_id}",
             json!({"timezone":"Asia/Kolkata"}),
         );
         assert_eq!(
-            actions(&request, "chef:bricks"),
+            actions(&request, "si:chef"),
             vec!["silicon.self_profile.update"]
         );
         assert_eq!(
@@ -729,7 +729,7 @@ mod tests {
             ..request
         };
         assert_eq!(
-            actions(&composite, "chef:bricks"),
+            actions(&composite, "si:chef"),
             vec!["silicon.hierarchy.update", "silicon.self_profile.update"]
         );
     }
@@ -742,7 +742,7 @@ mod tests {
             json!({"tag_ids":[],"default_trust":{"level":"trusted"},"extra_silicon_membership_ids":[],"reports_to_membership_id":null,"profile_photo":null}),
         );
         assert_eq!(
-            actions(&request, "chef:bricks"),
+            actions(&request, "si:chef"),
             vec![
                 "membership.directory.update",
                 "membership.tags.update",
@@ -762,7 +762,7 @@ mod tests {
         );
         creation.method = "POST".into();
         assert_eq!(
-            actions(&creation, "chef:bricks"),
+            actions(&creation, "si:chef"),
             vec![
                 "membership.job_description.update",
                 "membership.tags.update",
@@ -863,14 +863,14 @@ mod tests {
     async fn router_middleware_retains_exact_body_path_and_retry_headers() -> anyhow::Result<()> {
         let app = Router::new().route("/api/v1/organizations/{org_id}/silicons/{silicon_id}", patch(|| async {
             let context = MUTATION_REQUEST.with(Clone::clone);
-            axum::Json(json!({"actions":actions(&context,"chef:bricks"),"path":context.path,"body":context.body,
+            axum::Json(json!({"actions":actions(&context,"si:chef"),"path":context.path,"body":context.body,
                 "version":context.expected_version,"key":context.idempotency_key}))
         })).layer(middleware::from_fn(capture_request));
         let response = app
             .oneshot(
                 Request::builder()
                     .method("PATCH")
-                    .uri("/api/v1/organizations/bricks/silicons/chef%3Abricks")
+                    .uri("/api/v1/organizations/bricks/silicons/si%3Achef")
                     .header("if-match", "\"1\"")
                     .header("idempotency-key", "timezone-retry")
                     .body(Body::from(r#"{"timezone":"Asia/Kolkata"}"#))?,
@@ -881,7 +881,7 @@ mod tests {
             serde_json::from_slice(&to_bytes(response.into_body(), 4096).await?)?;
         assert_eq!(
             value,
-            json!({"actions":["silicon.self_profile.update"],"path":"/api/v1/organizations/bricks/silicons/chef%3Abricks",
+            json!({"actions":["silicon.self_profile.update"],"path":"/api/v1/organizations/bricks/silicons/si%3Achef",
             "body":{"timezone":"Asia/Kolkata"},"version":"\"1\"","key":"timezone-retry"})
         );
         Ok(())

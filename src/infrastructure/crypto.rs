@@ -52,6 +52,7 @@ pub struct EncryptionService {
     // Legacy values are cryptographic context metadata only. They cannot be
     // used to look up or authenticate an identity.
     application_contexts: BTreeMap<(Option<Id>, Id), Id>,
+    public_id_contexts: BTreeMap<(Option<Id>, Id), Id>,
 }
 
 #[derive(Clone)]
@@ -518,6 +519,7 @@ impl EncryptionService {
         Ok(Self {
             encryption_keys: Keyring::from_settings("IAM_ENCRYPTION_KEYRING", settings)?,
             application_contexts: BTreeMap::new(),
+            public_id_contexts: BTreeMap::new(),
         })
     }
 
@@ -539,6 +541,40 @@ impl EncryptionService {
                 );
             }
         }
+        let rows: Vec<(String, Option<uuid::Uuid>, String)> = sqlx::query_as(
+            "SELECT application_id, testing_environment_id, context_id FROM iam_private.public_id_application_contexts()",
+        ).fetch_all(pool).await?;
+        for (application, environment, old) in rows {
+            self.public_id_contexts.insert(
+                (environment.map(Id::from), Id::identity(&application)?),
+                Id::legacy_application_encryption_id(&old)?,
+            );
+        }
+        Ok(())
+    }
+
+    /// Offline 0111 converter only: these are old application AAD contexts,
+    /// never identities accepted by authentication or the current runtime.
+    pub(crate) async fn load_canonical_cutover_contexts(
+        &mut self,
+        pool: &sqlx::PgPool,
+    ) -> anyhow::Result<()> {
+        let rows: Vec<(String, Option<uuid::Uuid>, uuid::Uuid)> = sqlx::query_as(
+            "SELECT application_id, testing_environment_id, context_id FROM iam_private.application_encryption_contexts()",
+        ).fetch_all(pool).await?;
+        for (application, environment, context) in rows {
+            let key = (
+                environment.map(Id::from),
+                Id::legacy_application_encryption_id(&application)?,
+            );
+            let context = Id::from(context);
+            if let Some(previous) = self.application_contexts.insert(key, context) {
+                anyhow::ensure!(
+                    previous == context,
+                    "conflicting cutover encryption context"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -552,6 +588,33 @@ impl EncryptionService {
         };
         if let Some(retained) = application_id.and_then(|application| {
             self.application_contexts.get(&(
+                if context.production_application {
+                    None
+                } else {
+                    testing_plane::current_id()
+                },
+                application,
+            ))
+        }) {
+            if context.field == ProtectedField::TestingApplicationSecret {
+                context.entity_id = *retained;
+            } else {
+                context.tenant_id = Some(*retained);
+            }
+        }
+        context
+    }
+
+    fn pre_schema_context(&self, mut context: EncryptionContext) -> EncryptionContext {
+        let application_id = match context.field {
+            ProtectedField::ApplicationWebhookUrl
+            | ProtectedField::ApplicationWebhookSigningSecret
+            | ProtectedField::ApplicationWebhookEventPayload => context.tenant_id,
+            ProtectedField::TestingApplicationSecret => Some(context.entity_id),
+            _ => None,
+        };
+        if let Some(retained) = application_id.and_then(|application| {
+            self.public_id_contexts.get(&(
                 if context.production_application {
                     None
                 } else {
@@ -631,6 +694,19 @@ impl EncryptionService {
             )
             .or_else(|error| {
                 let retained = self.retained_context(context);
+                if retained == context {
+                    return Err(error);
+                }
+                cipher.decrypt(
+                    Nonce::from_slice(&encrypted.nonce),
+                    Payload {
+                        msg: &encrypted.ciphertext,
+                        aad: &encryption_aad(retained, encrypted.key_version),
+                    },
+                )
+            })
+            .or_else(|error| {
+                let retained = self.pre_schema_context(context);
                 if retained == context {
                     return Err(error);
                 }
@@ -935,11 +1011,51 @@ mod tests {
     }
 
     #[test]
+    fn renamed_application_decrypts_qualified_aad_without_accepting_a_legacy_identity()
+    -> anyhow::Result<()> {
+        let mut crypto = service();
+        let old = Id::legacy_application_encryption_id("bricks>remind")?;
+        let app = Id::identity("remind")?;
+        let row = Id::from_u128(721);
+        let bytes = crypto.encrypt(
+            EncryptionContext::tenant(ProtectedField::ApplicationWebhookUrl, old, row),
+            b"https://example.test/hook",
+        )?;
+        let context = EncryptionContext::tenant(ProtectedField::ApplicationWebhookUrl, app, row);
+        assert!(crypto.decrypt(context, &bytes).is_err());
+        crypto
+            .encryption
+            .public_id_contexts
+            .insert((None, app), old);
+        assert_eq!(
+            crypto.decrypt(context, &bytes)?.as_slice(),
+            b"https://example.test/hook"
+        );
+        assert!(Id::identity("bricks>remind").is_err());
+        assert!(
+            crypto
+                .decrypt(
+                    EncryptionContext::tenant(
+                        ProtectedField::ApplicationWebhookUrl,
+                        Id::identity("other")?,
+                        row
+                    ),
+                    &bytes
+                )
+                .is_err()
+        );
+        let new_bytes = crypto.encrypt(context, b"new")?;
+        crypto.encryption.public_id_contexts.clear();
+        assert_eq!(crypto.decrypt(context, &new_bytes)?.as_slice(), b"new");
+        Ok(())
+    }
+
+    #[test]
     fn canonical_application_context_decrypts_retained_ciphertext_without_uuid_identity()
     -> anyhow::Result<()> {
         let mut service = service();
         let legacy_context = Id::from_u128(71);
-        let application = Id::identity("bricks>remind")?;
+        let application = Id::identity("remind")?;
         let row = Id::from_u128(72);
         let legacy =
             EncryptionContext::tenant(ProtectedField::ApplicationWebhookUrl, legacy_context, row);
@@ -956,7 +1072,7 @@ mod tests {
         );
         let other = EncryptionContext::tenant(
             ProtectedField::ApplicationWebhookUrl,
-            Id::identity("bricks>waveform")?,
+            Id::identity("waveform")?,
             row,
         );
         assert_eq!(
@@ -980,7 +1096,7 @@ mod tests {
     -> anyhow::Result<()> {
         use crate::infrastructure::testing_plane::{SelectedEnvironment, scope};
         let mut service = service();
-        let application = Id::identity("bricks>remind")?;
+        let application = Id::identity("remind")?;
         let first = SelectedEnvironment {
             id: Id::from_u128(81),
             organization_id: Id::from_u128(91),

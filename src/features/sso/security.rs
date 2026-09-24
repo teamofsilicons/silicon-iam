@@ -169,7 +169,7 @@ mod tests {
         let application_id = Id::now_v7();
         delegated.client_application_id = Some(application_id);
         delegated.audience_application_id = Some(application_id);
-        delegated.audience = "tos>interface".to_owned();
+        delegated.audience = "interface".to_owned();
         delegated.scopes = vec!["organizations.join".to_owned()];
         Authenticated(delegated)
     }

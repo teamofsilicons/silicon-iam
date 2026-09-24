@@ -280,25 +280,18 @@ fn import_idempotency_scope(environment_id: Id) -> String {
 
 fn qualified_app_id(value: &str) -> Result<String, AppError> {
     let normalized = value.trim().to_ascii_lowercase();
-    let Some((organization, local)) = normalized.split_once('>') else {
-        return Err(AppError::invalid_field(
-            "app_id",
-            "must be a qualified production Application id",
-        ));
-    };
-    let valid_organization = (3..=50).contains(&organization.len())
-        && organization.bytes().all(|byte| {
+    let valid = (1..=80).contains(&normalized.len())
+        && normalized
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_lowercase)
+        && normalized.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte)
         });
-    let valid_local = (1..=80).contains(&local.len())
-        && local.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-        && local.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte)
-        });
-    if !valid_organization || !valid_local || local.contains('>') {
+    if !valid {
         return Err(AppError::invalid_field(
             "app_id",
-            "must be a qualified production Application id",
+            "must be a bare production Application handle",
         ));
     }
     Ok(normalized)
@@ -313,10 +306,10 @@ mod tests {
     #[test]
     fn import_requires_a_canonical_qualified_application_id() {
         assert_eq!(
-            qualified_app_id(" TOS>Briefcase ").ok().as_deref(),
-            Some("tos>briefcase")
+            qualified_app_id(" Briefcase ").ok().as_deref(),
+            Some("briefcase")
         );
-        for invalid in ["briefcase", "to>briefcase", "tos>>briefcase", "tos>2fa"] {
+        for invalid in ["tos>briefcase", "to>briefcase", "tos>>briefcase", "tos>2fa"] {
             assert!(qualified_app_id(invalid).is_err(), "accepted {invalid}");
         }
     }

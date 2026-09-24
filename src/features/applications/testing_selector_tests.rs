@@ -27,7 +27,7 @@ pub(super) async fn assert_selector_membership_transport(
             let mut tx = context::begin(state.db(), DatabaseContext::principal(APP)).await?;
             crate::features::testing_environments::register_application_selector(&mut tx, APP, &secret).await?;
             tx.commit().await?;
-            exchange(state, "test_carbon", "selector-membership-transport-login").await
+            exchange(state, "c:test_carbon", "selector-membership-transport-login").await
         },
     )).await?;
     ensure!(
@@ -40,7 +40,7 @@ pub(super) async fn assert_selector_membership_transport(
     let selector = HeaderValue::from_str(&format!(
         "Basic {}",
         base64::engine::general_purpose::STANDARD
-            .encode(format!("test_org>app-alpha:{}", secret.expose_secret()))
+            .encode(format!("app-alpha:{}", secret.expose_secret()))
     ))?;
     // Match the full API's layer order: plane selection is outside transport.
     // Its OAuth selector branch reroutes before the original transport runs.
@@ -63,7 +63,7 @@ pub(super) async fn assert_selector_membership_transport(
         let membership = if legacy {
             "00000000-0000-0000-0000-000000000031"
         } else {
-            "test_carbon%5Btest_org%5D"
+            "c:test_carbon%5Btest_org%5D"
         };
         let uri = format!("/api/v1/organizations/test_org/members/{membership}");
         let (status, headers, body) =
@@ -75,7 +75,7 @@ pub(super) async fn assert_selector_membership_transport(
         let expected = if legacy {
             "00000000-0000-0000-0000-000000000031"
         } else {
-            "test_carbon[test_org]"
+            "c:test_carbon[test_org]"
         };
         ensure!(
             body["id"] == expected,
@@ -90,7 +90,7 @@ pub(super) async fn assert_selector_membership_transport(
         let target = if legacy {
             "00000000-0000-0000-0000-000000000531"
         } else {
-            "worker:test_org[test_org]"
+            "si:worker[test_org]"
         };
         // The read-only token must reach ordinary authorization after decoding,
         // rather than failing JSON/query UUID extraction or gaining write access.

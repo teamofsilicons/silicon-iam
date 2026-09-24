@@ -5,20 +5,20 @@ import type { Page } from "../src/api";
 
 test("Briefcase incoming approvals use the target app, not the requesting app", () => {
   const incoming = {
-    app_id: "outside>caller",
-    target_app_id: "tos>briefcase",
+    app_id: "caller",
+    target_app_id: "briefcase",
     can_decide: true,
   };
   const sent = {
-    app_id: "tos>briefcase",
+    app_id: "briefcase",
     target_app_id: null,
     can_decide: false,
   };
-  assert.equal(matchesScopeReview(incoming, "tos>briefcase", "incoming"), true);
-  assert.equal(matchesScopeReview(sent, "tos>briefcase", "incoming"), false);
-  assert.equal(matchesScopeReview(sent, "tos>briefcase", "outgoing"), true);
+  assert.equal(matchesScopeReview(incoming, "briefcase", "incoming"), true);
+  assert.equal(matchesScopeReview(sent, "briefcase", "incoming"), false);
+  assert.equal(matchesScopeReview(sent, "briefcase", "outgoing"), true);
   assert.equal(
-    matchesScopeReview(incoming, "tos>briefcase", "outgoing"),
+    matchesScopeReview(incoming, "briefcase", "outgoing"),
     false,
   );
   assert.equal(matchesScopeReview(incoming, undefined, "incoming"), true);
@@ -29,15 +29,15 @@ test("an incoming request on a later shared-inbox page is not hidden", async () 
   const calls: string[] = [];
   const pages: Page[] = [
     {
-      items: [{ app_id: "tos>briefcase", target_app_id: null }],
+      items: [{ app_id: "briefcase", target_app_id: null }],
       page: { has_more: true, next_cursor: "next+page" },
     },
     {
       items: [
         {
           id: "incoming",
-          app_id: "outside>caller",
-          target_app_id: "tos>briefcase",
+          app_id: "caller",
+          target_app_id: "briefcase",
         },
       ],
       page: { has_more: true, next_cursor: "remaining" },
@@ -45,7 +45,7 @@ test("an incoming request on a later shared-inbox page is not hidden", async () 
   ];
   const result = await scopeReviewPage(
     "/api/v1/application-scope-requests?status=pending&limit=30",
-    "tos>briefcase",
+    "briefcase",
     "incoming",
     async (url) => {
       calls.push(url);
@@ -63,13 +63,13 @@ test("an incoming request on a later shared-inbox page is not hidden", async () 
 test("empty results exhaust all pages and a stalled cursor fails visibly", async () => {
   const empty = await scopeReviewPage(
     "/reviews",
-    "tos>briefcase",
+    "briefcase",
     "incoming",
     async () => ({ items: [], page: { has_more: false } }),
   );
   assert.deepEqual(empty.items, []);
   await assert.rejects(
-    scopeReviewPage("/reviews", "tos>briefcase", "incoming", async () => ({
+    scopeReviewPage("/reviews", "briefcase", "incoming", async () => ({
       items: [],
       page: { has_more: true, next_cursor: "stuck" },
     })),

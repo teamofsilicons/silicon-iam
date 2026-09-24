@@ -108,7 +108,7 @@ async fn enrol(anonymous: &Client, handle: &str, fixed_code: Option<&str>) -> Cl
         .complete(
             session,
             &models::CarbonSignupComplete {
-                carbon_id: handle.to_owned(),
+                carbon_id: format!("c:{handle}"),
                 display_name: handle.to_owned(),
                 timezone: None,
                 profile_photo: None,
@@ -168,7 +168,7 @@ async fn the_client_speaks_the_contract_end_to_end() {
     let client = enrol(&anonymous, &handle, None).await;
 
     let me = client.carbons().me().await.expect("the caller's profile");
-    assert_eq!(me.carbon_id, handle);
+    assert_eq!(me.carbon_id, format!("c:{handle}"));
 
     // A profile update, which exercises merge-patch and If-Match together.
     let renamed = client
@@ -246,7 +246,7 @@ async fn the_client_speaks_the_contract_end_to_end() {
     // therefore guards both the public timestamp encoding and the tenant /
     // application RLS context each read needs after an application exists.
     let application_handle = unique("app");
-    let qualified_app_id = format!("{org_id}>{application_handle}");
+    let public_app_id = application_handle.clone();
     let created_application = client
         .applications()
         .create(
@@ -268,7 +268,7 @@ async fn the_client_speaks_the_contract_end_to_end() {
         )
         .await
         .expect("the application is created and its timestamps decode");
-    assert_eq!(created_application.application.app_id, qualified_app_id);
+    assert_eq!(created_application.application.app_id, public_app_id);
     assert!(
         created_application.application.updated_at >= created_application.application.created_at
     );
@@ -284,7 +284,7 @@ async fn the_client_speaks_the_contract_end_to_end() {
     let listed_application = applications
         .items
         .iter()
-        .find(|application| application.app_id == qualified_app_id)
+        .find(|application| application.app_id == public_app_id)
         .expect("the application is present in its owner's list");
     assert_eq!(listed_application.id, created_application.application.id);
 
@@ -313,7 +313,7 @@ async fn the_client_speaks_the_contract_end_to_end() {
 
     let fetched_application = client
         .applications()
-        .get(&qualified_app_id)
+        .get(&public_app_id)
         .await
         .expect("the newly created application reads through RLS");
     assert_eq!(fetched_application.id, created_application.application.id);
@@ -328,13 +328,13 @@ async fn the_client_speaks_the_contract_end_to_end() {
     // semantics, and revocation are all exercised against the real service.
     let consent = client
         .auth()
-        .login_organizations(&qualified_app_id)
+        .login_organizations(&public_app_id)
         .await
         .expect("scope consent");
     let short_lived = client
         .auth()
         .short_lived_token_for_organizations(
-            &qualified_app_id,
+            &public_app_id,
             std::slice::from_ref(&org_id),
             consent.scope_version,
             &consent
@@ -347,19 +347,19 @@ async fn the_client_speaks_the_contract_end_to_end() {
         .await
         .expect("an IAM-issued short-lived token");
     let application_client = anonymous.with_credential(Credential::application(
-        qualified_app_id.clone(),
+        public_app_id.clone(),
         created_application.app_secret.clone(),
     ));
 
     let login_mutation = Mutation::new();
     let application_tokens = application_client
         .oauth()
-        .login(&qualified_app_id, &short_lived.slt, &login_mutation)
+        .login(&public_app_id, &short_lived.slt, &login_mutation)
         .await
         .expect("the Application exchanges an SLT as a form request");
     let replayed_tokens = application_client
         .oauth()
-        .login(&qualified_app_id, &short_lived.slt, &login_mutation)
+        .login(&public_app_id, &short_lived.slt, &login_mutation)
         .await
         .expect("an exact token-exchange retry replays safely");
     assert_eq!(
@@ -373,7 +373,7 @@ async fn the_client_speaks_the_contract_end_to_end() {
 
     let spent_slt = application_client
         .oauth()
-        .login(&qualified_app_id, &short_lived.slt, &Mutation::new())
+        .login(&public_app_id, &short_lived.slt, &Mutation::new())
         .await;
     let Err(error) = spent_slt else {
         panic!("a spent SLT must not start another Application session");
@@ -398,7 +398,7 @@ async fn the_client_speaks_the_contract_end_to_end() {
     assert!(access_introspection.active);
     assert_eq!(
         access_introspection.client_id.as_deref(),
-        Some(qualified_app_id.as_str())
+        Some(public_app_id.as_str())
     );
     assert_eq!(access_introspection.org_id, None);
 
@@ -406,7 +406,7 @@ async fn the_client_speaks_the_contract_end_to_end() {
     let refreshed_tokens = application_client
         .oauth()
         .refresh(
-            &qualified_app_id,
+            &public_app_id,
             &application_tokens.refresh_token,
             &refresh_mutation,
         )
@@ -415,7 +415,7 @@ async fn the_client_speaks_the_contract_end_to_end() {
     let replayed_refresh = application_client
         .oauth()
         .refresh(
-            &qualified_app_id,
+            &public_app_id,
             &application_tokens.refresh_token,
             &refresh_mutation,
         )
@@ -642,7 +642,7 @@ async fn a_testing_environment_is_the_same_api_against_its_own_data() {
         .me()
         .await
         .expect("the environment profile");
-    assert_eq!(inside_me.carbon_id, inside_handle);
+    assert_eq!(inside_me.carbon_id, format!("c:{inside_handle}"));
     let organizations = inside
         .organizations()
         .list(&Paging::new())
@@ -740,7 +740,7 @@ async fn batch_login_is_atomic_and_application_bound() {
             client
                 .with_environment(key.clone())
                 .auth()
-                .batch_login_organizations(&["tos>app".to_owned()])
+                .batch_login_organizations(&["app".to_owned()])
                 .await
                 .is_err()
         );
@@ -785,7 +785,7 @@ async fn exercise_batch_login(anonymous: &Client, client: &Client) {
                     webhook_scope: None,
                     obo_review_message: None,
                     testing_idle_days: None,
-                    app_id: handle.to_owned(),
+                    app_id: unique(handle),
                     org_id: orgs[0].clone(),
                     app_name: Some(handle.to_owned()),
                     app_logo: None,
@@ -1029,7 +1029,7 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
                     webhook_scope: None,
                     obo_review_message: None,
                     testing_idle_days: Some(60),
-                    app_id: format!("service{index}"),
+                    app_id: unique(&format!("service{index}")),
                     org_id: org.clone(),
                     app_name: Some("Imported application".to_owned()),
                     app_logo: None,
@@ -1320,7 +1320,7 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
         .me()
         .await
         .expect("identity-only self read");
-    assert_eq!(profile["carbon_id"], handle);
+    assert_eq!(profile["carbon_id"], format!("c:{handle}"));
     for field in ["email", "phone_number", "display_name", "profile_photo"] {
         assert!(profile.get(field).is_none(), "undeclared field {field}");
     }
@@ -1405,7 +1405,7 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
     ));
     assert_eq!(
         verified.authorization.public_id.as_deref(),
-        Some(handle.as_str())
+        Some(format!("c:{handle}").as_str())
     );
     assert!(verified.authorization.org_role.is_none());
     assert!(verified.authorization.tags.is_none());

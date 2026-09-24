@@ -11,7 +11,7 @@ const env = {
 };
 const config = settings(env);
 const credentials = {
-  app_id: "tos>sample",
+  app_id: "sample",
   app_secret: "ask_test_secret_not_production",
   iam_test_key: "abcdefghijklmnopABCDEFGHIJKLMNOP",
 };

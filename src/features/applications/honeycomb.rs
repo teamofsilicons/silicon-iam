@@ -212,7 +212,7 @@ async fn bundle(
     service: Service,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    validation::app_id(&id)?;
+    validation::bundle_id(&id)?;
     let value: Option<sqlx::types::Json<Value>> =
         sqlx::query_scalar("SELECT iam_private.honeycomb_bundle_record($1,$2)")
             .bind(service.application_id)

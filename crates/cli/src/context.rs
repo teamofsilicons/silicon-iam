@@ -246,147 +246,105 @@ impl Context {
         }
     }
 
-    /// Resolves a local or already-qualified Application identifier.
-    ///
-    /// A person working inside one organization should not have to remember
-    /// that create accepts `billing` while every later command historically
-    /// required `acme>billing`. Qualified identifiers remain unchanged for
-    /// cross-organization protocol calls; local ones use the active org.
-    ///
+    /// Validates an immutable bare Application identifier.
     /// # Errors
-    ///
-    /// Returns [`CliError::NoOrganization`] when `value` is local and no
-    /// organization is selected.
+    /// Rejects qualified or malformed application identifiers.
+    #[allow(clippy::unused_self)]
     pub fn application_id(&self, value: &str) -> Result<String> {
-        if value.contains('>') {
+        if !(1..=80).contains(&value.len())
+            || !value.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+            || !value
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+        {
+            return Err(CliError::Usage("Application ID must be a bare lowercase handle; pass the owning organization separately with --org".to_owned()));
+        }
+        Ok(value.to_owned())
+    }
+
+    /// Resolves a bundle's unchanged organization-qualified ID.
+    /// # Errors
+    /// Rejects malformed bundle identifiers or missing organization selection.
+    pub fn bundle_id(&self, value: &str) -> Result<String> {
+        if let Some((org, handle)) = value.split_once('>') {
+            if !(3..=50).contains(&org.len())
+                || !org.bytes().all(|b| {
+                    b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-')
+                })
+            {
+                return Err(CliError::Usage(
+                    "Bundle ID must be organization>bundle".to_owned(),
+                ));
+            }
+            self.application_id(handle)?;
             Ok(value.to_owned())
         } else {
-            Ok(format!("{}>{value}", self.organization()?))
+            Ok(format!(
+                "{}>{}",
+                self.organization()?,
+                self.application_id(value)?
+            ))
         }
     }
 
-    /// Returns the local part accepted by Application creation.
-    ///
+    /// Returns the bundle handle and its explicit owning organization.
     /// # Errors
-    ///
-    /// Returns a usage error when a supplied qualified id names a different
-    /// organization than the create request.
-    #[allow(
-        clippy::unused_self,
-        reason = "identifier normalization belongs to the invocation context API"
-    )]
-    pub fn local_application_id(&self, value: &str, organization: &str) -> Result<String> {
-        let Some((qualified_org, local_id)) = value.split_once('>') else {
-            return Ok(value.to_owned());
-        };
-        if value.matches('>').count() != 1 || qualified_org != organization {
-            return Err(CliError::Usage(format!(
-                "Application ID `{value}` does not belong to organization `{organization}`"
-            )));
-        }
-        Ok(local_id.to_owned())
-    }
-
-    /// Resolves the local handle and owning organization used for Application
-    /// creation.
-    ///
-    /// A canonical `organization>application` identifier supplies its own
-    /// organization on a fresh profile. When an organization is selected, it
-    /// remains a guard against creating the Application in the wrong tenant.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CliError::NoOrganization`] for a local handle without an active
-    /// organization, or a usage error for a malformed or mismatched canonical
-    /// identifier.
-    pub fn application_creation_identity(&self, value: &str) -> Result<(String, String)> {
-        let Some((organization, local_id)) = value.split_once('>') else {
-            return Ok((value.to_owned(), self.organization()?.to_owned()));
-        };
-        if value.matches('>').count() != 1 || organization.is_empty() || local_id.is_empty() {
-            return Err(CliError::Usage(format!(
-                "Application ID `{value}` must have the form organization>application"
-            )));
-        }
-        if let Some(selected) = self.organization_if_set()
-            && selected != organization
+    /// Rejects a bundle outside the selected organization.
+    pub fn bundle_creation_identity(&self, value: &str) -> Result<(String, String)> {
+        let id = self.bundle_id(value)?;
+        let (org, handle) = id
+            .split_once('>')
+            .ok_or_else(|| CliError::Usage("Bundle ID must be organization>bundle".to_owned()))?;
+        if self
+            .organization_if_set()
+            .is_some_and(|selected| selected != org)
         {
-            return Err(CliError::Usage(format!(
-                "Application ID `{value}` does not belong to organization `{selected}`"
-            )));
+            return Err(CliError::Usage(
+                "Bundle organization differs from --org".to_owned(),
+            ));
         }
-        let local_id = self.local_application_id(value, organization)?;
-        Ok((local_id, organization.to_owned()))
+        Ok((handle.to_owned(), org.to_owned()))
     }
 
-    /// Resolves a local or global Silicon identifier inside `organization`.
-    ///
+    /// Returns the application handle and separately selected owning organization.
     /// # Errors
-    ///
-    /// Returns a usage error when a global id carries a different org suffix.
-    #[allow(
-        clippy::unused_self,
-        reason = "identifier normalization belongs to the invocation context API"
-    )]
-    pub fn silicon_id(&self, value: &str, organization: &str) -> Result<String> {
-        let Some((handle, suffix)) = value.rsplit_once(':') else {
-            return Ok(format!("{value}:{organization}"));
-        };
-        if value.matches(':').count() != 1 || suffix != organization {
-            return Err(CliError::Usage(format!(
-                "Silicon ID `{value}` does not belong to organization `{organization}`"
-            )));
-        }
-        Ok(format!("{handle}:{suffix}"))
+    /// Requires --org or a configured organization for creation.
+    pub fn application_creation_identity(&self, value: &str) -> Result<(String, String)> {
+        Ok((self.application_id(value)?, self.organization()?.to_owned()))
     }
 
-    /// Resolves the Silicon ID and organization needed for authentication.
-    ///
-    /// A canonical Silicon ID already contains its organization, so a fresh
-    /// profile does not need a separately configured `--org` merely to sign
-    /// that Silicon in. When an organization is active, it remains an
-    /// important guard against accidentally using a credential in the wrong
-    /// scope.
-    ///
+    /// Converts a creation handle to a canonical Silicon ID; ownership stays separate.
     /// # Errors
-    ///
-    /// Returns [`CliError::NoOrganization`] for a local handle without an
-    /// active organization, or a usage error for a malformed or mismatched
-    /// canonical ID.
+    /// Rejects malformed and legacy organization-suffixed Silicon identifiers.
+    #[allow(clippy::unused_self)]
+    pub fn silicon_id(&self, value: &str, _organization: &str) -> Result<String> {
+        let handle = value.strip_prefix("si:").unwrap_or(value);
+        if !(3..=50).contains(&handle.len())
+            || !handle
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+        {
+            return Err(CliError::Usage("Silicon ID must be si:<handle>".to_owned()));
+        }
+        Ok(format!("si:{handle}"))
+    }
+
+    /// Returns the Silicon ID and separately selected organization for management.
+    /// # Errors
+    /// Requires an explicit organization and a valid Silicon handle.
     pub fn silicon_identity(&self, value: &str) -> Result<(String, String)> {
-        let Some((handle, suffix)) = value.rsplit_once(':') else {
-            let organization = self.organization()?;
-            return Ok((
-                self.silicon_id(value, organization)?,
-                organization.to_owned(),
-            ));
-        };
-        if value.matches(':').count() != 1 || handle.is_empty() || suffix.is_empty() {
-            return Err(CliError::Usage(format!(
-                "Silicon ID `{value}` must have the form handle:organization"
-            )));
-        }
-        if let Some(organization) = self.organization_if_set() {
-            return Ok((
-                self.silicon_id(value, organization)?,
-                organization.to_owned(),
-            ));
-        }
-        Ok((value.to_owned(), suffix.to_owned()))
+        let org = self.organization()?;
+        Ok((self.silicon_id(value, org)?, org.to_owned()))
     }
 
-    /// Returns the local handle accepted by Silicon creation.
-    ///
+    /// Returns the creation handle without its si: prefix.
     /// # Errors
-    ///
-    /// Returns a usage error when a supplied global id carries a different
-    /// organization suffix.
+    /// Rejects malformed Silicon IDs.
     pub fn local_silicon_id(&self, value: &str, organization: &str) -> Result<String> {
-        let global = self.silicon_id(value, organization)?;
-        global
-            .rsplit_once(':')
-            .map(|(handle, _)| handle.to_owned())
-            .ok_or_else(|| CliError::Usage(format!("Silicon ID `{value}` is invalid")))
+        Ok(self
+            .silicon_id(value, organization)?
+            .trim_start_matches("si:")
+            .to_owned())
     }
 
     /// Select an exact retry key for this invocation.
@@ -511,64 +469,37 @@ mod tests {
     }
 
     #[test]
-    fn local_resource_ids_are_qualified_from_the_active_organization() {
+    fn identifiers_keep_organization_separate() {
         let mut context = context(None);
-        context.organization = Some("tos".to_owned());
-
         assert_eq!(
             context.application_id("space-station").ok().as_deref(),
-            Some("tos>space-station")
+            Some("space-station")
         );
+        assert!(context.application_id("other>space-station").is_err());
         assert_eq!(
-            context
-                .application_id("other>space-station")
-                .ok()
-                .as_deref(),
-            Some("other>space-station")
-        );
-        assert_eq!(
-            context.silicon_id("builder", "tos").ok().as_deref(),
-            Some("builder:tos")
-        );
-        assert_eq!(
-            context.silicon_id("builder:tos", "tos").ok().as_deref(),
-            Some("builder:tos")
-        );
-    }
-
-    #[test]
-    fn mismatched_qualified_creation_ids_fail_before_a_request() {
-        let context = context(None);
-        assert!(
-            context
-                .local_application_id("other>space-station", "tos")
-                .is_err()
-        );
-        assert!(context.local_silicon_id("builder:other", "tos").is_err());
-    }
-
-    #[test]
-    fn canonical_silicon_ids_supply_their_org_on_a_fresh_profile() {
-        let context = context(None);
-        assert_eq!(
-            context.silicon_identity("builder:tos").ok(),
-            Some(("builder:tos".to_owned(), "tos".to_owned()))
+            context.silicon_id("si:builder", "").ok().as_deref(),
+            Some("si:builder")
         );
         assert!(matches!(
-            context.silicon_identity("builder"),
+            context.silicon_identity("si:builder"),
             Err(CliError::NoOrganization)
         ));
-    }
-
-    #[test]
-    fn active_org_rejects_a_canonical_silicon_from_another_org() {
-        let mut context = context(None);
         context.organization = Some("tos".to_owned());
-
-        assert!(context.silicon_identity("builder:other").is_err());
         assert_eq!(
             context.silicon_identity("builder").ok(),
-            Some(("builder:tos".to_owned(), "tos".to_owned()))
+            Some(("si:builder".to_owned(), "tos".to_owned()))
+        );
+        assert_eq!(
+            context.application_creation_identity("space-station").ok(),
+            Some(("space-station".to_owned(), "tos".to_owned()))
+        );
+        assert!(context.local_silicon_id("builder:other", "tos").is_err());
+        assert_eq!(
+            context
+                .local_silicon_id("si:builder", "tos")
+                .ok()
+                .as_deref(),
+            Some("builder")
         );
     }
 
@@ -579,7 +510,7 @@ mod tests {
             refresh_token: "rft_old".to_owned(),
             expires_at: OffsetDateTime::now_utc(),
             actor_type: SessionActor::Silicon,
-            actor_id: "builder:tos".to_owned(),
+            actor_id: "si:builder".to_owned(),
             pending_refresh_key: None,
             pending_refresh_started_at: None,
             pending_logout: None,
@@ -592,14 +523,14 @@ mod tests {
             refresh_expires_at: OffsetDateTime::now_utc() + time::Duration::days(900),
             actor: models::ActorRef {
                 type_field: models::ActorRefType::Silicon,
-                public_id: "builder:tos".to_owned(),
+                public_id: "si:builder".to_owned(),
             },
             session_id: Uuid::from_u128(2),
         };
 
         let renewed = renewed_session(&tokens, &previous);
         assert_eq!(renewed.actor_type, SessionActor::Silicon);
-        assert_eq!(renewed.actor_id, "builder:tos");
+        assert_eq!(renewed.actor_id, "si:builder");
         assert_eq!(renewed.access_token, "sat_new");
         assert_eq!(renewed.refresh_token, "rft_new");
         assert!(renewed.needs_refresh());

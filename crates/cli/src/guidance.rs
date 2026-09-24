@@ -253,9 +253,6 @@ impl Plan {
     fn application_command(&mut self, context: &Context, command: &AppCommand) {
         match command {
             AppCommand::Import { app_id } => {
-                if let Some((org, _)) = app_id.split_once('>') {
-                    self.organization = Some(org.to_owned());
-                }
                 self.note("The test client secret is separate from production. Keep it private. The inherited production webhook secret was not revealed; replace the test endpoint and secret before testing deliveries you need to verify locally.");
                 self.add(
                     "Review the imported application's status and scopes",
@@ -321,7 +318,7 @@ impl Plan {
                 self.docs("Apply the delegated authority contract", "obo");
             }
             AppCommand::List { .. } => {
-                self.note("This list spans organizations you can administer. Quote canonical app IDs such as 'org>app' so your shell does not interpret > as output redirection.");
+                self.note("This list spans organizations you can administer. Use bare app IDs; the owning organization is a separate field.");
                 self.add(
                     "Learn the fields needed to inspect one application",
                     &["app", "show", "--help"],

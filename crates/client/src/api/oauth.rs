@@ -232,16 +232,16 @@ mod tests {
 
     #[test]
     fn application_login_can_only_submit_an_slt() {
-        let request = application_login_request("acme>checkout", "slt_example");
-        assert_eq!(request.app_id, "acme>checkout");
+        let request = application_login_request("checkout", "slt_example");
+        assert_eq!(request.app_id, "checkout");
         assert_eq!(request.slt.as_deref(), Some("slt_example"));
         assert_eq!(request.refresh_token, None);
     }
 
     #[test]
     fn application_refresh_cannot_begin_a_login() {
-        let request = application_refresh_request("acme>checkout", "ort_example");
-        assert_eq!(request.app_id, "acme>checkout");
+        let request = application_refresh_request("checkout", "ort_example");
+        assert_eq!(request.app_id, "checkout");
         assert_eq!(request.slt, None);
         assert_eq!(request.refresh_token.as_deref(), Some("ort_example"));
     }

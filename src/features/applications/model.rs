@@ -683,7 +683,7 @@ mod tests {
     #[test]
     fn application_directory_discloses_only_the_qualified_id_and_base_url() {
         let value = serde_json::to_value(ApplicationDirectoryEntry {
-            app_id: "tos>briefcase".to_owned(),
+            app_id: "briefcase".to_owned(),
             base_url: "https://briefcase.example/api".to_owned(),
         })
         .unwrap_or(Value::Null);
@@ -693,7 +693,7 @@ mod tests {
         assert_eq!(object.len(), 2);
         assert_eq!(
             object.get("app_id").and_then(Value::as_str),
-            Some("tos>briefcase")
+            Some("briefcase")
         );
         assert_eq!(
             object.get("base_url").and_then(Value::as_str),
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn webhook_rotation_projects_the_new_secret_and_versions() {
         let value = serde_json::to_value(WebhookSecretRotated {
-            app_id: "tos>briefcase".to_owned(),
+            app_id: "briefcase".to_owned(),
             webhook_signing_secret: format!("whs_{}", "A".repeat(43)),
             webhook_secret_version: 2,
             application_version: 7,
@@ -735,7 +735,7 @@ mod tests {
                 actor_type: "silicon".to_owned(),
                 public_id: None,
             },
-            app_id: Some("example>app".to_owned()),
+            app_id: Some("app".to_owned()),
             org_id: None,
             event_type: "oauth_token_exchange".to_owned(),
             success: true,
@@ -766,7 +766,7 @@ mod tests {
         let value = serde_json::to_value(ApplicationDetail {
             visibility: "public".to_owned(),
             id: Id::nil(),
-            app_id: "tos>briefcase".to_owned(),
+            app_id: "briefcase".to_owned(),
             org_id: "tos".to_owned(),
             created_by: actor(),
             app_name: Some("Briefcase".to_owned()),

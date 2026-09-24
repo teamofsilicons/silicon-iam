@@ -320,6 +320,23 @@ fn convert(
 mod tests {
     use super::*;
     impl Bridge {
+        // Exercise the old 0111 replay bridge without admitting old public IDs to
+        // the current runtime loader. This is only compiled for its migration test.
+        pub(crate) async fn load_legacy_cutover_fixture(
+            &mut self,
+            pool: &sqlx::PgPool,
+        ) -> anyhow::Result<()> {
+            let rows: Vec<(String, Option<uuid::Uuid>, uuid::Uuid, OffsetDateTime)> = sqlx::query_as(
+                "SELECT public_id, testing_environment_id, legacy_id, expires_at FROM iam_private.canonical_replay_contexts()",
+            ).fetch_all(pool).await?;
+            for (id, environment, legacy, expiry) in rows {
+                self.entries
+                    .insert((environment.map(Id::from), id), (legacy, expiry));
+                self.expires_at = Some(self.expires_at.map_or(expiry, |old| old.max(expiry)));
+            }
+            Ok(())
+        }
+
         pub(crate) fn fixture(
             entries: &[(Option<Id>, &str, uuid::Uuid)],
             expiry: OffsetDateTime,

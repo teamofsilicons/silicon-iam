@@ -200,16 +200,13 @@ async fn enforce_limit(
 }
 
 fn validate_global_id(value: &str) -> Result<(), AppError> {
-    let Some((local, organization)) = value.split_once(':') else {
+    let Some(local) = value.strip_prefix("si:") else {
         return Err(validation::validation(
             "silicon_id",
             "has an invalid format",
         ));
     };
-    if value.matches(':').count() != 1
-        || !valid_handle(local, 50)
-        || !valid_handle(organization, 50)
-    {
+    if !valid_handle(local, 50) {
         return Err(validation::validation(
             "silicon_id",
             "has an invalid format",
@@ -275,7 +272,7 @@ mod tests {
 
     #[test]
     fn silicon_login_inputs_use_exact_wire_formats() {
-        assert!(validate_global_id("assistant:acme").is_ok());
+        assert!(validate_global_id("si:assistant").is_ok());
         assert!(validate_global_id("Assistant:acme").is_err());
         assert!(validate_global_id("assistant:acme:extra").is_err());
         assert!(validate_credential(format!("stk-{}", "a".repeat(32))).is_ok());

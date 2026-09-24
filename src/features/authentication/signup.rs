@@ -1340,7 +1340,7 @@ mod tests {
         let session_id = Id::from_u128(0x49_01);
         let email_candidate = Id::from_u128(0x49_02);
         let phone_candidate = Id::from_u128(0x49_03);
-        let principal_id = Id::fixture("rls-signup-test");
+        let principal_id = Id::fixture("c:rls-signup-test");
         let email_contact_id = Id::from_u128(0x49_05);
         let phone_contact_id = Id::from_u128(0x49_06);
 
@@ -1406,7 +1406,7 @@ mod tests {
             r"
             SELECT principal_id
             FROM iam_private.complete_verified_signup(
-                $1, $2, 'rls-signup-test', 'RLS Signup Test',
+                $1, $2, 'c:rls-signup-test', 'RLS Signup Test',
                 NULL, NULL, 'UTC', $3, $4
             )
             ",
