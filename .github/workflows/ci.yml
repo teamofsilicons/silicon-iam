@@ -75,6 +75,8 @@ jobs:
       - name: Validate CLI installer without downloads or service changes
         run: |
           python3 scripts/test-cli-installer.py
+          PYTHONDONTWRITEBYTECODE=1 python3 deploy/aws/test_release_honeycomb_contracts.py
+          PYTHONDONTWRITEBYTECODE=1 python3 deploy/aws/test_rehearse_contract_release.py
           ruby scripts/generate-telemetry-routes.rb --check
 
       - name: Confirm the client wire types still match the contract

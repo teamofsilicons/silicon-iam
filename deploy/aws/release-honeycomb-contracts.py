@@ -6,6 +6,7 @@ operator review step. Only `execute` changes the host. No identity/bootstrap,
 scope grant, secret-store write, or Honeycomb cutover is performed.
 """
 import argparse
+import base64
 import fcntl
 import hashlib
 import json
@@ -15,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.parse
 import urllib.request
@@ -26,7 +28,7 @@ IMAGE_RE = r"[a-zA-Z0-9._:/-]+@sha256:[a-f0-9]{64}"
 CHECKPOINTS = (
     "Validate immutable images, current health, configuration and both existing ledgers",
     "Stop API, scoped API and worker; save private units/environment and both database dumps",
-    "Validate both dump archives and checksums before marking migrations started",
+    "Validate both dump archives and retain a verified encrypted off-host recovery bundle before migration",
     "Run dual-database iam-migrate, apply image runtime grants to both databases, initialize scoped helper",
     "Verify complete ledger checksums; preserve each service's current Honeycomb feature flags",
     "Install immutable image into all three units and verify readiness/revision/container health",
@@ -53,6 +55,15 @@ def digest(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             result.update(chunk)
     return result.hexdigest()
+
+
+def backup_receipt(response, checksum, size):
+    encoded = base64.b64encode(bytes.fromhex(checksum)).decode()
+    require(response.get("VersionId") not in (None, "", "null")
+            and response.get("ChecksumSHA256") == encoded
+            and response.get("ServerSideEncryption") == "AES256"
+            and response.get("ContentLength") == size, "Private backup receipt mismatch")
+    return response["VersionId"]
 
 
 def atomic_json(path, value):
@@ -100,6 +111,9 @@ class Release:
             require(re.fullmatch(IMAGE_RE, value), "All image arguments require immutable sha256 digests")
         for value in (args.revision, args.previous_revision):
             require(re.fullmatch(r"[a-f0-9]{40}", value), "Full source revisions are required")
+        require(re.fullmatch(r"[a-z0-9.-]+", args.backup_bucket)
+                and re.fullmatch(r"releases/[A-Za-z0-9._/-]+", args.backup_prefix)
+                and ".." not in args.backup_prefix.split("/"), "Invalid private recovery destination")
         self.root = Path("/etc/silicon-iam/releases") / f"contracts-{args.revision}-{time.time_ns()}"
         self.state = {"revision": args.revision, "image": args.image, "previous_revision": args.previous_revision,
                       "previous_image": args.previous_image, "migration_started": False, "services_stopped": False}
@@ -167,11 +181,52 @@ class Release:
                 time.sleep(2)
         raise RuntimeError(f"Readiness/revision check failed on port {port}")
 
+    def upload_verified(self, path, name):
+        checksum, size = digest(path), path.stat().st_size
+        encoded = base64.b64encode(bytes.fromhex(checksum)).decode()
+        key = self.args.backup_prefix.rstrip("/") + "/" + self.root.name + "/" + name
+        response = json.loads(self.run(["aws", "s3api", "put-object", "--region", self.args.region,
+            "--bucket", self.args.backup_bucket, "--key", key, "--body", str(path),
+            "--server-side-encryption", "AES256", "--checksum-algorithm", "SHA256",
+            "--checksum-sha256", encoded, "--metadata", "sha256=" + checksum]))
+        require(response.get("VersionId") not in (None, "", "null"), "Recovery bucket must have versioning enabled")
+        verified = json.loads(self.run(["aws", "s3api", "head-object", "--region", self.args.region,
+            "--bucket", self.args.backup_bucket, "--key", key, "--version-id", response["VersionId"],
+            "--checksum-mode", "ENABLED"]))
+        version = backup_receipt(verified, checksum, size)
+        require(version == response["VersionId"], "Recovery object version mismatch")
+        return {"bucket": self.args.backup_bucket, "key": key, "version_id": version,
+                "sha256": checksum, "bytes": size}
+
+    def verify_backup_destination(self):
+        public = json.loads(self.run(["aws", "s3api", "get-public-access-block", "--region", self.args.region,
+                                     "--bucket", self.args.backup_bucket]))["PublicAccessBlockConfiguration"]
+        require(all(public.get(key) is True for key in
+                ("BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets")),
+                "Recovery bucket public access must be blocked")
+        probe = self.root / "backup-destination-probe.json"
+        atomic_json(probe, {"revision": self.args.revision, "contains_credentials": False})
+        atomic_json(self.root / "backup-destination-receipt.json", self.upload_verified(probe, probe.name))
+
+    def upload_quiesced_backup(self):
+        archive = self.root / "quiesced-backup.tar.gz"
+        paths = [self.root / name for name in (
+            "production-before.dump", "testing-before.dump", "backups.json", "migration-manifest.json",
+            "state.json", "production-ledger-before.json", "testing-ledger-before.json", "runtime-grants.sql",
+            "api.env", "scoped.env", "worker.env", *(f"silicon-iam-{service}.service" for service in SERVICES))]
+        paths += [path for path in self.root.glob("*.env") if path not in paths]
+        require(all(path.is_file() for path in paths), "Missing paired recovery component")
+        with tarfile.open(archive, "x:gz") as output:
+            for path in paths:
+                output.add(path, arcname=path.name, recursive=False)
+        atomic_json(self.root / "offhost-backup.json", self.upload_verified(archive, archive.name))
+
     def execute(self):
         require(os.geteuid() == 0, "Execute only as root on the existing IAM host")
         os.umask(0o077)
         self.root.mkdir(parents=True, mode=0o700)
         self.checkpoint("preflight")
+        self.verify_backup_destination()
         password = self.run(["aws", "ecr", "get-login-password", "--region", self.args.region], sensitive=True)
         login = subprocess.run(["docker", "login", "--username", "AWS", "--password-stdin", self.args.image.split('/')[0]],
                                input=password, capture_output=True)
@@ -250,6 +305,8 @@ class Release:
             backups[label] = {"path": str(dump), "size": dump.stat().st_size, "sha256": digest(dump)}
         atomic_json(self.root / "backups.json", backups)
         self.checkpoint("both-backups-verified")
+        self.upload_quiesced_backup()
+        self.checkpoint("offhost-paired-backup-verified")
         self.state["migration_started"] = True
         self.checkpoint("migration-started-no-image-only-rollback")
         environment = dict(os.environ, IAM_MIGRATOR_DATABASE_URL=self.databases["production"][1],
@@ -311,7 +368,8 @@ def main():
     for name in ("plan", "execute"):
         release = commands.add_parser(name, help="Review checkpoints" if name == "plan" else "Change the production host")
         for field in ("image", "previous-image", "postgres-image", "revision", "previous-revision",
-                      "production-host", "production-secret-arn", "testing-host", "testing-secret-arn"):
+                      "production-host", "production-secret-arn", "testing-host", "testing-secret-arn",
+                      "backup-bucket", "backup-prefix"):
             release.add_argument("--" + field, required=True)
         release.add_argument("--migration-manifest", required=True, type=Path)
         release.add_argument("--region", default="us-east-1")
