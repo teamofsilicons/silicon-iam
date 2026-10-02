@@ -189,7 +189,7 @@ pub(super) static DOCUMENTS: &[Document] = &[
         topic: "openapi",
         title: "Normative OpenAPI wire contract",
         source: "docs/openapi.yaml",
-        source_sha256: "8e47cbbb0ae5af5b22f0479c2cf8bd6d67b6edc80b4cd71f9ba09def47e3a954",
+        source_sha256: "978cb4cec22c5d96ec0bd03c7649a09c4efd9113a0095d07186771a8cf1a84e6",
         format: "yaml",
         aliases: &["schema"],
         content: include_str!("manual_assets/openapi.yaml"),
