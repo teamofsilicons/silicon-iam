@@ -10,6 +10,8 @@ skip = [
   # still requires 0.22; Tungstenite's 0.26 roots wrapper depends on 1.0 roots.
   "base64@0.23.1",
   "webpki-roots@0.26.11",
+  # AWS-LC JWT verification and Ring-backed tooling use distinct parsing APIs.
+  "untrusted@0.7.1",
   # SQLx 0.9 uses the next RustCrypto generation while AEAD remains on the
   # audited 0.10 generation.
   "block-buffer@0.12.1",
