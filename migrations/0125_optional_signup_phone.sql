@@ -204,4 +204,3 @@ BEGIN
     WHERE carbon.id = p_principal_id;
 END;
 $$;
-
