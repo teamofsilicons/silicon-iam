@@ -279,7 +279,7 @@ pub(super) static DOCUMENTS: &[Document] = &[
         topic: "migrating-to-iam-5",
         title: "Update an application for IAM 5",
         source: "docs/MIGRATING_TO_IAM_5.md",
-        source_sha256: "998dd44574594409ba7d1ecd57bd4b2becd0e4006a755e908b46671a577b0d19",
+        source_sha256: "d6ff1c4b02709f307520efc93c59153a021d7ee27068fe5641cf9a5ab113909c",
         format: "markdown",
         aliases: &["iam5", "migration"],
         content: include_str!("manual_assets/migrating-to-iam-5.md"),
