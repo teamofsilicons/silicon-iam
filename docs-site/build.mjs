@@ -17,14 +17,25 @@ const client = ["overview", "connecting", "updates", "login", "tokens", "obo", "
 const label = (text) => text.replaceAll("-", " ").replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
 const titles = { obo: "On-behalf-of access", "testing-environments": "Testing environments", authentication: "Authentication", login: "Application login", conventions: "Request conventions" };
 const pages = [];
-const historical = new Set(["INTEGRATION_FIXES_2026-09-05.md", "SESSION_BOUND_CONSENT_FIX.md", "frontend/deployment.md", "frontend/manual-qa.md"]);
+// Match the evidence-only exclusions in scripts/generate-cli-docs.rb. Keep
+// consumer integration and migration guides public, including OBO_CUTOVER.md.
+const historical = new Set([
+  "INTEGRATION_FIXES_2026-09-05.md",
+  "SESSION_BOUND_CONSENT_FIX.md",
+  "PRIVATE_APPLICATION_LOGIN_ERRORS.md",
+  "HONEYCOMB_IMPLEMENTATION.md",
+  "frontend/deployment.md",
+  "frontend/manual-qa.md",
+  "frontend/scope-approvals.md",
+]);
+const operatorRecord = /^(?:RELEASE_READINESS_|IAM_REDESIGN_|deployment-verification-).+\.md$/;
 async function collect(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) await collect(path);
     else if ([".md", ".html"].includes(extname(path))) {
       const source = relative(docs, path);
-      if (historical.has(source)) continue;
+      if (historical.has(source) || operatorRecord.test(source)) continue;
       const file = entry.name.replace(/\.(md|html)$/, "");
       let route = `/docs/${source.replace(/\.(md|html)$/, "").toLowerCase().replaceAll("_", "-")}/`;
       if (source === "README.md") route = "/docs/source-guide/";

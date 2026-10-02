@@ -14,7 +14,7 @@ and `iam -o json commands` for machine-readable command discovery. Help and bund
 honeycomb install <configured-iam-app-id>
 iam iam --json
 iam login --carbon-id <your-carbon-id>       # Carbon: enter the IAM verification code
-# Or, for a Silicon: iam silicon-login --sid <handle:org>
+# Or, for a Silicon: iam silicon-login --sid <si:handle>
 iam login status --json
 iam --org <org> member self
 ```
@@ -27,7 +27,7 @@ arguments and related documentation. `iam commands --json` exposes the tree to a
 
 IAM is the credential issuer: Carbon verification and Silicon SID/STK login
 happen here. An application CLI must instead accept `app login '<SLT>'`, using a
-token minted by `iam login --app-id 'org>app'` or the IAM consent website. An
+token minted by `iam login --app-id 'app'` or the IAM consent website. An
 app-bound SLT cannot create an unrestricted IAM session. `iam iam --json`
 therefore reports `app_id: null` and `credential_issuer: true`; IAM does not
 invent an application registration for itself.
@@ -48,7 +48,7 @@ to fetch current membership authority. Omit secrets from the command line to
 use hidden prompts:
 
 ```sh
-iam --org acme app token authorization 'acme>checkout' --org-context acme
+iam --org acme app token authorization 'checkout' --org-context acme
 ```
 
 Add `--test <environment-id>` for a testing environment. `-o json` returns the
@@ -56,26 +56,27 @@ typed snapshot; text output explains membership, epoch, audience, environment,
 role and tags. `app token introspect` also includes it. No directory edit or
 webhook arrival is required, including after losing an application's local
 projection. First select the organization with
-`iam login --app-id 'acme>checkout' --grant-org acme --approve-scopes`, then exchange the SLT.
+`iam login --app-id 'checkout' --grant-org acme --approve-scopes`, then exchange the SLT.
 
 Role disclosure requires `self.membership.read`; tag disclosure requires
 `self.tags.read`. Missing scope means **undisclosed**, not a default role or
 empty tags. Inactive, wrong-application and wrong-organization tokens have no
-current organization authorization. An unscoped token reaches each explicitly selected organization
-where its subject has an active membership: `iam app token authorizations` lists them and
+current organization authorization. A new token reaches only its selected organization
+where its subject has an active membership: `iam app token authorizations` lists that scope and
 `iam app token authorization --org-context` answers for one. After an IAM environment clean,
 reimport/onboard and log in again; old tokens cannot restore erased authority.
 
-Successful `app obo verify` prints the same binding, limited to the parent
-token's scopes intersected with the recipient's approved scopes. Apply it only
-to that proof's exact endpoint/request. Verification consumes the proof; never
-retry it after an uncertain result.
+Successful `app obo verify` identifies the user, organization, immediate caller,
+originating app and approved endpoint. Optional disclosures remain limited by current
+IAM consent and participating apps' scopes. Verification does not consume the OBO
+access token; the recipient enforces payload and resource permissions on every call.
 
 ## Organization consent
 
-Application login reviews all requested permissions before selecting organizations.
-OBO preserves one explicitly selected user organization per operation, even when the apps
-belong to different organizations.
+Application login selects exactly one account and organization and asks for explicit
+consent only when critical IAM permissions require it. OBO endpoints require separate
+on-demand approval and dedicated access/refresh tokens. OBO consent selects an account
+and organization per provider; one access token covers the approved dependency graph.
 Only selected active memberships are returned. See [the consent guide](../ORGANIZATION_CONSENT.md).
 
 ## CLI updates
@@ -123,17 +124,13 @@ iam whoami
 ```
 
 The session is stored under `~/.silicon-iam/` and renewed automatically when it
-is close to expiring. `iam logout` ends the current Carbon session on IAM and
-then forgets it locally. `iam logout --all` ends every Carbon session; when
-another active session would be affected, the service requires every affected
-session to be at least 12 hours old and a verified-channel
-`account.sessions_revoke_all` step-up assertion bound to the signed-in
-Carbon's principal UUID. `iam logout --local-only` only clears this device.
-
-A Silicon logout is local because the public logout route accepts Carbon
-authority; rotate or remove the Silicon to revoke its server-side credential.
-The CLI persists a pending remote-logout idempotency key before sending, so an
-exact retry can confirm a logout whose response was lost.
+is close to expiring. `iam logout` ends the current Carbon or Silicon session on IAM
+and then forgets it locally. `iam logout --all` ends every session for that account;
+when another active session is affected, every affected session must satisfy the
+12-hour rule and the request needs account-bound `account.sessions_revoke_all`
+step-up. Carbons verify an OTP; Silicons confirm their current STK.
+`iam logout --local-only` only clears this device. The CLI persists a pending
+remote-logout idempotency key so an identical retry can reconcile a lost response.
 
 ## Finding your way around
 
@@ -157,7 +154,7 @@ iam docs cli           # this complete CLI guide
 iam docs applications  # registration, secrets, URLs and authorization
 iam docs testing       # isolation, fixed OTPs, import and lifecycle
 iam docs authorization # initial/current organization authority contract
-iam docs obo           # delegated proofs and request-bound authorization
+iam docs obo           # endpoint consent and delegated access tokens
 iam docs storage       # private credential files and concurrent sessions
 iam docs --search 'webhook secret'
 iam docs client/tokens # Rust client token lifecycle and snapshots
@@ -175,7 +172,7 @@ For example, application creation explains the returned credentials and points
 to inspecting the application, minting an SLT and exchanging it. Suggestions
 retain the selected service URL, profile, organization, testing environment
 and custom `SILICON_HOME` / `SILICON_IAM_HOME`, so a copied follow-up stays in the same context.
-They use POSIX shell quoting (including quoted `org>app` IDs); production
+They use POSIX shell quoting; production
 suggestions explicitly unset `SILICON_IAM_TEST` to avoid inheriting a different
 environment. They are suggestions only: the CLI does not execute them. Secret
 values are not inserted into suggested commands; use the referenced help for
@@ -208,8 +205,12 @@ flag instead of waiting indefinitely for a hidden terminal prompt. The CLI does
 not read secrets from piped standard input or open a hidden terminal to bypass
 that check. Empty credentials are rejected. A stored session can still be
 reused without a prompt, and local/testing responses that supply development
-verification codes still work without a prompt. Production `signup` requires
-interactive email and phone verification; it has no signup `--code` flags.
+verification codes still work without a prompt. Carbon signup verifies an email and any optional phone. Use `iam signup --provider
+google` or `--provider apple` to open provider verification in a browser while the
+CLI waits. The provider's verified email skips the email OTP step. Without a
+provider, use `--email`; noninteractive verification returns a `session_id` that
+can be resumed with `--session-id` and `--email-code` or `--phone-code`. Omit
+`--phone` to skip the optional number, or use `--skip-phone` when resuming.
 Keep secret-bearing command lines and JSON credential responses out of shell
 traces, CI logs and agent transcripts.
 
@@ -231,7 +232,7 @@ repository's `docs/` directory nor a documentation generator.
 
 ## Complete command reference
 
-This is the complete `1.3.0` command tree emitted by `iam commands`. Angle
+This guide covers the current command tree; `iam commands` reports the installed version's exact capabilities. Angle
 brackets mark required values; square brackets mark optional values. A row for
 a noun such as `iam member` is a help namespace and requires one of the listed
 subcommands. Run `iam <command> --help` for every flag, accepted value, default,
@@ -241,20 +242,19 @@ Global `--org` wins over `SILICON_IAM_ORG` and the profile default. `--no-org`
 ignores both environment and stored organization defaults; it conflicts only
 with an explicitly supplied `--org`. `--test <environment-uuid>` selects an
 isolated plane by its public, hyphenated UUID—never put its root key on the
-command line. Options may appear before or after positional identifiers. Quote
-canonical Application IDs such as `'acme>billing'` so the shell does not treat
-`>` as redirection.
+command line. Options may appear before or after positional identifiers. Application IDs are bare handles such as `billing`; bundle IDs retain
+`org>bundle` and must be quoted in a shell.
 
 ### Authentication and top-level commands
 
 | Command | Required input | Authority and important constraints |
 | --- | --- | --- |
 | `iam login` | Exactly one of `--email`, `--phone`, or `--carbon-id`, or `--app-id` to reuse a stored session; the code is prompted unless `--code` is given | Carbon login. `--app-id` without an identity reuses the existing session to mint an SLT; with an identity it first signs in. A bare `iam login` is incomplete even when signed in. It never logs the Application in directly. |
-| `iam silicon-login` | Silicon ID and STK at flags/prompts, or only `--app-id` with a stored Silicon session | `--app-id` mints an SLT; omit both credentials to reuse the current Silicon session. A canonical `handle:org` supplies the organization when none is selected. |
-| `iam logout` | None | Ends the current Carbon session remotely; Silicon logout is local. `--local-only` and `--all` conflict. `--all` uses step-up action `account.sessions_revoke_all` on the Carbon principal UUID, and affected sessions must satisfy the 12-hour rule. |
+| `iam silicon-login` | Silicon ID and STK at flags/prompts, or only `--app-id` with a stored Silicon session | `--app-id` mints an SLT; omit both credentials to reuse the current Silicon session. The global `si:handle` does not select an organization; use `--grant-org` for app login. |
+| `iam logout` | None | Ends the current Carbon or Silicon session remotely. `--local-only` and `--all` conflict. `--all` uses step-up action `account.sessions_revoke_all` on the account principal ID, and affected sessions must satisfy the 12-hour rule. |
 | `iam whoami` | None | Requires an IAM session in the selected production or test plane. |
-| `iam step-up` | `<action> <resource-uuid>` | Carbon only. The code is prompted unless `--code` is given. The action and exact resource must match the later protected mutation. |
-| `iam signup` | `--email <email> --phone <e164> --carbon-id <id>` | Creates and verifies a Carbon; the testing plane suppresses delivery and accepts `000000`. |
+| `iam step-up` | `<action> <resource-id>` | Carbon: OTP prompt or `--code`; Silicon: hidden current-password prompt or `--stk`. The action and exact resource must match the later protected mutation. |
+| `iam signup` | `--email <email>` or `--provider google\|apple`; optional `--phone`, `--carbon-id`, `--display-name`, `--timezone`, `--photo` | Creates and signs in a Carbon. Omitted ID and name receive available defaults. Provider signup requires configured production provider credentials; testing email signup uses the explicitly returned test code. Create or join your first organization afterward. |
 | `iam commands` | None | Prints this same complete command tree from the installed binary. |
 | `iam docs` | Optional `<topic>` and/or `--search <words>` | Offline API/client/CLI manuals. `-o json` returns structured metadata, content or search results. No session or configuration is required. |
 
@@ -352,13 +352,14 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 
 | Command | Required input | Authority and important constraints |
 | --- | --- | --- |
-| `iam silicon` | `<subcommand>` | Selected-organization Silicon namespace. Local IDs use `--org`; canonical IDs use `handle:org`. |
+| `iam silicon` | `<subcommand>` | Selected-organization Silicon namespace. Local IDs use `--org`; canonical IDs use `si:handle`. |
 | `iam silicon list` | None | Optional tag and paging filters. |
 | `iam silicon create` | `<handle> --job-description <role>` | Requires `silicons.create`; returns the STK exactly once. A canonical ID supplies its org when none is selected and must match a selected org. |
 | `iam silicon show` | `<silicon-id>` | Accepts a local or canonical ID. |
 | `iam silicon update` | `<silicon-id>` plus at least one update or `--clear-*` flag | Requires the corresponding directory/hierarchy authority. |
 | `iam silicon remove` | `<silicon-id>` | Step-up action `organization.authorization_change` on its membership ID; hierarchy reassignment may be required. |
 | `iam silicon rotate-request` | `<silicon-id>` | Step-up action `silicon.rotate_token` on its principal UUID; creates an approval request and invalidates the old credential only after approval. |
+| `iam silicon organization-custody` | `<si:id>`; optional `--can-create-organizations true\|false` | Read or update the selected organization's custody permission; requires exact organization custody and `organization.update`. |
 | `iam silicon rotate-complete` | `<silicon-id> <approved-request-uuid>` | Same step-up action/resource; returns the replacement STK exactly once. |
 | `iam silicon webhook` | `<silicon-id>` | Reads the current endpoint. |
 | `iam silicon set-webhook` | `<silicon-id> --webhook-url <https-url>` | Step-up action `organization.silicon_webhook.redirect` on its membership ID; returns the generated signing secret once. |
@@ -372,8 +373,8 @@ canonical Application IDs such as `'acme>billing'` so the shell does not treat
 ### Application identity keys
 
 ```sh
-iam app verification issue 'acme>checkout' --ttl-seconds 300 --json
-iam app verification verify 'acme>checkout' --as-app-id 'vendor>billing' --json
+iam app verification issue 'checkout' --ttl-seconds 300 --json
+iam app verification verify 'checkout' --as-app-id 'billing' --json
 ```
 
 The first command prompts for the issuing application's secret and prints a new
@@ -388,13 +389,13 @@ invalidation; it grants no user permissions and does not replace OBO.
 
 | Command | Required input | Authority and important constraints |
 | --- | --- | --- |
-| `iam app` | `<subcommand>` | Application namespace. Local IDs use `--org`; canonical IDs use `org>handle`. |
+| `iam app` | `<subcommand>` | Application namespace. IDs are globally unique bare handles. Creation requires an owning `--org`; IDs do not imply it. |
 | `iam app list` | None | Carbon session; intentionally lists Applications across every organization the Carbon can administer. `--org` does not filter this view; `--status` does. |
 | `iam app create` | `<app-id> --name <name> --webhook-url <https-url> --webhook-secret <secret> --base-url <origin>` | Current Carbon owner/admin of the owning org. The webhook secret is caller-chosen (32–512 visible ASCII); the generated client secret is returned once. Base URL is a pathless origin with no trailing slash. |
-| `iam app show` | `<app-id>` | Carbon Application administrator. |
+| `iam app show` | `<app-id>` | Carbon or Silicon Application administrator. |
 | `iam app update` | `<app-id>` plus at least one update or `--clear-*` flag | Carbon Application administrator; `--obo-endpoints` replaces the complete catalog. |
-| `iam app rotate-secret` | `<app-id>` | Step-up action `application.client_secret.rotate` on the Application UUID; returns the replacement client secret once. |
-| `iam app rotate-webhook-secret` | `<app-id> --webhook-secret <secret>` | Step-up action `application.webhook_secret.rotate` on the Application UUID. IAM stores the caller-chosen 32–512 visible-ASCII secret. |
+| `iam app rotate-secret` | `<app-id>` | Step-up action `application.client_secret.rotate` on the canonical Application ID; returns the replacement client secret once. |
+| `iam app rotate-webhook-secret` | `<app-id> --webhook-secret <secret>` | Step-up action `application.webhook_secret.rotate` on the canonical Application ID. IAM stores the caller-chosen 32–512 visible-ASCII secret. |
 | `iam app discover` | `<target-app-id> --as-app-id <requester-app-id>` plus requester secret at flag or prompt | Application-authenticated base-URL discovery; may cross organizations and respects production/test credential separation. |
 | `iam app verification issue` | `<app-id>` plus issuing app secret at `--app-secret` or prompt | Returns a fresh `app_access_key`, expiry and app ID. `--ttl-seconds` accepts 60–3600; omitted means 300 seconds. Each call issues independently with no request-key replay. |
 | `iam app verification verify` | `<calling-app-id> --as-app-id <receiving-app-id>` plus caller's `--app-access-key` and receiver's `--app-secret` at flags or prompts | Proves calling app identity only. Invalid keys return `{valid_key:false}`; invalid receiving credentials are authentication errors. Use the same `--test` for both apps when testing. |
@@ -405,15 +406,23 @@ invalidation; it grants no user permissions and does not replace OBO.
 | `iam app token authorization` | `<app-id>` plus access token and Application secret at flags or prompts | Current scope-filtered membership/epoch/role/tag snapshot for one organization; `--org-context` must match a bound token and selects one for an unscoped token. No directory mutation or webhook is required. |
 | `iam app token authorizations` | `<app-id>` plus access token and Application secret at flags or prompts | One snapshot per organization the token currently reaches: exactly one for a bound token, one per selected active membership for a multi-organization token, none when the subject holds no membership. |
 | `iam app token revoke` | `<app-id>` plus token and Application secret at flags or prompts | Access revocation affects one access token; refresh revocation affects the family. Optional 16–255 visible-ASCII idempotency key should be reused after uncertainty. |
-| `iam app obo` | `<subcommand>` | Same-organization, organization-bound on-behalf-of namespace. |
-| `iam app obo endpoints` | `<audience-app-id> --as-app-id <requester-app-id>` plus requester secret at flag or prompt | Application-authenticated catalog discovery; a cross-org target is deliberately indistinguishable from missing. |
-| `iam app obo exchange` | `<audience-app-id> <endpoint-id> --as-app-id <requester-app-id> --method <method>` plus subject access token and requester secret at flags or prompts | Fetches the catalog, validates metadata, and signs the exact method/path/body binding. `--body` conflicts with `--body-file`; optional idempotency key must be reused for an uncertain identical request. |
-| `iam app obo verify` | `<audience-app-id> --method <method> --path <path>` plus proof and audience secret at flags or prompts | Audience Application consumes the proof once and verifies the exact method, registered path, and body bytes. `--body` conflicts with `--body-file`. |
+| `iam app obo` | `<subcommand>` | Separate endpoint consent, reusable access/refresh tokens and grant management. |
+| `iam app obo endpoints` | `<audience-app-id> --as-app-id <requester-app-id>` | Discover available endpoint definitions and dependencies with requester credentials. |
+| `iam app obo authorize` | `<app-id> --endpoints '[{"audience":"target","endpoint_id":"action"}]' --org-context <org>` | Requires the user's ordinary `--subject-token` and app secret. Returns the IAM approval URL and complete graph. |
+| `iam app obo status` | `<app-id> <request-id>` | Read a request as its creating application; never reveals the approval code. |
+| `iam app obo consent` | `<request-id>` | Direct IAM user session: review the requested actions, branches, classifications and displayed version. |
+| `iam app obo decide` | `<request-id> approve\|decline --consent-version <displayed-version>` | Direct IAM user decision on the graph just reviewed; approval returns a single-use code. |
+| `iam app obo token` | `<app-id> <request-id>` | Redeem `--authorization-code` with the app secret for a dedicated pair per root endpoint. |
+| `iam app obo refresh` | `<app-id>` | Rotate `--refresh-token` using the owning app secret; retain the exact grant. |
+| `iam app obo verify` | `<audience-app-id> <endpoint-id> --method <method> --path <path>` | Use receiver credentials and `--access-token`. Verification is repeatable and does not consume the token. |
+| `iam app obo delegate` | `<app-id> <downstream-audience> <endpoint-id>` | Use the incoming `--access-token` and current receiver secret to obtain a downstream access token with no refresh token. |
+| `iam app obo grants` | `--cursor`, `--limit` (1–10; default 10) | Review one page of the direct IAM user's grants and dependency chains; continue with the returned cursor. |
+| `iam app obo revoke` | `<grant-id>` | Revoke the user-owned grant and every descendant token. |
 | `iam app verify-webhook` | `<body-file> --event-id <id> --timestamp <value> --key-version <version> --signature <v1=hex> --webhook-secret <secret>` | Fully local verification over exact raw bytes. Use `-` for stdin. A test-wrapped event requires the matching `--test`; production/test mismatches fail. |
 | `iam app import` | `<canonical-production-app-id>` and `--test <environment-uuid>` | Signed-in test Carbon. If the target org already exists there, the Carbon must be its owner/admin; otherwise import creates the org and ownership. Returns a fresh test-only client secret once. |
-| `iam app webhook` | `<app-id>` | Current owning-org Carbon owner/admin or IAM platform administrator with `applications.review`; reads the endpoint and internal Application UUID for step-up. |
-| `iam app set-webhook` | `<app-id> --webhook-url <https-url>` | Carbon Application administrator. Test endpoints activate immediately and install the supplied `--webhook-secret` or generate a test-only secret. |
-| `iam app approve-webhook` | `<app-id> --step-up <assertion>` | Current owning-org Carbon owner/admin or IAM platform administrator with `applications.review`. Step-up action `application.webhook.approve` on the internal Application UUID. Activates only a pending endpoint of an already verified app; no Application status or scope change. |
+| `iam app webhook` | `<app-id>` | Current owning-org Carbon or Silicon owner/admin or IAM platform administrator with `applications.review`; reads the endpoint and canonical Application ID for step-up. |
+| `iam app set-webhook` | `<app-id> --webhook-url <https-url>` | Carbon or Silicon Application administrator. Test endpoints activate immediately and install the supplied `--webhook-secret` or generate a test-only secret. |
+| `iam app approve-webhook` | `<app-id> --step-up <assertion>` | Current owning-org Carbon or Silicon owner/admin or IAM platform administrator with `applications.review`. Step-up action `application.webhook.approve` on the canonical Application ID. Activates only a pending endpoint of an already verified app; no Application status or scope change. |
 | `iam app dead-letters` | `<app-id>` | Carbon Application administrator; optional paging. |
 | `iam app replay` | `<app-id>` and one or more `--delivery <uuid>` | Re-queues only the named dead letters. |
 | `iam app history` | `<app-id>` | Carbon Application administrator; paginated Application-login history. |
@@ -518,19 +527,16 @@ iam app rotate-webhook-secret billing \
 `--webhook-secret`; it appears in each command's generated usage and help.
 IAM encrypts that value. Testing webhook URL replacements can generate a fresh test-only secret when none is supplied.
 
-An Application belongs to exactly one organization. With an active `--org`
-(or stored default), `app create billing` sends local handle `billing` and the
-selected organization separately; IAM returns the canonical ID
-`acme>billing`. Alternatively, `app create 'acme>billing'` infers `acme` when
-no organization is selected. If both are present, they must match. Always
-quote a canonical ID in a shell because an unquoted `>` is output redirection.
+An Application belongs to exactly one organization. `app create billing --org acme`
+sends the globally unique bare ID `billing` and its owning organization separately.
+The same `billing` ID is used for login, credentials, discovery and OBO. No
+organization can be inferred from an application or account ID.
 CLI options may appear before or after the positional Application ID, although
 the examples keep the ID first for readability.
 
 The local app handle accepts **1–80 characters**: a lowercase ASCII letter first,
 then lowercase letters, digits, underscores, or hyphens. For example, `a`, `ab`,
-and `billing` are valid. The organization prefix is not counted in that limit;
-organization handles still require 3–50 characters.
+and `billing` are valid. Organization handles are separate and require 3–50 characters.
 
 `--base-url` is the Application backend **origin**, for example
 `https://billing.example.com`. It must contain no slash after the authority —
@@ -543,12 +549,12 @@ may contain a path and may end in `/`.
 
 An application without pending critical approvals is usable; its first production webhook
 starts pending; later URL replacements leave the old URL active until approval.
-The current owning-org Carbon owner/admin or an IAM platform administrator
+The current owning-org Carbon or Silicon owner/admin or an IAM platform administrator
 with `applications.review` can approve that pending endpoint. Being the
 Application's creator alone does not grant authority.
 
 ```sh
-APP_ID='acme>billing'
+APP_ID='billing'
 APP_UUID=$(iam -o json app webhook "$APP_ID" | jq -r .application_id)
 TOKEN=$(iam -o json step-up application.webhook.approve "$APP_UUID" \
     | jq -r .step_up_token)
@@ -556,7 +562,7 @@ iam app approve-webhook "$APP_ID" --step-up "$TOKEN"
 ```
 
 The assertion uses the internal UUID from `app webhook`, not the public
-`org>handle` ID. The CLI reads the current Application version and sends an
+bare application ID. The CLI reads the current Application version and sends an
 idempotent approval with no request fields. Approval changes only the endpoint, not
 Application status or scopes. An Application itself still `under_review`
 must complete platform review separately. A missing pending endpoint or a
@@ -720,18 +726,16 @@ test-only credential:
 
 ```sh
 iam --test "$TEST_ID" app discover 'google>drive' \
-    --as-app-id 'acme>checkout'
+    --as-app-id 'checkout'
 ```
 
 The secret is prompted for when `--app-secret` is omitted, keeping it out of
 shell history.
 
-For ordinary same-organization commands, Application and Silicon local handles
-are enough. The CLI expands `billing` to `acme>billing` and `builder` to
-`builder:acme` from the active organization. Canonical IDs remain accepted for
-cross-organization Application calls. On creation, a canonical ID supplies the
-organization when none is active; when `--org` or a default is active, its
-organization component must match.
+Application IDs are bare handles such as `billing`; Silicon account IDs are
+`si:builder`. `--org` selects management context, never part of either account ID.
+Public membership references include the organization, such as `si:builder[acme]`.
+Bundle IDs keep the separate `acme>workspace` namespace.
 
 Retiring one keeps it recoverable:
 
@@ -746,21 +750,20 @@ An Application can start a session only by exchanging an IAM-issued,
 single-use short-lived token (SLT). It cannot submit an OTP, email, phone,
 Carbon ID, Silicon token, or IAM refresh token.
 
-With a direct IAM session, explicitly select the organizations to share:
+With a direct IAM session, select exactly one organization:
 
 ```sh
-iam login --app-id 'acme>billing' --grant-org acme,my-team
-iam login --app-id 'acme>billing' --all-orgs
-iam silicon-login --sid 'builder:acme' --app-id 'acme>billing' --grant-org acme
-# Add access later without dropping previous grants on this parent login:
-iam login --app-id 'acme>billing' --grant-org another-team
+iam login --app-id billing --grant-org acme
+iam silicon-login --sid si:builder --app-id billing --grant-org acme
+# A separate login issues a separate token family for another organization:
+iam login --app-id billing --grant-org another-team
 ```
 
-Without these flags an interactive terminal lists choices and prompts;
-noninteractive use requires flags. At least one active organization is required.
-`--org`, `SILICON_IAM_ORG`, and stored defaults qualify IDs or select management
-commands, but **never grant Application access**. `--no-org` only clears that
-management context. New memberships are not automatically shared.
+Without `--grant-org`, an interactive terminal lists choices and prompts;
+noninteractive use must supply one. `--all-orgs`, empty selection and multiple
+organization values are rejected. Create or join your first organization before
+application login. `--org`, `SILICON_IAM_ORG` and stored defaults select management
+context only; `--no-org` clears that context. They never grant app access.
 
 IAM validates the Application and the entire selection. Applications cannot
 use their own bearer or secret to choose or enlarge grants. The printed SLT is
@@ -769,132 +772,61 @@ the only credential handed to the app. See
 
 ### End-to-end Application proof in a test environment
 
-The complete Application protocol can be exercised without `curl` or SDK code.
-This creates an isolated plane and two Applications, exchanges and refreshes a
-login, checks it authoritatively, mints and consumes an OBO proof, then revokes
-the token family. `jq` is used only to carry JSON fields between `iam`
-commands:
+Use a disposable testing environment containing a configured caller and audience.
+The caller must declare the audience endpoint in its effective external scopes;
+critical scopes need the applicable provider approval. Sign in directly to IAM
+as the represented user, select an organization during ordinary app login, and
+exchange its SLT for the caller's ordinary access token. That login grants no OBO
+authority. The following assumes `TEST_ID`, `ACCESS`, `CALLER_SECRET` and
+`AUDIENCE_SECRET` are set for that environment:
 
 ```sh
-ENVIRONMENT=$(iam -o json env create cli-application-proof)
-TEST_ID=$(printf '%s' "$ENVIRONMENT" | jq -r .id)
+REQUEST=$(iam --test "$TEST_ID" -o json app obo authorize caller \
+  --org-context customer --subject-token "$ACCESS" --app-secret "$CALLER_SECRET" \
+  --endpoints '[{"audience":"audience","endpoint_id":"orders.create"}]')
+REQUEST_ID=$(printf '%s' "$REQUEST" | jq -r .id)
 
-iam --test "$TEST_ID" signup --email proof@example.test \
-    --phone +14155550123 --carbon-id proof
-iam --test "$TEST_ID" login --email proof@example.test --code 000000
-iam --test "$TEST_ID" org create acme --name Acme
+# Review every dependency and the displayed version before deciding.
+iam --test "$TEST_ID" app obo consent "$REQUEST_ID"
+VERSION=$(printf '%s' "$REQUEST" | jq -r .version)
+DECISION=$(iam --test "$TEST_ID" -o json app obo decide "$REQUEST_ID" approve \
+  --consent-version "$VERSION")
+CODE=$(printf '%s' "$DECISION" | jq -r .authorization_code)
+TOKENS=$(iam --test "$TEST_ID" -o json app obo token caller "$REQUEST_ID" \
+  --authorization-code "$CODE" --app-secret "$CALLER_SECRET")
+OBO_ACCESS=$(printf '%s' "$TOKENS" | jq -r '.items[0].access_token')
+OBO_REFRESH=$(printf '%s' "$TOKENS" | jq -r '.items[0].refresh_token')
+GRANT_ID=$(printf '%s' "$TOKENS" | jq -r '.items[0].grant_id')
 
-CALLER=$(iam --test "$TEST_ID" -o json app create caller --org acme \
-    --name Caller --base-url https://caller.example \
-    --webhook-url https://hooks.example.test/caller \
-    --webhook-secret caller-demo-webhook-secret-000001)
-CALLER_SECRET=$(printf '%s' "$CALLER" | jq -r .app_secret)
+# This verification can be repeated while the endpoint token remains valid.
+iam --test "$TEST_ID" app obo verify audience orders.create \
+  --access-token "$OBO_ACCESS" --app-secret "$AUDIENCE_SECRET" \
+  --method POST --path /v1/orders
 
-AUDIENCE=$(iam --test "$TEST_ID" -o json app create audience --org acme \
-    --name Audience --base-url https://audience.example \
-    --webhook-url https://hooks.example.test/audience \
-    --webhook-secret audience-demo-webhook-secret-0001 \
-    --obo-endpoints \
-    '[{"endpoint_id":"orders.create","path":"/v1/orders","metadata":{"reason":{"type":"string"}}}]')
-AUDIENCE_SECRET=$(printf '%s' "$AUDIENCE" | jq -r .app_secret)
-
-# An Application credential can discover another Application in this plane.
-iam --test "$TEST_ID" app discover 'acme>audience' \
-    --as-app-id 'acme>caller' --app-secret "$CALLER_SECRET"
-
-SLT=$(iam --test "$TEST_ID" --org acme -o json login \
-    --app-id 'acme>caller' | jq -r .slt)
-TOKENS=$(iam --test "$TEST_ID" -o json app token exchange 'acme>caller' \
-    --slt "$SLT" --app-secret "$CALLER_SECRET")
-ACCESS=$(printf '%s' "$TOKENS" | jq -r .access_token)
-REFRESH=$(printf '%s' "$TOKENS" | jq -r .refresh_token)
-
-iam --test "$TEST_ID" -o json app token introspect 'acme>caller' \
-    --token "$ACCESS" --token-type access-token \
-    --org-context acme --app-secret "$CALLER_SECRET" | jq -e '.active == true'
-
-TOKENS=$(iam --test "$TEST_ID" -o json app token refresh 'acme>caller' \
-    --refresh-token "$REFRESH" --app-secret "$CALLER_SECRET")
-ACCESS=$(printf '%s' "$TOKENS" | jq -r .access_token)
-REFRESH=$(printf '%s' "$TOKENS" | jq -r .refresh_token)
-
-iam --test "$TEST_ID" app obo endpoints 'acme>audience' \
-    --as-app-id 'acme>caller' --app-secret "$CALLER_SECRET"
-PROOF=$(iam --test "$TEST_ID" -o json app obo exchange \
-    'acme>audience' orders.create --as-app-id 'acme>caller' \
-    --subject-token "$ACCESS" --app-secret "$CALLER_SECRET" \
-    --method POST --body '{"order_id":"demo-1"}' \
-    --metadata '{"reason":"CLI proof"}' | jq -r .access_proof)
-iam --test "$TEST_ID" app obo verify 'acme>audience' \
-    --access-proof "$PROOF" --app-secret "$AUDIENCE_SECRET" \
-    --method POST --path /v1/orders --body '{"order_id":"demo-1"}'
-
-iam --test "$TEST_ID" app token revoke 'acme>caller' \
-    --token "$REFRESH" --token-type refresh-token \
-    --app-secret "$CALLER_SECRET"
-iam --test "$TEST_ID" -o json app token introspect 'acme>caller' \
-    --token "$ACCESS" --token-type access-token \
-    --org-context acme --app-secret "$CALLER_SECRET" | jq -e '.active == false'
+iam --test "$TEST_ID" app obo refresh caller \
+  --refresh-token "$OBO_REFRESH" --app-secret "$CALLER_SECRET"
+iam --test "$TEST_ID" app obo grants
+iam --test "$TEST_ID" app obo revoke "$GRANT_ID"
 ```
 
-The second `login` above intentionally supplies no identity or OTP: it proves
-that an existing IAM session can mint an organization-bound SLT and that the
-Application still sees only that SLT. The two `jq -e` checks prove the exact
-organization authority before revocation and inactive state afterward.
+The consent and decision steps require the represented user's direct IAM session;
+the app cannot approve its own endpoint access. Use the IAM URL instead for a
+browser flow. Keep the exact reviewed version; if the graph changes, reread and
+review the new graph before approval. Secrets are explicit here to make the test
+reproducible; omit secret flags interactively to use hidden prompts.
 
-The OBO exchange reads the audience's current catalog, hashes the exact body
-bytes, and delegates canonical path/signature construction to the Rust client
-using the same caller credential and idempotency key that go on the request.
-Verification hashes the actual body again and consumes the proof once. To
-recover an uncertain exchange, reuse `--idempotency-key` and every JSON request
-input but omit `--timestamp` so the retry is signed with a fresh value. The
-timestamp and signature are not idempotency material; an old timestamp falls
-outside the 60-second signature window. `--timestamp` exists for controlled
-protocol checks and must itself be current.
+Authorization, decisions, code exchange, refresh, delegation and revocation
+accept `--idempotency-key`. Persist one key per operation and reuse it with identical
+input after an uncertain transport result. A new key with a used refresh token is
+reuse and compromises its family. Verification has no idempotency key and does not
+consume the token; receivers still deduplicate their own actual operations.
 
-Token exchange, refresh, and revocation accept `--idempotency-key`. Persist
-that key before a refresh or revocation and reuse it after an uncertain
-outcome; retrying the same refresh token under a new key is treated as a replay
-and compromises that Application refresh family. It does not revoke the parent
-IAM session, other devices, or unrelated Applications. Revoking a refresh token
-invalidates its whole Application family and related access authority; revoking
-an access token invalidates only that access token. Either operation deliberately
-succeeds when the token is already unknown.
-
-`--org-context` on introspection is an optional exact organization handle. On an
-organization-bound token a well-formed handle it is not bound to returns
-`active: false`; on an unscoped token the handle selects one of the organizations
-it reaches and returns `active: false` when its subject is not an active member
-there. A malformed or duplicated `X-Org-ID` is rejected as an invalid request.
-
-For normal interactive use, omit `--app-secret`, `--slt`, `--refresh-token`,
-`--token`, `--subject-token`, or `--access-proof`; the CLI prompts for each so
-the value does not enter shell history. They are explicit above only to make
-the isolated proof reproducible.
-
-Before shipping an integration, manually exercise the rejected paths in the
-same disposable environment, not only the happy path:
-
-- repeat token exchange, refresh, revocation, and OBO exchange with the same
-  explicit idempotency key and exact input; then change one input under that
-  key and confirm `409 idempotency_conflict`;
-- verify one OBO proof twice and confirm only the first succeeds; change its
-  method, registered path, or one body byte and confirm verification fails;
-- mint another Application token with `--no-org` and confirm OBO exchange is
-  refused, then repeat with `--org acme` and confirm it succeeds;
-- create an Application in a second organization and confirm ordinary base-URL
-  discovery can find it but OBO discovery returns the same `404 not_found` as a
-  nonexistent target;
-- introspect with the matching organization, a different valid organization,
-  and a malformed organization; expect active, inactive, and request error
-  respectively;
-- try production credentials with `--test`, and test credentials without it;
-  both directions must fail;
-- confirm `app create` rejects a missing/short webhook secret and rejects
-  `--base-url https://example.test/`, while a webhook URL with a path remains
-  valid;
-- run each relevant `--clear-*` form and re-read the resource to distinguish
-  cleared from unchanged.
+Before shipping, verify that ordinary login alone grants no OBO access; declining
+leaves login valid; wrong users cannot approve; an added dependency requires new
+consent; a stale consent version fails; repeated verification succeeds; wrong
+audiences/endpoints and revoked grants fail; derived tokens cannot refresh or
+outlive their parents; and production/testing credentials never cross environments.
+Test current membership removal, app/scope revocation and global logout as well.
 
 ### Offline webhook verification
 
@@ -962,12 +894,12 @@ one resource identifier (a canonical membership ID for a membership, otherwise t
 | `app approve-webhook` | `application.webhook.approve` | Application `id` |
 | `sso disable` | `organization.sso_change` | organization `id` |
 | `session revoke` | `account.session_revoke` | session ID |
-| `logout --all` when other sessions are active | `account.sessions_revoke_all` | signed-in `carbon_id` |
+| `logout --all` when other sessions are active | `account.sessions_revoke_all` | signed-in `carbon_id` or `silicon_id` |
 | `approval decide` for a `silicon_token_rotation` request | `silicon.rotate_token` | target full `silicon_id` |
 
-The public handles accepted by most commands are not the step-up resource.
-Read the internal UUID first, mint the assertion, then pass it to the matching
-mutation. For example:
+Use the exact action/resource binding returned by the protected resource.
+Some resources use UUIDs; principals and memberships use their canonical IDs.
+Mint the assertion for that value and pass it to the matching mutation. For example:
 
 ```sh
 SILICON=$(iam -o json silicon show builder)
@@ -979,7 +911,7 @@ iam silicon set-webhook builder \
     --webhook-url https://example.com/hooks --step-up "$TOKEN"
 ```
 
-Useful UUID sources are `iam -o json org show | jq -r .id`,
+Useful resource-ID sources are `iam -o json org show | jq -r .id`,
 `iam -o json member list`, `iam -o json silicon show <silicon>` (both
 `membership_id` and `silicon_id`), `iam -o json app show <app> | jq -r .id`,
 `iam -o json app webhook <app> | jq -r .application_id` (also available to
@@ -987,7 +919,8 @@ platform webhook reviewers),
 `iam -o json session list`, and `iam -o json carbon show | jq -r .carbon_id`.
 
 If the code is not supplied, `iam step-up` prompts after sending it to the
-selected verified channel (`--channel email` by default, or `phone`). The
+selected verified channel (`--channel email` by default, or `phone`). For a Silicon,
+the CLI instead requests its current password, or accepts `--stk`; no email OTP is sent. The
 service also rejects a missing or mismatched assertion explicitly:
 
 ```
@@ -1004,27 +937,26 @@ requires explicit declaration, review where critical, and user consent.
 
 ```sh
 iam app scopes catalog
-iam app scopes catalog --app-id 'vendor>drive'
+iam app scopes catalog --app-id 'drive'
 iam app create checkout --org acme --name Checkout \
   --base-url https://checkout.example --webhook-url https://checkout.example/hooks \
   --webhook-secret "$WEBHOOK_SECRET" \
   --webhook-scope membership,updates \
   --app-scope '{"iam":["self.identity.read","self.profile.read"],"external":[]}'
-iam login --app-id 'acme>checkout' --grant-org customer --approve-scopes
-iam silicon-login --app-id 'acme>checkout' --grant-org customer --approve-scopes
+iam login --app-id 'checkout' --grant-org customer --approve-scopes
+iam silicon-login --app-id 'checkout' --grant-org customer --approve-scopes
 ```
 
-Interactive login displays the complete permission set, distinguishing critical scopes, and
-asks for approval before organization selection. Without a terminal, `--approve-scopes`
-explicitly authorizes the displayed current set. `--grant-org` or `--all-orgs` selects
-organizations independently; a default `--org` never grants access. If consent becomes stale,
+Interactive login displays the current IAM permission set when critical consent is
+required. Without a terminal, `--approve-scopes` records that explicit approval.
+`--grant-org <org>` selects exactly one organization; `--all-orgs` is rejected; a default `--org` never grants access. If consent becomes stale,
 reload the application view and review again. IAM tokens, OTPs, SID/STK, and refresh credentials
 stay inside IAM: an external application asks only for its short-lived token.
 
 ## Critical scope review forum
 
 ```sh
-iam app scopes request 'acme>checkout' \
+iam app scopes request 'checkout' \
   --app-scope '{"iam":["self.identity.read","directory.carbons.read"],"external":[]}' \
   --message 'Checkout needs to list organization Carbons to assign invoice recipients.'
 iam app scopes requests --status pending
@@ -1045,22 +977,23 @@ permissions through `iam app update --app-scope ...` without requesting approval
 When exposing OBO endpoints, every object needs `critical: true` or `false`:
 
 ```sh
-iam app update 'vendor>drive' \
+iam app update 'drive' \
   --obo-endpoints '[{"endpoint_id":"files.read","path":"/v1/files","critical":false,"metadata":{}}]' \
   --obo-review-message 'Explain the information you need and how users control its use.'
 ```
 
 OBO accepts apps from different owning organizations. The calling app must declare the exact
 endpoint, obtain critical approval if required, and hold the user's consent. Use
-`iam app obo exchange ... --org-context customer` to select the user's organization when the
-token reaches several. The subject token must belong to the calling app and still be active.
+`iam app obo authorize ... --org-context customer` for the originating login organization;
+consent can select a different configured account and organization for each provider.
+The subject token must belong to the calling app and still be active when requesting consent.
 
 ## Application bundles
 
 ```sh
 iam app bundle availability --org acme
 iam app bundle create workspace --org acme --name Workspace \
-  --logo https://example.com/workspace.svg --app-id 'acme>checkout,acme>billing'
+  --logo https://example.com/workspace.svg --app-id 'checkout,billing'
 iam app bundle list --org acme --limit 25
 iam app bundle show 'acme>workspace'
 iam app bundle update 'acme>workspace' --name 'Acme Workspace'
@@ -1090,10 +1023,10 @@ selected ad hoc list; it also supports `--approve-scopes` and per-app permission
 ## One-step application test environments
 
 ```sh
-iam app testing create 'acme>checkout' 'Invoice integration' --description 'Cross-app invoice flow'
-iam app testing create 'acme>checkout' 'Shared scenario' --iam-test-key "$IAM_TEST_KEY"
-iam app testing list 'acme>checkout'
-iam app update 'acme>checkout' --testing-idle-days 14
+iam app testing create 'checkout' 'Invoice integration' --description 'Cross-app invoice flow'
+iam app testing create 'checkout' 'Shared scenario' --iam-test-key "$IAM_TEST_KEY"
+iam app testing list 'checkout'
+iam app update 'checkout' --testing-idle-days 14
 ```
 
 These commands use the production app secret, prompted securely when `--app-secret` is
@@ -1167,14 +1100,14 @@ Copyright 2026 Team of Silicons.
 Production application secrets are securely prompted when omitted. Lifecycle management runs outside `--test` and is restricted to environments created by that application.
 
 ```sh
-iam app testing list 'acme>checkout' --status all
-iam app testing manage 'acme>checkout' show ENVIRONMENT_UUID
-iam app testing manage 'acme>checkout' update ENVIRONMENT_UUID --name 'Checkout test'
-iam app testing manage 'acme>checkout' key ENVIRONMENT_UUID
-iam app testing manage 'acme>checkout' rotate-key ENVIRONMENT_UUID
-iam app testing manage 'acme>checkout' clean ENVIRONMENT_UUID
-iam app testing manage 'acme>checkout' delete ENVIRONMENT_UUID
-iam app testing manage 'acme>checkout' restore ENVIRONMENT_UUID
+iam app testing list 'checkout' --status all
+iam app testing manage 'checkout' show ENVIRONMENT_UUID
+iam app testing manage 'checkout' update ENVIRONMENT_UUID --name 'Checkout test'
+iam app testing manage 'checkout' key ENVIRONMENT_UUID
+iam app testing manage 'checkout' rotate-key ENVIRONMENT_UUID
+iam app testing manage 'checkout' clean ENVIRONMENT_UUID
+iam app testing manage 'checkout' delete ENVIRONMENT_UUID
+iam app testing manage 'checkout' restore ENVIRONMENT_UUID
 ```
 
 Clean permanently erases every IAM row in the selected environment, including imported dependencies, and retains its key. Delete disables the environment; restore is available until the returned purge deadline. Key rotation invalidates the previous key immediately. These commands do not clean external application databases.
@@ -1182,7 +1115,7 @@ Clean permanently erases every IAM row in the selected environment, including im
 To authenticate and inspect a test application, securely enter its test secret and IAM test key at the prompts:
 
 ```sh
-iam app testing view 'acme>checkout'
+iam app testing view 'checkout'
 ```
 
 This returns the environment UUID and test configuration without returning credentials. The `view` command does not grant a production IAM session or user-data authority.
@@ -1200,10 +1133,10 @@ consent and test-plane authentication. See [the service contract](../HONEYCOMB_I
 ### Membership identifiers
 
 Membership IDs are `carbon_id[org_id]` or the full `silicon_id[org_id]`, for example
-`saket[tos]` and `helper:tos[tos]`. Quote IDs in shell commands:
+`c:saket[tos]` and `si:helper[tos]`. Quote IDs in shell commands:
 
 ```sh
-iam --org tos --json member show 'saket[tos]'
+iam --org tos --json member show 'c:saket[tos]'
 iam --org tos --json member details
 ```
 

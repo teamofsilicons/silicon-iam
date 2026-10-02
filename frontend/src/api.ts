@@ -13,6 +13,8 @@ export type Configuration = {
 export type SessionState = {
   authenticated: boolean;
   user?: RecordValue;
+  accountId?: string;
+  actorType?: "carbon" | "silicon";
   sessionId?: string;
   expiresAt?: number;
 };
@@ -110,7 +112,8 @@ export async function request<T = RecordValue>(
       ["session_expired", "sign_in_required"].includes(error.code)
     ) {
       clearApprovalRetries();
-      window.dispatchEvent(new Event("iam:session-expired"));
+      if (!new Headers(init.headers).has("X-IAM-Account"))
+        window.dispatchEvent(new Event("iam:session-expired"));
     }
     throw new ApiError(
       response.status,
@@ -198,7 +201,12 @@ export function mutation() {
     method: string,
     path: string,
     body?: unknown,
-    options: { version?: number; stepUp?: string; contentType?: string } = {},
+    options: {
+      version?: number;
+      stepUp?: string;
+      contentType?: string;
+      accountId?: string;
+    } = {},
   ): Promise<T> => {
     const serialized = body === undefined ? undefined : JSON.stringify(body);
     const signature = JSON.stringify([
@@ -206,6 +214,7 @@ export function mutation() {
       path,
       serialized,
       options.version,
+      options.accountId,
     ]);
     const retryHash = await approvalRetryHash(signature);
     const key =
@@ -223,6 +232,7 @@ export function mutation() {
     if (options.version !== undefined)
       headers["If-Match"] = `"${options.version}"`;
     if (options.stepUp) headers["X-Step-Up-Token"] = options.stepUp;
+    if (options.accountId) headers["X-IAM-Account"] = options.accountId;
     try {
       const result = await request<T>(path, {
         method,
@@ -249,6 +259,49 @@ export function mutation() {
       throw error;
     }
   };
+}
+// Retry keys for binary uploads live only in memory: an approval-gated upload
+// must be retried with the same key and the same file.
+const uploadKeys = new Map<string, string>();
+export async function uploadFile<T = RecordValue>(
+  path: string,
+  file: File,
+  version: number,
+): Promise<T> {
+  const signature = JSON.stringify([
+    path,
+    file.name,
+    file.size,
+    file.lastModified,
+    file.type,
+    version,
+  ]);
+  const key = uploadKeys.get(signature) || crypto.randomUUID();
+  uploadKeys.set(signature, key);
+  try {
+    const result = await request<T>(path, {
+      method: "PUT",
+      headers: {
+        "Content-Type": file.type,
+        "Idempotency-Key": key,
+        "If-Match": `"${version}"`,
+      },
+      body: file,
+    });
+    uploadKeys.delete(signature);
+    return result;
+  } catch (error) {
+    if (
+      error instanceof ApiError &&
+      error.status >= 400 &&
+      error.status < 500 &&
+      ![408, 425, 429].includes(error.status) &&
+      error.code !== "approval_required" &&
+      !error.code.startsWith("idempotency_")
+    )
+      uploadKeys.delete(signature);
+    throw error;
+  }
 }
 export function description(value: unknown): string {
   return value instanceof Error
@@ -281,6 +334,12 @@ export function authDestination(config: Configuration, signup = false): string {
       result.searchParams.append(name, value);
   }
   if (current.pathname === "/join") result.searchParams.set("next", "join");
+  if (current.pathname === "/silicon-custody")
+    result.searchParams.set("next", "silicon-custody");
+  if (current.pathname === "/obo/consent")
+    result.searchParams.set("next", "obo-consent");
+  if (current.pathname === "/obo-grants")
+    result.searchParams.set("next", "obo-grants");
   return result.href;
 }
 export function continueDestination(): string {
@@ -300,5 +359,11 @@ export function continueDestination(): string {
       result.searchParams.append(name, value);
   }
   if (current.pathname === "/join") result.searchParams.set("next", "join");
+  if (current.pathname === "/silicon-custody")
+    result.searchParams.set("next", "silicon-custody");
+  if (current.pathname === "/obo/consent")
+    result.searchParams.set("next", "obo-consent");
+  if (current.pathname === "/obo-grants")
+    result.searchParams.set("next", "obo-grants");
   return result.pathname + result.search;
 }

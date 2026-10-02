@@ -21,6 +21,38 @@ use crate::{
 pub async fn run(context: &Context, command: OrgCommand) -> Result<()> {
     let client = context.authenticated().await?;
     match command {
+        OrgCommand::DirectoryVisibility {
+            mode,
+            visible_members,
+            candidates,
+        } => {
+            let org = context.organization()?;
+            if candidates {
+                return json(
+                    &client
+                        .organizations()
+                        .directory_visibility_candidates(org)
+                        .await?,
+                );
+            }
+            let policy = client.organizations().directory_visibility(org).await?;
+            if let Some(mode) = mode {
+                json(
+                    &client
+                        .organizations()
+                        .replace_directory_visibility(
+                            org,
+                            policy.version,
+                            &mode,
+                            &visible_members,
+                            &context.mutation(),
+                        )
+                        .await?,
+                )
+            } else {
+                json(&policy)
+            }
+        }
         OrgCommand::List { status, page } => {
             let listed = client
                 .organizations()

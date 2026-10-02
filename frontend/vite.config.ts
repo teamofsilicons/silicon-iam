@@ -2,7 +2,7 @@ import { loadTelemetryKey } from "./server/telemetry-config.ts";
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import solid from "vite-plugin-solid";
 import { randomBytes } from "node:crypto";
-import { gateway, type Environment } from "./server/gateway.ts";
+import { bodyLimit, gateway, type Environment } from "./server/gateway.ts";
 
 function sessionGateway(env: Environment): Plugin {
   return {
@@ -17,7 +17,10 @@ function sessionGateway(env: Environment): Plugin {
           let size = 0;
           for await (const chunk of req) {
             size += chunk.length;
-            if (size > 262144) {
+            if (
+              size >
+              bodyLimit((req.url || "/").split("?")[0], req.method || "GET")
+            ) {
               res.writeHead(413);
               res.end();
               return;
@@ -37,7 +40,11 @@ function sessionGateway(env: Environment): Plugin {
           });
           const response = await gateway(request, env);
           res.statusCode = response.status;
-          response.headers.forEach((value, key) => res.setHeader(key, value));
+          response.headers.forEach((value, key) => {
+            if (key !== "set-cookie") res.setHeader(key, value);
+          });
+          if (response.headers.getSetCookie().length)
+            res.setHeader("Set-Cookie", response.headers.getSetCookie());
           res.end(Buffer.from(await response.arrayBuffer()));
         } catch {
           res.writeHead(502, { "Content-Type": "application/json" });

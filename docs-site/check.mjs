@@ -14,7 +14,18 @@ async function collect(directory) {
 }
 await collect(output);
 const failures = new Set();
+// Check the emitted routes independently of the collector so a future export
+// regression cannot publish an operator record while still passing link checks.
+const evidenceRoute = /(?:^|\/)(?:release-readiness-[^/]+|iam-redesign-[^/]+|deployment-verification-[^/]+|integration-fixes-[^/]+|session-bound-consent-fix|private-application-login-errors|honeycomb-implementation|frontend\/(?:deployment|manual-qa|scope-approvals))\//;
+const sitemap = await readFile(join(output, "sitemap.xml"), "utf8");
+for (const [, route] of sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)) {
+  if (evidenceRoute.test(new URL(route).pathname)) failures.add(`sitemap: internal evidence route ${route}`);
+}
+for (const route of ["api/obo/index.html", "client/obo/index.html", "obo-cutover/index.html"]) {
+  if (!pages.has(join(output, route))) failures.add(`${route}: required public OBO integration guide is missing`);
+}
 for (const [file, body] of pages) {
+  if (evidenceRoute.test(file.slice(output.length))) failures.add(`${file}: internal evidence in public documentation`);
   if (/\btrusted_org\b|\bskip_consent\b|\bskip_application_consent\b|\ballow_bundled_applications\b|\bbundles_enabled\b/.test(body)) failures.add(`${file}: internal organization policy in public documentation`);
   if (!body.includes(`rel="canonical" href="${origin}/`)) failures.add(`${file}: missing canonical documentation origin`);
   if (/<script\b/i.test(body)) failures.add(`${file}: documentation must not execute scripts`);

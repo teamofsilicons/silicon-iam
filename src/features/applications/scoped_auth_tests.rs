@@ -355,6 +355,7 @@ async fn scoped_slt_lifecycle_preserves_issuer_and_authorization_boundaries() ->
         other_client,
         headers,
         axum::Form(AppTokenForm {
+            org_id: None,
             app_id: Some("app-alpha".into()),
             slt: Some(unrelated),
             refresh_token: None,

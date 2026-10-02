@@ -34,7 +34,7 @@ let iam = Client::builder("https://backend.iam.teamofsilicons.com")?
 
 let signed_in = iam.with_credential(Credential::bearer(iam_access_token));
 let application = iam.with_credential(Credential::application(
-    "acme&gt;checkout",
+    "checkout",
     application_secret,
 ));</code></pre>
 
@@ -51,8 +51,8 @@ let application = iam.with_credential(Credential::application(
 </table>
 
 <p>
-  Application credentials are the canonical organization-qualified ID, such as
-  <code>acme&gt;checkout</code>, plus the generated client secret. The webhook signing secret is a
+  Application credentials are the globally unique bare ID, such as
+  <code>checkout</code>, plus the generated client secret. The webhook signing secret is a
   separate, caller-chosen credential and cannot authenticate API requests.
 </p>
 

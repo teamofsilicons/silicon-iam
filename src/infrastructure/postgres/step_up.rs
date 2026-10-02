@@ -106,6 +106,34 @@ pub async fn consume(
     token: &StepUpToken,
     expectation: StepUpExpectation,
 ) -> Result<Id, AppError> {
+    if expectation.carbon_id.to_string().starts_with("si:") {
+        let digests = crypto
+            .digest_secrets(DigestPurpose::StepUpAssertion, &token.0)
+            .map_err(|_| AppError::Internal {
+                category: "silicon_step_up_digest",
+            })?;
+        return sqlx::query_scalar::<_, Option<Id>>(
+            "SELECT iam_private.consume_silicon_step_up($1,$2,$3,$4,$5)",
+        )
+        .bind(expectation.authentication_session_id)
+        .bind(expectation.action)
+        .bind(expectation.resource_id.map(|id| id.to_string()))
+        .bind(
+            digests
+                .iter()
+                .map(crate::infrastructure::crypto::SecretDigest::key_version)
+                .collect::<Vec<_>>(),
+        )
+        .bind(
+            digests
+                .iter()
+                .map(|d| d.as_bytes().to_vec())
+                .collect::<Vec<_>>(),
+        )
+        .fetch_one(&mut **transaction)
+        .await?
+        .ok_or_else(invalid_step_up);
+    }
     lock_active_authority(transaction, expectation).await?;
     let digests = crypto
         .digest_secrets(DigestPurpose::StepUpAssertion, &token.0)

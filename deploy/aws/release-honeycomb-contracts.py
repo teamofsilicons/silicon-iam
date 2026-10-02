@@ -28,7 +28,7 @@ CHECKPOINTS = (
     "Stop API, scoped API and worker; save private units/environment and both database dumps",
     "Validate both dump archives and checksums before marking migrations started",
     "Run dual-database iam-migrate, apply image runtime grants to both databases, initialize scoped helper",
-    "Verify complete ledger checksums; force both Honeycomb cutover flags false",
+    "Verify complete ledger checksums; preserve each service's current Honeycomb feature flags",
     "Install immutable image into all three units and verify readiness/revision/container health",
 )
 
@@ -36,6 +36,15 @@ CHECKPOINTS = (
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+def cutover_flags(environment):
+    """Inspect only non-secret feature flags; a release must not change policy."""
+    values = dict(item.split("=", 1) for item in environment if "=" in item)
+    flags = {flag: values.get(flag, "false") for flag in FLAGS}
+    require(all(value in ("true", "false") for value in flags.values()),
+            "Unknown Honeycomb feature flag value requires operator review")
+    return flags
 
 
 def digest(path):
@@ -176,8 +185,11 @@ class Release:
         for port in (8080, 8081):
             self.ready(port, self.args.previous_revision)
         replacements = []
+        existing_flags = {}
         for service in SERVICES:
             self.run(["systemctl", "is-active", f"silicon-iam-{service}"])
+            container = json.loads(self.run(["docker", "inspect", f"silicon-iam-{service}"], sensitive=True))[0]
+            existing_flags[service] = cutover_flags(container["Config"]["Env"])
             unit = Path(f"/etc/systemd/system/silicon-iam-{service}.service")
             text = unit.read_text()
             require(text.count(self.args.previous_image) == 1, f"Unexpected current image in {unit.name}")
@@ -193,9 +205,9 @@ class Release:
         for filename in ("api.env", "scoped.env", "worker.env"):
             path = Path("/etc/silicon-iam") / filename
             require(path.is_file(), f"Missing runtime environment {filename}")
-            lines = [line for line in path.read_text().splitlines() if line.partition("=")[0] not in FLAGS]
-            lines.extend(flag + "=false" for flag in FLAGS)
-            replacements.append((path, "\n".join(lines) + "\n"))
+            # Environment files are backed up and retained byte for byte. Enabling
+            # or disabling Honeycomb features is a separate reviewed operation.
+        self.state["preserved_cutover_flags"] = existing_flags
         for label, host, arn, name in (
             ("production", self.args.production_host, self.args.production_secret_arn, "silicon_iam"),
             ("testing", self.args.testing_host, self.args.testing_secret_arn, "silicon_iam_testing"),
@@ -272,11 +284,11 @@ class Release:
         time.sleep(5)
         for service in SERVICES:
             self.run(["systemctl", "is-active", f"silicon-iam-{service}"])
-            state = json.loads(self.run(["docker", "inspect", f"silicon-iam-{service}"]))[0]
+            state = json.loads(self.run(["docker", "inspect", f"silicon-iam-{service}"], sensitive=True))[0]
             require(state["State"]["Running"] and state["Config"]["Image"] == self.args.image,
                     f"Unexpected running container for {service}")
-            values = dict(item.split("=", 1) for item in state["Config"]["Env"] if "=" in item)
-            require(all(values.get(flag) == "false" for flag in FLAGS), "Honeycomb cutover flag not disabled")
+            require(cutover_flags(state["Config"]["Env"]) == existing_flags[service],
+                    f"Honeycomb feature flags changed in {service}; restore reviewed configuration")
         self.state["services_stopped"] = False
         self.checkpoint("healthy-acceptance-gates-pending")
 
@@ -311,7 +323,7 @@ def main():
     if args.command == "plan":
         print(json.dumps({"revision": args.revision, "image": args.image, "checkpoints": CHECKPOINTS,
                           "migration_counts": {key: len(value) for key, value in release.inventory["ledgers"].items()},
-                          "cutover_flags": {key: False for key in FLAGS}, "executes_changes": False}, indent=2))
+                          "cutover_flags": {key: "preserve current per-service value" for key in FLAGS}, "executes_changes": False}, indent=2))
         return
     require(os.geteuid() == 0, "Execute only as root")
     with open("/run/silicon-iam-contract-release.lock", "w") as lock:

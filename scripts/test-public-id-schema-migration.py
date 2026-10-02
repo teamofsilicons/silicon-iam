@@ -107,6 +107,12 @@ COMMIT;'''
             assert run("SELECT count(*) FROM iam.application_webhook_endpoints WHERE application_id='app' AND url_ciphertext=decode(repeat('04',17),'hex');", name).strip() == str(len(planes))
             assert run("SELECT count(*) FROM iam.outbox_events WHERE aggregate_type='silicon' AND aggregate_id='si:migration' AND payload->'actor'->>'id'='si:migration' AND payload->>'application_id'='app';", name).strip() == str(len(planes))
             assert run("SELECT count(*) FROM iam_private.public_id_application_contexts WHERE application_id='app' AND context_id='identity-test>app';", name).strip() == str(len(planes))
+            # Forward migrations apply on top of the released schema as the same
+            # restricted owner; runtime grants describe the latest schema.
+            later = [p for p in base if int(p.name[:4]) > 118]
+            if later:
+                run(f'SET SESSION AUTHORIZATION {name}; SET client_min_messages=warning;\n'
+                    + ''.join('BEGIN;\n' + include(path) + 'COMMIT;\n' for path in later), name)
             # Runtime grants must explicitly keep AAD readers and forbid alias-map access.
             run(include(ROOT/'deploy/postgres/runtime-grants.sql'),name)
             assert run("SELECT has_function_privilege('silicon_iam_api','iam_private.public_id_application_contexts()','EXECUTE') AND NOT has_table_privilege('silicon_iam_api','iam_private.public_id_schema_map','SELECT');",name).strip()=='t'

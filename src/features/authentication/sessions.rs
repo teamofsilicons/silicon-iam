@@ -64,7 +64,7 @@ const OTHER_ACTIVE_SESSIONS_MATURITY_QUERY: &str = r"
     )
     FROM iam.authentication_sessions AS session
     WHERE session.subject_principal_id = $1
-      AND session.subject_kind = 'carbon'
+      AND session.subject_kind IN ('carbon','silicon')
       AND session.id <> $2
       AND session.status = 'active'
       AND session.idle_expires_at > transaction_timestamp()
@@ -83,7 +83,8 @@ const APPLICATION_LOGOUT_AUTHORITY_QUERY: &str = r"
      AND session.absolute_expires_at > transaction_timestamp()
     JOIN iam.principals AS subject
       ON subject.id = token.subject_principal_id
-     AND subject.kind = 'carbon'
+     AND subject.kind = token.subject_kind
+     AND subject.kind IN ('carbon','silicon')
      AND subject.status = 'active'
      AND subject.auth_epoch = token.subject_auth_epoch
     JOIN iam.applications AS application
@@ -108,7 +109,7 @@ const APPLICATION_LOGOUT_AUTHORITY_QUERY: &str = r"
       AND token.token_class = 'application_access'
       AND token.authentication_session_id = $2
       AND token.subject_principal_id = $3
-      AND token.subject_kind = 'carbon'
+      AND token.subject_kind IN ('carbon','silicon')
       AND token.client_application_id = $4
       AND token.revoked_at IS NULL
       AND token.expires_at > transaction_timestamp()
@@ -197,13 +198,29 @@ pub(super) fn carbon_context(context: &AccessContext) -> Result<Id, AppError> {
     Ok(context.subject.id)
 }
 
+fn identity_context(context: &AccessContext) -> Result<Id, AppError> {
+    if !matches!(
+        context.subject.actor_type,
+        ActorType::Carbon | ActorType::Silicon
+    ) || context.audience != IAM_AUDIENCE
+        || context.client_application_id.is_some()
+        || context.audience_application_id.is_some()
+        || context.organization_id.is_some()
+        || context.membership_id.is_some()
+        || !context.scopes.iter().any(|scope| scope == "iam.self")
+    {
+        return Err(AppError::Forbidden);
+    }
+    Ok(context.subject.id)
+}
+
 pub(super) async fn list_sessions(
     state: &ApiState,
     context: &AccessContext,
     cursor: Option<String>,
     limit: i64,
 ) -> Result<SessionPage, AppError> {
-    let principal_id = carbon_context(context)?;
+    let principal_id = identity_context(context)?;
     let cursor = cursor.map(|value| decode_cursor(&value)).transpose()?;
     let fetch_limit = limit.checked_add(1).ok_or(AppError::Internal {
         category: "session_page_limit",
@@ -228,7 +245,7 @@ pub(super) async fn list_sessions(
             revoked_at
         FROM iam.authentication_sessions
         WHERE subject_principal_id = $1
-          AND subject_kind = 'carbon'
+          AND subject_kind IN ('carbon','silicon')
           AND (
               $2::timestamptz IS NULL
               OR (created_at, id) < ($2, $3)
@@ -257,7 +274,15 @@ pub(super) async fn list_sessions(
     let items = rows
         .into_iter()
         .take(visible_count)
-        .map(|row| session_response(&row, principal_id, &carbon_id))
+        .map(|row| {
+            let mut response = session_response(&row, principal_id, &carbon_id);
+            context
+                .subject
+                .actor_type
+                .as_str()
+                .clone_into(&mut response.actor.actor_type);
+            response
+        })
         .collect::<Vec<_>>();
     let next_cursor = if has_more {
         items
@@ -312,7 +337,7 @@ pub(super) async fn list_login_history(
     cursor: Option<String>,
     limit: i64,
 ) -> Result<LoginEventPage, AppError> {
-    let principal_id = carbon_context(context)?;
+    let principal_id = identity_context(context)?;
     let cursor = cursor.map(|value| decode_cursor(&value)).transpose()?;
     let fetch_limit = limit.checked_add(1).ok_or(AppError::Internal {
         category: "login_history_page_limit",
@@ -354,7 +379,15 @@ pub(super) async fn list_login_history(
     let items = rows
         .into_iter()
         .take(visible_count)
-        .map(|row| login_event_response(&row, principal_id, &carbon_id))
+        .map(|row| {
+            let mut response = login_event_response(&row, principal_id, &carbon_id)?;
+            context
+                .subject
+                .actor_type
+                .as_str()
+                .clone_into(&mut response.actor.actor_type);
+            Ok(response)
+        })
         .collect::<Result<Vec<_>, AppError>>()?;
     let next_cursor = if has_more {
         items
@@ -380,7 +413,7 @@ pub(super) async fn revoke_session(
     step_up_token: Option<&StepUpToken>,
     session_id: Id,
 ) -> Result<Outcome<()>, AppError> {
-    let principal_id = carbon_context(context)?;
+    let principal_id = identity_context(context)?;
     let request_digest = idempotency::digest_parts_with_legacy(
         &state.crypto,
         b"session-revoke",
@@ -388,6 +421,7 @@ pub(super) async fn revoke_session(
         &[0],
     );
     let mut transaction = serializable(state.db(), "session_revoke_transaction").await?;
+    set_principal_context(&mut transaction, principal_id).await?;
     let record_id = match idempotency::begin::<EmptyMutationOutcome>(
         &mut transaction,
         &state.crypto,
@@ -426,7 +460,7 @@ pub(super) async fn revoke_session(
         FROM iam.authentication_sessions
         WHERE id = $1
           AND subject_principal_id = $2
-          AND subject_kind = 'carbon'
+          AND subject_kind IN ('carbon','silicon')
         FOR UPDATE
         ",
     )
@@ -493,7 +527,7 @@ pub(super) async fn logout(
         LogoutMode::AllSessions => b"all".as_slice(),
     };
     binding.request_digest = match command.trigger {
-        LogoutTrigger::FirstPartyCarbon => idempotency::digest_parts_with_legacy(
+        LogoutTrigger::FirstPartyIdentity => idempotency::digest_parts_with_legacy(
             &state.crypto,
             b"logout",
             &[
@@ -525,6 +559,7 @@ pub(super) async fn logout(
         }
     };
     let mut transaction = serializable(state.db(), "logout_transaction").await?;
+    set_principal_context(&mut transaction, command.principal_id).await?;
 
     if matches!(command.credential_state, LogoutCredentialState::ReplayOnly) {
         return replay_completed_logout(transaction, &state.crypto, command.key, &binding).await;
@@ -591,7 +626,7 @@ fn logout_request_binding(
         LogoutMode::AllSessions => b"all".as_slice(),
     };
     match trigger {
-        LogoutTrigger::FirstPartyCarbon => LogoutRequestBinding {
+        LogoutTrigger::FirstPartyIdentity => LogoutRequestBinding {
             caller_scope: principal_id.as_bytes().to_vec(),
             request_digest: idempotency::digest_parts(
                 b"logout",
@@ -697,7 +732,7 @@ async fn execute_logout(
         .collect()
     };
     let application_id = match execution.trigger {
-        LogoutTrigger::FirstPartyCarbon => None,
+        LogoutTrigger::FirstPartyIdentity => None,
         LogoutTrigger::Application { application_id, .. } => Some(application_id),
     };
     for session in revoked {
@@ -911,7 +946,7 @@ async fn revoke_one(
             version = version + 1
         WHERE id = $1
           AND subject_principal_id = $2
-          AND subject_kind = 'carbon'
+          AND subject_kind IN ('carbon','silicon')
           AND status = 'active'
           AND idle_expires_at > transaction_timestamp()
           AND absolute_expires_at > transaction_timestamp()
@@ -944,7 +979,7 @@ async fn revoke_all(
             revocation_reason = 'user_logout_all',
             version = version + 1
         WHERE subject_principal_id = $1
-          AND subject_kind = 'carbon'
+          AND subject_kind IN ('carbon','silicon')
           AND status = 'active'
           AND idle_expires_at > transaction_timestamp()
           AND absolute_expires_at > transaction_timestamp()
@@ -1112,12 +1147,23 @@ async fn record_revocation(
     application_id: Option<Id>,
     outbox_event: &'static str,
 ) -> Result<(), AppError> {
-    let metadata = revocation_event_payload(
+    let mut metadata = revocation_event_payload(
         principal_id,
         actor_authentication_session_id,
         application_id,
         &session,
     );
+    let kind: String = sqlx::query_scalar(
+        "SELECT kind::text FROM iam.principals WHERE id=$1 AND kind IN ('carbon','silicon')",
+    )
+    .bind(principal_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|_| AppError::Internal {
+        category: "session_revocation_actor",
+    })?;
+    metadata["actor"]["type"] = json!(kind);
+    metadata["authorized_state"]["subject"]["type"] = json!(kind);
     events::record(
         transaction,
         SecurityMutation {
@@ -1177,7 +1223,7 @@ async fn carbon_handle(
     principal_id: Id,
 ) -> Result<String, AppError> {
     sqlx::query_scalar::<_, String>(
-        "SELECT carbon_id FROM iam.carbons WHERE id = $1 AND deleted_at IS NULL",
+        "SELECT carbon_id FROM iam.carbons WHERE id = $1 AND deleted_at IS NULL UNION ALL SELECT global_silicon_id FROM iam.silicons WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(principal_id)
     .fetch_optional(&mut **transaction)
@@ -1355,7 +1401,14 @@ mod tests {
         };
         assert!(matches!(carbon_context(&context), Ok(id) if id == principal_id));
 
+        context.subject.actor_type = ActorType::Silicon;
+        assert!(super::identity_context(&context).is_ok());
+        assert!(carbon_context(&context).is_err());
+        context.subject.actor_type = ActorType::Application;
+        assert!(super::identity_context(&context).is_err());
+        context.subject.actor_type = ActorType::Silicon;
         context.client_application_id = Some(Id::from_u128(3));
+        assert!(super::identity_context(&context).is_err());
         assert!(carbon_context(&context).is_err());
     }
 
@@ -1439,7 +1492,7 @@ mod tests {
             "token.token_class = 'application_access'",
             "token.authentication_session_id = $2",
             "token.subject_principal_id = $3",
-            "token.subject_kind = 'carbon'",
+            "token.subject_kind IN ('carbon','silicon')",
             "token.client_application_id = $4",
             "application.id = token.audience_application_id",
             "application.app_id = token.audience",
@@ -1471,7 +1524,7 @@ mod tests {
         ));
         assert!(
             validate_logout_trigger_mode(
-                LogoutTrigger::FirstPartyCarbon,
+                LogoutTrigger::FirstPartyIdentity,
                 super::LogoutMode::AllSessions
             )
             .is_ok()
@@ -1530,7 +1583,7 @@ mod tests {
         let first_party = logout_request_binding(
             carbon_id,
             session_id,
-            LogoutTrigger::FirstPartyCarbon,
+            LogoutTrigger::FirstPartyIdentity,
             super::LogoutMode::CurrentSession,
         );
         assert_ne!(application.request_digest, other_session.request_digest);

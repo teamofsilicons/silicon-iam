@@ -1,97 +1,71 @@
-# Rust client OBO signing and verification
+# Rust client OBO consent, tokens and verification
 
-On-behalf-of (OBO) lets one Application call a registered endpoint on another Application, including one owned by a different organization. IAM mints a proof for one exact downstream request; the audience authenticates and consumes it before doing the work.
+Use `client.obo()` for separate endpoint approval, reusable access/refresh tokens, verification, downstream delegation and user grant management. The SDK never stores or refreshes these tokens automatically. Ordinary application login grants no OBO authority.
 
-**Start with a valid token issued to the calling application.** The caller must declare the exact audience and endpoint in its `app_scope.external`, and the user must approve that permission during IAM login. Critical endpoints additionally require the audience application's approval. The subject remains the same user throughout the exchange. Set `org_id` to one of the user's selected active organizations when more than one is available; application ownership does not choose the user's organization.
-
-## Declare and classify endpoints
-
-Every exposed endpoint must include a required boolean `critical` alongside `endpoint_id`, `path`, and `metadata`. Discover any audience's catalog with `obo().endpoints(app_id)`. Its organization owner/admin controls that catalog and the initial `obo_review_message`. For critical scope discussions, use `application_scopes().request`, `get`, `reply`, and `decide`. A denial requires a reason; request and reply notifications reach the relevant administrators.
+## Start consent when the app needs the action
 
 ```
-{"endpoint_id":"invoices.create","path":"/v1/invoices","critical":true,"metadata":{"reason":{"type":"string"}}}
+use silicon_iam_client::{Client, Credential, Mutation, models};
+
+let application = Client::new("https://backend.iam.teamofsilicons.com")?
+    .with_credential(Credential::application("assistant", "<app secret>"));
+let request = application.obo().authorize(&models::OboAuthorizationRequest {
+    redirect_uri: None, // Or Some(exact_callback) together with a 32–512-byte state.
+    state: None,
+    subject_token: "<user's ordinary application token>".to_owned(),
+    org_id: "customer".to_owned(),
+    endpoints: vec![models::OboAuthorizationEndpoint {
+        audience: "waveform".to_owned(),
+        endpoint_id: "speech.generate".to_owned(),
+    }],
+}, &Mutation::new()).await?;
+// Open request.authorization_url in IAM for the represented user.
+// Save request.id; application.obo().authorization(request.id) reads status.
 ```
 
-## Discover, hash, sign, then exchange
+IAM shows the requesting app, user, organization and every requested root's full dependency tree. Approval creates a separate grant per root endpoint. Only a direct IAM user session may call `obo().consent(id)` and `obo().decide(id, decision, mutation)`; application credentials or app bearers cannot approve their own access. Send the displayed version with `OboConsentDecision`. A stale graph must be reviewed again. Optional `contexts` select a direct IAM account token and organization per provider; omitted providers use the root context. Direct account credentials stay inside IAM clients, never the requesting app. With a bound callback, validate returned state/request ID, clear the code from the URL and redeem it on the application server; status polling never returns it.
+
+## Redeem the approved code
 
 ```
-use silicon_iam_client::{Mutation, api::obo::body_sha256, models};
-
-let catalog = caller.obo().endpoints("acme>billing").await?;
-
-// Compute this over the exact downstream bytes, not re-serialized JSON.
-let body_digest = body_sha256(body);
-let exchanging = Mutation::new();
-
-let request = models::OboExchangeRequest {
-    subject_token: subject_access_token.to_owned(),
-    org_id: Some("customer".to_owned()),
-    audience: "acme>billing".to_owned(),
-    endpoint_id: "invoices.create".to_owned(),
-    metadata: serde_json::json!({ "reason": "checkout" }),
-    request: models::OboExchangeRequestBinding {
-        method: "POST".to_owned(),
-        body_sha256: body_digest,
-    },
-};
-
-let proof = caller.obo()
-    .exchange_signed(&request, &catalog, &exchanging)
-    .await?;
-```
-
-`body_sha256` hashes exact bytes and returns the required lowercase digest. `exchange_signed` generates a fresh Unix-seconds timestamp, selects the endpoint's exact registered path from the supplied catalog, and uses the same `Credential::Application` secret for Basic authentication and HMAC. It rejects a catalog/audience/endpoint mismatch or a non-canonical method, path, digest, timestamp, or idempotency key before sending. The signature is lowercase HMAC-SHA256 hex over this exact UTF-8 string:
-
-```
-{timestamp}.{UPPERCASE_METHOD}.{registered_path}.{lowercase_body_sha256}.{idempotency_key}
-```
-
-The request body itself never goes to IAM; it travels directly to the audience Application. For a specialized transport, `sign_exchange(request, catalog, timestamp, mutation)` exposes the same canonical signer and the low-level `exchange` method remains available. Normal callers should keep signing and sending coupled through `exchange_signed`.
-
-## What the proof is bound to
-
-IAM binds the proof to the source and audience Applications, subject token, actor, organization, endpoint, metadata, method, registered path and exact body digest. It is valid for one verification or the provider-configured ttl_seconds (default 300 seconds), whichever comes first. Exchange immediately before the downstream request.
-
-## Consume it against the actual request
-
-```
-let verified = audience.obo().verify(
-    &models::OboVerifyRequest {
-        access_proof: proof.access_proof,
-        request: models::OboVerifyRequestBinding {
-            method: "POST".to_owned(),
-            path: "/v1/invoices".to_owned(),
-            body_sha256: body_sha256(actual_body),
-        },
-    },
+let exchange = Mutation::new();
+let issued = application.obo().exchange_code(
+    request.id, "<code copied after IAM approval>", &exchange,
 ).await?;
-
-// Only now execute the operation. `verified` identifies the actor,
-// issuer Application, endpoint and authenticated metadata.
-// `verified.authorization` is the current delegated membership binding.
+for token in issued.items {
+    // Store token.access_token and token.refresh_token with their grant/endpoint binding.
+}
 ```
 
-`verified.authorization` binds the represented actor to the current membership ID/version, authorization epoch, organization, audience and testing environment. Its role/tag disclosure is limited to the intersection of the parent token's scopes, its exact current session-bound consent, and both applications' currently approved scopes. Only these self disclosures and the exact delegated endpoint scope appear in the nested scope list: `self.identity.read` includes nested actor type/public ID, `self.membership.read` reveals `org_role` and `self.tags.read` reveals `tags`. Null means undisclosed, not baseline member or empty tags. Apply your application's authorization policy to this binding for this exact verified endpoint/request only. Never fill undisclosed fields from a broader cached scope set, promote the actor from an unbound cached role, or reuse a consumed proof's binding on another request.
+Code exchange returns `OboTokenResponse` with one `OboTokenPair` per root endpoint and organization. Refresh through `obo().refresh(refresh_token, mutation)`; this returns a single replacement pair and rotates the refresh token. Keep one refresh in flight per family, and retain one mutation key for an uncertain identical retry. Neither refresh nor replay can expand endpoints or extend an already issued token's original expiry.
 
-**Verification is single-use and must never be retried.** It accepts no idempotency key. If the call returns a transport or decode error, the proof may already have been consumed; fail the downstream request and mint a fresh proof for a new attempt. A second verification returns `409`.
+## The receiver verifies each request
 
-## Recovering an uncertain exchange
+```
+let receiver = Client::new("https://backend.iam.teamofsilicons.com")?
+    .with_credential(Credential::application("waveform", "<receiver secret>"));
+let verified = receiver.obo().verify(&models::OboTokenVerificationRequest {
+    access_token: incoming_access_token,
+    endpoint_id: "speech.generate".to_owned(),
+    request: models::OboTokenRequestBinding {
+        method: "POST".to_owned(),
+        path: "/v1/speech".to_owned(),
+    },
+}).await?;
+// Validate payload, metadata, and the represented user's resource permissions.
+// verified.authorization carries only current, permitted self disclosures.
+```
 
-Exchange, unlike verification, is idempotent. Recreate a `Mutation` with the saved `IdempotencyKey` and repeat the exact subject token, audience, endpoint, metadata, method and body digest while the proof is still valid. Call `exchange_signed` again so the retry receives a fresh timestamp and signature; those two headers are not idempotency material and an old timestamp can fall outside the 60-second window. Any changed request input returns `409 idempotency_conflict`. The client does not store those inputs or retry the exchange automatically.
+Verification is reusable and accepts no mutation key. It may be repeated after a transport failure, but execute only after receiving current success. Tokens do not bind body hashes; the receiver enforces resource permissions, metadata validation and operation deduplication. The result includes the immediate `issuer_app_id`, `originating_app_id`, user, organization, endpoint and chain.
 
-## How the proof reaches the audience
+## Call any approved graph endpoint
 
-IAM does not prescribe a downstream proof header or body field. The two Applications must agree how to carry `access_proof`. Regardless of that transport, the audience calculates the verification method, path and digest from the request it actually received.
+The same access token works at every approved endpoint in the root graph. Forward it to the next declared provider; that provider calls `obo().verify(...)` with its own credentials and exact endpoint/method/path. The result returns the provider's selected account and organization. Only the originating app holds the refresh token.
 
-## Failure modes
+`obo().delegate(...)` is a compatibility edge check and returns the same access token, without a child credential. It does not broaden the graph. Newly requested dependencies require fresh consent.
 
-| Condition | Meaning | Do |
-| --- | --- | --- |
-| `401` | The Application Basic credential or exchange HMAC is invalid. | Correct the credential, canonical string, clock, or signature. Do not retry unchanged. |
-| `403` | The endpoint was not declared or consented, a critical grant is missing, or the subject token no longer authorizes the selected organization. | Re-check the selected user organization, current membership, app declaration, critical approval, and user consent. |
-| `404 not_found` | The target or endpoint is nonexistent or unavailable in this production/testing environment. | Correct the audience and environment. Do not retry unchanged. |
-| `409` | The proof was consumed, or an idempotency key was reused with different exchange input. | Do not retry verification. For an exchange conflict, recover the original input or use a new key for a genuinely new operation. |
-| `410 proof_expired` | The proof's configured lifetime elapsed. | Exchange a new proof for a new downstream attempt. |
-| `422` | The metadata or presented request binding does not satisfy the registered contract. | Re-read the catalog and compare the actual request. |
+## User control and migration
 
-See the HTTP OBO contract (`iam docs api/obo`) for the complete signature and authorization checks.
+With a direct IAM user client, use `obo().grants()` to review the first page of up to 10 grants, `obo().grants_page(&Paging::new().after(cursor).limit(10))` to continue with `page.next_cursor` while `page.has_more` is true and `obo().revoke(grant_id, mutation)` to end the root and all descendant authority. Ordinary logout and session expiry preserve durable consent. Grant revocation and current membership, app, organization or graph changes stop access; account/app security resets invalidate issued credentials. Access uses the shortest graph endpoint TTL, while the rotating refresh family follows the durable grant lifetime. Recover unchanged grants with `obo().recover(grant_id, subject_token, mutation)` using a fresh originating account/app login. Another selected account's security reset requires renewed approval from that account. Requests and tokens remain isolated to their testing environment and generation.
+
+The old proof-signing/exchange SDK methods are retired. Earlier login consent is not converted into a new grant. Migrate callers and receivers together to `authorize`, `exchange_code`, `refresh`, `verify` and, when declared, `delegate`. See the HTTP OBO contract (`iam docs api/obo`) for the complete lifecycle.

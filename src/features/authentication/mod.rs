@@ -13,7 +13,13 @@ mod otp;
 mod refresh;
 mod sessions;
 mod signup;
+#[cfg(test)]
+mod signup_database_tests;
 mod silicon;
+pub(crate) mod silicon_signup;
+mod silicon_step_up;
+mod social;
+mod social_provider;
 mod step_up;
 mod tokens;
 mod validation;
@@ -25,16 +31,16 @@ use axum::{
 
 use crate::api::ApiState;
 
-/// Credential class that legitimately initiated a Carbon's global logout.
+/// Credential class that legitimately initiated an account's global logout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[allow(
     clippy::large_enum_variant,
     reason = "bounded canonical handles preserve Copy authority snapshots without interning or lifetime coupling"
 )]
 pub(crate) enum LogoutTrigger {
-    /// The Carbon used an IAM bearer or browser session directly.
-    FirstPartyCarbon,
-    /// A reviewed Application used its Carbon-bound OAuth access token.
+    /// A Carbon or Silicon used an IAM bearer (or Carbon browser session) directly.
+    FirstPartyIdentity,
+    /// A reviewed Application used its account-bound OAuth access token.
     Application {
         application_id: crate::domain::id::Id,
         access_token_id: crate::domain::id::Id,
@@ -52,6 +58,31 @@ pub(crate) enum LogoutCredentialState {
 /// Builds the Carbon authentication feature router.
 pub(crate) fn router() -> Router<ApiState> {
     Router::new()
+        .merge(social::router())
+        .route(
+            "/api/v1/silicon-auth/step-up",
+            post(silicon_step_up::create),
+        )
+        .route(
+            "/api/v1/me/silicon-custodies",
+            get(silicon_signup::list_custodies),
+        )
+        .route(
+            "/api/v1/me/silicon-custodies/{silicon_id}",
+            axum::routing::patch(silicon_signup::update_custody),
+        )
+        .route(
+            "/api/v1/silicon-signup/requests",
+            post(silicon_signup::create),
+        )
+        .route(
+            "/api/v1/silicon-signup/requests/{request_id}",
+            get(silicon_signup::status),
+        )
+        .route(
+            "/api/v1/silicon-signup/requests/{request_id}/custodian",
+            get(silicon_signup::review).post(silicon_signup::decide),
+        )
         .route("/api/v1/signup/sessions", post(http::create_signup_session))
         .route(
             "/api/v1/signup/sessions/{session_id}/email",
@@ -63,7 +94,7 @@ pub(crate) fn router() -> Router<ApiState> {
         )
         .route(
             "/api/v1/signup/sessions/{session_id}/phone",
-            post(http::start_signup_phone),
+            post(http::start_signup_phone).delete(http::skip_signup_phone),
         )
         .route(
             "/api/v1/signup/sessions/{session_id}/phone/verify",

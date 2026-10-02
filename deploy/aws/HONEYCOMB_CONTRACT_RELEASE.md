@@ -4,6 +4,13 @@
 IAM API, scoped API and worker. The `manifest` and `plan` commands do not access
 AWS or change the production host. Only `execute` performs the rollout.
 
+The October 2026 IAM redesign requires the coordinated consumer gates in
+[`docs/OBO_CUTOVER.md`](../../docs/OBO_CUTOVER.md) and the backup and restore
+requirements in [`docs/RELEASE_READINESS_2026_10_03.md`](../../docs/RELEASE_READINESS_2026_10_03.md).
+This helper does not deploy consumers or establish application-flow acceptance.
+Its Honeycomb flags do not preserve the retired OBO proof routes. Do not deploy
+the complete redesign to IAM alone while consumers still use those routes.
+
 ## Prepare the immutable inputs
 
 1. Finish release checks, commit the complete source, and build the ARM64 image
@@ -23,8 +30,13 @@ AWS or change the production host. Only `execute` performs the rollout.
    ```
 
    This uses committed Git objects, including SQLx SHA-384 checksums. It never
-   captures uncommitted SQL. For this contract release, verify that production
-   ends at 0107 and testing ends at 9013 (107 and 120 entries respectively).
+   captures uncommitted SQL. The 3 October 2026 redesign inventory contains
+   138 main migrations through `0140_obo_selected_provider_metadata.sql` and
+   29 testing overlays through `9031_obo_selected_provider_metadata.sql`:
+   138 production ledger entries and 167 testing ledger entries. Numbering has
+   intentional gaps. Recalculate this inventory from the final release commit
+   if it changes; do not infer counts from the highest migration number. Every
+   already-applied checksum must match the corresponding committed migration.
 4. Transfer the script and manifest to a private directory on the existing IAM
    host. Keep database credentials in Secrets Manager. Supply only secret ARNs
    and RDS endpoints as arguments; the script obtains credentials in memory.
@@ -62,12 +74,16 @@ These files can contain credentials and must remain private.
 3. **Migrate:** durably mark migration start; run the release's dual-database
    migrator; apply its runtime grant manifest to both databases; install the
    scoped authentication SQL helper. Verify both complete ledgers exactly.
-4. **Start:** install the release image in all three units, preserve other runtime
-   settings, and explicitly set both `IAM_HONEYCOMB_SCHEDULED_TESTING` and
-   `IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS` to `false`. Check both API revisions,
-   readiness, running container images, and effective disabled flags.
+4. **Start:** install the release image in all three units and retain environment
+   files byte for byte. Preserve each service's current
+   `IAM_HONEYCOMB_SCHEDULED_TESTING` and `IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS`
+   values, recorded during preflight. Missing values retain the `false` default;
+   unrecognized values or inline unit overrides stop preflight for review. Check
+   both API revisions, readiness, running images, and unchanged effective flags.
 5. **Acceptance:** the script reports `healthy-acceptance-gates-pending`. Run the
-   authenticated IAM/Honeycomb end-to-end checks before enabling either flag.
+   authenticated IAM/Honeycomb and coordinated consumer end-to-end checks.
+   Changing either Honeycomb flag is a separate reviewed configuration action;
+   this helper neither enables nor disables it.
    Persist the verified image in the existing infrastructure configuration using
    the separately reviewed deployment process. This script does not update
    CloudFormation or replace the instance.

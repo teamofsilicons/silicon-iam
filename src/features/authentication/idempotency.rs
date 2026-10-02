@@ -96,13 +96,6 @@ impl From<[u8; 32]> for ReplayDigest {
     }
 }
 impl ReplayDigest {
-    pub(super) fn with_legacy(current: [u8; 32], legacy: [u8; 32]) -> Self {
-        Self {
-            current,
-            legacy: Some(legacy),
-            legacy_caller: None,
-        }
-    }
     pub(super) fn with_caller(mut self, caller: Option<[u8; 32]>) -> Self {
         self.legacy_caller = caller;
         self

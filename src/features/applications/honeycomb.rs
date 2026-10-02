@@ -139,8 +139,10 @@ impl Service {
             _ => ApiError::internal("honeycomb_actor_authentication"),
         })?
         .ok_or_else(ApiError::unauthenticated)?;
-        if access.subject.actor_type != ActorType::Carbon
-            || access.client_application_id != Some(self.application_id)
+        if !matches!(
+            access.subject.actor_type,
+            ActorType::Carbon | ActorType::Silicon
+        ) || access.client_application_id != Some(self.application_id)
             || access.audience_application_id != Some(self.application_id)
         {
             return Err(ApiError::forbidden("honeycomb_actor_required"));

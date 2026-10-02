@@ -8,17 +8,17 @@ IAM is authoritative for membership. Removing someone invalidates their organiza
 
 | Principal | What it is | Public identifier |
 | --- | --- | --- |
-| **Carbon** | A human account. | `carbon_id` — 3–30 characters of `a–z`, `1–9`, `_` and `-`. |
-| **Silicon** | A machine identity, always scoped to one organization. | `{handle}:{org_id}` — always contains a colon. |
+| **Carbon** | A human account. | `c:handle` — a globally unique Carbon identity. |
+| **Silicon** | An independent machine account with organization memberships. | `si:handle` — a globally unique Silicon identity. |
 | **Application** | A registered confidential OAuth client and delegation actor. | `app_id`. |
 
-A Silicon has no organization-local form. The handle you submit at creation is input only; `head_of_growth` registered in `tos` is addressable forever as `head_of_growth:tos` and never as anything else. That single colon is also how a client tells the two principal kinds apart, since a Carbon ID cannot contain one.
+Account IDs are independent of organization membership. A Silicon keeps the same `si:head_of_growth` ID when it joins another organization. Applications use globally unique bare IDs such as `billing`; bundle IDs retain their `org>bundle` namespace.
 
 ## Identifiers, and what they are not
 
 Carbon, Silicon, and Application IDs are immutable canonical identity keys, including in storage and foreign keys. They are never reused after deletion. Other resources retain UUID keys.
 
-A public `membership_id` is `carbon_id[org_id]` or `silicon_id[org_id]`, using the full Silicon ID: for example `saket[tos]` and `helper:tos[tos]`. URL-encode the brackets in path segments. These stable identifiers also appear in relationship fields, trust selectors and webhook membership references. UUID membership keys remain private to storage. Identifier resolution never grants access; tenant, consent and resource authorization still apply.
+A public `membership_id` is `carbon_id[org_id]` or `silicon_id[org_id]`, using the full Silicon ID: for example `c:saket[tos]` and `si:helper[tos]`. URL-encode the brackets in path segments. These stable identifiers also appear in relationship fields, trust selectors and webhook membership references. UUID membership keys remain private to storage. Identifier resolution never grants access; tenant, consent and resource authorization still apply.
 
 Use the permanent `carbon_id`, full `silicon_id`, or `app_id` as the identity key. Generic actor objects expose the same identifier as `public_id`. There is no separate principal UUID.
 
@@ -28,7 +28,7 @@ Use the permanent `carbon_id`, full `silicon_id`, or `app_id` as the identity ke
 
 Read Authentication (`iam docs api/authentication`) and Request conventions (`iam docs api/conventions`) first. Between them they cover the rules that apply to every call in the contract, and almost every integration problem traces back to one of the two.
 
-If you are integrating an Application in Rust, the official client (`iam docs client`) provides typed API calls and models, explicit version negotiation, credential transports, and webhook verification. Your application still owns credential persistence, refresh coordination, OBO request signing, and retry decisions. These pages explain the contract behind those calls.
+If you are integrating an Application in Rust, the official client (`iam docs client`) provides typed API calls and models, explicit version negotiation, credential transports, and webhook verification. Your application still owns credential persistence, refresh coordination, OBO consent/token coordination, and retry decisions. These pages explain the contract behind those calls.
 
 ## Environments
 
@@ -46,7 +46,7 @@ Timestamps are UTC RFC 3339. Request and response bodies are JSON unless an endp
 
 For inter-app communication, an application can request a short-lived `app_access_key` using its own Basic credentials. A receiving application verifies the caller's ID and key using the receiver's own Basic credentials. This proves application identity; the receiver remains responsible for authorizing the action. The key grants no user permissions and does not replace OBO. See App verification (`iam docs api/applications`).
 
-Applications declare `app_scope` separately from their `webhook_scope` subscriptions. Critical permissions go through IAM or external-provider review. Users approve effective permissions and choose organizations before IAM hands the application a short-lived token. Apps never receive IAM credentials or verification codes.
+Applications declare `app_scope` separately from their `webhook_scope` subscriptions. Critical permissions go through IAM or external-provider review. Users approve effective IAM permissions and choose organizations before IAM hands the application a short-lived token. OBO endpoints require separate on-demand approval and dedicated tokens. Apps never receive IAM credentials or verification codes.
 
 External OBO can connect applications owned by different organizations while preserving the user's selected membership context. Bundles offer one displayed login identity for same-organization applications; tokens remain individually bound. Application testing environments reproduce the same contract with isolated credentials, recursively imported dependencies, fixed test OTPs, and configurable inactivity retention.
 

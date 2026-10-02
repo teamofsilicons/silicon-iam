@@ -51,6 +51,8 @@ pub(crate) fn router() -> Router<ApiState> {
 #[serde(deny_unknown_fields)]
 struct Login {
     slt: String,
+    #[serde(default)]
+    org_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -102,6 +104,7 @@ async fn login(
     }
     let client = service_identity(&state, "login", &input.slt).await?;
     let form = AppTokenForm {
+        org_id: input.org_id,
         app_id: Some(APP_ID.into()),
         slt: Some(input.slt),
         refresh_token: None,
@@ -117,6 +120,7 @@ async fn refresh(
     require_credential(&input.refresh_token, "ort_")?;
     let client = service_identity(&state, "refresh", &input.refresh_token).await?;
     let form = AppTokenForm {
+        org_id: None,
         app_id: Some(APP_ID.into()),
         slt: None,
         refresh_token: Some(input.refresh_token),

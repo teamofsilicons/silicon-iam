@@ -50,7 +50,7 @@ pub(crate) struct CarbonProfileResponse {
     timezone: String,
     profile_photo: String,
     email: String,
-    phone_number: String,
+    phone_number: Option<String>,
     status: String,
     pub(crate) version: i64,
     #[serde(with = "time::serde::rfc3339")]
@@ -111,6 +111,12 @@ pub(super) async fn get(
     use crate::features::organizations::application_reads::{self, ReadScopes};
     let scopes = ReadScopes::for_actor(&authenticated);
     if authenticated.0.subject.actor_type == ActorType::Silicon {
+        if authenticated.0.client_application_id.is_none()
+            && authenticated.0.organization_id.is_none()
+        {
+            return crate::features::authentication::silicon_signup::profile(state, authenticated)
+                .await;
+        }
         return application_reads::self_silicon(state, authenticated).await;
     }
     let carbon_id = if scopes.is_application() {
@@ -153,11 +159,56 @@ pub(super) async fn patch(
     headers: HeaderMap,
     payload: Result<Json<CarbonProfilePatch>, JsonRejection>,
 ) -> Result<Response, AppError> {
-    let carbon_id = require_self_service(&authenticated)?;
     let input = validate_patch(json_body(payload)?, &state)?;
+    update_profile(state, authenticated, headers, input, None).await
+}
+
+pub(super) async fn update_photo(
+    state: ApiState,
+    authenticated: Authenticated,
+    headers: HeaderMap,
+    photo: super::photos::PhotoUpload,
+) -> Result<Response, AppError> {
+    let input = CarbonProfilePatch {
+        display_name: None,
+        timezone: None,
+        profile_photo: None,
+    };
+    update_profile(state, authenticated, headers, input, Some(photo)).await
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "profile bytes, fields, concurrency, audit and notifications commit atomically"
+)]
+async fn update_profile(
+    state: ApiState,
+    authenticated: Authenticated,
+    headers: HeaderMap,
+    mut input: CarbonProfilePatch,
+    upload: Option<super::photos::PhotoUpload>,
+) -> Result<Response, AppError> {
+    if authenticated.0.subject.actor_type == ActorType::Silicon {
+        return update_silicon_profile(state, authenticated, headers, input, upload).await;
+    }
+    let carbon_id = require_self_service(&authenticated)?;
     let mut transaction = serializable(&state).await?;
     set_principal_context(&mut transaction, carbon_id).await?;
-    let lease = match claim(&mut transaction, &state, &headers, &authenticated, &input).await? {
+    let (route, request) = match &upload {
+        Some(photo) => (super::photos::UPLOAD_ROUTE, serde_json::to_value(photo)),
+        None => (ME_ROUTE, serde_json::to_value(&input)),
+    };
+    let request = request.map_err(|_| internal("profile_request_summary"))?;
+    let lease = match claim(
+        &mut transaction,
+        &state,
+        &headers,
+        &authenticated,
+        route,
+        &request,
+    )
+    .await?
+    {
         Claim::Replay(response) => {
             transaction
                 .commit()
@@ -173,6 +224,9 @@ pub(super) async fn patch(
         return Err(AppError::PreconditionFailed {
             code: Cow::Borrowed("etag_mismatch"),
         });
+    }
+    if let Some(photo) = upload {
+        input.profile_photo = Some(Some(photo.store(&mut transaction, &state).await?));
     }
     let authorizations_before = profile_webhook_authorizations(&mut transaction, carbon_id).await?;
     let silicon_routes = capture_carbon_profile_silicon_routes(&mut transaction, carbon_id).await?;
@@ -272,6 +326,108 @@ pub(super) async fn patch(
     raw_json_with_etag(StatusCode::OK, body, after.version, false)
 }
 
+async fn update_silicon_profile(
+    state: ApiState,
+    actor: Authenticated,
+    headers: HeaderMap,
+    mut input: CarbonProfilePatch,
+    upload: Option<super::photos::PhotoUpload>,
+) -> Result<Response, AppError> {
+    if actor.0.audience != "silicon-iam"
+        || actor.0.client_application_id.is_some()
+        || !actor.0.scopes.iter().any(|s| s == "iam.self")
+    {
+        return Err(AppError::Forbidden);
+    }
+    let mut transaction = serializable(&state).await?;
+    set_principal_context(&mut transaction, actor.0.subject.id).await?;
+    let (route, request) = match &upload {
+        Some(photo) => (super::photos::UPLOAD_ROUTE, serde_json::to_value(photo)),
+        None => (ME_ROUTE, serde_json::to_value(&input)),
+    };
+    let lease = match claim(
+        &mut transaction,
+        &state,
+        &headers,
+        &actor,
+        route,
+        &request.map_err(|_| internal("silicon_profile_request"))?,
+    )
+    .await?
+    {
+        Claim::Replay(response) => {
+            transaction
+                .commit()
+                .await
+                .map_err(|_| internal("silicon_profile_replay"))?;
+            return Ok(response);
+        }
+        Claim::Acquired(lease) => lease,
+    };
+    let expected = expected_version(&headers)?;
+    let before = sqlx::query_scalar::<_, Option<serde_json::Value>>(
+        "SELECT iam_private.silicon_identity_profile()",
+    )
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| internal("silicon_profile_read"))?
+    .ok_or(AppError::NotFound)?;
+    if before["version"].as_i64() != Some(expected) {
+        return Err(AppError::PreconditionFailed {
+            code: "etag_mismatch".into(),
+        });
+    }
+    if let Some(photo) = upload {
+        input.profile_photo = Some(Some(photo.store(&mut transaction, &state).await?));
+    }
+    let mut after = sqlx::query_scalar::<_, Option<serde_json::Value>>(
+        "SELECT iam_private.update_silicon_identity_profile($1,$2,$3,$4,$5)",
+    )
+    .bind(expected)
+    .bind(input.display_name)
+    .bind(input.timezone)
+    .bind(input.profile_photo.is_some())
+    .bind(input.profile_photo.flatten())
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| internal("silicon_profile_update"))?
+    .ok_or(AppError::PreconditionFailed {
+        code: "etag_mismatch".into(),
+    })?;
+    crate::features::authentication::silicon_signup::profile_photo_default(&state, &mut after)?;
+    let version = after["version"]
+        .as_i64()
+        .ok_or_else(|| internal("silicon_profile_version"))?;
+    let audit = AuditRecord {
+        actor: Some(actor.0.subject),
+        authentication_session_id: Some(actor.0.authentication_session_id),
+        application_id: None,
+        authentication_method: None,
+        aggregate: Some(AggregateVersion {
+            aggregate_type: "silicon",
+            aggregate_id: actor.0.subject.id,
+            version,
+        }),
+        action: "silicon.profile_update",
+        target_type: "silicon",
+        target_id: Some(actor.0.subject.id),
+        organization_id: None,
+        before_state: Some(before),
+        after_state: Some(after.clone()),
+        metadata: json!({}),
+    };
+    events::record_audit(&mut transaction, audit)
+        .await
+        .map_err(|_| internal("silicon_profile_audit"))?;
+    let body = serde_json::to_vec(&after).map_err(|_| internal("silicon_profile_encode"))?;
+    idempotency::complete(&mut transaction, &state.crypto, lease, 200, &body).await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| internal("silicon_profile_commit"))?;
+    raw_json_with_etag(StatusCode::OK, body, version, false)
+}
+
 fn require_self_service(authenticated: &Authenticated) -> Result<Id, AppError> {
     let access = &authenticated.0;
     if access.subject.actor_type == ActorType::Carbon
@@ -336,7 +492,11 @@ pub(crate) async fn read_profile(
     .await
     .map_err(|_| internal("carbon_profile_contacts"))?;
     let email = decrypt_contact(state, contacts.iter().find(|row| row.kind == "email"))?;
-    let phone = decrypt_contact(state, contacts.iter().find(|row| row.kind == "phone"))?;
+    let phone = contacts
+        .iter()
+        .find(|row| row.kind == "phone")
+        .map(|row| decrypt_contact(state, Some(row)))
+        .transpose()?;
     let profile_photo = match carbon.profile_photo_uri {
         Some(value) => value,
         None => default_profile_photo(state, &carbon.carbon_id)?,
@@ -522,6 +682,7 @@ async fn claim<T: Serialize>(
     state: &ApiState,
     headers: &HeaderMap,
     authenticated: &Authenticated,
+    route: &'static str,
     request: &T,
 ) -> Result<Claim, AppError> {
     let raw = headers
@@ -544,7 +705,7 @@ async fn claim<T: Serialize>(
         transaction,
         &state.crypto,
         IdempotencyRequest {
-            route: ME_ROUTE,
+            route,
             caller_scope: &caller,
             key: &key,
             request_payload: &payload,
@@ -789,7 +950,7 @@ fn changed_profile_fields(
     changed_fields
 }
 
-fn json_with_etag<T: Serialize>(
+pub(crate) fn json_with_etag<T: Serialize>(
     status: StatusCode,
     value: &T,
     version: i64,
@@ -871,7 +1032,7 @@ mod tests {
             timezone: "UTC".to_owned(),
             profile_photo: "https://iris.example/pfp/carbon?id=carbon-one".to_owned(),
             email: email.to_owned(),
-            phone_number: "+15555550100".to_owned(),
+            phone_number: Some("+15555550100".to_owned()),
             status: "active".to_owned(),
             version,
             created_at: OffsetDateTime::UNIX_EPOCH,

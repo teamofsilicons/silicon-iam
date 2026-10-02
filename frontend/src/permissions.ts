@@ -7,7 +7,7 @@ export async function organizationAuthority(
   let cursor = "";
   for (let count = 0; count < 100; count++) {
     const page = await request<Page>(
-      `${orgPath(org)}/members?limit=100&principal_type=carbon${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+      `${orgPath(org)}/members?limit=100&principal_type=${principal.startsWith("si:") ? "silicon" : "carbon"}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
     );
     const own = page.items.find(
       (item) =>

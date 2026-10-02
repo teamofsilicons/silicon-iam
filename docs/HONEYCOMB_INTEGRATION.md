@@ -17,7 +17,7 @@ app identities without a catalog:
 
 ```sh
 iam-bootstrap-apps --org-id '<org>' --carbon-id '<owner>' \
-  --iam-app-id '<org>iam' --honeycomb-app-id '<org>honeycomb' \
+  --iam-app-id iam --honeycomb-app-id honeycomb \
   --output /secure/operator/iam-honeycomb-bootstrap.json
 ```
 
@@ -69,11 +69,12 @@ All `/api/v1/honeycomb/*` requests use `Authorization: Bearer hck_…`. Ordinary
 `ask_`, user tokens and test root keys never grant this authority. Do not send
 `X-Testing-Environment-Key`; test instructions name their environment explicitly.
 
-Human-authored writes use `X-Honeycomb-Actor-Token: oat_…`, a live
-Carbon token whose client and audience are the provisioned Honeycomb identity.
+Actor-authored writes use `X-Honeycomb-Actor-Token: oat_…`, a live
+Carbon or Silicon application token whose client and audience are the provisioned Honeycomb identity.
 IAM checks the current session, selected organization grant, live membership
 and required manager/reviewer authority. A supplied identity or role is not proof.
-Silicons cannot act as organization owners/admins in this IAM contract.
+Carbons and Silicons may hold owner or administrator roles; the same current
+capability checks apply. Silicon organization creation also respects its custodian setting.
 
 Writes carry an `operation_id` UUID, `Idempotency-Key` and
 `expected_iam_revision` (zero only when creating). Keep the exact serialized body,
@@ -87,7 +88,8 @@ activation have distinct `operation_id` values. Some service-only control reads
 and exports have no user actor, as specified below.
 
 Sensitive mutations require `X-Step-Up-Token`, obtained through the existing IAM
-verified-channel flow for the same actor session, action and application UUID:
+Carbon verified-channel or Silicon STK step-up flow for the same actor session,
+action and application resource:
 
 | Mutation | Step-up action |
 | --- | --- |
@@ -119,10 +121,13 @@ secret with a new explicitly authorized rotation.
 | `GET /inventory?kind=applications\|bundles\|testing-environments` | Adoption inventory; paginate with returned `next_after` as `after` |
 
 IDs and owning organizations are immutable. Changing metadata does not rotate
-an app credential. The backend origin is optional without OBO endpoints; OBO
-requires a valid origin. Endpoint paths remain immutable. `ttl_seconds` is a
-positive integer with default 300. Existing proofs keep their original expiry;
-new proofs use the newly accepted duration, and verification remains one-use.
+an app credential. The backend origin is optional without OBO or ATA endpoints; exposing either
+requires a valid origin. Endpoint paths remain immutable. OBO `ttl_seconds` is a
+positive integer with default 300. Access tokens use the shortest TTL in their
+approved graph and remain reusable until expiry or invalidation. OBO grants need
+separate user consent; ATA verifications are configured by authorized app managers
+and never acquire user authority. Both catalogs preserve endpoint names,
+descriptions, metadata, notes, warning codes and explicit dependencies.
 
 Private apps require live owning-organization membership and the selected grant
 through login, exchange, refresh, introspection, API access and OBO. Their
@@ -141,6 +146,19 @@ active receiver remains active. An unchanged URL can omit its secret; changing
 that secret uses the dedicated rotation operation. Bundle acceptance remains
 subject to IAM's current eligibility checks; catalog publication cannot override
 them. Bundle membership creates no new credential or principal.
+
+## ATA verification management
+
+Use `/applications/{app_id}/ata-verifications` under `/api/v1/honeycomb` to list
+or create verifications, `/preview` to resolve the graph, and `/{id}/revoke` to
+revoke one. Actor-authorized creation supplies `app_ids`, `endpoints` containing
+`{audience, endpoint_id}`, `expires_after` (null for never) and
+`access_token_validity` (seconds). Review the preview's expanded apps/endpoints
+and graph; create with those exact expanded lists plus its `graph_version`.
+Changes require a new preview. The signer is derived from the authenticated
+Carbon or Silicon and remains read-only. The creating app alone receives the
+one-time refresh credential. Recipients receive access proof only. See
+[ATA runtime verification](api/applications.html) for token and verifier calls.
 
 ## Immutable publication and notification recipients
 
@@ -172,7 +190,7 @@ Review authority is distinct from applicant administration:
 - `provider: iam` requires the current `applications.review` platform capability.
 - `provider: honeycomb` requires `honeycomb.applications.review`, assigned through
   the separate `honeycomb_validator` role. Organization ownership does not grant it.
-- A qualified provider app such as `org>provider` requires current management
+- A provider app such as `provider` requires current management
   authority in the provider's organization and the actor's selected grant.
 
 Copy each gate's exact scope list. Activation requires the latest approving
@@ -204,7 +222,7 @@ These header credentials have different purposes:
 | Header | Authority |
 | --- | --- |
 | `Authorization: Bearer hck_…` | Honeycomb service transport for all management routes |
-| `X-Honeycomb-Actor-Token: oat_…` | Live Carbon creator/owner/admin or reviewer authority |
+| `X-Honeycomb-Actor-Token: oat_…` | Live Carbon or Silicon creator/owner/admin or eligible reviewer authority |
 | `X-Honeycomb-Application-Authorization: Basic …` | Base64 of the production `app_id:app_secret`; IAM verifies it as an ordinary production app client |
 | `X-Honeycomb-Testing-Key: …` | A specific environment's current root key; alone authorizes public imports/key rotation/clean, or with production app credentials proves attachment |
 | `X-Testing-Environment-Key: …` | Ordinary runtime test requests only; forbidden on Honeycomb management routes |

@@ -247,7 +247,8 @@ pub(crate) async fn transport(
     // These are the authenticated request contracts accepting membership refs.
     // Preserve unrelated bodies byte-for-byte (including signed callbacks).
     let accepts_memberships = parts.uri.path().starts_with("/api/v1/organizations/")
-        || parts.uri.path() == "/api/v1/step-up/challenges";
+        || parts.uri.path() == "/api/v1/step-up/challenges"
+        || parts.uri.path() == "/api/v1/silicon-auth/step-up";
     if let Some(query) = parts.uri.query()
         && accepts_memberships
         && query.contains("reassign_reports_to")

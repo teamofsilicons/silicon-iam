@@ -2,6 +2,8 @@
 #![allow(clippy::module_inception)]
 
 mod applications;
+mod ata_catalog;
+mod ata_tokens;
 mod authorization;
 mod batch_login;
 mod bundles;
@@ -12,7 +14,12 @@ pub(crate) mod honeycomb;
 mod idempotency;
 mod model;
 mod oauth;
+#[allow(
+    dead_code,
+    reason = "legacy proof implementation retained for migration contract tests; routes are retired"
+)]
 mod obo;
+mod obo_tokens;
 mod scope_reviews;
 mod scoped_auth;
 mod scopes;
@@ -32,6 +39,8 @@ mod bundle_availability_tests;
 pub(crate) mod live_tests;
 #[cfg(test)]
 mod login_history_tests;
+#[cfg(test)]
+mod obo_chain_tests;
 #[cfg(test)]
 mod obo_disclosure_tests;
 #[cfg(test)]
@@ -57,6 +66,14 @@ use crate::api::ApiState;
 pub fn router() -> Router<ApiState> {
     Router::new()
         .merge(bundle_router())
+        .route(
+            "/api/v1/delegation-warnings",
+            get(ata_catalog::warning_catalog),
+        )
+        .route(
+            "/api/v1/ata-access/applications/{app_id}/endpoints",
+            get(ata_catalog::discover),
+        )
         .route("/api/v1/app-verification/keys", post(verification::issue))
         .route(
             "/api/v1/app-verification/verify",
@@ -109,8 +126,14 @@ pub fn router() -> Router<ApiState> {
             "/api/v1/application-directory/{app_id}",
             get(applications::discover),
         )
-        .route("/api/v1/obo-access/exchanges", post(obo::exchange))
-        .route("/api/v1/obo-access/verify", post(obo::verify))
+        .merge(obo_tokens::router())
+        .merge(ata_tokens::router())
+        .route("/api/v1/obo-access/exchanges", post(obo_tokens::retired))
+        .route(
+            "/api/v1/obo-access/chained-exchanges",
+            post(obo_tokens::retired),
+        )
+        .route("/api/v1/obo-access/verify", post(obo_tokens::retired))
         .route(
             "/api/v1/obo-access/applications/{app_id}/endpoints",
             get(obo::discover_endpoints),

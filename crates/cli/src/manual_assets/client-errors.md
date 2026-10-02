@@ -62,7 +62,7 @@ match application
 
 - `Error::UnstructuredResponse` is not classified as retryable. Preserve the original mutation key and investigate the deployment boundary before deciding whether to retry.
 
-- OBO proof verification accepts no idempotency key and is single-use. Never retry it after an ambiguous outcome.
+- OBO token verification accepts no idempotency key and does not consume the token. It may be retried after an ambiguous outcome; execute only after successful current verification.
 
 ## Transport guardrails
 

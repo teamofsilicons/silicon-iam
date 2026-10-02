@@ -10,6 +10,8 @@ import {
 import { createResource } from "./resource";
 import { request, type Configuration, type SessionState } from "./api";
 import Auth from "./Auth";
+import SiliconCustody from "./SiliconCustody";
+import OrganizationOnboarding from "./OrganizationOnboarding";
 import { invitationLocation } from "./invitation-flow";
 import { scopeReviewRequest } from "./scope-review-link";
 import Console from "./Console";
@@ -30,6 +32,15 @@ export default function App() {
   const [session, { refetch, mutate }] = createResource(() =>
     request<SessionState>("/api/session"),
   );
+  const [memberships, { refetch: refreshMemberships }] = createResource(
+    () =>
+      session()?.authenticated &&
+      !["/join", "/silicon-custody"].includes(location.pathname) &&
+      new URL(location.href).searchParams.get("next") !== "silicon-custody"
+        ? session()?.sessionId
+        : undefined,
+    () => request<{ items: unknown[] }>("/api/v1/organizations?limit=1"),
+  );
   const expired = () => {
     track("iam.session.expired");
     mutate({ authenticated: false });
@@ -41,7 +52,9 @@ export default function App() {
   onMount(() => window.addEventListener("iam:session-expired", expired));
   onCleanup(() => window.removeEventListener("iam:session-expired", expired));
   const authPage = () =>
-    ["/login", "/signup", "/sso/complete"].includes(location.pathname) ||
+    ["/login", "/signup", "/sso/complete", "/obo/consent"].includes(
+      location.pathname,
+    ) ||
     new URL(location.href).searchParams.has("app_id") ||
     new URL(location.href).searchParams.has("app_ids") ||
     new URL(location.href).searchParams.has("bundle_id") ||
@@ -86,19 +99,63 @@ export default function App() {
           }
         >
           <Show
-            when={session()?.authenticated && !authPage()}
+            when={!memberships.loading && !memberships.error}
             fallback={
-              <Auth
+              <main class="boot">
+                <Brand />
+                <Show when={memberships.error} fallback={<Loading />}>
+                  <ErrorBox
+                    error={memberships.error}
+                    retry={() => void refreshMemberships()}
+                  />
+                </Show>
+              </main>
+            }
+          >
+            <Show
+              when={location.pathname === "/silicon-custody"}
+              fallback={
+                <Show
+                  when={
+                    session()?.authenticated &&
+                    memberships()?.items.length === 0 &&
+                    !new URL(location.href).searchParams.has("add_account")
+                  }
+                  fallback={
+                    <Show
+                      when={session()?.authenticated && !authPage()}
+                      fallback={
+                        <Auth
+                          config={config()!}
+                          session={session() || { authenticated: false }}
+                        />
+                      }
+                    >
+                      <Console
+                        config={config()!}
+                        session={session()!}
+                        reloadSession={refetch}
+                      />
+                    </Show>
+                  }
+                >
+                  <OrganizationOnboarding
+                    silicon={session()?.actorType === "silicon"}
+                    config={config()!}
+                    displayName={session()?.user?.display_name}
+                    canCreate={
+                      session()?.user?.can_create_organizations !== false
+                    }
+                    complete={() => void refreshMemberships()}
+                  />
+                </Show>
+              }
+            >
+              <SiliconCustody
                 config={config()!}
                 session={session() || { authenticated: false }}
               />
-            }
-          >
-            <Console
-              config={config()!}
-              session={session()!}
-              reloadSession={refetch}
-            />
+            </Show>
           </Show>
         </Show>
       </Show>

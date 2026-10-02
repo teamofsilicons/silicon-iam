@@ -1,62 +1,44 @@
-<p class="lede">
-  A Carbon is a human account. Creating one requires a verified email address and a verified
-  phone number, both bound to a single 48-hour signup session.
-</p>
-
+<p class="lede">A Carbon is a human account with a required verified email. Phone is optional;
+if supplied it must also be verified. Signup works through the official IAM CLI and website.</p>
 <h2>Signup</h2>
-
-<p>Six calls, in order. Every one takes an <code>Idempotency-Key</code>.</p>
-
-<table>
-  <thead><tr><th></th><th>Call</th><th>Returns</th></tr></thead>
-  <tbody>
-    <tr><td><span class="verb verb-post">POST</span></td>
-      <td><code>/api/v1/signup/sessions</code></td><td>A 48-hour session</td></tr>
-    <tr><td><span class="verb verb-post">POST</span></td>
-      <td><code>/api/v1/signup/sessions/{session_id}/email</code></td>
-      <td><code>already_exists</code>, and a code if false</td></tr>
-    <tr><td><span class="verb verb-post">POST</span></td>
-      <td><code>/api/v1/signup/sessions/{session_id}/email/verify</code></td>
-      <td><code>verified: true</code></td></tr>
-    <tr><td><span class="verb verb-post">POST</span></td>
-      <td><code>/api/v1/signup/sessions/{session_id}/phone</code></td>
-      <td><code>already_exists</code>, and a code if false</td></tr>
-    <tr><td><span class="verb verb-post">POST</span></td>
-      <td><code>/api/v1/signup/sessions/{session_id}/phone/verify</code></td>
-      <td><code>verified: true</code></td></tr>
-    <tr><td><span class="verb verb-post">POST</span></td>
-      <td><code>/api/v1/signup/sessions/{session_id}/complete</code></td>
-      <td>The new <code>CarbonSelf</code></td></tr>
-  </tbody>
-</table>
-
-<div class="banner banner-info">
-  <div>
-    <strong>The <code>already_exists</code> short-circuit.</strong>
-    When a contact already belongs to an account, the server returns
-    <code>already_exists: true</code> and deliberately sends nothing. Rendering "check your inbox"
-    here strands the user forever — route them to sign-in instead.
-  </div>
-</div>
-
-<p>
-  Completion requires both channels verified <em>in that session</em>, and neither may belong to
-  another account. Availability of a candidate handle is a separate public probe:
-  <code>GET /api/v1/carbon-ids/{carbon_id}/availability</code>.
-</p>
-
-<p>
-  New Carbon IDs accept lowercase <code>a–z</code>, the digits <code>1–9</code>,
-  <code>_</code> and <code>-</code>, and are 3–30 characters. Note the absence of
-  <code>0</code>: immutable legacy IDs containing it remain addressable for login and lookup, but
-  cannot be newly registered. Rejecting it client-side is far kinder than a <code>422</code>
-  after somebody has settled on a name.
-</p>
-
-<p>
-  Completion does not sign the new Carbon in. It returns the profile; the client then runs the
-  ordinary login flow.
-</p>
+<p>Email signup uses a 48-hour session. Each mutation takes an <code>Idempotency-Key</code>:</p>
+<ol>
+<li><code>POST /api/v1/signup/sessions</code> creates the session.</li>
+<li><code>POST …/{session_id}/email</code> starts verification, then
+<code>POST …/{session_id}/email/verify</code> checks the code.</li>
+<li>Optionally call <code>POST …/{session_id}/phone</code> and
+<code>POST …/{session_id}/phone/verify</code>. A supplied but unverified number blocks
+completion. <code>DELETE …/{session_id}/phone</code> explicitly skips and clears it.</li>
+<li><code>POST …/{session_id}/complete</code> creates the profile and signs the Carbon in.</li>
+</ol>
+<p>If a contact is already registered, IAM returns <code>already_exists: true</code> without
+sending a signup code. Offer to sign in to that account instead of asking the user to wait.</p>
+<p>Completion accepts optional <code>carbon_id</code>, <code>display_name</code> and
+<code>timezone</code>. Omitted ID/name derive available defaults from the verified email;
+clients should supply the detected IANA timezone (otherwise UTC). Use
+<code>GET /api/v1/carbon-ids/{carbon_id}/availability</code> for an edited ID. Public Carbon
+IDs have the form <code>c:handle</code>; use the current schema's handle restrictions.</p>
+<p>The completion response includes the profile, access/refresh tokens, actor, session ID
+and <code>onboarding.requires_organization</code>; it also sets <code>iam_session</code>.
+No second login OTP is required. Complete profile setup, then create or join the first
+organization before an application login. An absent phone is returned as null.</p>
+<h2>Google and Apple</h2>
+<p><code>GET /api/v1/signup/social/providers</code> reports which providers are enabled.
+Start an enabled provider with <code>POST /api/v1/signup/social/{provider}/start</code>
+and an idempotency key. Open its <code>authorization_url</code>; keep the returned
+<code>request_id</code> and secret <code>poll_token</code> in memory. Poll
+<code>POST …/{provider}/status</code> with those two values.</p>
+<p>Status is <code>pending</code>, <code>verified</code>, <code>already_registered</code>,
+<code>failed</code> or <code>expired</code>. Verified results include a signup session and
+provider-verified email; continue with optional phone and profile setup without another
+email OTP. Already-registered accounts are offered login. Provider callbacks and token
+validation run on IAM's server; the CLI uses the same browser-and-poll protocol.</p>
+<h2>Profile pictures</h2>
+<p>New profiles receive an IAM-style generated image. Upload a replacement using
+<code>PUT /api/v1/me/photo</code> with raw PNG, JPEG or WebP bytes, at most 512 KiB,
+matching <code>Content-Type</code>, <code>If-Match</code> and <code>Idempotency-Key</code>.
+It returns the updated profile and its immutable public <code>profile_photo</code> URL.
+The same self-profile upload route supports Silicon accounts.</p>
 
 <h2>Login</h2>
 
@@ -142,8 +124,8 @@
 </table>
 
 <p>
-  These exist for invitation pickers: you cannot invite a Carbon that does not exist, so
-  resolving first turns a guaranteed <code>404</code> into a working autocomplete. Search returns
+  These support account invitation pickers. Email invitations may also be sent before
+  signup; they bind only after the recipient verifies the matching email. Search returns
   handles only — never contact details.
 </p>
 

@@ -95,7 +95,7 @@ The built Node server was run separately on port 4312. Manual HTTP checks observ
 
 This is **not** exhaustive command/API parity or production certification. WorkOS SSO completion requires actual WorkOS entitlement, connection, callback allowlisting and hosted auth-origin configuration. Real email invitation delivery, the entire delegated-capability/quorum matrix, 12-hour session aging, secret-rotation recovery under packet loss, very large cursor collections, and testing-environment lifecycle operations were not fully exercised in this local run. They are implemented against backend contracts and need the corresponding configured fixtures before release.
 
-OBO proof exchange/verification and application SLT exchange belong to application servers and the IAM client, not this human browser console. The browser run verifies endpoint registration and handoff, not an external application’s authorization implementation.
+The browser reviews and decides separate OBO consent, including every dependency and branch, and manages user grants. Code exchange, refresh, token verification, delegation and application SLT exchange belong to application servers and the IAM client. Verify denial, stale graph changes and revocation in the browser; verify receiver resource authorization separately.
 
 The local QA API/database and built preview (`http://127.0.0.1:4312`) are left available for continued preview work. The temporary callback receiver on 4321 was stopped after verification. The database container is separate from existing Briefcase containers. Do not use broad Docker cleanup commands; stopping this named container is recoverable, while deleting its storage is not.
 

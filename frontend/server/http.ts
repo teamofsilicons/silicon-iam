@@ -2,7 +2,7 @@ import { loadTelemetryKey } from "./telemetry-config.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { resolve, sep, extname } from "node:path";
-import { gateway, type Environment } from "./gateway.ts";
+import { bodyLimit, gateway, type Environment } from "./gateway.ts";
 import { settings } from "./session.ts";
 
 export function createHandler(assetDirectory: string) {
@@ -72,7 +72,9 @@ export function createHandler(assetDirectory: string) {
       let size = 0;
       for await (const chunk of req) {
         size += chunk.length;
-        if (size > 262144) {
+        if (
+          size > bodyLimit((req.url || "/").split("?")[0], req.method || "GET")
+        ) {
           res.writeHead(413);
           res.end("Request too large");
           return;
@@ -92,7 +94,11 @@ export function createHandler(assetDirectory: string) {
       });
       const response = await gateway(request, env);
       res.statusCode = response.status;
-      response.headers.forEach((value, name) => res.setHeader(name, value));
+      response.headers.forEach((value, name) => {
+        if (name !== "set-cookie") res.setHeader(name, value);
+      });
+      if (response.headers.getSetCookie().length)
+        res.setHeader("Set-Cookie", response.headers.getSetCookie());
       res.end(Buffer.from(await response.arrayBuffer()));
     } catch {
       res.writeHead(502, {

@@ -1,7 +1,9 @@
 //! One module per noun, matching the command grammar.
 
 pub mod app;
+mod app_ata;
 pub mod app_bundles;
+mod app_obo;
 pub mod app_reads;
 pub mod app_scopes;
 pub mod app_testing;
@@ -17,6 +19,7 @@ pub mod member;
 pub mod org;
 pub mod session;
 pub mod silicon;
+mod silicon_signup;
 pub mod sso;
 pub mod system;
 pub mod tag;
@@ -43,6 +46,8 @@ pub async fn dispatch(context: &Context, command: Command) -> Result<()> {
         Command::Whoami => auth::whoami(context).await,
         Command::StepUp(args) => auth::step_up(context, args).await,
         Command::Signup(args) => auth::signup(context, args).await,
+        Command::SiliconSignup(args) => silicon_signup::signup(context, args).await,
+        Command::SiliconCustody(args) => silicon_signup::custody(context, args).await,
         Command::Carbon(command) => carbon::run(context, command).await,
         Command::Commands => crate::experience::print_commands(context.format),
         Command::Docs { topic, search } => {
@@ -88,6 +93,8 @@ mod tests {
                             | "login"
                             | "batch-login"
                             | "silicon-login"
+                            | "silicon-signup"
+                            | "silicon-custody"
                             | "logout"
                             | "whoami"
                             | "step-up"
@@ -126,3 +133,5 @@ mod tests {
         walk(&crate::cli::Cli::command());
     }
 }
+
+mod silicon_invitations;

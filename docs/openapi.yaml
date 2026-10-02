@@ -39,8 +39,8 @@ tags:
       membership in the Application's organization.
   - name: OBO Access
     description: >-
-      Strictly same-organization Application discovery, request-bound proof
-      exchange, and single-use audience verification.
+      Durable, separately approved delegated access with provider-specific account and
+      organization choices, chained endpoint graphs, and receiver-authenticated reusable tokens.
   - name: App verification
     description: >-
       Short-lived application identity keys for inter-app communication. Each
@@ -61,6 +61,21 @@ tags:
   - { name: Platform administration }
 
 paths:
+  /api/v1/organizations/{org_id}/silicons/{silicon_id}/custody: {"get": {"operationId": "getOrganizationSiliconCustody", "summary": "Read organization-owned Silicon custody settings", "description": "Direct IAM Carbon or Silicon only. Requires organization.update in the current organization and this organization to be the stored custodian. Invited identities retain their original custodian.", "tags": ["Silicons"], "security": [{"iamBearer": []}], "parameters": [{"name": "org_id", "in": "path", "required": true, "schema": {"type": "string"}}, {"name": "silicon_id", "in": "path", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Organization custody setting.", "headers": {"ETag": {"schema": {"type": "string"}}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconCustody"}}}}, "default": {"description": "Request rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}}}, "patch": {"operationId": "updateOrganizationSiliconCustody", "summary": "Control organization creation by an organization-owned Silicon", "description": "Direct IAM Carbon or Silicon only. Requires organization.update in the current organization and this organization to be the stored custodian. Invited identities retain their original custodian.", "tags": ["Silicons"], "security": [{"iamBearer": []}], "parameters": [{"name": "org_id", "in": "path", "required": true, "schema": {"type": "string"}}, {"name": "silicon_id", "in": "path", "required": true, "schema": {"type": "string"}}, {"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string"}}, {"$ref": "#/components/parameters/IdempotencyKey"}], "responses": {"200": {"description": "Organization custody setting.", "headers": {"ETag": {"schema": {"type": "string"}}, "Idempotency-Replayed": {"$ref": "#/components/headers/IdempotencyReplayed"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconCustody"}}}}, "default": {"description": "Request rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}}, "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconCustodySettings"}}}}}}
+  /api/v1/organizations/{org_id}/directory-visibility: {"get": {"operationId": "getDirectoryVisibilityDefault", "summary": "Read the organization default directory policy", "tags": ["Organizations"], "security": [{"iamBearer": []}], "parameters": [{"name": "org_id", "in": "path", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DirectoryVisibilityPolicy"}}}}, "default": {"description": "Request rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}}}, "put": {"operationId": "replaceDirectoryVisibilityDefault", "summary": "Replace the default directional directory policy", "tags": ["Organizations"], "security": [{"iamBearer": []}], "parameters": [{"name": "org_id", "in": "path", "required": true, "schema": {"type": "string"}}, {"$ref": "#/components/parameters/IdempotencyKey"}, {"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string"}, "description": "Current policy version from its ETag."}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DirectoryVisibilityPolicy"}}}, "headers": {"Idempotency-Replayed": {"$ref": "#/components/headers/IdempotencyReplayed"}}}, "default": {"description": "Request rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}}, "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DirectoryVisibilityInput"}}}}}}
+  /api/v1/organizations/{org_id}/members/{membership_id}/directory-visibility: {"get": {"operationId": "getMemberDirectoryVisibility", "summary": "Read a member visibility override and effective policy", "tags": ["Organizations"], "security": [{"iamBearer": []}], "parameters": [{"name": "org_id", "in": "path", "required": true, "schema": {"type": "string"}}, {"name": "membership_id", "in": "path", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DirectoryVisibilityPolicy"}}}}, "default": {"description": "Request rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}}}, "put": {"operationId": "replaceMemberDirectoryVisibility", "summary": "Replace one member visibility policy without changing capabilities", "tags": ["Organizations"], "security": [{"iamBearer": []}], "parameters": [{"name": "org_id", "in": "path", "required": true, "schema": {"type": "string"}}, {"name": "membership_id", "in": "path", "required": true, "schema": {"type": "string"}}, {"$ref": "#/components/parameters/IdempotencyKey"}, {"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string"}, "description": "Current policy version from its ETag."}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DirectoryVisibilityPolicy"}}}, "headers": {"Idempotency-Replayed": {"$ref": "#/components/headers/IdempotencyReplayed"}}}, "default": {"description": "Request rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}}, "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DirectoryVisibilityInput"}}}}}}
+  /api/v1/organizations/{org_id}/directory-visibility/candidates: {"get": {"operationId": "listDirectoryVisibilityCandidates", "summary": "List active member choices for an authorized directory policy manager", "tags": ["Organizations"], "security": [{"iamBearer": []}], "parameters": [{"name": "org_id", "in": "path", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/DirectoryVisibilityCandidate"}}}}}}}, "default": {"description": "Request rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}}}}
+  /api/v1/organizations/{org_id}/silicon-invitations: {"get": {"operationId": "listSiliconInvitations", "summary": "List organization invitations for existing Silicon accounts", "tags": ["Invitations"], "security": [{"iamBearer": []}], "parameters": [{"name": "org_id", "in": "path", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/SiliconInvitation"}}}}}}}, "default": {"description": "Request rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}}}, "post": {"operationId": "createSiliconInvitation", "summary": "Invite a visible Silicon from one of your active organizations", "tags": ["Invitations"], "security": [{"iamBearer": []}], "parameters": [{"name": "org_id", "in": "path", "required": true, "schema": {"type": "string"}}, {"$ref": "#/components/parameters/IdempotencyKey"}], "responses": {"201": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconInvitation"}}}, "headers": {"Idempotency-Replayed": {"$ref": "#/components/headers/IdempotencyReplayed"}}}, "default": {"description": "Request rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}}, "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["silicon_id"], "properties": {"silicon_id": {"type": "string"}}}}}}}}
+  /api/v1/organizations/{org_id}/silicon-invitations/candidates: {"get": {"operationId": "listSiliconInvitationCandidates", "summary": "List visible Silicons from your active organizations that can be invited", "tags": ["Invitations"], "security": [{"iamBearer": []}], "parameters": [{"name": "org_id", "in": "path", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/SiliconInvitationCandidate"}}}}}}}, "default": {"description": "Request rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}}}}
+  /api/v1/organizations/{org_id}/silicon-invitations/{id}/revoke: {"post": {"operationId": "revokeSiliconInvitation", "summary": "Revoke a pending Silicon invitation", "tags": ["Invitations"], "security": [{"iamBearer": []}], "parameters": [{"name": "org_id", "in": "path", "required": true, "schema": {"type": "string"}}, {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}, {"$ref": "#/components/parameters/IdempotencyKey"}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconInvitation"}}}, "headers": {"Idempotency-Replayed": {"$ref": "#/components/headers/IdempotencyReplayed"}}}, "default": {"description": "Request rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}}}}
+  /api/v1/me/silicon-invitations: {"get": {"operationId": "listOwnSiliconInvitations", "summary": "List invitations addressed to the authenticated Silicon account", "tags": ["Invitations"], "security": [{"iamBearer": []}], "parameters": [], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/SiliconInvitation"}}}}}}}, "default": {"description": "Request rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}}}}
+  /api/v1/me/silicon-invitations/{id}/decision: {"post": {"operationId": "decideSiliconInvitation", "summary": "Accept or decline using the invited Silicon account", "tags": ["Invitations"], "security": [{"iamBearer": []}], "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}, {"$ref": "#/components/parameters/IdempotencyKey"}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconInvitation"}}}, "headers": {"Idempotency-Replayed": {"$ref": "#/components/headers/IdempotencyReplayed"}}}, "default": {"description": "Request rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}}, "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["decision"], "properties": {"decision": {"type": "string", "enum": ["accept", "decline"]}}}}}}}}
+  /api/v1/silicon-auth/step-up: {"post": {"tags": ["Silicons"], "operationId": "siliconStepUp", "summary": "Confirm the current STK for one protected action and resource", "security": [{"iamBearer": []}], "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconStepUpInput"}}}}, "responses": {"200": {"description": "Five-minute single-use proof for this session, action and target.", "headers": {"Idempotency-Replayed": {"$ref": "#/components/headers/IdempotencyReplayed"}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StepUpTokenResponse"}}}}, "default": {"description": "Request rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorEnvelope"}}}}}}}
+  /api/v1/silicon-signup/requests: {"post": {"operationId": "registerIndependentSilicon", "summary": "Register an independent Silicon pending verified custody approval", "tags": ["Silicons"], "security": [], "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "responses": {"201": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconSignupCreated"}}}, "headers": {"Idempotency-Replayed": {"schema": {"type": "boolean"}, "description": "Whether this response is an exact replay."}}}, "default": {"description":"Request rejected.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}, "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconSignupRequest"}}}}}}
+  /api/v1/silicon-signup/requests/{request_id}: {"get": {"operationId": "pollSiliconSignup", "summary": "Read registration status using the returned polling bearer", "tags": ["Silicons"], "security": [{"iamBearer": []}], "parameters": [{"name": "request_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconSignupStatus"}}}}, "default": {"description":"Request rejected.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}}}
+  /api/v1/silicon-signup/requests/{request_id}/custodian: {"get": {"operationId": "reviewSiliconCustody", "summary": "Review a request addressed to your verified email", "tags": ["Silicons"], "security": [{"iamBearer": []}], "parameters": [{"name": "request_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconSignupStatus"}}}}, "default": {"description":"Request rejected.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}}, "post": {"operationId": "decideSiliconCustody", "summary": "Approve or reject becoming the Silicon custodian", "tags": ["Silicons"], "security": [{"iamBearer": []}], "parameters": [{"name": "request_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}, {"$ref": "#/components/parameters/IdempotencyKey"}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconSignupStatus"}}}, "headers": {"Idempotency-Replayed": {"schema": {"type": "boolean"}, "description": "Whether this response is an exact replay."}}}, "default": {"description":"Request rejected.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}, "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconCustodyDecision"}}}}}}
+  /api/v1/me/silicon-custodies: {"get": {"operationId": "listSiliconCustodies", "summary": "List Silicon identities under your personal custody", "tags": ["Silicons"], "security": [{"iamBearer": []}], "parameters": [], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/SiliconCustody"}}}}}}}, "default": {"description":"Request rejected.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}}}
+  /api/v1/me/silicon-custodies/{silicon_id}: {"patch": {"operationId": "updateSiliconCustody", "summary": "Update your Silicon organization creation setting", "tags": ["Silicons"], "security": [{"iamBearer": []}], "parameters": [{"name": "silicon_id", "in": "path", "required": true, "schema": {"type": "string"}}, {"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string"}}, {"$ref": "#/components/parameters/IdempotencyKey"}], "responses": {"200": {"description": "Success", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconCustody"}}}, "headers": {"Idempotency-Replayed": {"schema": {"type": "boolean"}, "description": "Whether this response is an exact replay."}}}, "default": {"description":"Request rejected.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}, "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SiliconCustodySettings"}}}}}}
   /webhooks/iam:
     servers:
       - url: https://scoped.backend.iam.teamofsilicons.com
@@ -258,6 +273,25 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
         '504': { $ref: '#/components/responses/GatewayTimeout' }
+    delete:
+      tags: [Carbon signup]
+      operationId: skipSignupPhone
+      security: []
+      summary: Skip the optional phone and invalidate its outstanding verification code.
+      parameters:
+        - { $ref: '#/components/parameters/SessionId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '200':
+          description: Optional phone removed from the pending signup session.
+          headers: { Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' } }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { skipped: { type: boolean, const: true } }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
   /api/v1/signup/sessions/{session_id}/phone/verify:
     parameters:
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
@@ -293,13 +327,13 @@ paths:
             schema: { $ref: '#/components/schemas/CarbonSignupComplete' }
       responses:
         '201':
-          description: Carbon created after verified identities are rechecked atomically.
+          description: Carbon created and authenticated atomically; verified email required, optional phone must be verified if supplied. The response contains credentials and must not be logged.
           headers:
-            ETag: { $ref: '#/components/headers/ETag' }
+            Set-Cookie: { schema: { type: string }, description: HttpOnly IAM browser session. }
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/CarbonSelf' }
+              schema: { $ref: '#/components/schemas/CarbonSignupResult' }
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
@@ -817,11 +851,11 @@ paths:
       security: [{ iamBearer: [] }]
       responses:
         '200':
-          description: Current Carbon including self-only contact details.
+          description: Current Carbon or Silicon identity. Carbon contact details are self-only.
           headers: { ETag: { $ref: '#/components/headers/ETag' } }
           content:
             application/json:
-              schema: { anyOf: [{ $ref: '#/components/schemas/CarbonSelf' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
+              schema: { anyOf: [{ $ref: '#/components/schemas/CarbonSelf' }, { $ref: '#/components/schemas/SiliconIdentityProfile' }, { $ref: '#/components/schemas/ApplicationReadObject' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
     patch:
       tags: [Carbon account]
@@ -843,12 +877,59 @@ paths:
             Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/CarbonSelf' }
+              schema: { anyOf: [{ $ref: '#/components/schemas/CarbonSelf' }, { $ref: '#/components/schemas/SiliconIdentityProfile' }] }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
+  /api/v1/me/photo:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    put:
+      tags: [Carbon account]
+      operationId: uploadCurrentProfilePhoto
+      summary: Upload and set a profile photo in IAM.
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      requestBody:
+        required: true
+        content:
+          image/png: { schema: { type: string, format: binary, maxLength: 524288 } }
+          image/jpeg: { schema: { type: string, format: binary, maxLength: 524288 } }
+          image/webp: { schema: { type: string, format: binary, maxLength: 524288 } }
+      responses:
+        '200':
+          description: Profile updated with an immutable IAM-hosted photo URL.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content: { application/json: { schema: { anyOf: [{ $ref: '#/components/schemas/CarbonSelf' }, { $ref: '#/components/schemas/SiliconIdentityProfile' }] } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '413': { description: Image exceeds 512 KiB. }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+  /api/v1/profile-photos/{photo_id}:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    get:
+      tags: [Carbon account]
+      operationId: getProfilePhoto
+      security: []
+      parameters:
+        - { name: photo_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The uploaded image; only served while its identity remains active.
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        '304': { description: The image matches If-None-Match. }
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/me/sessions:
     parameters:
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
@@ -1039,6 +1120,94 @@ paths:
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
+  /api/v1/organizations/{org_id}/logo:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+      - { $ref: '#/components/parameters/OrgIdPath' }
+    put:
+      tags: [Organizations]
+      operationId: uploadOrganizationLogo
+      summary: Upload the organization logo to IAM
+      description: >-
+        Stores the raw image bytes in IAM and sets the organization's logo to
+        the public IAM URL of this upload
+        (/api/v1/organization-logos/{logo_id}). Requires the same authority as
+        changing the logo through PATCH: the organization.update capability,
+        the organization.profile.update scope for application tokens and the
+        organization.profile.update action policy. PNG, JPEG, WebP and GIF are
+        accepted up to 512 KiB; the body must match the declared Content-Type.
+        The previous upload is deleted, and setting logo through PATCH (to
+        another URL or null) deletes the stored upload.
+      security: [{ iamBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      requestBody:
+        required: true
+        content:
+          image/png:
+            schema: { type: string, format: binary, maxLength: 524288 }
+          image/jpeg:
+            schema: { type: string, format: binary, maxLength: 524288 }
+          image/webp:
+            schema: { type: string, format: binary, maxLength: 524288 }
+          image/gif:
+            schema: { type: string, format: binary, maxLength: 524288 }
+      responses:
+        '200':
+          description: Logo stored; logo now points at the uploaded image.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+          content:
+            application/json:
+              schema: { anyOf: [{ $ref: '#/components/schemas/Organization' }, { $ref: '#/components/schemas/ApplicationMutationObject' }] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/organization-logos/{logo_id}:
+    get:
+      tags: [Organizations]
+      operationId: getOrganizationLogo
+      summary: Download an uploaded organization logo
+      description: >-
+        Public, so browsers and applications can load the image without
+        credentials. Each upload has a new random logo_id, so responses are
+        immutable and cacheable. Returns 404 once the logo is replaced or
+        cleared, or the organization is no longer active.
+      security: []
+      parameters:
+        - name: logo_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: If-None-Match
+          in: header
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: The logo image.
+          headers:
+            ETag:
+              description: Quoted SHA-256 of the image bytes.
+              schema: { type: string }
+            Cache-Control:
+              description: public, max-age=31536000, immutable
+              schema: { type: string }
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+            image/gif: { schema: { type: string, format: binary } }
+        '304':
+          description: The If-None-Match tag matches the stored image.
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/organizations/{org_id}/ownership-transfers:
     parameters:
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
@@ -1349,7 +1518,10 @@ paths:
                 type: object
                 additionalProperties: { type: object, additionalProperties: true }
         default:
-          $ref: '#/components/responses/Error'
+          description: Structured error response.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
   /api/v1/organizations/{org_id}/directory/members/{membership_id}:
     parameters:
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
@@ -3530,7 +3702,7 @@ paths:
         - { $ref: '#/components/parameters/AppIdPath' }
       responses:
         '200':
-          description: Same-organization Application reference and its active endpoints in endpoint_id order.
+          description: Available Application reference and its active endpoints in endpoint_id order.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OboEndpointCatalog' }
@@ -3538,80 +3710,549 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/obo-access/exchanges:
+  "/api/v1/obo-access/authorizations":
     parameters:
-      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    - "$ref": "#/components/parameters/TestingEnvironmentSelection"
     post:
-      tags: [OBO Access]
-      operationId: exchangeOboAccessProof
-      description: >-
-        Authenticates App A with HTTP Basic and a fresh request HMAC. IAM
-        derives the tenant from App A, requires audience App B and the subject
-        membership to belong to that same organization, loads registered_path
-        from the selected active endpoint, and verifies X-OBO-Signature in
-        constant time over
-        timestamp.method.registered_path.body_sha256.Idempotency-Key. The
-        request carries only metadata and the body digest, never the downstream
-        body or file. Exact idempotent replay expires no later than the proof.
-      security: [{ applicationBasic: [] }]
+      tags:
+      - OBO Access
+      operationId: createOboAuthorization
+      summary: Request separate user approval for named OBO endpoints and their full
+        dependency graphs
+      security:
+      - applicationBasic: []
       parameters:
-        - { $ref: '#/components/parameters/IdempotencyKey' }
-        - { $ref: '#/components/parameters/OboTimestamp' }
-        - { $ref: '#/components/parameters/OboSignature' }
+      - "$ref": "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/OboExchangeRequest' }
+            schema:
+              "$ref": "#/components/schemas/OboAuthorizationRequest"
       responses:
         '201':
-          description: Random single-use proof bound to same-organization source, audience, subject token, actor, registered endpoint, method, path, body digest, and exact metadata; valid for the provider-configured ttl_seconds (default 300 seconds).
+          description: Request separate user approval for named OBO endpoints and their
+            full dependency graphs
           headers:
-            Cache-Control: { schema: { const: no-store } }
-            Pragma: { schema: { const: no-cache } }
-            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+            Cache-Control:
+              schema:
+                const: no-store
+            Pragma:
+              schema:
+                const: no-cache
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/OboProofResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '428': { $ref: '#/components/responses/PreconditionRequired' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
-  /api/v1/obo-access/verify:
+              schema:
+                "$ref": "#/components/schemas/OboConsentDetail"
+        '400':
+          "$ref": "#/components/responses/BadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '410':
+          "$ref": "#/components/responses/Gone"
+        '412':
+          "$ref": "#/components/responses/PreconditionFailed"
+        '422':
+          "$ref": "#/components/responses/UnprocessableEntity"
+        '428':
+          "$ref": "#/components/responses/PreconditionRequired"
+        '429':
+          "$ref": "#/components/responses/TooManyRequests"
+  "/api/v1/obo-access/authorizations/{id}":
     parameters:
-      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    - "$ref": "#/components/parameters/TestingEnvironmentSelection"
+    get:
+      tags:
+      - OBO Access
+      operationId: getOboAuthorization
+      summary: Read a pending authorization or its status as the creating application
+      security:
+      - applicationBasic: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: &1
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Read a pending authorization or its status as the creating application
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+            Pragma:
+              schema:
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OboConsentDetail"
+        '400':
+          "$ref": "#/components/responses/BadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '410':
+          "$ref": "#/components/responses/Gone"
+        '412':
+          "$ref": "#/components/responses/PreconditionFailed"
+        '422':
+          "$ref": "#/components/responses/UnprocessableEntity"
+        '428':
+          "$ref": "#/components/responses/PreconditionRequired"
+        '429':
+          "$ref": "#/components/responses/TooManyRequests"
+  "/api/v1/obo-access/consents/{id}":
+    parameters:
+    - "$ref": "#/components/parameters/TestingEnvironmentSelection"
+    get:
+      tags:
+      - OBO Access
+      operationId: getOboConsent
+      summary: Review an OBO request as its represented user with a direct IAM session
+      security:
+      - iamBearer: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: *1
+      responses:
+        '200':
+          description: Review an OBO request as its represented user with a direct IAM
+            session
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+            Pragma:
+              schema:
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OboConsentDetail"
+        '400':
+          "$ref": "#/components/responses/BadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '410':
+          "$ref": "#/components/responses/Gone"
+        '412':
+          "$ref": "#/components/responses/PreconditionFailed"
+        '422':
+          "$ref": "#/components/responses/UnprocessableEntity"
+        '428':
+          "$ref": "#/components/responses/PreconditionRequired"
+        '429':
+          "$ref": "#/components/responses/TooManyRequests"
+  "/api/v1/obo-access/consents/{id}/decision":
+    parameters:
+    - "$ref": "#/components/parameters/TestingEnvironmentSelection"
     post:
-      tags: [OBO Access]
-      operationId: consumeOboAccessProof
-      description: >-
-        App B submits the proof and the method, path, and body digest calculated
-        from the actual downstream request. IAM verifies every binding before
-        atomically consuming the proof. Successful verification is never stored
-        or replayed; exactly one concurrent call succeeds and later use returns
-        409. No Idempotency-Key, X-Org-ID, or actual request body is accepted.
-      security: [{ applicationBasic: [] }]
+      tags:
+      - OBO Access
+      operationId: decideOboConsent
+      summary: Approve the exact displayed graph or decline without changing ordinary
+        login
+      security:
+      - iamBearer: []
+      parameters:
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      - name: id
+        in: path
+        required: true
+        schema: *1
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/OboVerifyRequest' }
+            schema:
+              "$ref": "#/components/schemas/OboConsentDecision"
       responses:
         '200':
-          description: Proof consumed exactly once; returns its bound actor, endpoint, and exact metadata for audience-side authorization.
+          description: Approve the exact displayed graph or decline without changing
+            ordinary login
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+            Pragma:
+              schema:
+                const: no-cache
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/OboAccessResult' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '410': { $ref: '#/components/responses/Gone' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
+              schema:
+                "$ref": "#/components/schemas/OboConsentDecisionResult"
+        '400':
+          "$ref": "#/components/responses/BadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '410':
+          "$ref": "#/components/responses/Gone"
+        '412':
+          "$ref": "#/components/responses/PreconditionFailed"
+        '422':
+          "$ref": "#/components/responses/UnprocessableEntity"
+        '428':
+          "$ref": "#/components/responses/PreconditionRequired"
+        '429':
+          "$ref": "#/components/responses/TooManyRequests"
+  "/api/v1/obo-access/tokens":
+    parameters:
+    - "$ref": "#/components/parameters/TestingEnvironmentSelection"
+    post:
+      tags:
+      - OBO Access
+      operationId: issueOboTokens
+      summary: Redeem a single-use authorization code or rotate one grant refresh token
+      security:
+      - applicationBasic: []
+      parameters:
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/OboTokenRequest"
+      responses:
+        '200':
+          description: Redeem a single-use authorization code or rotate one grant refresh
+            token
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+            Pragma:
+              schema:
+                const: no-cache
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OboTokenResponse"
+        '400':
+          "$ref": "#/components/responses/BadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '410':
+          "$ref": "#/components/responses/Gone"
+        '412':
+          "$ref": "#/components/responses/PreconditionFailed"
+        '422':
+          "$ref": "#/components/responses/UnprocessableEntity"
+        '428':
+          "$ref": "#/components/responses/PreconditionRequired"
+        '429':
+          "$ref": "#/components/responses/TooManyRequests"
+  "/api/v1/obo-access/token-verifications":
+    parameters:
+    - "$ref": "#/components/parameters/TestingEnvironmentSelection"
+    post:
+      tags:
+      - OBO Access
+      operationId: verifyOboToken
+      summary: Verify current endpoint authority without consuming the reusable access
+        token
+      security:
+      - applicationBasic: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/OboTokenVerificationRequest"
+      responses:
+        '200':
+          description: Verify current endpoint authority without consuming the reusable
+            access token
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+            Pragma:
+              schema:
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OboTokenVerification"
+        '400':
+          "$ref": "#/components/responses/BadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '410':
+          "$ref": "#/components/responses/Gone"
+        '412':
+          "$ref": "#/components/responses/PreconditionFailed"
+        '422':
+          "$ref": "#/components/responses/UnprocessableEntity"
+        '428':
+          "$ref": "#/components/responses/PreconditionRequired"
+        '429':
+          "$ref": "#/components/responses/TooManyRequests"
+  "/api/v1/obo-access/delegations":
+    parameters:
+    - "$ref": "#/components/parameters/TestingEnvironmentSelection"
+    post:
+      tags:
+      - OBO Access
+      operationId: deriveOboToken
+      summary: Derive an audience-specific token for one currently declared and consented
+        downstream endpoint
+      security:
+      - applicationBasic: []
+      parameters:
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/OboDelegationRequest"
+      responses:
+        '201':
+          description: Derive an audience-specific token for one currently declared
+            and consented downstream endpoint
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+            Pragma:
+              schema:
+                const: no-cache
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OboAccessToken"
+        '400':
+          "$ref": "#/components/responses/BadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '410':
+          "$ref": "#/components/responses/Gone"
+        '412':
+          "$ref": "#/components/responses/PreconditionFailed"
+        '422':
+          "$ref": "#/components/responses/UnprocessableEntity"
+        '428':
+          "$ref": "#/components/responses/PreconditionRequired"
+        '429':
+          "$ref": "#/components/responses/TooManyRequests"
+  "/api/v1/obo-access/grants":
+    parameters:
+    - "$ref": "#/components/parameters/TestingEnvironmentSelection"
+    get:
+      tags:
+      - OBO Access
+      operationId: listOboGrants
+      summary: List one page of the direct IAM user's OBO grants
+      description: Returns grants most recent first. Continue with page.next_cursor while page.has_more is true. The service bounds limit to 1 through 10.
+      parameters:
+      - "$ref": "#/components/parameters/Cursor"
+      - name: app_id
+        in: query
+        required: false
+        schema: { $ref: '#/components/schemas/AppId' }
+        description: Restricts the current account's grants to this originating application before pagination.
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 10
+      security:
+      - iamBearer: []
+      responses:
+        '200':
+          description: List one page of the direct IAM user's OBO grants
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+            Pragma:
+              schema:
+                const: no-cache
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OboGrants"
+        '400':
+          "$ref": "#/components/responses/BadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '410':
+          "$ref": "#/components/responses/Gone"
+        '412':
+          "$ref": "#/components/responses/PreconditionFailed"
+        '422':
+          "$ref": "#/components/responses/UnprocessableEntity"
+        '428':
+          "$ref": "#/components/responses/PreconditionRequired"
+        '429':
+          "$ref": "#/components/responses/TooManyRequests"
+  "/api/v1/obo-access/grants/{id}/revoke":
+    parameters:
+    - "$ref": "#/components/parameters/TestingEnvironmentSelection"
+    post:
+      tags:
+      - OBO Access
+      operationId: revokeOboGrant
+      summary: Revoke one user-owned OBO grant and its root and descendant tokens
+      security:
+      - iamBearer: []
+      parameters:
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      - name: id
+        in: path
+        required: true
+        schema: *1
+      responses:
+        '200':
+          description: Revoke one user-owned OBO grant and its root and descendant tokens
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+            Pragma:
+              schema:
+                const: no-cache
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/OboGrantRevoked"
+        '400':
+          "$ref": "#/components/responses/BadRequest"
+        '401':
+          "$ref": "#/components/responses/Unauthorized"
+        '403':
+          "$ref": "#/components/responses/Forbidden"
+        '404':
+          "$ref": "#/components/responses/NotFound"
+        '409':
+          "$ref": "#/components/responses/Conflict"
+        '410':
+          "$ref": "#/components/responses/Gone"
+        '412':
+          "$ref": "#/components/responses/PreconditionFailed"
+        '422':
+          "$ref": "#/components/responses/UnprocessableEntity"
+        '428':
+          "$ref": "#/components/responses/PreconditionRequired"
+        '429':
+          "$ref": "#/components/responses/TooManyRequests"
+  "/api/v1/obo-access/exchanges":
+    parameters:
+    - "$ref": "#/components/parameters/TestingEnvironmentSelection"
+    post:
+      tags:
+      - OBO Access
+      operationId: retiredOboExchanges
+      deprecated: true
+      summary: Retired single-use proof flow; obtain separate OBO consent and tokens
+      responses:
+        '410':
+          description: obo_proof_flow_retired. Legacy proof issuance and verification
+            are unavailable.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/v1/obo-access/chained-exchanges":
+    parameters:
+    - "$ref": "#/components/parameters/TestingEnvironmentSelection"
+    post:
+      tags:
+      - OBO Access
+      operationId: retiredOboChainedExchanges
+      deprecated: true
+      summary: Retired single-use proof flow; obtain separate OBO consent and tokens
+      responses:
+        '410':
+          description: obo_proof_flow_retired. Legacy proof issuance and verification
+            are unavailable.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
+  "/api/v1/obo-access/verify":
+    parameters:
+    - "$ref": "#/components/parameters/TestingEnvironmentSelection"
+    post:
+      tags:
+      - OBO Access
+      operationId: retiredOboVerify
+      deprecated: true
+      summary: Retired single-use proof flow; obtain separate OBO consent and tokens
+      responses:
+        '410':
+          description: obo_proof_flow_retired. Legacy proof issuance and verification
+            are unavailable.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/ErrorEnvelope"
 
   /api/v1/admin/applications:
     parameters:
@@ -4783,21 +5424,763 @@ paths:
           application/json:
             schema:
               "$ref": "#/components/schemas/HoneycombTestingInstruction"
-  "/api/v1/honeycomb/applications/{app_id}/publication-plans": {"post":{"tags":["Honeycomb integration"],"operationId":"honeycombPublicationPlan","summary":"honeycombPublicationPlan","security":[{"HoneycombService":[]}],"parameters":[{"name":"app_id","in":"path","required":true,"schema":{"type":"string"}},{"name":"X-Honeycomb-Actor-Token","in":"header","required":true,"schema":{"type":"string"},"description":"Live user token issued to the configured management app."},{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"200":{"description":"Authoritative IAM-local result. Never cache credential-bearing responses.","headers":{"Cache-Control":{"schema":{"type":"string"}},"Idempotency-Replayed":{"schema":{"type":"boolean"}}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombPublicationPlanRecord"}}}},"default":{"description":"Structured authority, revision or validation rejection.","content":{"application/json":{"schema":{"type":"object","additionalProperties":true}}}}},"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombPublicationPlan"}}}}}}
-  "/api/v1/honeycomb/applications/{app_id}/publication-decisions": {"post":{"tags":["Honeycomb integration"],"operationId":"honeycombPublicationDecision","summary":"honeycombPublicationDecision","security":[{"HoneycombService":[]}],"parameters":[{"name":"app_id","in":"path","required":true,"schema":{"type":"string"}},{"name":"X-Honeycomb-Actor-Token","in":"header","required":true,"schema":{"type":"string"},"description":"Live user token issued to the configured management app."},{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"200":{"description":"Authoritative IAM-local result. Never cache credential-bearing responses.","headers":{"Cache-Control":{"schema":{"type":"string"}},"Idempotency-Replayed":{"schema":{"type":"boolean"}}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombPublicationDecisionRecord"}}}},"default":{"description":"Structured authority, revision or validation rejection.","content":{"application/json":{"schema":{"type":"object","additionalProperties":true}}}}},"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombPublicationDecision"}}}}}}
-  "/api/v1/honeycomb/applications/{app_id}/publication-activations": {"post":{"tags":["Honeycomb integration"],"operationId":"honeycombPublicationActivation","summary":"honeycombPublicationActivation","security":[{"HoneycombService":[]}],"parameters":[{"name":"app_id","in":"path","required":true,"schema":{"type":"string"}},{"name":"X-Honeycomb-Actor-Token","in":"header","required":true,"schema":{"type":"string"},"description":"Live user token issued to the configured management app."},{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"200":{"description":"Authoritative IAM-local result. Never cache credential-bearing responses.","headers":{"Cache-Control":{"schema":{"type":"string"}},"Idempotency-Replayed":{"schema":{"type":"boolean"}}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombReceipt"}}}},"default":{"description":"Structured authority, revision or validation rejection.","content":{"application/json":{"schema":{"type":"object","additionalProperties":true}}}}},"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombPublicationActivation"}}}}}}
-  "/api/v1/honeycomb/publication-plans/{plan_id}": {"get":{"tags":["Honeycomb integration"],"operationId":"honeycombReadPublicationPlan","summary":"honeycombReadPublicationPlan","security":[{"HoneycombService":[]}],"parameters":[{"name":"plan_id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}],"responses":{"200":{"description":"Authoritative IAM-local result. Never cache credential-bearing responses.","headers":{"Cache-Control":{"schema":{"type":"string"}},"Idempotency-Replayed":{"schema":{"type":"boolean"}}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombPublicationPlanRecord"}}}},"default":{"description":"Structured authority, revision or validation rejection.","content":{"application/json":{"schema":{"type":"object","additionalProperties":true}}}}}}}
-  "/api/v1/honeycomb/publication-plans/{plan_id}/reviewer-eligibility": {"get":{"tags":["Honeycomb integration"],"operationId":"honeycombReviewerEligibility","summary":"honeycombReviewerEligibility","security":[{"HoneycombService":[]}],"parameters":[{"name":"plan_id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"X-Honeycomb-Actor-Token","in":"header","required":true,"schema":{"type":"string"},"description":"Live user token issued to the configured management app."},{"name":"provider","in":"query","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Authoritative IAM-local result. Never cache credential-bearing responses.","headers":{"Cache-Control":{"schema":{"type":"string"}},"Idempotency-Replayed":{"schema":{"type":"boolean"}}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombReviewerEligibility"}}}},"default":{"description":"Structured authority, revision or validation rejection.","content":{"application/json":{"schema":{"type":"object","additionalProperties":true}}}}}}}
-  "/api/v1/honeycomb/publication-plans/{plan_id}/notification-recipients": {"get":{"tags":["Honeycomb integration"],"operationId":"honeycombNotificationRecipients","summary":"honeycombNotificationRecipients","security":[{"HoneycombService":[]}],"parameters":[{"name":"plan_id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"provider","in":"query","required":true,"schema":{"type":"string"}},{"name":"after","in":"query","schema":{"type":"string"}},{"name":"limit","in":"query","schema":{"type":"integer","minimum":1,"maximum":1000}}],"responses":{"200":{"description":"Authoritative IAM-local result. Never cache credential-bearing responses.","headers":{"Cache-Control":{"schema":{"type":"string"}},"Idempotency-Replayed":{"schema":{"type":"boolean"}}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombNotificationRecipients"}}}},"default":{"description":"Structured authority, revision or validation rejection.","content":{"application/json":{"schema":{"type":"object","additionalProperties":true}}}}}}}
-  "/api/v1/honeycomb/testing-environments/{environment_id}/adoption-export": {"post":{"tags":["Honeycomb integration"],"operationId":"honeycombAdoptionExport","summary":"honeycombAdoptionExport","security":[{"HoneycombService":[]}],"parameters":[{"name":"environment_id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"200":{"description":"Authoritative IAM-local result. Never cache credential-bearing responses.","headers":{"Cache-Control":{"schema":{"type":"string"}},"Idempotency-Replayed":{"schema":{"type":"boolean"}}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombReceipt"}}}},"default":{"description":"Structured authority, revision or validation rejection.","content":{"application/json":{"schema":{"type":"object","additionalProperties":true}}}}},"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombAdoptionExport"}}}}}}
-  "/api/v1/honeycomb/testing-environments/{environment_id}/retention": {"post":{"tags":["Honeycomb integration"],"operationId":"honeycombRetention","summary":"honeycombRetention","security":[{"HoneycombService":[]}],"parameters":[{"name":"environment_id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"200":{"description":"Authoritative IAM-local result. Never cache credential-bearing responses.","headers":{"Cache-Control":{"schema":{"type":"string"}},"Idempotency-Replayed":{"schema":{"type":"boolean"}}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombReceipt"}}}},"default":{"description":"Structured authority, revision or validation rejection.","content":{"application/json":{"schema":{"type":"object","additionalProperties":true}}}}},"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombRetention"}}}}}}
-  "/api/v1/honeycomb/testing-environments/{environment_id}/applications/{app_id}": {"get":{"tags":["Honeycomb integration"],"operationId":"honeycombReadTestingApplication","summary":"honeycombReadTestingApplication","security":[{"HoneycombService":[]}],"parameters":[{"name":"environment_id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"app_id","in":"path","required":true,"schema":{"type":"string"}},{"name":"X-Honeycomb-Actor-Token","in":"header","required":false,"schema":{"type":"string"},"description":"Live user token issued to the configured management app."},{"name":"X-Honeycomb-Application-Authorization","in":"header","schema":{"type":"string"},"description":"Production Basic application credentials, mutually exclusive with actor token."},{"name":"X-Honeycomb-Testing-Key","in":"header","schema":{"type":"string"},"description":"Current per-environment key: root authority for test configuration/rotation, or attachment proof with production app credentials. Never a global testing unlock."},{"name":"generation","in":"query","required":true,"schema":{"type":"integer","format":"int64","minimum":1}},{"name":"key_version","in":"query","required":true,"schema":{"type":"integer","format":"int32","minimum":1}},{"name":"expected_environment_revision","in":"query","required":true,"schema":{"type":"integer","format":"int64","minimum":1}}],"responses":{"200":{"description":"Authoritative IAM-local result. Never cache credential-bearing responses.","headers":{"Cache-Control":{"schema":{"type":"string"}},"Idempotency-Replayed":{"schema":{"type":"boolean"}}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombRecord"}}}},"default":{"description":"Structured authority, revision or validation rejection.","content":{"application/json":{"schema":{"type":"object","additionalProperties":true}}}}}}}
-  "/api/v1/honeycomb/testing-environments/{environment_id}/applications/{app_id}/configuration": {"put":{"tags":["Honeycomb integration"],"operationId":"honeycombConfigureTestingApplication","summary":"honeycombConfigureTestingApplication","security":[{"HoneycombService":[]}],"parameters":[{"name":"environment_id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"app_id","in":"path","required":true,"schema":{"type":"string"}},{"name":"X-Honeycomb-Actor-Token","in":"header","required":false,"schema":{"type":"string"},"description":"Live user token issued to the configured management app."},{"name":"X-Honeycomb-Application-Authorization","in":"header","schema":{"type":"string"},"description":"Production Basic application credentials, mutually exclusive with actor token."},{"name":"X-Honeycomb-Testing-Key","in":"header","schema":{"type":"string"},"description":"Current per-environment key: root authority for test configuration/rotation, or attachment proof with production app credentials. Never a global testing unlock."},{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"200":{"description":"Authoritative IAM-local result. Never cache credential-bearing responses.","headers":{"Cache-Control":{"schema":{"type":"string"}},"Idempotency-Replayed":{"schema":{"type":"boolean"}}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombReceipt"}}}},"default":{"description":"Structured authority, revision or validation rejection.","content":{"application/json":{"schema":{"type":"object","additionalProperties":true}}}}},"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombTestingAppMutation"}}}}}}
-  "/api/v1/honeycomb/testing-environments/{environment_id}/applications/{app_id}/secret-rotations": {"post":{"tags":["Honeycomb integration"],"operationId":"honeycombRotateTestingApplicationSecret","summary":"honeycombRotateTestingApplicationSecret","security":[{"HoneycombService":[]}],"parameters":[{"name":"environment_id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"app_id","in":"path","required":true,"schema":{"type":"string"}},{"name":"X-Honeycomb-Actor-Token","in":"header","required":false,"schema":{"type":"string"},"description":"Live user token issued to the configured management app."},{"name":"X-Honeycomb-Application-Authorization","in":"header","schema":{"type":"string"},"description":"Production Basic application credentials, mutually exclusive with actor token."},{"name":"X-Honeycomb-Testing-Key","in":"header","schema":{"type":"string"},"description":"Current per-environment key: root authority for test configuration/rotation, or attachment proof with production app credentials. Never a global testing unlock."},{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"200":{"description":"Authoritative IAM-local result. Never cache credential-bearing responses.","headers":{"Cache-Control":{"schema":{"type":"string"}},"Idempotency-Replayed":{"schema":{"type":"boolean"}}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombReceipt"}}}},"default":{"description":"Structured authority, revision or validation rejection.","content":{"application/json":{"schema":{"type":"object","additionalProperties":true}}}}},"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombTestingAppMutation"}}}}}}
-  "/api/v1/honeycomb/application-identity": {"get":{"tags":["Honeycomb integration"],"summary":"honeycombApplicationIdentity","operationId":"honeycombApplicationIdentity","security":[{"HoneycombService":[]}],"parameters":[{"name":"X-Honeycomb-Application-Authorization","in":"header","required":true,"schema":{"type":"string"},"description":"Production Basic application credentials verified independently of a test environment key."}],"responses":{"200":{"description":"Current authenticated app identity or its environment links; contains no credentials.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombApplicationIdentity"}}}},"default":{"description":"Structured authentication or validation rejection."}}}}
-  "/api/v1/honeycomb/testing-environments": {"get":{"tags":["Honeycomb integration"],"summary":"honeycombApplicationTestingEnvironments","operationId":"honeycombApplicationTestingEnvironments","security":[{"HoneycombService":[]}],"parameters":[{"name":"X-Honeycomb-Application-Authorization","in":"header","required":true,"schema":{"type":"string"},"description":"Production Basic application credentials verified independently of a test environment key."},{"name":"cursor","in":"query","schema":{"type":"string","format":"uuid"}},{"name":"limit","in":"query","schema":{"type":"integer","minimum":1,"maximum":100}},{"name":"status","in":"query","schema":{"type":"string","enum":["active","deleted","all"]}}],"responses":{"200":{"description":"Current authenticated app identity or its environment links; contains no credentials.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombApplicationTestingEnvironments"}}}},"default":{"description":"Structured authentication or validation rejection."}}}}
-  "/api/v1/honeycomb/organizations/{org_id}/notification-recipients": {"get":{"tags":["Honeycomb integration"],"summary":"Current organization owner and admin recipients","operationId":"honeycombOrganizationRecipients","security":[{"HoneycombService":[]}],"parameters":[{"name":"org_id","in":"path","required":true,"schema":{"type":"string"}},{"name":"after","in":"query","schema":{"type":"string"}},{"name":"limit","in":"query","schema":{"type":"integer","minimum":1,"maximum":1000}}],"responses":{"200":{"description":"Only current owner/admin verified email contacts for this organization.","content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombOrganizationRecipients"}}}},"default":{"description":"Structured service authentication or organization error."}}}}
-  "/api/v1/honeycomb/testing-environments/{environment_id}/applications/{app_id}/credential-recovery": {"post":{"tags":["Honeycomb integration"],"operationId":"honeycombRecoverTestingApplicationCredential","summary":"Recover only the authenticated production application\u2019s linked test credential","security":[{"HoneycombService":[]}],"parameters":[{"name":"environment_id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"app_id","in":"path","required":true,"schema":{"type":"string"}},{"name":"X-Honeycomb-Application-Authorization","in":"header","schema":{"type":"string"},"description":"Production Basic application credentials, mutually exclusive with actor token.","required":true},{"name":"X-Honeycomb-Testing-Key","in":"header","schema":{"type":"string"},"description":"Current per-environment key: root authority for test configuration/rotation, or attachment proof with production app credentials. Never a global testing unlock."},{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"200":{"description":"Authoritative IAM-local result. Never cache credential-bearing responses.","headers":{"Cache-Control":{"schema":{"type":"string"}},"Idempotency-Replayed":{"schema":{"type":"boolean"}}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombReceipt"}}}},"default":{"description":"Structured authority, revision or validation rejection.","content":{"application/json":{"schema":{"type":"object","additionalProperties":true}}}}},"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HoneycombTestingCredentialRecovery"}}}}}}
+  "/api/v1/honeycomb/applications/{app_id}/publication-plans":
+    post:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombPublicationPlan
+      summary: honeycombPublicationPlan
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: true
+        schema:
+          type: string
+        description: Live user token issued to the configured management app.
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '200':
+          description: Authoritative IAM-local result. Never cache credential-bearing
+            responses.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombPublicationPlanRecord"
+        default:
+          description: Structured authority, revision or validation rejection.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombPublicationPlan"
+  "/api/v1/honeycomb/applications/{app_id}/publication-decisions":
+    post:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombPublicationDecision
+      summary: honeycombPublicationDecision
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: true
+        schema:
+          type: string
+        description: Live user token issued to the configured management app.
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '200':
+          description: Authoritative IAM-local result. Never cache credential-bearing
+            responses.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombPublicationDecisionRecord"
+        default:
+          description: Structured authority, revision or validation rejection.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombPublicationDecision"
+  "/api/v1/honeycomb/applications/{app_id}/publication-activations":
+    post:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombPublicationActivation
+      summary: honeycombPublicationActivation
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: true
+        schema:
+          type: string
+        description: Live user token issued to the configured management app.
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '200':
+          description: Authoritative IAM-local result. Never cache credential-bearing
+            responses.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombReceipt"
+        default:
+          description: Structured authority, revision or validation rejection.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombPublicationActivation"
+  "/api/v1/honeycomb/publication-plans/{plan_id}":
+    get:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombReadPublicationPlan
+      summary: honeycombReadPublicationPlan
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: plan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Authoritative IAM-local result. Never cache credential-bearing
+            responses.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombPublicationPlanRecord"
+        default:
+          description: Structured authority, revision or validation rejection.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  "/api/v1/honeycomb/publication-plans/{plan_id}/reviewer-eligibility":
+    get:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombReviewerEligibility
+      summary: honeycombReviewerEligibility
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: plan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: true
+        schema:
+          type: string
+        description: Live user token issued to the configured management app.
+      - name: provider
+        in: query
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Authoritative IAM-local result. Never cache credential-bearing
+            responses.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombReviewerEligibility"
+        default:
+          description: Structured authority, revision or validation rejection.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  "/api/v1/honeycomb/publication-plans/{plan_id}/notification-recipients":
+    get:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombNotificationRecipients
+      summary: honeycombNotificationRecipients
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: plan_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: provider
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: after
+        in: query
+        schema:
+          type: string
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 1000
+      responses:
+        '200':
+          description: Authoritative IAM-local result. Never cache credential-bearing
+            responses.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombNotificationRecipients"
+        default:
+          description: Structured authority, revision or validation rejection.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  "/api/v1/honeycomb/testing-environments/{environment_id}/adoption-export":
+    post:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombAdoptionExport
+      summary: honeycombAdoptionExport
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: environment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '200':
+          description: Authoritative IAM-local result. Never cache credential-bearing
+            responses.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombReceipt"
+        default:
+          description: Structured authority, revision or validation rejection.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombAdoptionExport"
+  "/api/v1/honeycomb/testing-environments/{environment_id}/retention":
+    post:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombRetention
+      summary: honeycombRetention
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: environment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '200':
+          description: Authoritative IAM-local result. Never cache credential-bearing
+            responses.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombReceipt"
+        default:
+          description: Structured authority, revision or validation rejection.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombRetention"
+  "/api/v1/honeycomb/testing-environments/{environment_id}/applications/{app_id}":
+    get:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombReadTestingApplication
+      summary: honeycombReadTestingApplication
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: environment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: false
+        schema:
+          type: string
+        description: Live user token issued to the configured management app.
+      - name: X-Honeycomb-Application-Authorization
+        in: header
+        schema:
+          type: string
+        description: Production Basic application credentials, mutually exclusive with
+          actor token.
+      - name: X-Honeycomb-Testing-Key
+        in: header
+        schema:
+          type: string
+        description: 'Current per-environment key: root authority for test configuration/rotation,
+          or attachment proof with production app credentials. Never a global testing
+          unlock.'
+      - name: generation
+        in: query
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+      - name: key_version
+        in: query
+        required: true
+        schema:
+          type: integer
+          format: int32
+          minimum: 1
+      - name: expected_environment_revision
+        in: query
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+      responses:
+        '200':
+          description: Authoritative IAM-local result. Never cache credential-bearing
+            responses.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombRecord"
+        default:
+          description: Structured authority, revision or validation rejection.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  "/api/v1/honeycomb/testing-environments/{environment_id}/applications/{app_id}/configuration":
+    put:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombConfigureTestingApplication
+      summary: honeycombConfigureTestingApplication
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: environment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: false
+        schema:
+          type: string
+        description: Live user token issued to the configured management app.
+      - name: X-Honeycomb-Application-Authorization
+        in: header
+        schema:
+          type: string
+        description: Production Basic application credentials, mutually exclusive with
+          actor token.
+      - name: X-Honeycomb-Testing-Key
+        in: header
+        schema:
+          type: string
+        description: 'Current per-environment key: root authority for test configuration/rotation,
+          or attachment proof with production app credentials. Never a global testing
+          unlock.'
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '200':
+          description: Authoritative IAM-local result. Never cache credential-bearing
+            responses.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombReceipt"
+        default:
+          description: Structured authority, revision or validation rejection.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombTestingAppMutation"
+  "/api/v1/honeycomb/testing-environments/{environment_id}/applications/{app_id}/secret-rotations":
+    post:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombRotateTestingApplicationSecret
+      summary: honeycombRotateTestingApplicationSecret
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: environment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: false
+        schema:
+          type: string
+        description: Live user token issued to the configured management app.
+      - name: X-Honeycomb-Application-Authorization
+        in: header
+        schema:
+          type: string
+        description: Production Basic application credentials, mutually exclusive with
+          actor token.
+      - name: X-Honeycomb-Testing-Key
+        in: header
+        schema:
+          type: string
+        description: 'Current per-environment key: root authority for test configuration/rotation,
+          or attachment proof with production app credentials. Never a global testing
+          unlock.'
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '200':
+          description: Authoritative IAM-local result. Never cache credential-bearing
+            responses.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombReceipt"
+        default:
+          description: Structured authority, revision or validation rejection.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombTestingAppMutation"
+  "/api/v1/honeycomb/application-identity":
+    get:
+      tags:
+      - Honeycomb integration
+      summary: honeycombApplicationIdentity
+      operationId: honeycombApplicationIdentity
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: X-Honeycomb-Application-Authorization
+        in: header
+        required: true
+        schema:
+          type: string
+        description: Production Basic application credentials verified independently
+          of a test environment key.
+      responses:
+        '200':
+          description: Current authenticated app identity or its environment links;
+            contains no credentials.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombApplicationIdentity"
+        default:
+          description: Structured authentication or validation rejection.
+  "/api/v1/honeycomb/testing-environments":
+    get:
+      tags:
+      - Honeycomb integration
+      summary: honeycombApplicationTestingEnvironments
+      operationId: honeycombApplicationTestingEnvironments
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: X-Honeycomb-Application-Authorization
+        in: header
+        required: true
+        schema:
+          type: string
+        description: Production Basic application credentials verified independently
+          of a test environment key.
+      - name: cursor
+        in: query
+        schema:
+          type: string
+          format: uuid
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+      - name: status
+        in: query
+        schema:
+          type: string
+          enum:
+          - active
+          - deleted
+          - all
+      responses:
+        '200':
+          description: Current authenticated app identity or its environment links;
+            contains no credentials.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombApplicationTestingEnvironments"
+        default:
+          description: Structured authentication or validation rejection.
+  "/api/v1/honeycomb/organizations/{org_id}/notification-recipients":
+    get:
+      tags:
+      - Honeycomb integration
+      summary: Current organization owner and admin recipients
+      operationId: honeycombOrganizationRecipients
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: org_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: after
+        in: query
+        schema:
+          type: string
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 1000
+      responses:
+        '200':
+          description: Only current owner/admin verified email contacts for this organization.
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombOrganizationRecipients"
+        default:
+          description: Structured service authentication or organization error.
+  "/api/v1/honeycomb/testing-environments/{environment_id}/applications/{app_id}/credential-recovery":
+    post:
+      tags:
+      - Honeycomb integration
+      operationId: honeycombRecoverTestingApplicationCredential
+      summary: Recover only the authenticated production application’s linked test credential
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: environment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Application-Authorization
+        in: header
+        schema:
+          type: string
+        description: Production Basic application credentials, mutually exclusive with
+          actor token.
+        required: true
+      - name: X-Honeycomb-Testing-Key
+        in: header
+        schema:
+          type: string
+        description: 'Current per-environment key: root authority for test configuration/rotation,
+          or attachment proof with production app credentials. Never a global testing
+          unlock.'
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '200':
+          description: Authoritative IAM-local result. Never cache credential-bearing
+            responses.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+            Idempotency-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/HoneycombReceipt"
+        default:
+          description: Structured authority, revision or validation rejection.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/HoneycombTestingCredentialRecovery"
   /api/v1/organizations/{org_id}/action-policies:
     parameters:
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
@@ -4890,6 +6273,469 @@ paths:
         '412': { $ref: '#/components/responses/PreconditionFailed' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '428': { $ref: '#/components/responses/PreconditionRequired' }
+  /api/v1/ata-access/tokens:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    post:
+      tags: [ATA]
+      operationId: refreshAtaAccessToken
+      summary: Rotate the originating application's ATA refresh credential
+      description: Issues one reusable access token for the entire approved ATA dependency graph. Only the originating application's Basic credentials can refresh. Refresh reuse revokes the verification. ATA credentials never carry user or OBO authority.
+      security: [{ applicationBasic: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AtaRefreshRequest' }
+      responses:
+        '200':
+          description: Rotated refresh credential and reusable graph access credential; never cache.
+          headers:
+            Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' }
+            Cache-Control: { schema: { const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AtaTokenResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/ata-access/verify:
+    parameters:
+      - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
+    post:
+      tags: [ATA]
+      operationId: verifyAtaAccessToken
+      summary: Verify application authority for the authenticated recipient's exact endpoint
+      description: The recipient authenticates using its own application Basic credentials. Unknown, expired, revoked, wrong-type, wrong-app and wrong-endpoint proofs all return verified false. Verification is reusable and checks the complete current dependency graph and testing environment.
+      security: [{ applicationBasic: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AtaVerificationRequest' }
+      responses:
+        '200':
+          description: Current authority for this recipient and endpoint; validity is UTC YYYYMMDDHHMMSS.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AtaVerificationResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  "/api/v1/signup/social/providers":
+    get:
+      operationId: listSocialSignupProviders
+      tags:
+      - Carbon signup
+      security: []
+      responses:
+        '200':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - providers
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required:
+                      - id
+                      - enabled
+                      properties:
+                        id:
+                          type: string
+                        enabled:
+                          type: boolean
+        default:
+          description: Structured IAM error.
+  "/api/v1/signup/social/{provider}/start":
+    post:
+      operationId: startSocialSignup
+      tags:
+      - Carbon signup
+      summary: Start browser or CLI social enrollment
+      description: Google or Apple credentials must be configured. Not available in
+        a testing environment. Open authorization_url in a browser and poll status using
+        the secret poll_token. No account is silently linked to an existing email.
+      security: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - google
+          - apple
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '201':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SocialSignupStart"
+        default:
+          description: Structured IAM error.
+  "/api/v1/signup/social/{provider}/status":
+    post:
+      operationId: pollSocialSignup
+      tags:
+      - Carbon signup
+      security: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - google
+          - apple
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SocialSignupStatusInput"
+      responses:
+        '200':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SocialSignupStatus"
+        default:
+          description: Structured IAM error.
+  "/api/v1/signup/social/{provider}/callback":
+    get:
+      operationId: getSocialSignupCallback
+      tags:
+      - Carbon signup
+      summary: Fixed-provider callback; returns no credentials
+      security: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - google
+          - apple
+      - name: state
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: code
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: error
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Neutral HTML directing the user back to the initiating IAM window
+            or CLI.
+          content:
+            text/html:
+              schema:
+                type: string
+    post:
+      operationId: postSocialSignupCallback
+      tags:
+      - Carbon signup
+      summary: Fixed-provider callback; returns no credentials
+      security: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - google
+          - apple
+      responses:
+        '200':
+          description: Neutral HTML directing the user back to the initiating IAM window
+            or CLI.
+          content:
+            text/html:
+              schema:
+                type: string
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - state
+              properties:
+                state:
+                  type: string
+                code:
+                  type: string
+                error:
+                  type: string
+  "/api/v1/delegation-warnings":
+    get:
+      operationId: listDelegationWarnings
+      tags:
+      - Application registration
+      security: []
+      responses:
+        '200':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - warnings
+                properties:
+                  warnings:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required:
+                      - id
+                      - name
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+        default:
+          description: Structured IAM error.
+  "/api/v1/ata-access/applications/{app_id}/endpoints":
+    get:
+      operationId: discoverAtaEndpoints
+      tags:
+      - ATA
+      security:
+      - applicationBasic: []
+      parameters:
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - application
+                - endpoints
+                properties:
+                  application:
+                    type: object
+                    required:
+                    - app_id
+                    - org_id
+                    properties:
+                      app_id:
+                        "$ref": "#/components/schemas/AppId"
+                      org_id:
+                        "$ref": "#/components/schemas/OrgId"
+                  endpoints:
+                    type: array
+                    items:
+                      "$ref": "#/components/schemas/AtaDiscoveredEndpoint"
+        default:
+          description: Structured IAM error.
+  "/api/v1/honeycomb/applications/{app_id}/ata-verifications":
+    get:
+      operationId: listAtaVerifications
+      tags:
+      - Honeycomb integration
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      "$ref": "#/components/schemas/AtaVerification"
+        default:
+          description: Structured IAM error.
+    post:
+      operationId: createAtaVerification
+      tags:
+      - Honeycomb integration
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: true
+        schema:
+          type: string
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '200':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AtaVerificationCreated"
+        default:
+          description: Structured IAM error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/AtaVerificationCreate"
+  "/api/v1/honeycomb/applications/{app_id}/ata-verifications/preview":
+    post:
+      operationId: previewAtaVerification
+      tags:
+      - Honeycomb integration
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AtaVerificationPreview"
+        default:
+          description: Structured IAM error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/AtaVerificationCreate"
+  "/api/v1/honeycomb/applications/{app_id}/ata-verifications/{id}/revoke":
+    post:
+      operationId: revokeAtaVerification
+      tags:
+      - Honeycomb integration
+      security:
+      - HoneycombService: []
+      parameters:
+      - name: app_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: X-Honeycomb-Actor-Token
+        in: header
+        required: true
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      responses:
+        '200':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/AtaVerification"
+        default:
+          description: Structured IAM error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - operation_id
+              properties:
+                operation_id:
+                  type: string
+                  format: uuid
 webhooks:
   applicationEvent:
     post:
@@ -4937,6 +6783,7 @@ webhooks:
         '200': { description: Event accepted idempotently. }
         '202': { description: Event accepted for asynchronous local processing. }
         '204': { description: Event accepted with no response body. }
+
 
 components:
   securitySchemes:
@@ -5002,21 +6849,6 @@ components:
       required: true
       description: Opaque caller-generated key containing 16 to 255 printable ASCII bytes. Reuse with different bytes returns idempotency_conflict.
       schema: { type: string, minLength: 16, maxLength: 255, pattern: '^[\x21-\x7E]{16,255}$' }
-    OboTimestamp:
-      name: X-OBO-Timestamp
-      in: header
-      required: true
-      description: Canonical positive Unix timestamp in seconds; accepted only within 60 seconds of IAM's clock.
-      schema: { type: string, pattern: '^[1-9][0-9]{0,18}$' }
-    OboSignature:
-      name: X-OBO-Signature
-      in: header
-      required: true
-      description: >-
-        Exactly 64 lowercase hexadecimal characters: HMAC-SHA256 using App A's
-        current Application secret over
-        timestamp.method.registered_path.body_sha256.Idempotency-Key.
-      schema: { type: string, pattern: '^[0-9a-f]{64}$' }
     IfMatch:
       name: If-Match
       in: header
@@ -5239,6 +7071,349 @@ components:
       description: A bounded server or provider processing deadline elapsed.
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
   schemas:
+    DirectoryVisibilityInput: {"type": "object", "required": ["mode"], "properties": {"mode": {"type": "string", "enum": ["all", "self", "selected", "inherit"]}, "visible_membership_ids": {"type": "array", "maxItems": 1000, "uniqueItems": true, "items": {"type": "string"}}}, "additionalProperties": false, "description": "Organization policies support all, self, or selected. Member overrides additionally support inherit. Selected IDs must be active members in the same organization; other modes require an empty list. Every viewer always sees itself. These rules filter directory disclosure and do not grant operational capabilities."}
+    DirectoryVisibilityPolicy: {"type": "object", "required": ["mode", "visible_membership_ids", "version", "effective_mode", "effective_visible_membership_ids"], "properties": {"mode": {"type": "string", "enum": ["all", "self", "selected", "inherit"]}, "visible_membership_ids": {"type": "array", "maxItems": 1000, "uniqueItems": true, "items": {"type": "string"}}, "version": {"type": "integer"}, "effective_mode": {"type": "string", "enum": ["all", "self", "selected"]}, "effective_visible_membership_ids": {"type": "array", "items": {"type": "string"}}}}
+    DirectoryVisibilityCandidate: {"type": "object", "required": ["membership_id", "public_id", "display_name", "type"], "properties": {"membership_id": {"type": "string"}, "public_id": {"type": "string"}, "display_name": {"type": "string"}, "type": {"type": "string", "enum": ["carbon", "silicon"]}}}
+    SiliconInvitationCandidate: {"type": "object", "required": ["silicon_id", "display_name", "source_org_ids"], "properties": {"silicon_id": {"type": "string"}, "display_name": {"type": "string"}, "source_org_ids": {"type": "array", "items": {"type": "string"}}}}
+    SiliconInvitation: {"type": "object", "required": ["id", "org_id", "organization_name", "silicon_id", "display_name", "invited_by", "status", "created_at", "expires_at", "decided_at"], "properties": {"id": {"type": "string", "format": "uuid"}, "org_id": {"type": "string"}, "organization_name": {"type": "string"}, "silicon_id": {"type": "string"}, "display_name": {"type": "string"}, "invited_by": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "accepted", "declined", "revoked", "expired"]}, "created_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"}, "decided_at": {"type": ["string", "null"], "format": "date-time"}, "membership_id": {"type": ["string", "null"]}}}
+    SiliconStepUpInput: {"type": "object", "additionalProperties": false, "x-redact-debug": true, "required": ["silicon_token", "action", "resource_id"], "properties": {"silicon_token": {"type": "string", "writeOnly": true}, "action": {"$ref": "#/components/schemas/StepUpAction"}, "resource_id": {"type": "string"}}}
+    SiliconCustody: {"type": "object", "required": ["silicon_id", "can_create_organizations", "version"], "properties": {"silicon_id": {"type": "string"}, "display_name": {"type": "string"}, "can_create_organizations": {"type": "boolean"}, "version": {"type": "integer"}}}
+    SiliconCustodySettings: {"type": "object", "additionalProperties": false, "required": ["can_create_organizations"], "properties": {"can_create_organizations": {"type": "boolean"}}}
+    AtaDiscoveredEndpoint:
+      type: object
+      additionalProperties: false
+      required:
+      - endpoint_id
+      - name
+      - path
+      - critical
+      - description
+      - ata_id
+      - version
+      properties:
+        endpoint_id:
+          type: string
+          pattern: "^[a-z0-9._-]{1,128}$"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        path:
+          type: string
+          description: Unique absolute path. No query, fragment, escapes or traversal
+            segments.
+        critical:
+          type: boolean
+        description:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        metadata:
+          type: object
+          additionalProperties: true
+          default: {}
+        note_to_user:
+          type: string
+          nullable: true
+          maxLength: 2000
+        additional_warnings:
+          type: array
+          items:
+            type: string
+            enum:
+            - uses_credits
+            - incurs_cost
+            - stores_data
+            - shares_data
+            - deletes_data
+            - external_service
+          default: []
+        downstream:
+          type: array
+          items:
+            "$ref": "#/components/schemas/AtaDependency"
+          default: []
+        enabled:
+          type: boolean
+          default: true
+        ata_id:
+          type: string
+          readOnly: true
+          description: Globally unique [app_id:ata:local_id]
+        version:
+          type: integer
+          readOnly: true
+    SiliconIdentityProfile: {"type": "object", "required": ["silicon_id", "display_name", "timezone", "profile_photo", "status", "version"], "properties": {"silicon_id": {"type": "string"}, "display_name": {"type": "string"}, "timezone": {"type": "string"}, "profile_photo": {"type": "string"}, "status": {"type": "string"}, "version": {"type": "integer"}, "can_create_organizations": {"type": "boolean"}}}
+    SiliconSignupRequest: {"type": "object", "additionalProperties": false, "x-redact-debug": true, "required": ["silicon_id", "custodian_email"], "properties": {"silicon_id": {"type": "string", "pattern": "^si:[a-z0-9_-]{3,50}$"}, "silicon_token": {"type": "string", "minLength": 12, "maxLength": 24, "writeOnly": true}, "custodian_email": {"type": "string", "format": "email"}, "display_name": {"type": "string", "maxLength": 100}, "timezone": {"type": "string"}, "webhook_url": {"type": "string", "format": "uri"}}}
+    SiliconSignupCreated: {"type": "object", "x-redact-debug": true, "required": ["request_id", "silicon_id", "status", "poll_token", "expires_at"], "properties": {"request_id": {"type": "string", "format": "uuid"}, "silicon_id": {"type": "string"}, "status": {"type": "string"}, "poll_token": {"type": "string", "writeOnly": true}, "generated_silicon_token": {"type": "string", "writeOnly": true}, "webhook_signing_secret": {"type": "string", "writeOnly": true}, "expires_at": {"type": "string", "format": "date-time"}}}
+    SiliconSignupStatus: {"type": "object", "required": ["request_id", "silicon_id", "display_name", "timezone", "status", "can_create_organizations", "expires_at"], "properties": {"request_id": {"type": "string", "format": "uuid"}, "silicon_id": {"type": "string"}, "display_name": {"type": "string"}, "timezone": {"type": "string"}, "status": {"type": "string", "description": "pending, approved, rejected or expired"}, "can_create_organizations": {"type": "boolean"}, "expires_at": {"type": "string", "format": "date-time"}}}
+    SiliconCustodyDecision: {"type": "object", "additionalProperties": false, "required": ["approve"], "properties": {"approve": {"type": "boolean"}, "can_create_organizations": {"type": "boolean", "default": true}}}
+    SocialSignupStart:
+      type: object
+      additionalProperties: false
+      required:
+      - request_id
+      - authorization_url
+      - poll_token
+      - expires_at
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        authorization_url:
+          type: string
+          format: uri
+        poll_token:
+          type: string
+          writeOnly: true
+        expires_at:
+          type: string
+          format: date-time
+      x-redact-debug: true
+    SocialSignupStatusInput:
+      type: object
+      additionalProperties: false
+      required:
+      - request_id
+      - poll_token
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        poll_token:
+          type: string
+          writeOnly: true
+      x-redact-debug: true
+    SocialSignupStatus:
+      type: object
+      additionalProperties: false
+      required:
+      - status
+      properties:
+        status:
+          type: string
+          enum:
+          - pending
+          - verified
+          - already_registered
+          - failed
+          - expired
+        signup_session_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          nullable: true
+        display_name:
+          type: string
+          nullable: true
+    AtaDependency:
+      type: object
+      additionalProperties: false
+      required:
+      - audience
+      - endpoint_id
+      properties:
+        audience:
+          "$ref": "#/components/schemas/AppId"
+        endpoint_id:
+          type: string
+    AtaEndpoint:
+      type: object
+      additionalProperties: false
+      required:
+      - endpoint_id
+      - name
+      - path
+      - critical
+      - description
+      properties:
+        endpoint_id:
+          type: string
+          pattern: "^[a-z0-9._-]{1,128}$"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        path:
+          type: string
+          description: Unique absolute path. No query, fragment, escapes or traversal
+            segments.
+        critical:
+          type: boolean
+        description:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        metadata:
+          type: object
+          additionalProperties: true
+          default: {}
+        note_to_user:
+          type: string
+          nullable: true
+          maxLength: 2000
+        additional_warnings:
+          type: array
+          items:
+            type: string
+            enum:
+            - uses_credits
+            - incurs_cost
+            - stores_data
+            - shares_data
+            - deletes_data
+            - external_service
+          default: []
+        downstream:
+          type: array
+          items:
+            "$ref": "#/components/schemas/AtaDependency"
+          default: []
+        enabled:
+          type: boolean
+          default: true
+    AtaVerificationCreate:
+      type: object
+      additionalProperties: false
+      required:
+      - endpoints
+      properties:
+        operation_id:
+          type: string
+          format: uuid
+        app_ids:
+          type: array
+          items:
+            "$ref": "#/components/schemas/AppId"
+        endpoints:
+          type: array
+          items:
+            "$ref": "#/components/schemas/AtaDependency"
+          minItems: 1
+          maxItems: 64
+        expires_after:
+          type: integer
+          format: int64
+          minimum: 3600
+          nullable: true
+          description: Seconds until the verification expires. Null or omitted means never.
+        access_token_validity:
+          type: integer
+          minimum: 60
+          maximum: 86400
+          default: 1800
+        graph_version:
+          type: string
+          description: Preview hash. Required on create to approve exactly the reviewed
+            dependency chain.
+    AtaVerificationPreview:
+      type: object
+      additionalProperties: false
+      required:
+      - app_id
+      - app_ids
+      - endpoints
+      - graph
+      - graph_version
+      - requires_expansion
+      properties:
+        app_id:
+          "$ref": "#/components/schemas/AppId"
+        app_ids:
+          type: array
+          items:
+            "$ref": "#/components/schemas/AppId"
+        endpoints:
+          type: array
+          items:
+            "$ref": "#/components/schemas/AtaDependency"
+        graph:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        graph_version:
+          type: string
+        requires_expansion:
+          type: boolean
+    AtaVerification:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        app_id:
+          "$ref": "#/components/schemas/AppId"
+        app_ids:
+          type: array
+          items:
+            "$ref": "#/components/schemas/AppId"
+        endpoints:
+          type: array
+          items:
+            "$ref": "#/components/schemas/AtaDependency"
+        graph:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        access_token_validity:
+          type: integer
+          minimum: 60
+          maximum: 86400
+        signing_principal:
+          type: object
+          required:
+          - id
+          - kind
+          - display_name
+          properties:
+            id:
+              type: string
+            kind:
+              type: string
+              enum:
+              - carbon
+              - silicon
+            display_name:
+              type: string
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+        active:
+          type: boolean
+      required:
+      - id
+      - app_id
+      - app_ids
+      - endpoints
+      - graph
+      - expires_at
+      - access_token_validity
+      - signing_principal
+      - created_at
+      - revoked_at
+    AtaVerificationCreated:
+      type: object
+      additionalProperties: true
+      required:
+      - refresh_token
+      properties:
+        refresh_token:
+          type: string
+          writeOnly: true
+      x-redact-debug: true
+      description: Verification metadata plus one-time refresh credential. Retry the same
+        operation ID and Idempotency-Key only to recover its exact response.
     ActionActors:
       type: string
       enum: [any_member, only_admins, only_owner]
@@ -5466,13 +7641,12 @@ components:
           properties:
             timezone: { $ref: '#/components/schemas/TimeZoneId' }
             email: { type: string, format: email }
-            phone_number: { type: string }
+            phone_number: { type: [string, 'null'] }
             status: { type: string, enum: [active, suspended] }
             version: { type: integer, minimum: 1 }
             updated_at: { type: string, format: date-time }
     CarbonSignupComplete:
       type: object
-      required: [carbon_id, display_name]
       additionalProperties: false
       properties:
         carbon_id: { $ref: '#/components/schemas/CarbonId' }
@@ -5481,6 +7655,17 @@ components:
           allOf: [{ $ref: '#/components/schemas/TimeZoneId' }]
           description: Defaults to UTC when omitted.
         profile_photo: { type: [string, 'null'], format: uri, maxLength: 2048 }
+    CarbonSignupResult:
+      allOf:
+        - { $ref: '#/components/schemas/CarbonSelf' }
+        - { $ref: '#/components/schemas/IamTokenResponse' }
+        - type: object
+          required: [onboarding]
+          properties:
+            onboarding:
+              type: object
+              required: [requires_organization]
+              properties: { requires_organization: { type: boolean } }
     CarbonProfilePatch:
       type: object
       minProperties: 1
@@ -5607,18 +7792,17 @@ components:
     ApplicationAuthorization:
       type: object
       description: >-
-        Current active membership bound to the authenticated token or verified
-        proof, audience, organization, principal and testing plane. Use on first
-        login and cache misses; webhook snapshots are asynchronous updates, not
-        prerequisites for initial access. org_role requires roles.read and tags
-        requires memberships.read. Null means undisclosed, not member or empty
-        tags. OBO disclosure uses the intersection of the parent token scopes
-        and recipient application's currently approved scopes. The binding
-        authorizes no action outside the verified proof's endpoint/request.
-        Do not reuse it for a different principal, membership, epoch, audience,
-        organization, environment or effective scope set. Never fill undisclosed
-        fields from a broader cached token. Introspect current bearer tokens again
-        before relying on cached authority; a consumed OBO proof is single-use.
+        Current active membership bound to the authenticated token or verified OBO
+        access token, audience, organization, principal and testing plane. Use on
+        first login and cache misses; webhook snapshots are asynchronous updates.
+        For OBO, optional actor identity requires self.identity.read, org_role
+        requires self.membership.read and tags requires self.tags.read. Null means
+        undisclosed, not member or empty tags. OBO disclosures are limited by current
+        user IAM consent and every participating application's approved scopes.
+        The binding authorizes only the verified OBO endpoint; the receiver still
+        checks payload and resource permissions. Never reuse it for a different
+        principal, membership, epoch, audience, organization, environment or scope.
+        Verify OBO authority on every request; verification does not consume its token.
       required: [organization_id, org_id, membership_id, membership_version, authorization_epoch, audience, testing_environment_id, scopes, org_role, tags]
       properties:
         actor_type: { type: string, enum: [carbon, silicon] }
@@ -5698,14 +7882,14 @@ components:
       additionalProperties: false
       properties:
         silicon_id: { $ref: '#/components/schemas/SiliconGlobalId' }
-        silicon_token: { type: string, pattern: '^stk-[a-f0-9]{32}$' }
+        silicon_token: { type: string, minLength: 12, maxLength: 36, writeOnly: true, description: 'Case-sensitive 12 to 24 character password or legacy stk- credential.' }
     BatchLoginSelection:
       type: object
       additionalProperties: false
       required: [app_id, org_ids, scope_version, approved_scopes]
       properties:
         scope_version: { type: integer, minimum: 1, description: Version of the consent view the user reviewed. }
-        approved_scopes: { type: array, uniqueItems: true, items: { type: string }, description: "Explicitly approved full effective scope set; external entries use obo:{app_id}:{endpoint_id}." }
+        approved_scopes: { type: array, uniqueItems: true, items: { type: string }, description: "Explicitly approved effective IAM scope set. OBO endpoint scopes are excluded and require separate endpoint consent." }
         app_id: { $ref: '#/components/schemas/AppId' }
         org_ids:
           type: array
@@ -5757,15 +7941,15 @@ components:
       additionalProperties: false
       properties:
         scope_version: { type: integer, minimum: 1, description: Version of the consent view the user reviewed. }
-        approved_scopes: { type: array, uniqueItems: true, items: { type: string }, description: "Explicitly approved full effective scope set; external entries use obo:{app_id}:{endpoint_id}." }
+        approved_scopes: { type: array, uniqueItems: true, items: { type: string }, description: "Explicitly approved effective IAM scope set. OBO endpoint scopes are excluded and require separate endpoint consent." }
         app_id: { $ref: '#/components/schemas/AppId' }
         org_ids:
           type: array
-          minItems: 0
-          maxItems: 1000
+          minItems: 1
+          maxItems: 1
           uniqueItems: true
           items: { $ref: '#/components/schemas/OrgId' }
-          description: User-selected active organizations. Adds to this application's existing grants on the same parent IAM session; never includes future memberships automatically. Only a direct IAM bearer may submit this selection.
+          description: Exactly one active organization. The application access and refresh tokens are bound to this account and organization. Only a direct IAM bearer may submit this selection.
         redirect_uri: { type: string, format: uri, maxLength: 2048 }
     LoginOrganization:
       type: object
@@ -5780,7 +7964,7 @@ components:
       properties:
         allow_empty_organization_selection:
           type: boolean
-          description: Whether this Carbon may continue without selecting organizations using an approved organizations.create or organizations.join permission. Empty selection adds no organization grants.
+          description: Always false. Application login requires one organization; direct IAM signup and account login handle first-organization creation.
         scope_version: { type: integer, minimum: 1 }
         consent_required: { type: boolean }
         scopes: { type: array, items: { $ref: '#/components/schemas/ApplicationConsentScope' } }
@@ -5804,6 +7988,7 @@ components:
         - required: [slt]
         - required: [refresh_token]
       properties:
+        org_id: { type: string, description: Optional organization for testing actor-ID exchange; required when the actor belongs to multiple organizations. Not accepted with issued SLTs or refresh tokens. }
         app_id: { $ref: '#/components/schemas/AppId' }
         slt: { type: string, minLength: 3, maxLength: 101, description: "IAM-issued one-time code, or an existing Carbon/Silicon ID in a verified testing environment." }
         refresh_token: { type: string, minLength: 32, maxLength: 512 }
@@ -6161,7 +8346,7 @@ components:
       required: [silicon, silicon_token, secret_replay_expires_at]
       properties:
         silicon: { $ref: '#/components/schemas/Silicon' }
-        silicon_token: { type: string, pattern: '^stk-[a-f0-9]{32}$' }
+        silicon_token: { type: string, minLength: 12, maxLength: 36, writeOnly: true, description: 'Case-sensitive 12 to 24 character password or legacy stk- credential.' }
         secret_replay_expires_at: { type: string, format: date-time }
     SiliconPage:
       type: object
@@ -6262,7 +8447,7 @@ components:
       properties:
         silicon_id: { $ref: '#/components/schemas/SiliconGlobalId' }
         credential_version: { type: integer, minimum: 1 }
-        silicon_token: { type: string, pattern: '^stk-[a-f0-9]{32}$' }
+        silicon_token: { type: string, minLength: 12, maxLength: 36, writeOnly: true, description: 'Case-sensitive 12 to 24 character password or legacy stk- credential.' }
         secret_replay_expires_at: { type: string, format: date-time }
     TagCreate:
       type: object
@@ -7111,7 +9296,16 @@ components:
       additionalProperties: false
       description: Callable endpoint definition configurable only by a current owner/admin of the Application's organization.
       properties:
-        ttl_seconds: { type: integer, format: int32, minimum: 1, maximum: 2147483647, default: 300, description: Provider-configured proof lifetime in seconds; fixed at issuance. }
+        obo_id: { type: string, readOnly: true, description: 'Globally unique [app:obo:local] identity.' }
+        name: { type: string, maxLength: 160, default: '' }
+        description: { type: string, maxLength: 4000, default: '' }
+        note_to_user: { type: [string, 'null'], maxLength: 2000 }
+        additional_warnings:
+          type: array
+          maxItems: 6
+          uniqueItems: true
+          items: { type: string, enum: [uses_credits, incurs_cost, stores_data, shares_data, deletes_data, external_service] }
+        ttl_seconds: { type: integer, format: int32, minimum: 1, maximum: 2147483647, default: 300, description: Provider-configured OBO access-token lifetime in seconds; fixed at issuance and bounded by the approved graph and provider lifetimes. }
         critical: { type: boolean, description: Whether calling this endpoint requires approval from the audience application. }
         endpoint_id:
           type: string
@@ -7128,7 +9322,31 @@ components:
         metadata:
           type: object
           additionalProperties: true
-          description: Each top-level key is required at exchange. A descriptor may declare type as string, number, integer, boolean, object, array, or null; size, nesting, and node count are bounded.
+          description: The receiving application validates these required metadata keys on each actual request. A descriptor may declare type as string, number, integer, boolean, object, array, or null; size, nesting, and node count are bounded.
+        downstream:
+          type: array
+          maxItems: 16
+          uniqueItems: true
+          description: >-
+            Direct endpoint dependencies the receiving app may call for the same user.
+            IAM displays the recursively resolved graph during separate OBO consent.
+            Delegation requires the edge in the approved graph and current declarations,
+            and the calling receiver's effective external scope. Empty grants no delegation.
+          items: { $ref: '#/components/schemas/ApplicationOboDownstream' }
+        downstream_ttl_seconds:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 3600
+          deprecated: true
+          description: Legacy proof-consumption window retained for configuration compatibility; does not grant or extend reusable-token delegation.
+    ApplicationOboDownstream:
+      type: object
+      required: [audience, endpoint_id]
+      additionalProperties: false
+      properties:
+        audience: { $ref: '#/components/schemas/AppId' }
+        endpoint_id: { type: string, minLength: 3, maxLength: 128, pattern: '^[a-z][a-z0-9_.:-]{2,127}$' }
     OboEndpointReference:
       type: object
       required: [endpoint_id, path]
@@ -7154,85 +9372,504 @@ components:
           maxItems: 50
           description: Active definitions ordered by endpoint_id.
           items: { $ref: '#/components/schemas/ApplicationOboEndpoint' }
-    OboRequestMethod:
-      type: string
-      minLength: 1
-      maxLength: 32
-      pattern: "^[A-Z][A-Z0-9!#$%&'*+.^_`|~-]{0,31}$"
-      description: Canonical uppercase HTTP method included byte-for-byte in the OBO HMAC and proof binding.
-    OboBodySha256:
-      type: string
-      pattern: '^[0-9a-f]{64}$'
-      description: Lowercase hexadecimal SHA-256 digest of the exact downstream request body bytes.
-    OboExchangeRequestBinding:
+    AtaRefreshRequest:
       type: object
-      required: [method, body_sha256]
       additionalProperties: false
+      required: [refresh_token]
       properties:
-        method: { $ref: '#/components/schemas/OboRequestMethod' }
-        body_sha256: { $ref: '#/components/schemas/OboBodySha256' }
-    OboVerifyRequestBinding:
+        refresh_token: { type: string, writeOnly: true }
+    AtaTokenResponse:
       type: object
-      required: [method, path, body_sha256]
       additionalProperties: false
+      required: [token_id, verification_id, token_type, access_token, refresh_token, expires_at, expires_in, refresh_expires_at]
       properties:
-        method: { $ref: '#/components/schemas/OboRequestMethod' }
+        token_id: { type: string, format: uuid }
+        verification_id: { type: string, format: uuid }
+        token_type: { type: string, const: Bearer }
+        access_token: { type: string }
+        refresh_token: { type: string }
+        expires_at: { type: string, format: date-time }
+        expires_in: { type: integer, minimum: 0 }
+        refresh_expires_at: { type: [string, 'null'], format: date-time }
+    AtaVerificationRequest:
+      type: object
+      additionalProperties: false
+      required: [app_id, app_proof_token, endpoint]
+      properties:
+        app_id: { $ref: '#/components/schemas/AppId' }
+        app_proof_token: { type: string, writeOnly: true }
+        endpoint: { type: string, maxLength: 2048, description: Exact registered recipient request path. }
+    AtaVerificationResult:
+      type: object
+      additionalProperties: false
+      required: [verified]
+      properties:
+        verified: { type: boolean }
+        valid_till: { type: integer, format: int64, description: Expiry as UTC YYYYMMDDHHMMSS; absent for invalid proofs. }
+    OboAuthorizationEndpoint:
+      type: object
+      additionalProperties: false
+      required:
+      - audience
+      - endpoint_id
+      properties:
+        audience:
+          "$ref": "#/components/schemas/AppId"
+        endpoint_id: &1
+          type: string
+    OboAuthorizationRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - subject_token
+      - org_id
+      - endpoints
+      properties:
+        redirect_uri:
+          type: string
+          format: uri
+          description: Exact app-authenticated callback; only the same application can redeem the returned code.
+        state:
+          type: string
+          minLength: 32
+          maxLength: 512
+          description: Application callback correlation value; required with redirect_uri.
+        subject_token: *1
+        org_id:
+          "$ref": "#/components/schemas/OrgId"
+        endpoints:
+          type: array
+          items:
+            "$ref": "#/components/schemas/OboAuthorizationEndpoint"
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+    OboConsentNode:
+      type: object
+      additionalProperties: false
+      required:
+      - audience
+      - app_name
+      - endpoint_id
+      - description
+      - critical
+      - downstream
+      properties:
+        obo_id: { type: string, readOnly: true, description: 'Globally unique [app:obo:local] identity.' }
+        name: { type: string, maxLength: 160, default: '' }
+        note_to_user: { type: [string, 'null'], maxLength: 2000 }
+        additional_warnings:
+          type: array
+          maxItems: 6
+          uniqueItems: true
+          items: { type: string, enum: [uses_credits, incurs_cost, stores_data, shares_data, deletes_data, external_service] }
+        audience:
+          "$ref": "#/components/schemas/AppId"
+        app_name:
+          type:
+          - string
+          - 'null'
+        endpoint_id: *1
+        description: *1
+        critical:
+          type: boolean
+        downstream:
+          type: array
+          items:
+            "$ref": "#/components/schemas/OboConsentNode"
+    OboConsentDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - app_id
+      - app_name
+      - actor
+      - org_id
+      - status
+      - version
+      - expires_at
+      - endpoints
+      properties:
+        redirect_uri:
+          type: string
+          format: uri
+          description: Exact app-authenticated callback; only the same application can redeem the returned code.
+        state:
+          type: string
+          minLength: 32
+          maxLength: 512
+          description: Application callback correlation value; required with redirect_uri.
+        providers:
+          type: array
+          items: { $ref: '#/components/schemas/OboConsentProvider' }
+        management_url: { type: string }
+        id: &2
+          type: string
+          format: uuid
+        app_id:
+          "$ref": "#/components/schemas/AppId"
+        app_name:
+          type:
+          - string
+          - 'null'
+        actor:
+          "$ref": "#/components/schemas/ActorRef"
+        org_id:
+          "$ref": "#/components/schemas/OrgId"
+        status:
+          type: string
+          enum:
+          - pending
+          - approved
+          - declined
+          - exchanged
+          - expired
+        version:
+          type: integer
+        expires_at: &3
+          type: string
+          format: date-time
+        endpoints:
+          type: array
+          items:
+            "$ref": "#/components/schemas/OboConsentNode"
+        authorization_url:
+          type: string
+          format: uri
+    OboConsentDecision:
+      type: object
+      additionalProperties: false
+      required:
+      - decision
+      - version
+      properties:
+        contexts:
+          type: array
+          maxItems: 100
+          description: One authenticated account and organization per provider; omitted providers use the root account and organization.
+          items: { $ref: '#/components/schemas/OboProviderContext' }
+        decision:
+          type: string
+          enum:
+          - approve
+          - decline
+        version:
+          type: integer
+    OboProviderContext:
+      x-redact-debug: true
+      type: object
+      additionalProperties: false
+      required: [app_id, account_token, org_id]
+      properties:
+        app_id: { $ref: '#/components/schemas/AppId' }
+        account_token: { type: string, writeOnly: true, description: Direct authenticated IAM account token; consumed only as approval proof and never saved in the grant. }
+        org_id: { $ref: '#/components/schemas/OrgId' }
+    OboConsentProvider:
+      type: object
+      additionalProperties: false
+      required: [app_id, app_name, actor, org_id]
+      properties:
+        app_id: { $ref: '#/components/schemas/AppId' }
+        app_name: { type: string }
+        actor: { $ref: '#/components/schemas/ActorRef' }
+        org_id: { $ref: '#/components/schemas/OrgId' }
+    OboConsentDecisionResult:
+      type: object
+      additionalProperties: false
+      required:
+      - request_id
+      - status
+      - expires_at
+      properties:
+        redirect_uri:
+          type: string
+          format: uri
+          description: Exact app-authenticated callback; only the same application can redeem the returned code.
+        request_id: *2
+        status:
+          type: string
+          enum:
+          - approved
+          - declined
+        authorization_code: *1
+        expires_at: *3
+    OboTokenRequest:
+      type: object
+      additionalProperties: false
+      required: []
+      properties:
+        grant_id: { type: string, format: uuid, description: Existing durable grant to recover. }
+        subject_token: { type: string, writeOnly: true, description: Current application login for the original account; recovery never widens authority. }
+        authorization_id: *2
+        authorization_code: *1
+        refresh_token: *1
+      description: Redeem a code, rotate a refresh token, or recover an existing durable grant with a current application login. Recovery never widens authority and cannot bypass another selected account's security reset.
+      oneOf:
+      - required: [authorization_id, authorization_code]
+        not:
+          anyOf:
+          - required: [refresh_token]
+          - required: [grant_id]
+          - required: [subject_token]
+      - required: [refresh_token]
+        not:
+          anyOf:
+          - required: [authorization_id]
+          - required: [authorization_code]
+          - required: [grant_id]
+          - required: [subject_token]
+      - required: [grant_id, subject_token]
+        not:
+          anyOf:
+          - required: [authorization_id]
+          - required: [authorization_code]
+          - required: [refresh_token]
+    OboAccessToken:
+      type: object
+      additionalProperties: false
+      required:
+      - grant_id
+      - access_token
+      - token_type
+      - expires_in
+      - expires_at
+      - audience
+      - endpoint_id
+      - org_id
+      - scope
+      properties:
+        grant_id: *2
+        access_token: *1
+        token_type: &4
+          type: string
+          enum:
+          - Bearer
+        expires_in: &5
+          type: integer
+          minimum: 1
+        expires_at: *3
+        audience: &6
+          "$ref": "#/components/schemas/AppId"
+        endpoint_id: *1
+        org_id: &7
+          "$ref": "#/components/schemas/OrgId"
+        actor:
+          description: Account explicitly selected for this provider in the approved graph.
+          "$ref": "#/components/schemas/ActorRef"
+        scope: *1
+        testing_context: &8
+          "$ref": "#/components/schemas/OboTestingContext"
+        token_id: &9
+          type: string
+          format: uuid
+    OboTokenPair:
+      type: object
+      additionalProperties: false
+      required:
+      - grant_id
+      - access_token
+      - token_type
+      - expires_in
+      - expires_at
+      - audience
+      - endpoint_id
+      - org_id
+      - scope
+      - refresh_token
+      properties:
+        grant_id: *2
+        access_token: *1
+        token_type: *4
+        expires_in: *5
+        expires_at: *3
+        audience: *6
+        endpoint_id: *1
+        org_id: *7
+        actor:
+          description: Account explicitly selected for this provider in the approved graph.
+          "$ref": "#/components/schemas/ActorRef"
+        scope: *1
+        testing_context: *8
+        token_id: *9
+        refresh_token: *1
+        refresh_expires_at:
+          type: string
+          format: date-time
+    OboTokenResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            "$ref": "#/components/schemas/OboTokenPair"
+    OboTokenRequestBinding:
+      type: object
+      additionalProperties: false
+      required:
+      - method
+      - path
+      properties:
+        method:
+          type: string
+          description: 'Actual canonical HTTP method. The receiver maps its own handler
+            to the named endpoint; the catalog currently specifies endpoint paths, not
+            allowed-method lists. Accepted methods: GET, POST, PUT, PATCH, DELETE, HEAD,
+            OPTIONS.'
+          pattern: "^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$"
         path:
           type: string
-          minLength: 1
-          maxLength: 2048
-          pattern: '^/(?!/)(?!.*(?:^|/)\.\.?(?:/|$))(?!.*[?#\x00-\x20\x7F]).*$'
-          description: Exact registered path of the downstream request.
-        body_sha256: { $ref: '#/components/schemas/OboBodySha256' }
-    OboExchangeRequest:
+          description: Actual registered endpoint path.
+    OboTokenVerificationRequest:
       type: object
-      required: [subject_token, audience, endpoint_id, metadata, request]
       additionalProperties: false
-      description: Delegates as the same user to any declared and consented audience; org_id selects a user-authorized organization when more than one is available.
+      required:
+      - access_token
+      - endpoint_id
+      - request
       properties:
-        org_id: { $ref: '#/components/schemas/OrgId' }
-        subject_token: { type: string, minLength: 32, maxLength: 4096, description: Actor-bound application access token issued to the calling app. }
-        audience: { $ref: '#/components/schemas/AppId' }
-        endpoint_id: { type: string, minLength: 3, maxLength: 128, pattern: '^[a-z][a-z0-9_.:-]{2,127}$' }
-        metadata:
-          type: object
-          additionalProperties: true
-          description: Exact metadata bound into the proof. It must contain every registered key, no unregistered keys, and values matching every declared type.
-        request: { $ref: '#/components/schemas/OboExchangeRequestBinding' }
-    OboProofResponse:
+        access_token: *1
+        endpoint_id: *1
+        request:
+          "$ref": "#/components/schemas/OboTokenRequestBinding"
+    OboDelegationRequest:
       type: object
-      required: [access_proof, proof_id, expires_in, expires_at]
       additionalProperties: false
-      description: The idempotency replay envelope for this secret response expires no later than expires_at.
+      required:
+      - access_token
+      - audience
+      - endpoint_id
       properties:
-        testing_context: { $ref: '#/components/schemas/OboTestingContext' }
-        access_proof: { type: string, pattern: '^obo_[A-Za-z0-9_-]{43}$' }
-        proof_id: { type: string, format: uuid }
-        expires_in: { type: integer, minimum: 1, maximum: 2147483647, default: 300 }
-        expires_at: { type: string, format: date-time }
-    OboVerifyRequest:
+        access_token: *1
+        audience:
+          "$ref": "#/components/schemas/AppId"
+        endpoint_id: *1
+    OboAuthorizedEndpoint:
       type: object
-      required: [access_proof, request]
       additionalProperties: false
-      description: Exact actual-request binding; successful verification is strictly single-use and not idempotently replayable.
+      required:
+      - app_id
+      - endpoint_id
+      - path
       properties:
-        access_proof: { type: string, pattern: '^obo_[A-Za-z0-9_-]{43}$' }
-        request: { $ref: '#/components/schemas/OboVerifyRequestBinding' }
-    OboAccessResult:
+        app_id:
+          "$ref": "#/components/schemas/AppId"
+        endpoint_id: *1
+        path: *1
+    OboTokenChainLink:
       type: object
-      required: [valid, proof_id, issuer_app_id, audience, actor, authorization, org_id, endpoint, metadata, expires_at, consumed_at]
+      additionalProperties: false
+      required:
+      - app_id
+      - audience
+      - endpoint_id
       properties:
-        valid: { const: true }
-        proof_id: { type: string, format: uuid }
-        issuer_app_id: { $ref: '#/components/schemas/AppId' }
-        audience: { $ref: '#/components/schemas/AppId' }
-        actor: { $ref: '#/components/schemas/ActorRef' }
-        authorization: { $ref: '#/components/schemas/ApplicationAuthorization' }
-        org_id: { $ref: '#/components/schemas/OrgId' }
-        endpoint: { $ref: '#/components/schemas/OboEndpointReference' }
-        metadata: { type: object, additionalProperties: true }
-        expires_at: { type: string, format: date-time }
-        consumed_at: { type: string, format: date-time }
+        app_id:
+          "$ref": "#/components/schemas/AppId"
+        audience:
+          "$ref": "#/components/schemas/AppId"
+        endpoint_id: *1
+    OboTokenVerification:
+      type: object
+      additionalProperties: false
+      required:
+      - active
+      - token_id
+      - grant_id
+      - actor
+      - org_id
+      - issuer_app_id
+      - originating_app_id
+      - endpoint
+      - chain
+      - authorization
+      - expires_at
+      properties:
+        active:
+          type: boolean
+          const: true
+        token_id: *2
+        grant_id: *2
+        actor:
+          "$ref": "#/components/schemas/ActorRef"
+        org_id:
+          "$ref": "#/components/schemas/OrgId"
+        issuer_app_id:
+          "$ref": "#/components/schemas/AppId"
+        originating_app_id:
+          "$ref": "#/components/schemas/AppId"
+        endpoint:
+          "$ref": "#/components/schemas/OboAuthorizedEndpoint"
+        chain:
+          type: array
+          items:
+            "$ref": "#/components/schemas/OboTokenChainLink"
+        authorization:
+          "$ref": "#/components/schemas/ApplicationAuthorization"
+        expires_at: *3
+    OboGrant:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - app_id
+      - app_name
+      - org_id
+      - audience
+      - endpoint_id
+      - status
+      - created_at
+      - expires_at
+      - endpoints
+      properties:
+        id: *2
+        app_id:
+          "$ref": "#/components/schemas/AppId"
+        app_name:
+          type:
+          - string
+          - 'null'
+        org_id:
+          "$ref": "#/components/schemas/OrgId"
+        audience:
+          "$ref": "#/components/schemas/AppId"
+        endpoint_id: *1
+        status: *1
+        created_at: *3
+        expires_at: *3
+        endpoints:
+          type: array
+          items:
+            "$ref": "#/components/schemas/OboConsentNode"
+    OboGrants:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - page
+      properties:
+        items:
+          type: array
+          maxItems: 10
+          items:
+            "$ref": "#/components/schemas/OboGrant"
+        page:
+          "$ref": "#/components/schemas/PageInfo"
+    OboGrantRevoked:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - status
+      properties:
+        id: *2
+        status:
+          type: string
+          enum:
+          - revoked
 
     ApplicationScope:
       type: object
@@ -7256,6 +9893,21 @@ components:
         description: { type: string }
         critical: { type: boolean }
         app_id: { type: [string, 'null'] }
+        downstream:
+          type: array
+          description: >-
+            On consent for an OBO scope: every call the audience's declared
+            chain could make for the user under a separately approved OBO grant.
+          items: { $ref: '#/components/schemas/ApplicationConsentDownstream' }
+    ApplicationConsentDownstream:
+      type: object
+      required: [via_app_id, app_id, endpoint_id, description]
+      properties:
+        via_app_id: { $ref: '#/components/schemas/AppId' }
+        app_id: { $ref: '#/components/schemas/AppId' }
+        app_name: { type: [string, 'null'] }
+        endpoint_id: { type: string }
+        description: { type: string }
     ApplicationScopeRequestCreate:
       type: object
       required: [app_scope, message]
@@ -7524,6 +10176,7 @@ components:
       - webhook
       - app_scope
       properties:
+        ata_endpoints: { type: array, default: [], items: { $ref: '#/components/schemas/AtaEndpoint' } }
         operation_id: &1
           type: string
           format: uuid

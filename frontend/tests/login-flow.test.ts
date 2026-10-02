@@ -117,9 +117,7 @@ test("continuation preserves invalid duplicates and empty selections for rejecti
   };
   for (const path of ["/auth/continue", "/api/v1/login"]) {
     const response = await gateway(
-      new Request(
-        `${env.AUTH_ORIGIN}${path}?app_ids=a&app_ids=b&org_ids=`,
-      ),
+      new Request(`${env.AUTH_ORIGIN}${path}?app_ids=a&app_ids=b&org_ids=`),
       env,
     );
     const target = new URL(response.headers.get("location")!);
@@ -197,50 +195,29 @@ test("permission approval preserves exact published scopes and rejects incomplet
   );
 });
 
-test("account onboarding requires explicit IAM eligibility for every empty selection", () => {
-  const onboarding = {
-    app_id: "interface",
-    allow_empty_organization_selection: true,
-  };
-  const ordinary = {
-    app_id: "files",
-    allow_empty_organization_selection: false,
-  };
+test("application login requires exactly one organization for every app", () => {
+  const choices = [
+    { app_id: "interface", allow_empty_organization_selection: true },
+    { app_id: "files" },
+  ];
   assert.equal(
-    canApproveOrganizationSelections([onboarding], { "interface": [] }),
+    canApproveOrganizationSelections(choices, {
+      interface: ["work"],
+      files: ["work"],
+    }),
     true,
   );
-  assert.equal(canApproveOrganizationSelections([onboarding], {}), false);
+  for (const invalid of [[], ["work", "personal"], [""]])
+    assert.equal(
+      canApproveOrganizationSelections(choices, {
+        interface: invalid,
+        files: ["work"],
+      }),
+      false,
+    );
   assert.equal(
-    canApproveOrganizationSelections([ordinary], { "files": [] }),
-    false,
-  );
-  assert.equal(
-    canApproveOrganizationSelections([{ app_id: "old-api" }], {
-      "old-api": [],
-    }),
+    canApproveOrganizationSelections(choices, { interface: ["work"] }),
     false,
   );
   assert.equal(canApproveOrganizationSelections([], {}), false);
-  assert.equal(
-    canApproveOrganizationSelections([onboarding, ordinary], {
-      "interface": [],
-      "files": [],
-    }),
-    false,
-  );
-  assert.equal(
-    canApproveOrganizationSelections([onboarding, ordinary], {
-      "interface": [],
-      "files": ["work"],
-    }),
-    true,
-  );
-  assert.equal(
-    canApproveOrganizationSelections(
-      [onboarding, { ...ordinary, allow_empty_organization_selection: true }],
-      { "interface": [], "files": [] },
-    ),
-    true,
-  );
 });

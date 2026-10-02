@@ -308,7 +308,7 @@ pub async fn authenticate(
     row.map(AccessContext::try_from).transpose()
 }
 
-/// Resolves only immutable Carbon/Application token identity for exact logout
+/// Resolves only immutable Carbon/Silicon/Application token identity for exact logout
 /// replay lookup. This function deliberately does not confer authority: it
 /// ignores current token/session/epoch/tenant state, and callers must never use
 /// its result to execute a fresh mutation.
@@ -318,7 +318,10 @@ pub(crate) async fn identify_for_logout_replay(
     token: &SecretString,
 ) -> Result<Option<LogoutReplayIdentity>, AccessTokenError> {
     let lookup = access_lookup(crypto, token)?;
-    if !matches!(lookup.token_class, "carbon_access" | "application_access") {
+    if !matches!(
+        lookup.token_class,
+        "carbon_access" | "silicon_access" | "application_access"
+    ) {
         return Ok(None);
     }
 

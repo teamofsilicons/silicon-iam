@@ -62,6 +62,33 @@ export function ErrorBox(props: { error: unknown; retry?: () => void }) {
             {error()?.details?.field}: {error()?.details?.message}
           </p>
         </Show>
+        <Show
+          when={
+            error()?.status === 422 &&
+            error()?.details &&
+            !error()?.details?.field &&
+            !error()?.details?.fields
+          }
+        >
+          <ul>
+            <For each={Object.entries(error()?.details || {})}>
+              {([field, value]) => (
+                <Show
+                  when={
+                    typeof value === "string" ||
+                    (Array.isArray(value) &&
+                      value.every((item) => typeof item === "string"))
+                  }
+                >
+                  <li>
+                    {label(field)}:{" "}
+                    {Array.isArray(value) ? value.join(" ") : String(value)}
+                  </li>
+                </Show>
+              )}
+            </For>
+          </ul>
+        </Show>
         <Show when={error()?.code === "idempotency_expired"}>
           <p>
             The recovery window expired. Check the resource’s current state
@@ -308,6 +335,8 @@ export function StepUp(props: {
   onVerified: (token: string) => void;
   close: () => void;
 }) {
+  const [session] = createResource(() => request<RecordValue>("/api/session"));
+  const silicon = () => session()?.actorType === "silicon";
   const send = mutation(),
     [channel, setChannel] = createSignal("email"),
     [challenge, setChallenge] = createSignal<RecordValue>(),
@@ -319,7 +348,15 @@ export function StepUp(props: {
     setBusy(true);
     setError();
     try {
-      if (!challenge())
+      if (silicon()) {
+        const result = await send("POST", "/api/v1/silicon-auth/step-up", {
+          silicon_token: code(),
+          action: props.action,
+          resource_id: props.resource,
+        });
+        setCode("");
+        props.onVerified(result.step_up_token);
+      } else if (!challenge())
         setChallenge(
           await send("POST", "/api/v1/step-up/challenges", {
             channel: channel(),
@@ -345,42 +382,66 @@ export function StepUp(props: {
     <Modal title="Verify it’s you" close={props.close}>
       <form class="stack" onSubmit={submit}>
         <p class="muted">
-          This sensitive change needs a fresh verification. The code authorizes
-          only this action and this resource.
+          {silicon()
+            ? "Confirm your Silicon password to authorize this change."
+            : "This sensitive change needs a fresh verification."}{" "}
+          Verification applies only to this action and this resource.
         </p>
+        <ErrorBox error={session.error} />
         <Show
-          when={challenge()}
+          when={silicon()}
           fallback={
-            <Field name="Send a code to">
-              <select
-                value={channel()}
-                onChange={(e) => setChannel(e.currentTarget.value)}
-              >
-                <option value="email">Verified email</option>
-                <option value="phone_number">Verified phone</option>
-              </select>
-            </Field>
+            <Show
+              when={challenge()}
+              fallback={
+                <Field name="Send a code to">
+                  <select
+                    value={channel()}
+                    onChange={(e) => setChannel(e.currentTarget.value)}
+                  >
+                    <option value="email">Verified email</option>
+                    <Show when={session()?.user?.phone_number}>
+                      <option value="phone_number">Verified phone</option>
+                    </Show>
+                  </select>
+                </Field>
+              }
+            >
+              <Field name="Verification code" required>
+                <input
+                  autofocus
+                  required
+                  pattern="[0-9]{6}"
+                  maxlength="6"
+                  inputmode="numeric"
+                  autocomplete="one-time-code"
+                  value={code()}
+                  onInput={(e) => setCode(e.currentTarget.value)}
+                />
+              </Field>
+              <LocalOtp code={challenge()?.local_otp} config={props.config} />
+            </Show>
           }
         >
-          <Field name="Verification code" required>
+          <Field name="Silicon password" required>
             <input
-              autofocus
+              type="password"
+              autocomplete="current-password"
               required
-              pattern="[0-9]{6}"
-              maxlength="6"
-              inputmode="numeric"
-              autocomplete="one-time-code"
+              autofocus
               value={code()}
               onInput={(e) => setCode(e.currentTarget.value)}
             />
           </Field>
-          <LocalOtp code={challenge()?.local_otp} config={props.config} />
         </Show>
         <ErrorBox error={error()} />
-        <button class="button primary" disabled={busy()}>
+        <button
+          class="button primary"
+          disabled={busy() || session.loading || Boolean(session.error)}
+        >
           {busy()
             ? "Please wait…"
-            : challenge()
+            : silicon() || challenge()
               ? "Verify & continue"
               : "Send verification code"}
         </button>

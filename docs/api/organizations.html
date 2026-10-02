@@ -20,8 +20,8 @@
 </table>
 
 <p>
-  A Silicon can never be an owner or an administrator. Its authority is a separate question,
-  covered in <a href="https://docs.iam.teamofsilicons.com/api/governance">Tags, trust and governance</a>.
+  Carbons and Silicons may be owners, administrators or members. Roles and delegated
+  capabilities control authority; being a Silicon neither grants nor removes those powers.
 </p>
 
 <h2>Capabilities</h2>
@@ -51,7 +51,7 @@
 </table>
 
 <p>
-  Promotion, demotion and capability replacement all require a verified-channel step-up token and
+  Promotion, demotion and capability replacement all require a Carbon verified-channel or Silicon credential step-up token and
   an <code>If-Match</code> on the authorization aggregate, whose version is separate from the
   membership's.
 </p>
@@ -60,24 +60,38 @@
 
 <p>
   <code>GET /api/v1/organization-ids/{org_id}/availability</code> then
-  <code>POST /api/v1/organizations</code>. The creator becomes the sole member and owner.
+  <code>POST /api/v1/organizations</code>. The Carbon or Silicon creator becomes the sole member and owner. Silicon creation requires its custodian to allow <code>can_create_organizations</code>.
 </p>
 
 <div class="banner banner-danger">
   <div>
     <strong><code>org_id</code> is permanent.</strong>
-    It cannot be changed and is never reused after deletion. It also becomes the suffix of every
-    Silicon ID in the organization — a Silicon created as <code>head_of_growth</code> in
-    <code>tos</code> is <code>head_of_growth:tos</code> forever.
+    It cannot be changed and is never reused after deletion. Account IDs are independent:
+    <code>si:head_of_growth</code> can belong to several organizations, with membership
+    <code>si:head_of_growth[tos]</code> identifying its relationship to <code>tos</code>.
   </div>
 </div>
+
+<h3>Uploading a logo</h3>
+
+<p>
+  Instead of linking an external image, upload the logo to IAM with
+  <code>PUT /api/v1/organizations/{org_id}/logo</code>. Send the raw image as the body, with its
+  <code>Content-Type</code> (<code>image/png</code>, <code>image/jpeg</code>, <code>image/webp</code> or
+  <code>image/gif</code>, up to 512 KiB), plus <code>Idempotency-Key</code> and <code>If-Match</code>.
+  It needs the same authority as changing the logo with <code>PATCH</code>. The response is the
+  updated Organization. Its <code>logo</code> is now a public IAM URL,
+  <code>/api/v1/organization-logos/{logo_id}</code>, which anyone can load without credentials and
+  cache indefinitely. A new upload replaces the old image, and setting <code>logo</code> with
+  <code>PATCH</code> (to another URL or <code>null</code>) deletes the stored one.
+</p>
 
 <h2>Listing your organizations</h2>
 
 <p>
-  <code>GET /api/v1/organizations</code> is Carbon-only and defaults to
+  <code>GET /api/v1/organizations</code> accepts direct Carbon or Silicon sessions and defaults to
   <code>status=active</code>. Its <code>status=active|removed</code> query filters the authenticated
-  Carbon's <em>membership</em> in each organization, not the organization's own lifecycle state.
+  account's <em>membership</em> in each organization, not the organization's own lifecycle state.
   The <code>status</code> property in every returned Organization still describes the organization
   itself and remains <code>active</code> or <code>disabled</code>; a result reached through a removed
   membership may therefore describe an active organization.
@@ -98,7 +112,7 @@
       <td>The caller's own entry</td></tr>
     <tr><td><span class="verb verb-get">GET</span></td>
       <td><code>/api/v1/organizations/{org_id}/directory/members</code></td>
-      <td>Every teammate, paginated</td></tr>
+      <td>Visible active teammates, paginated</td></tr>
     <tr><td><span class="verb verb-get">GET</span></td>
       <td><code>/api/v1/organizations/{org_id}/directory/members/{membership_id}</code></td>
       <td>One teammate</td></tr>
@@ -126,9 +140,24 @@
 </p>
 
 <p>
-  The directory deliberately exposes public handles rather than <code>membership_id</code>. To act
-  on somebody you need the membership endpoints, which are authority-checked.
+  Membership references use canonical <code>c:handle[org_id]</code> or
+  <code>si:handle[org_id]</code> identifiers. Mutations use authority-checked membership
+  endpoints; knowing a public identifier never grants access.
 </p>
+
+<h2>Directory visibility</h2>
+<p>Organization membership does not automatically reveal the whole directory. Direct IAM
+managers use <code>GET/PUT /api/v1/organizations/{org_id}/directory-visibility</code>
+for the default, and <code>GET/PUT …/members/{membership_id}/directory-visibility</code>
+for an individual override. PUT takes <code>{mode, visible_membership_ids}</code>,
+<code>If-Match</code> and an idempotency key. Default modes are <code>all</code>,
+<code>self</code> or <code>selected</code>; member overrides also accept <code>inherit</code>.
+Use active same-org canonical memberships, with an empty list unless mode is selected.</p>
+<p>The default initially permits all members. The caller always sees itself. Visibility is
+directional, applied before pagination and enforced on detail reads. Changing the default
+requires <code>organization.update</code>; changing a member override requires
+<code>members.update_directory</code>. Responses include <code>version</code>, configured
+mode/list, and <code>effective_mode</code>/<code>effective_visible_membership_ids</code>.</p>
 
 <h2>Complete directory details</h2>
 <p><code>GET /api/v1/organizations/{org_id}/directory/details</code> returns a complete

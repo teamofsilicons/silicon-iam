@@ -1,11 +1,11 @@
 # Silicon IAM frontend
 
-The first official v1 frontend provides application permission consent, organization selection, batch login, and application bundles. See the [batch login guide](../BATCH_LOGIN.md) and [bundle guide](../BUNDLES.md).
+The frontend provides Carbon and Silicon signup, multiple configured accounts, application login with one organization, separate OBO consent, batch login and application bundles. See the [batch login guide](../BATCH_LOGIN.md) and [bundle guide](../BUNDLES.md).
 
 The SolidJS frontend has two entry points in one codebase:
 
 - **Main IAM console:** `/` for organizations, directory, governance, profile and sessions. Applications, bundles, scope-review workflows and testing-environment management live in the Honeycomb console.
-- **IAM authentication:** `/login` and `/signup`, with `/login?app_id=org%3Eapp&redirect_uri=…` for application login. Apps must not supply organization scope; users choose it in IAM. Configure a separate auth origin when hosting.
+- **IAM authentication:** `/login` and `/signup`, with `/login?app_id=app&redirect_uri=…` for application login. Apps must not supply organization scope; users choose it in IAM. Configure a separate auth origin when hosting.
 
 The app talks only to its same-origin session gateway. This is **not a static-only website**: deploy the gateway with the assets. Source lives in `frontend/` in the IAM repository; run the commands below there. Run the v1 backend with its complete production migrations, testing overlay, and runtime grants. See [organization consent](../ORGANIZATION_CONSENT.md).
 
@@ -82,20 +82,28 @@ Allowlist `https://auth.iam.teamofsilicons.com/api/v1/sso/callback` in WorkOS. T
 
 ## Authentication and application integration
 
-Signup verifies **both** email and phone, then creates a Carbon. It does not silently sign the user in: a fresh IAM login challenge establishes the session. The IAM-owned auth frontend may ask for OTPs; applications, the CLI, and the client must continue to use SLT login, not collect those OTPs themselves.
+Carbon signup requires a verified email; phone is optional, and a supplied phone must be verified or explicitly skipped. Google and Apple appear only when their backend providers are configured. A provider-verified email skips email OTP verification. Profile setup offers an available Carbon ID, display name, detected timezone, generated image and image upload. Completion signs the Carbon in automatically and prompts for first-org onboarding when no membership exists. An already-registered email offers login.
 
-Successful browser login never returns bearer/refresh tokens to browser JavaScript. The gateway encrypts the upstream Carbon tokens and upstream browser-session cookie into an HttpOnly, SameSite=Lax cookie (Secure over HTTPS). Token refresh runs server-side, with deterministic refresh idempotency and in-process single-flight. Terminal refresh rejection expires the frontend session; transient failures preserve it. A protected request rejected with HTTP 401 receives one refresh attempt and a replay with the same body and mutation key. A generic operation-level 401 does not erase the browser session. Because encrypted cookies cannot record an attempt before its response reaches the browser, refreshed access tokens renew conservatively 600 seconds early, covering IAM's maximum secret-response replay window across gateway replicas.
+Silicon signup collects an ID, optional 12–24-character password, custodian email, timezone and optional webhook. A generated password is revealed once. The request waits for its verified-email Carbon custodian to approve. `/silicon-custody?request=…` preserves that request through login/signup. Approved Silicons can sign in, edit their own profile and create an organization when their custodian allows it. Organization owners can also seed an organization-custodied Silicon or invite an existing one from a shared organization.
 
-Application login navigates through `/auth/continue` to IAM's `/login` surface. GET never grants consent or mints a token. After application confirmation, IAM displays every requested IAM and external application permission, explicitly marks critical permissions, and asks the user to continue before choosing at least one organization. The backend supplies the current scope version and determines whether that permission step is required; existing grants stay selected and additions preserve them. The trusted IAM frontend submits `org_ids`, the exact displayed `approved_scopes`, and `scope_version` to the direct-IAM SLT endpoint, shows loading and a success checkmark, then displays the SLT or redirects with `slt`. “Select all” includes current organizations only. Applications must protect their own callback flow/state and immediately exchange the SLT **on their server**, using application Basic credentials or the Rust client. The frontend never performs that exchange with app secrets.
+The official IAM CLI supports account signup and login, including IAM OTP entry. External application CLIs and backends receive only an app-bound SLT; they must never collect IAM OTPs or passwords.
+
+Successful browser login never returns account bearer/refresh tokens to browser JavaScript. The gateway encrypts each configured account's credentials and upstream browser-session cookie into HttpOnly, SameSite=Lax cookies (Secure over HTTPS). Only opaque account handles and safe profile summaries reach the client. Refresh is server-side and serialized per account. A protected request rejected with HTTP 401 gets one refresh attempt and an identical replay; terminal refresh rejection removes the affected account, while transient errors preserve it. Renewals begin conservatively 600 seconds early to cover the backend's secret-response replay window across replicas.
+
+Application login navigates through `/auth/continue` to `/login`. GET never grants consent or mints tokens. The picker supports Continue as Carbon or Continue as Silicon, adding accounts, and expanding/collapsing each configured account's organizations. Select exactly one account and organization. Collapse preferences persist locally. Create/join navigation returns to the pending login.
+
+The backend's `consent_required` determines whether to show the critical IAM permission consent step. No OBO permission appears there. The trusted gateway uses the chosen account to submit a one-element `org_ids`, exact current `approved_scopes`, and `scope_version`. Every SLT and resulting app token family remains bound to that membership. A later login never expands an earlier token. Apps validate callback state and exchange SLTs on their own server with their application secret.
 
 Application registration, configuration, webhook management, secret rotation and OBO endpoint definitions are managed through [Honeycomb](https://console.honeycomb.teamofsilicons.com/). IAM retains the accepted authentication records and enforces login, consent, scopes and delegated access. Old `/applications`, `/bundles`, `/scope-reviews` and `/testing` links display a handoff page with a working Honeycomb link; they do not open management forms.
 
-OBO proof exchange and verification remain signed **server-to-server** operations. Follow the [API/client integration docs](https://docs.iam.teamofsilicons.com/) for signed requests, snapshots, epochs, and current authorization.
+OBO uses its own on-demand consent page with endpoint names, descriptions, notes, warning codes and the full dependency tree. Each provider can select a configured account and organization; omitted choices default to the originating account and organization. The gateway substitutes protected credentials for opaque account handles before submitting contexts. Only the represented user can approve. Grants remain until revoked or invalidated by current authority changes. The same access token covers every approved graph endpoint; each receiver verifies its own endpoint with IAM. The originating app alone keeps the refresh token.
+
+An application may bind an optional callback URI and state when creating the OBO request. After a confirmed decision IAM returns the complete callback URL with `authorization_id`, `state`, and either `code` or `error=access_denied`. The frontend follows that server-bound URL. Without a callback it displays the one-use code for manual handoff. Manage grants at `/console/obo?app=<app_id>`. See the [OBO contract](../api/obo.html).
 
 ## Organization and account coverage
 
-- Organizations: create, view, edit, ownership transfer; email invitation join and WorkOS join navigation.
-- Directory: member details, directory fields, job roles/tags/history, admin/capability changes, removal; Silicon profile/create/remove, webhook setup/subscriptions and staged token rotation.
+- Organizations: Carbon/Silicon creation and ownership, view/edit/transfer, email/SSO admission for Carbons and existing-Silicon invitations.
+- Directory: organization visibility defaults and per-member overrides; member details, directory fields, job roles/tags/history, admin/capability changes, removal; Silicon profile/create/remove, webhook setup/subscriptions and staged token rotation.
 - Invitations and tags: list/create/view and revoke or edit/delete where supported.
 - Trust: organization default, rule creation/edit/deletion and effective-trust evaluation. Trust is advisory.
 - Approvals: pending/actionable lists, detail, approve/reject with the appropriate step-up.
@@ -112,7 +120,7 @@ The UI intentionally does not expose platform-admin review, Silicon-only governa
 - Sensitive actions require confirmation and fresh, action/resource-bound step-up. Tokens and newly revealed secrets are memory-only and disappear when their dialog closes.
 - CSRF defense requires exact same-origin requests and a custom frontend header for JSON API access. Only narrowly defined navigation/callback GETs are exempt. Browser-supplied bearer headers and app credentials are not forwarded.
 - Fixed upstream, allowlisted frontend hosts, blocked server-to-server routes, bounded request bodies, no-store responses, safe redirect handling, and a production CSP.
-- No analytics, external fonts, credential logging, browser localStorage or sessionStorage.
+- No external fonts or credential logging. Account credentials never enter browser localStorage/sessionStorage; localStorage holds account collapse preferences and the telemetry opt-out only.
 - A feature-detected WebMCP surface reads the current section, navigates IAM sections, or opens the Honeycomb console. It exposes no credentials.
 
 ## Keeping contracts current
@@ -136,7 +144,7 @@ Built with [SolidJS](https://docs.solidjs.com/), TypeScript and Vite. The mark a
 
 Honeycomb owns application permission requests, scope-review workflows and bundle definitions. IAM validates accepted decisions, enforces effective scopes and user consent, and retains organization bundle eligibility settings.
 
-Bundle login remains in IAM at `/login?bundle_id=org%3Ebundle`. Users see the bundle identity and choose organizations once; the callback receives individual application SLTs in the same `#slts=` encoding as batch login. Every member exchanges its own token using its own secret.
+Bundle login remains in IAM at `/login?bundle_id=org%3Ebundle`. Users see the bundle identity and choose one account and organization once; the callback receives individual application SLTs in the same `#slts=` encoding as batch login. Every member exchanges its own token using its own secret.
 
 The frontend links to the standalone documentation site at
 https://docs.iam.teamofsilicons.com. Its static build and hosting configuration

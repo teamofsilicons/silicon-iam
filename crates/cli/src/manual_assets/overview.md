@@ -2,7 +2,7 @@
 
 This is the first official Silicon IAM v1 contract. The public documentation is hosted at [docs.iam.teamofsilicons.com](https://docs.iam.teamofsilicons.com/).
 
-Applications declare the IAM information and external endpoints they need. Critical permissions go through review. Users authenticate in IAM, approve the application's current permissions, and choose which organizations to share. The application receives an app-bound short-lived token, never IAM credentials or verification codes.
+Applications declare the IAM information and external endpoints they need. Critical permissions go through review. Users authenticate in IAM, select one account and organization, and approve critical IAM permissions when required. The app requests separate OBO endpoint consent when needed. The application receives an app-bound short-lived token, never IAM credentials or verification codes.
 
 ## Use IAM
 
@@ -14,7 +14,7 @@ iam login status --json
 iam --help
 ```
 
-For a Silicon, use `iam silicon-login --sid <handle:org>` in the official IAM
+For a Silicon, use `iam silicon-login --sid <si:handle>` in the official IAM
 CLI. Application CLIs receive only app-bound short-lived tokens. Installation
 sets up the CLI without logging in. Honeycomb manages installed CLI updates;
 see [installation and bootstrap](HONEYCOMB_RELEASE.md). Follow [the CLI guide](cli/README.md) for practical

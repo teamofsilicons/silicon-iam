@@ -67,11 +67,11 @@ impl Plan {
                     );
                 }
             }
-            Command::Signup(args) => {
-                plan.note("Your account is created; signup does not sign this device in.");
+            Command::Signup(_) => {
+                plan.note("Completed signup signs this device in automatically. A pending verification can be resumed with its session ID.");
                 plan.add(
-                    "Sign in to the account you just created",
-                    &["login", "--carbon-id", &args.carbon_id],
+                    "Create your first organization after signup",
+                    &["org", "create", "--help"],
                 );
             }
             Command::Org(command) => plan.organization_command(command),
@@ -246,6 +246,12 @@ impl Plan {
                 self.note("Ownership has changed. Your previous owner authority is not retained automatically.");
                 self.add("Review current organization ownership", &["org", "show"]);
             }
+            OrgCommand::DirectoryVisibility { .. } => {
+                self.add(
+                    "Inspect the directory visible to this account",
+                    &["member", "directory"],
+                );
+            }
             OrgCommand::Available { .. } => {}
         }
     }
@@ -306,15 +312,15 @@ impl Plan {
                 self.add("Review the application", &["app", "show", app_id]);
             }
             AppCommand::Token(command) => self.application_token_command(context, command),
-            AppCommand::Obo(AppOboCommand::Exchange { .. }) => {
-                self.note("Send the proof only to its audience with the exact method, path and body it binds. Verification consumes it; do not pre-verify it as a health check.");
+            AppCommand::Obo(AppOboCommand::Authorize { .. }) => {
+                self.note("Review the full endpoint dependency graph in IAM, then give the approved authorization code to the requesting application for token exchange. Normal login grants no OBO authority.");
                 self.docs(
-                    "Understand request binding and delegated authorization",
+                    "Understand endpoint consent and delegated authorization",
                     "obo",
                 );
             }
             AppCommand::Obo(AppOboCommand::Verify { .. }) => {
-                self.note("The proof was consumed. Enforce the returned current authorization binding; absent role or tags grant no authority. Identity alone is not permission to perform the downstream operation.");
+                self.note("The token remains reusable. Enforce the current endpoint and resource authorization on every request; absent role or tags grant no authority. Identity alone is not permission to perform the downstream operation.");
                 self.docs("Apply the delegated authority contract", "obo");
             }
             AppCommand::List { .. } => {

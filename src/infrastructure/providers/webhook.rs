@@ -177,7 +177,10 @@ fn classify_response_body_error(
     }
 }
 
-fn validate_url(environment: RuntimeEnvironment, destination: &Url) -> Result<(), WebhookError> {
+pub(crate) fn validate_url(
+    environment: RuntimeEnvironment,
+    destination: &Url,
+) -> Result<(), WebhookError> {
     let allowed_scheme = destination.scheme() == "https"
         || (environment != RuntimeEnvironment::Production && destination.scheme() == "http");
     if !allowed_scheme

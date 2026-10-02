@@ -356,6 +356,123 @@ async fn scoped_mutations_enforce_scope_membership_capability_and_step_up() -> a
     );
     ensure!(sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM iam.organization_memberships m JOIN iam.organizations o ON o.id=m.organization_id WHERE o.org_id='scoped_created' AND m.principal_id=$1 AND m.org_role='owner')").bind(OWNER).fetch_one(&admin).await?);
 
+    // Logos are stored in IAM, served publicly and pruned once unreferenced.
+    let logos = Router::new()
+        .route(
+            "/api/v1/organization-logos/{logo_id}",
+            axum::routing::get(super::logos::get_logo),
+        )
+        .with_state(state.clone());
+    let logo_path = "/api/v1/organizations/test_org/logo";
+    let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0".to_vec();
+    let gif = b"GIF89a\x01\0\x01\0\0\0\0;".to_vec();
+    let current_version = version(&admin, ORG).await?;
+    for (label, token, content_type, expected) in [
+        (
+            "scope without user capability",
+            &member,
+            "image/png",
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "missing write scope",
+            &reader,
+            "image/png",
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "mismatched content",
+            &owner,
+            "image/jpeg",
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "svg",
+            &owner,
+            "image/svg+xml",
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let (status, body) =
+            upload_logo(&app, token, logo_path, current_version, content_type, &png).await?;
+        ensure!(
+            status == expected,
+            "{label}: expected {expected}, got {status}: {body}"
+        );
+    }
+    let (status, body) = upload_logo(
+        &app,
+        &owner,
+        logo_path,
+        current_version - 1,
+        "image/png",
+        &png,
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::PRECONDITION_FAILED,
+        "stale logo upload: {status} {body}"
+    );
+    ensure!(
+        version(&admin, ORG).await? == current_version,
+        "denied logo uploads must not mutate version"
+    );
+
+    let (status, body) =
+        upload_logo(&app, &owner, logo_path, current_version, "image/png", &png).await?;
+    ensure!(status == StatusCode::OK, "logo upload: {status} {body}");
+    let first_logo = logo_path_from(&body)?;
+    let (status, headers, bytes) = fetch_logo(&logos, &first_logo).await?;
+    ensure!(
+        status == StatusCode::OK
+            && bytes == png
+            && headers["content-type"] == "image/png"
+            && headers["cache-control"] == "public, max-age=31536000, immutable",
+        "uploaded logo must be served publicly: {status} {headers:?}"
+    );
+
+    let (status, body) = upload_logo(
+        &app,
+        &owner,
+        logo_path,
+        version(&admin, ORG).await?,
+        "image/gif",
+        &gif,
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::OK,
+        "logo replacement: {status} {body}"
+    );
+    let second_logo = logo_path_from(&body)?;
+    ensure!(
+        fetch_logo(&logos, &first_logo).await?.0 == StatusCode::NOT_FOUND,
+        "a replaced logo must no longer be served"
+    );
+    ensure!(
+        fetch_logo(&logos, &second_logo).await?.2 == gif,
+        "the replacement logo must be served"
+    );
+
+    let (status, body) = request(
+        &app,
+        &owner,
+        "PATCH",
+        profile_path,
+        Some(version(&admin, ORG).await?),
+        json!({"logo":null}),
+    )
+    .await?;
+    ensure!(status == StatusCode::OK, "logo removal: {status} {body}");
+    ensure!(
+        fetch_logo(&logos, &second_logo).await?.0 == StatusCode::NOT_FOUND
+            && sqlx::query_scalar::<_, i64>("SELECT count(*) FROM iam.organization_logos")
+                .fetch_one(&admin)
+                .await?
+                == 0,
+        "clearing the logo must delete the stored upload"
+    );
+
     runtime.close().await;
     admin.close().await;
     Ok(())
@@ -500,6 +617,52 @@ async fn request_with_step_up(
     let bytes = to_bytes(response.into_body(), 128 * 1024).await?;
     let json = serde_json::from_slice(&bytes).context("response must be JSON")?;
     Ok((status, json))
+}
+
+async fn upload_logo(
+    app: &Router,
+    token: &SecretString,
+    path: &str,
+    version: i64,
+    content_type: &str,
+    content: &[u8],
+) -> anyhow::Result<(StatusCode, Value)> {
+    let request = Request::builder()
+        .method("PUT")
+        .uri(path)
+        .header("authorization", format!("Bearer {}", token.expose_secret()))
+        .header("content-type", content_type)
+        .header("idempotency-key", Id::now_v7().to_string())
+        .header("if-match", format!("\"{version}\""))
+        .body(Body::from(content.to_vec()))?;
+    let response = app.clone().oneshot(request).await?;
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 128 * 1024).await?;
+    let json = serde_json::from_slice(&bytes).context("response must be JSON")?;
+    Ok((status, json))
+}
+
+async fn fetch_logo(
+    app: &Router,
+    path: &str,
+) -> anyhow::Result<(StatusCode, http::HeaderMap, Vec<u8>)> {
+    let request = Request::builder().uri(path).body(Body::empty())?;
+    let response = app.clone().oneshot(request).await?;
+    let (parts, body) = response.into_parts();
+    let bytes = to_bytes(body, 1024 * 1024).await?;
+    Ok((parts.status, parts.headers, bytes.to_vec()))
+}
+
+fn logo_path_from(organization: &Value) -> anyhow::Result<String> {
+    let logo = organization["logo"]
+        .as_str()
+        .context("uploaded organization must expose its logo")?;
+    let path = url::Url::parse(logo)?.path().to_owned();
+    ensure!(
+        path.starts_with("/api/v1/organization-logos/"),
+        "logo must point at IAM: {logo}"
+    );
+    Ok(path)
 }
 
 #[test]

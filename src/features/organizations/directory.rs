@@ -803,7 +803,7 @@ async fn change_admin_role(
     )
     .await?;
     require_active_version(&identity, expected_version)?;
-    if identity.principal_kind != "carbon"
+    if !matches!(identity.principal_kind.as_str(), "carbon" | "silicon")
         || (promote && identity.org_role != "member")
         || (!promote && identity.org_role != "admin")
     {
@@ -936,7 +936,7 @@ async fn replace_capabilities(
     )
     .await?;
     require_active_version(&identity, expected_version)?;
-    if identity.principal_kind != "carbon" {
+    if !matches!(identity.principal_kind.as_str(), "carbon" | "silicon") {
         return Err(AppError::Conflict {
             code: Cow::Borrowed("capability_principal_type_mismatch"),
         });
@@ -1235,13 +1235,16 @@ pub(super) async fn grant_default_administrator_capabilities(
 ) -> Result<(), AppError> {
     let defaults = sqlx::query_scalar::<_, String>(
         r"
-        SELECT capability
-        FROM iam.organization_capability_catalog
-        WHERE allowed_for_carbon
-          AND capability NOT IN ('admins.create', 'admins.manage')
-        ORDER BY capability
+        SELECT catalog.capability
+        FROM iam.organization_capability_catalog catalog
+        JOIN iam.organization_memberships member ON member.organization_id=$1 AND member.id=$2
+        WHERE (CASE WHEN member.principal_kind='silicon' THEN catalog.allowed_for_silicon ELSE catalog.allowed_for_carbon END)
+          AND catalog.capability NOT IN ('admins.create', 'admins.manage')
+        ORDER BY catalog.capability
         ",
     )
+    .bind(organization_id)
+    .bind(membership_id)
     .fetch_all(&mut **transaction)
     .await
     .map_err(support::database)?;
@@ -1615,20 +1618,21 @@ const MEMBERSHIP_PROJECTION: &str = r"
               AND assignment.membership_id = membership.id
               AND tag.status = 'active'
         ), '[]'::jsonb) AS tags,
-        carbon_settings.first_silicon_membership_id,
+        CASE WHEN iam_private.directory_member_visible(iam_private.current_principal_id(),membership.organization_id,carbon_settings.first_silicon_membership_id) THEN carbon_settings.first_silicon_membership_id END AS first_silicon_membership_id,
         CASE WHEN membership.principal_kind = 'carbon' THEN ARRAY(
             SELECT access_grant.silicon_membership_id
             FROM iam.extra_silicon_access_grants AS access_grant
             WHERE access_grant.organization_id = membership.organization_id
               AND access_grant.carbon_membership_id = membership.id
               AND access_grant.revoked_at IS NULL
+              AND iam_private.directory_member_visible(iam_private.current_principal_id(),membership.organization_id,access_grant.silicon_membership_id)
             ORDER BY access_grant.silicon_membership_id
         ) ELSE ARRAY[]::uuid[] END AS extra_silicons,
         CASE WHEN carbon_settings.membership_id IS NOT NULL THEN jsonb_build_object(
             'boundary', carbon_settings.default_trust_boundary::text,
             'level', carbon_settings.default_trust_level::text
         ) ELSE NULL END AS default_trust,
-        silicon.reports_to_membership_id,
+        CASE WHEN silicon.organization_id=membership.organization_id AND iam_private.directory_member_visible(iam_private.current_principal_id(),membership.organization_id,silicon.reports_to_membership_id) THEN silicon.reports_to_membership_id END AS reports_to_membership_id,
         CASE WHEN silicon.id IS NULL THEN NULL ELSE (
             WITH RECURSIVE ancestors AS (
                 SELECT parent.membership_id, parent.reports_to_membership_id
@@ -1641,7 +1645,7 @@ const MEMBERSHIP_PROJECTION: &str = r"
                 JOIN ancestors ON ancestors.reports_to_membership_id = parent.membership_id
                 WHERE parent.organization_id = membership.organization_id
             )
-            SELECT count(*)::integer FROM ancestors
+            SELECT GREATEST(1,count(*)::integer) FROM ancestors
         ) END AS hierarchy_level,
         membership.authz_epoch AS authorization_epoch,
         membership.removed_at,

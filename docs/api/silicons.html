@@ -1,30 +1,51 @@
-<p class="lede">
-  A Silicon is a machine identity that exists only inside one organization. It authenticates with
-  a credential pair, carries tags and a job description like any member, and can subscribe to directory
-  changes over its own webhook.
-</p>
-
-<h2>Identity</h2>
-
-<p>
-  <code>POST /api/v1/organizations/{org_id}/silicons</code> takes a handle and returns the
-  Silicon plus its token. The handle is creation input only; the public ID is always
-  <code>{handle}:{org_id}</code>.
-</p>
-
-<div class="banner banner-danger">
-  <div>
-    <strong>The response carries the only copy of the token.</strong>
-    Silicon IAM stores a keyed digest. The value is replayable for ten minutes with the same
-    idempotency key and is then unrecoverable — a lost token can only be rotated, never read.
-  </div>
-</div>
-
-<p>
-  <code>reports_to_membership_id</code> sets the reporting line, which determines
-  <code>hierarchy_level</code> and hence the default profile image. A cycle is refused with
-  <code>422 hierarchy_cycle</code>.
-</p>
+<p class="lede">A Silicon is an independent machine account with a global <code>si:handle</code>
+identity. It can belong to several organizations and hold member, administrator or owner roles.
+Its custodian is either an approving Carbon or the organization that created it.</p>
+<h2>Independent signup</h2>
+<p><code>POST /api/v1/silicon-signup/requests</code> takes <code>silicon_id</code>,
+<code>custodian_email</code>, optional <code>silicon_token</code>, <code>display_name</code>,
+<code>timezone</code> and <code>webhook_url</code>, plus an idempotency key. A supplied
+password is case-sensitive and 12–24 characters. Otherwise IAM returns a generated password
+once. Preserve it securely; status responses do not reveal it.</p>
+<p>The response contains <code>request_id</code>, pending status, expiry and a secret
+<code>poll_token</code>. Poll <code>GET /api/v1/silicon-signup/requests/{id}</code> using
+that token as a Bearer credential. The optional webhook reports completion. The CLI can wait
+until the custodian decides; pending signup never grants account authority.</p>
+<p>The custodian receives <code>/silicon-custody?request=…</code>, signs in or creates a
+Carbon account, and must own the matching verified email. Direct Carbon credentials read
+<code>GET …/{id}/custodian</code> and decide using <code>POST …/{id}/custodian</code> with
+<code>{approve, can_create_organizations}</code>; creation is allowed by default.
+After approval, sign in through <code>POST /api/v1/silicon-auth/token</code>.</p>
+<p>Custodians manage their approved Silicons at <code>GET /api/v1/me/silicon-custodies</code>.
+Change the organization-creation permission with
+<code>PATCH /api/v1/me/silicon-custodies/{silicon_id}</code>, the current version and an
+idempotency key. A Silicon that cannot create an organization can join an invited one.</p>
+<h2>Organization creation and invitations</h2>
+<p><code>POST /api/v1/organizations/{org_id}/silicons</code> seeds an account with that
+organization as custodian and returns its <code>si:handle</code> and one-time legacy
+<code>stk-…</code> credential. The same idempotent response can be recovered for ten minutes;
+after that the secret cannot be read back.</p>
+<p>To add an existing Silicon, read
+<code>GET /api/v1/organizations/{org_id}/silicon-invitations/candidates</code> and create
+an invitation at <code>POST …/silicon-invitations</code> with <code>{silicon_id}</code>.
+Candidates come only from organizations the inviter belongs to. The Silicon itself reads
+<code>GET /api/v1/me/silicon-invitations</code> and decides with
+<code>POST …/{id}/decision</code> and <code>{decision: "accept"}</code> or
+<code>{decision: "decline"}</code>. Admission adds a membership; it does not transfer custody.</p>
+<p>An organization's current manager with <code>organization.update</code> can read or
+change its own Silicon custody permission through
+<code>GET/PATCH /api/v1/organizations/{org_id}/silicons/{silicon_id}/custody</code>.
+PATCH accepts <code>{can_create_organizations}</code>, <code>If-Match</code> and an
+idempotency key. Custody must belong to that exact organization; membership alone does
+not grant custody over an independently registered or invited Silicon.</p>
+<h2>Profile and membership</h2>
+<p><code>GET/PATCH /api/v1/me</code> reads or edits the Silicon's display name, timezone and
+profile picture. <code>PUT /api/v1/me/photo</code> accepts a raw PNG/JPEG/WebP image up to
+512 KiB with the profile version and idempotency key. Organization directory fields remain
+on the membership, identified by <code>si:handle[org_id]</code>.</p>
+<p><code>reports_to_membership_id</code> sets the organization's reporting line and
+<code>hierarchy_level</code>. Cycles return <code>422 hierarchy_cycle</code>. An organization
+membership is separate from the account's global profile and credential.</p>
 
 <h2>Credential rotation is two steps, on purpose</h2>
 
@@ -44,8 +65,7 @@
 </ol>
 
 <p>
-  The split is the point: it guarantees a human is present when the replacement appears, rather
-  than a token being generated into an empty room and lost. The Silicon cannot authenticate
+  The split requires an explicit authorized completion to reveal the replacement. The Silicon cannot authenticate
   between step two and step three, so schedule accordingly.
 </p>
 

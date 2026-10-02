@@ -30,6 +30,110 @@ pub async fn run(context: &Context, command: SiliconCommand) -> Result<()> {
 
     let client = context.authenticated().await?;
     match command {
+        SiliconCommand::OrganizationCustody {
+            silicon_id,
+            can_create_organizations,
+        } => {
+            let org = context.organization()?;
+            let current = client
+                .silicons()
+                .organization_custody(org, &silicon_id)
+                .await?;
+            let value = if let Some(allowed) = can_create_organizations {
+                client
+                    .silicons()
+                    .set_organization_custody(
+                        org,
+                        &silicon_id,
+                        current.version,
+                        allowed,
+                        &context.mutation(),
+                    )
+                    .await?
+            } else {
+                current
+            };
+            match context.format {
+                Format::Json => json(&value),
+                Format::Text => {
+                    println!(
+                        "{} · custodian {} · may create organizations: {}",
+                        value.silicon_id, org, value.can_create_organizations
+                    );
+                    Ok(())
+                }
+            }
+        }
+        SiliconCommand::Custody {
+            silicon_id,
+            can_create_organizations,
+        } => {
+            let current = client.signup().silicon_custodies().await?;
+            if let (Some(id), Some(allowed)) = (silicon_id, can_create_organizations) {
+                let item = current
+                    .items
+                    .iter()
+                    .find(|item| item.silicon_id == id)
+                    .ok_or_else(|| {
+                        CliError::Usage("You are not the custodian of this Silicon".into())
+                    })?;
+                json(
+                    &client
+                        .signup()
+                        .set_silicon_organization_creation(
+                            &id,
+                            item.version,
+                            allowed,
+                            &context.mutation(),
+                        )
+                        .await?,
+                )
+            } else {
+                match context.format {
+                    Format::Json => json(&current),
+                    Format::Text => {
+                        let mut table =
+                            Table::new(["silicon", "display name", "may create organizations"]);
+                        for item in current.items {
+                            table.row([
+                                item.silicon_id,
+                                item.display_name,
+                                item.can_create_organizations.to_string(),
+                            ]);
+                        }
+                        table.print();
+                        Ok(())
+                    }
+                }
+            }
+        }
+        SiliconCommand::Profile {
+            display_name,
+            timezone,
+            photo,
+        } => {
+            let mut profile = client.silicons().identity().await?;
+            if display_name.is_some() || timezone.is_some() {
+                profile = client
+                    .silicons()
+                    .update_identity(
+                        profile.version,
+                        &models::CarbonProfilePatch {
+                            display_name,
+                            timezone,
+                            profile_photo: None,
+                        },
+                        &context.mutation(),
+                    )
+                    .await?;
+            }
+            if let Some(path) = photo {
+                profile =
+                    super::silicon_signup::upload_photo(context, &client, profile.version, &path)
+                        .await?;
+            }
+            json(&profile)
+        }
         SiliconCommand::List { tag, page } => {
             let org = context.organization()?;
             let listed = client.silicons().list(org, tag, &page.paging()).await?;

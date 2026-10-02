@@ -32,7 +32,7 @@ EXCLUDED = %w[
 ].freeze
 
 # Shapes a generator would get wrong, written by hand in `models_manual`.
-HAND_WRITTEN = %w[TrustSelector].freeze
+HAND_WRITTEN = %w[TrustSelector CarbonSignupResult].freeze
 
 RUST_KEYWORDS = %w[
   as break const continue crate dyn else enum extern false fn for if impl in let loop match mod
@@ -50,7 +50,8 @@ def field_name(name)
 end
 
 def variant_name(value)
-  value.to_s.split(/[^A-Za-z0-9]+/).map { |part| part.sub(/\A[a-z]/) { |c| c.upcase } }.join
+  candidate = value.to_s.split(/[^A-Za-z0-9]+/).map { |part| part.sub(/\A[a-z]/) { |c| c.upcase } }.join
+  candidate == "Self" ? "SelfOnly" : candidate
 end
 
 def wrap(text, indent, width = 78)

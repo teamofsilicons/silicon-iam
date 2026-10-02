@@ -324,6 +324,7 @@ mod tests {
                 description: "Identity".into(),
                 critical: false,
                 app_id: None,
+                downstream: None,
             }],
         };
         assert!(validate_consent(&policy, 3, &[]).is_err());

@@ -26,7 +26,7 @@ let iam = Client::builder("https://backend.iam.teamofsilicons.com")?
 
 let signed_in = iam.with_credential(Credential::bearer(iam_access_token));
 let application = iam.with_credential(Credential::application(
-    "acme>checkout",
+    "checkout",
     application_secret,
 ));
 ```
@@ -37,7 +37,7 @@ let application = iam.with_credential(Credential::application(
 | `Credential::bearer(...)` | Carbon or Silicon IAM routes after IAM authentication, and an Application-triggered logout using a Carbon Application access token. |
 | `Credential::application(app_id, secret)` | Application token exchange, refresh, introspection, revocation, discovery and OBO. |
 
-Application credentials are the canonical organization-qualified ID, such as `acme>checkout`, plus the generated client secret. The webhook signing secret is a separate, caller-chosen credential and cannot authenticate API requests.
+Application credentials are the globally unique bare ID, such as `checkout`, plus the generated client secret. The webhook signing secret is a separate, caller-chosen credential and cannot authenticate API requests.
 
 ## API compatibility
 

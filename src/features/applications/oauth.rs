@@ -143,6 +143,7 @@ const CODE_EXCHANGE_ACTIVE_SCOPES_QUERY: &str = r"
       ON approved.scope = request_scope.scope
     WHERE request_scope.authorization_request_id = $1
       AND request_scope.application_id = $3
+      AND request_scope.scope NOT LIKE 'obo:%'
     ORDER BY request_scope.scope
 ";
 
@@ -211,6 +212,7 @@ const REFRESH_ISSUANCE_SCOPES_QUERY: &str = r"
       ON approved.scope = snapshot.scope
     WHERE snapshot.family_id = $1
       AND snapshot.consent_grant_id = $2
+      AND snapshot.scope NOT LIKE 'obo:%'
     ORDER BY snapshot.scope
 ";
 
@@ -393,10 +395,7 @@ pub(super) async fn login_choices(
     .map_err(|_| ApiError::internal("login_choices"))?;
     let policy = super::scopes::policy(transaction, app.id).await?;
     Ok(super::model::LoginOrganizationsResponse {
-        allow_empty_organization_selection: allows_empty_organization_selection(
-            access.subject.actor_type,
-            policy.scopes.iter().map(|scope| scope.scope.as_str()),
-        ),
+        allow_empty_organization_selection: false,
         scope_version: policy.scope_version,
         consent_required: policy.consent_required,
         scopes: policy.scopes,
@@ -443,6 +442,13 @@ async fn mint_short_lived_token(
     subject: MintSubject<'_>,
     scopes: &[String],
 ) -> Result<(Id, SecretString), ApiError> {
+    if subject.organization_id.is_none()
+        || subject.membership_id.is_none()
+        || subject.selected_membership_ids.len() != 1
+        || subject.selected_membership_ids.first().copied() != subject.membership_id
+    {
+        return Err(ApiError::forbidden("organization_context_forbidden"));
+    }
     let request_id = Id::now_v7();
     sqlx::query(
         r"
@@ -587,33 +593,13 @@ pub(super) async fn issue_short_lived_token(
     Ok((StatusCode::CREATED, Json(response)).into_response())
 }
 
-/// Account onboarding scopes may be consented before a Carbon has any memberships.
-/// This never selects an organization or grants access to future memberships.
-fn allows_empty_organization_selection<'a>(
-    actor: ActorType,
-    scopes: impl IntoIterator<Item = &'a str>,
-) -> bool {
-    actor == ActorType::Carbon
-        && scopes
-            .into_iter()
-            .any(|scope| matches!(scope, "organizations.create" | "organizations.join"))
-}
-
-fn validate_organization_selection(
-    actor: ActorType,
-    consented_scopes: &[String],
-    org_ids: &[String],
-) -> Result<(), ApiError> {
-    if org_ids.len() > 1000
-        || (org_ids.is_empty()
-            && !allows_empty_organization_selection(
-                actor,
-                consented_scopes.iter().map(String::as_str),
-            ))
-    {
+/// An application login always selects exactly one account membership.
+/// Direct IAM identity sessions remain available for account onboarding.
+fn validate_organization_selection(org_ids: &[String]) -> Result<(), ApiError> {
+    if org_ids.len() != 1 {
         return Err(ApiError::bad_request(
             "organization_selection_required",
-            "Select between 1 and 1000 organizations. Only a Carbon consenting to organizations.create or organizations.join may select none.",
+            "Select exactly one organization for this application login.",
         ));
     }
     Ok(())
@@ -652,7 +638,7 @@ pub(super) async fn issue_for_selection(
     let policy = super::scopes::policy(transaction, app.id).await?;
     let scopes =
         super::scopes::validate_consent(&policy, input.scope_version, &input.approved_scopes)?;
-    validate_organization_selection(access.subject.actor_type, &scopes, &input.org_ids)?;
+    validate_organization_selection(&input.org_ids)?;
     let requested = input
         .org_ids
         .iter()
@@ -677,6 +663,11 @@ pub(super) async fn issue_for_selection(
     if selected_membership_ids.len() != requested.len() {
         return Err(ApiError::forbidden("organization_context_forbidden"));
     }
+    let membership_id = selected_membership_ids[0];
+    let organization_id = sqlx::query_scalar::<_, Id>(
+        "SELECT organization_id FROM iam.organization_memberships WHERE id=$1 AND principal_id=$2 AND status='active'",
+    ).bind(membership_id).bind(access.subject.id).fetch_one(&mut **transaction).await
+        .map_err(|_| ApiError::internal("login_selected_organization"))?;
     let (request_id, token) = mint_short_lived_token(
         transaction,
         state,
@@ -685,8 +676,8 @@ pub(super) async fn issue_for_selection(
             session_id: access.authentication_session_id,
             principal_id: access.subject.id,
             subject_kind,
-            organization_id: None,
-            membership_id: None,
+            organization_id: Some(organization_id),
+            membership_id: Some(membership_id),
             redirect_uri: input.redirect_uri.as_deref(),
             selected_membership_ids: &selected_membership_ids,
         },
@@ -926,10 +917,23 @@ pub(super) async fn tokens_for_application(
             "Present exactly one of slt and refresh_token.",
         ));
     }
+    if let Some(org_id) = form.org_id.as_deref() {
+        validation::org_id(org_id)?;
+        if !crate::infrastructure::testing_plane::is_active()
+            || form.slt.is_none()
+            || form.slt.as_deref().is_some_and(|s| s.starts_with("oac_"))
+        {
+            return Err(ApiError::validation(
+                "org_id",
+                "Only testing actor login accepts an organization override.",
+            ));
+        }
+    }
     let canonical = serde_json::to_vec(&json!({
         "app_id": form.app_id,
         "slt": form.slt,
         "refresh_token": form.refresh_token,
+        "org_id": form.org_id,
     }))
     .map_err(|_| ApiError::internal("oauth_token_canonical"))?;
     let mut transaction = context::begin(
@@ -971,7 +975,14 @@ pub(super) async fn tokens_for_application(
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
         });
         let response = if crate::infrastructure::testing_plane::is_active() && !issued_code {
-            exchange_testing_actor(&mut transaction, &state, &client, slt).await?
+            exchange_testing_actor(
+                &mut transaction,
+                &state,
+                &client,
+                slt,
+                form.org_id.as_deref(),
+            )
+            .await?
         } else {
             exchange_authorization_code(&mut transaction, &state, &client, &form).await?
         };
@@ -1530,6 +1541,10 @@ struct TestingLoginActor {
     subject_auth_epoch: i64,
     subject_public_id: String,
     scopes: Vec<String>,
+    organization_id: Id,
+    membership_id: Id,
+    membership_authz_epoch: i64,
+    org_id: String,
 }
 
 async fn exchange_testing_actor(
@@ -1537,6 +1552,7 @@ async fn exchange_testing_actor(
     state: &ApiState,
     client: &ApplicationIdentity,
     actor_id: &str,
+    org_id: Option<&str>,
 ) -> Result<TokenResponse, ApiError> {
     // The SQL implementation exists only in the testing database. The
     // production helper always returns no rows, even with forged DB context.
@@ -1551,7 +1567,7 @@ async fn exchange_testing_actor(
     let lifetime = i64::try_from(state.settings.security.refresh_family_ttl.as_secs())
         .map_err(|_| ApiError::internal("test_login_lifetime"))?;
     let actor = sqlx::query_as::<_, TestingLoginActor>(
-        "SELECT * FROM iam_private.create_testing_actor_login($1, $2, $3, $4, $5, $6)",
+        "SELECT * FROM iam_private.create_testing_actor_organization_login($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(client.application_id)
     .bind(client.auth_epoch)
@@ -1559,9 +1575,14 @@ async fn exchange_testing_actor(
     .bind(session_id)
     .bind(consent_id)
     .bind(lifetime)
+    .bind(org_id)
     .fetch_optional(&mut **transaction)
     .await
-    .map_err(|_| ApiError::internal("test_actor_login"))?
+    .map_err(|error| {
+        if error.as_database_error().is_some_and(|e| e.message()=="testing_organization_required") {
+            ApiError::validation("org_id", "Select one active organization for this testing actor.")
+        } else { ApiError::internal("test_actor_login") }
+    })?
     .ok_or_else(|| ApiError::bad_request("invalid_grant", "The test actor ID is invalid."))?;
     let response = issue_tokens(
         transaction,
@@ -1572,11 +1593,11 @@ async fn exchange_testing_actor(
             principal_id: actor.principal_id,
             subject_kind: actor.subject_kind.clone(),
             subject_auth_epoch: actor.subject_auth_epoch,
-            organization_id: None,
-            membership_id: None,
-            membership_authz_epoch: None,
+            organization_id: Some(actor.organization_id),
+            membership_id: Some(actor.membership_id),
+            membership_authz_epoch: Some(actor.membership_authz_epoch),
             consent_grant_id: consent_id,
-            org_id: None,
+            org_id: Some(actor.org_id),
             subject_public_id: actor.subject_public_id,
         },
         &actor.scopes,
@@ -1970,7 +1991,34 @@ async fn locked_refresh_issuance_scopes(
         .await
         .map_err(|_| ApiError::internal("refresh_issuance_scopes_lock"))?;
     if scopes.is_empty() {
-        return Err(invalid_refresh_grant());
+        // An intentionally empty login is renewable. A family that originally
+        // held IAM authority must never turn into one after that authority is
+        // removed from consent or platform approval.
+        let originally_empty = sqlx::query_scalar::<_, bool>(
+            r"
+            SELECT EXISTS (
+                SELECT 1 FROM iam.refresh_token_families AS family
+                WHERE family.id = $1 AND family.oauth_consent_grant_id = $2
+                  AND family.client_application_id = $3
+                  AND NOT EXISTS (
+                      SELECT 1 FROM iam.oauth_refresh_family_scopes AS snapshot
+                      WHERE snapshot.family_id = family.id
+                        AND snapshot.scope NOT LIKE 'obo:%'
+                  )
+            )
+            ",
+        )
+        .bind(family_id)
+        .bind(consent_grant_id)
+        .bind(application_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|_| ApiError::internal("refresh_empty_scope_snapshot"))?;
+        if !originally_empty
+            || !application_declares_no_iam_scopes(transaction, application_id).await?
+        {
+            return Err(invalid_refresh_grant());
+        }
     }
     Ok(scopes)
 }
@@ -2001,6 +2049,14 @@ async fn issue_tokens(
     existing_family_id: Option<Id>,
     parent_refresh_id: Option<Id>,
 ) -> Result<TokenResponse, ApiError> {
+    // Legacy consent rows can still contain external endpoint permissions.
+    // Ordinary login credentials only carry IAM scopes; OBO has its own grants.
+    let iam_scopes = scopes
+        .iter()
+        .filter(|scope| !scope.starts_with("obo:"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let scopes = iam_scopes.as_slice();
     let actor_type = match subject.subject_kind.as_str() {
         "carbon" => ActorType::Carbon,
         "silicon" => ActorType::Silicon,
@@ -2209,24 +2265,13 @@ async fn approve_request(
         .fetch_one(&mut **transaction)
         .await
         .map_err(|_| ApiError::internal("oauth_consent_grant_upsert"))?;
-    // Upsert locks the session-bound consent so concurrent additions are unioned.
-    sqlx::query(
-        r"
-        UPDATE iam.oauth_consent_grants SET selected_membership_ids = ARRAY(
-            SELECT DISTINCT member_id FROM unnest(
-                CASE WHEN EXISTS(SELECT 1 FROM iam.applications app
-                    WHERE app.id=application_id AND app.visibility='private')
-                THEN $2::uuid[] ELSE selected_membership_ids || $2::uuid[] END
-            ) member_id
-            ORDER BY member_id
-        ) WHERE id = $1
-    ",
-    )
-    .bind(consent.0)
-    .bind(selected_membership_ids)
-    .execute(&mut **transaction)
-    .await
-    .map_err(|_| ApiError::internal("oauth_organization_selection"))?;
+    // Consent is specific to this account, organization and parent session.
+    sqlx::query("UPDATE iam.oauth_consent_grants SET selected_membership_ids=$2 WHERE id=$1")
+        .bind(consent.0)
+        .bind(selected_membership_ids)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|_| ApiError::internal("oauth_organization_selection"))?;
     sqlx::query("DELETE FROM iam.oauth_consent_grant_scopes WHERE consent_grant_id = $1")
         .bind(consent.0)
         .execute(&mut **transaction)
@@ -2343,7 +2388,7 @@ async fn authorization_request_scopes(
     sqlx::query_scalar::<_, String>(
         r"
         SELECT scope FROM iam.oauth_authorization_request_scopes
-        WHERE authorization_request_id = $1 ORDER BY scope
+        WHERE authorization_request_id = $1 AND scope NOT LIKE 'obo:%' ORDER BY scope
         ",
     )
     .bind(request_id)
@@ -2370,7 +2415,10 @@ pub(super) async fn authorized_code_exchange_scopes(
         .fetch_all(&mut **transaction)
         .await
         .map_err(|_| ApiError::internal("authorization_code_scope_authority"))?;
-    if !scopes_retain_exact_authority(&requested, &currently_authorized) {
+    if !scopes_retain_exact_authority(&requested, &currently_authorized)
+        || (requested.is_empty()
+            && !application_declares_no_iam_scopes(transaction, application_id).await?)
+    {
         return Err(ApiError::bad_request(
             "invalid_grant",
             "The authorization code is invalid.",
@@ -2381,6 +2429,24 @@ pub(super) async fn authorized_code_exchange_scopes(
 
 fn scopes_retain_exact_authority(requested: &[String], currently_authorized: &[String]) -> bool {
     requested == currently_authorized
+}
+
+async fn application_declares_no_iam_scopes(
+    transaction: &mut Transaction<'_, Postgres>,
+    application_id: Id,
+) -> Result<bool, ApiError> {
+    sqlx::query_scalar::<_, bool>(
+        r"
+        SELECT EXISTS (
+            SELECT 1 FROM iam.applications
+            WHERE id = $1 AND app_scope -> 'iam' = '[]'::jsonb
+        )
+        ",
+    )
+    .bind(application_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("oauth_empty_login_scope_policy"))
 }
 
 async fn refresh_family_scopes(
@@ -2408,6 +2474,7 @@ async fn refresh_family_scopes(
         WHERE snapshot.family_id = $1
           AND snapshot.consent_grant_id = $2
           AND family.status = 'active'
+          AND snapshot.scope NOT LIKE 'obo:%'
         ORDER BY snapshot.scope
         ",
     )
@@ -2832,39 +2899,10 @@ mod tests {
     }
 
     #[test]
-    fn empty_selection_requires_carbon_and_a_current_consented_onboarding_scope() {
-        use super::validate_organization_selection;
-        use crate::domain::actor::ActorType;
-        for scope in ["organizations.create", "organizations.join"] {
-            let scopes = vec!["self.identity.read".into(), scope.into()];
-            assert!(validate_organization_selection(ActorType::Carbon, &scopes, &[]).is_ok());
-            for actor in [
-                ActorType::Silicon,
-                ActorType::Application,
-                ActorType::Service,
-            ] {
-                assert!(validate_organization_selection(actor, &scopes, &[]).is_err());
-            }
-        }
-        for scopes in [
-            vec![],
-            vec!["organizations.read".into()],
-            vec!["organization.invitations.create".into()],
-        ] {
-            assert!(validate_organization_selection(ActorType::Carbon, &scopes, &[]).is_err());
-            assert!(
-                validate_organization_selection(ActorType::Carbon, &scopes, &["work".into()])
-                    .is_ok()
-            );
-        }
-        assert!(
-            validate_organization_selection(
-                ActorType::Carbon,
-                &["organizations.create".into()],
-                &vec!["work".into(); 1001]
-            )
-            .is_err()
-        );
+    fn application_login_requires_exactly_one_organization() {
+        assert!(super::validate_organization_selection(&[]).is_err());
+        assert!(super::validate_organization_selection(&["work".into()]).is_ok());
+        assert!(super::validate_organization_selection(&["work".into(), "home".into()]).is_err());
     }
 
     #[test]
@@ -3092,3 +3130,7 @@ mod testing_login_tests;
 #[cfg(test)]
 #[path = "oauth_family_tests.rs"]
 mod oauth_family_tests;
+
+#[cfg(test)]
+#[path = "oauth_empty_scope_tests.rs"]
+mod oauth_empty_scope_tests;

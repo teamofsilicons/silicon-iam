@@ -45,7 +45,8 @@ CATALOG = [
   ["api/silicons", "Silicon identities and credentials", "docs/api/silicons.html", %w[silicons]],
   ["api/governance", "Tags, trust and approvals", "docs/api/governance.html", %w[governance tags trust approvals]],
   ["api/applications", "Applications, registration and current authorization", "docs/api/applications.html", %w[applications apps authorization]],
-  ["api/obo", "On-behalf-of proofs and delegated authority", "docs/api/obo.html", %w[obo]],
+  ["obo-cutover", "OBO token migration and rollout", "docs/OBO_CUTOVER.md", %w[obo-migration]],
+  ["api/obo", "On-behalf-of consent, tokens and delegated authority", "docs/api/obo.html", %w[obo]],
   ["api/webhooks", "Signed webhook delivery and verification", "docs/api/webhooks.html", %w[webhooks]],
   ["api/testing-environments", "Testing environments and isolation", "docs/api/testing-environments.html", %w[testing environments]],
   ["api/errors", "API error codes and recovery", "docs/api/errors.html", %w[errors]],
@@ -53,7 +54,7 @@ CATALOG = [
   ["client/connecting", "Configure the Rust client and credentials", "docs/client/connecting.html", %w[connecting]],
   ["client/login", "Application login using short-lived tokens", "docs/client/login.html", []],
   ["client/tokens", "Application tokens and authorization snapshots", "docs/client/tokens.html", %w[tokens]],
-  ["client/obo", "Rust client OBO signing and verification", "docs/client/obo.html", []],
+  ["client/obo", "Rust client OBO consent, tokens and verification", "docs/client/obo.html", []],
   ["client/webhooks", "Rust client webhook verification", "docs/client/webhooks.html", []],
   ["client/testing-environments", "Rust client testing environment workflow", "docs/client/testing-environments.html", []],
   ["client/errors", "Rust client errors and safe retry policy", "docs/client/errors.html", []],
@@ -134,6 +135,8 @@ end
 # New consumer guides must receive a discoverable topic, not silently disappear
 # from installed CLI builds. These fix reports are evidence, not user manuals.
 excluded = %w[
+  docs/IAM_REDESIGN_2026_10_02.md
+  docs/RELEASE_READINESS_2026_10_03.md
   docs/INTEGRATION_FIXES_2026-09-05.md
   docs/SESSION_BOUND_CONSENT_FIX.md
   docs/PRIVATE_APPLICATION_LOGIN_ERRORS.md

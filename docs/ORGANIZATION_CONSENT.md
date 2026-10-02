@@ -1,59 +1,101 @@
 # Application permission and organization consent
 
-IAM asks users what an application may access before asking which organizations to share. Applications receive only app-bound short-lived login tokens. They never receive IAM credentials, session tokens, or verification codes.
+Each application login selects one account and exactly one organization. IAM
+returns an app-bound short-lived token (SLT); applications never receive IAM
+credentials, session tokens or verification codes. OBO approval happens
+separately when an application requests a delegated action.
 
 ## Browser flow
 
-1. Authenticate the Carbon in IAM and identify the requested application or bundle.
-2. Display the complete effective permission list, with descriptions, external providers, and critical labels. Obtain explicit consent. The IAM backend's `consent_required` value determines whether this step is required.
-3. Show the user's active organizations. Select at least one, or explicitly select all current organizations. A Carbon may select none when `allow_empty_organization_selection` is true: the current approved permissions include `organizations.create` or `organizations.join`. Applications cannot supply organization scope through a login URL.
-4. Submit the exact approved scope names and scope version with selected organization IDs.
-5. Return a two-minute single-use SLT, or an array of individually bound SLTs for batch and bundle login.
+1. Continue as Carbon or Silicon. The IAM browser can retain several configured
+   accounts and list each account's active organizations. Adding an account does
+   not replace the others. Account collapse preferences persist on that browser.
+2. Select one account and one organization. Create or join an organization in IAM
+   first if the account has no membership. Applications cannot preselect an
+   organization through the login URL.
+3. Show the IAM permission consent screen only when the backend reports
+   `consent_required`, for critical IAM permissions requiring fresh consent.
+   Display the exact current IAM permission set and critical labels. Do not
+   include OBO endpoints in this screen.
+4. Submit the chosen organization, exact current `approved_scopes`, and
+   `scope_version` using the selected account's direct IAM session.
+5. Return a two-minute, single-use SLT. Batch and bundle login return an array of
+   individually app-bound SLTs.
 
-Identity and profile are default application permissions. Additional self, directory, organization, and external permissions must be declared. Critical scope approval by IAM or an external provider is separate from the user's consent; both must be satisfied.
+Identity and profile are default IAM permissions. Additional permissions must be
+declared. Application review and a user's critical IAM consent are separate
+checks; neither replaces current membership or capabilities.
 
 ## Direct IAM clients
 
 A Carbon or Silicon holding a direct IAM bearer reads:
 
 ```http
-GET /api/v1/app-auth/organizations?app_id=acme%3Ebilling
+GET /api/v1/app-auth/organizations?app_id=billing
 Authorization: Bearer <direct IAM access token>
 ```
 
-The response includes application identity, `items` with organization choices and existing authorization flags, `scopes` with descriptions and critical labels, `scope_version`, `consent_required`, and `allow_empty_organization_selection`. Present the returned current values to the user, then submit:
+The response includes application identity, `items` with available organizations,
+`scopes` with descriptions and critical labels, `scope_version`, and
+`consent_required`. The compatibility field `allow_empty_organization_selection`
+is false. Submit current values, not the literal example version:
 
 ```json
 {
-  "app_id": "acme>billing",
+  "app_id": "billing",
   "org_ids": ["customer"],
   "approved_scopes": ["self.identity.read", "self.profile.read"],
   "scope_version": 1
 }
 ```
 
-Use `POST /api/v1/app-auth/short-lived-tokens` with an idempotency key. The example version is illustrative: send the value just read. External scope names flatten to `obo:{app_id}:{endpoint_id}`. IAM rejects an incomplete, extra, or outdated scope set. Reload choices and obtain fresh consent after a version change.
+Use `POST /api/v1/app-auth/short-lived-tokens` with an idempotency key. `org_ids`
+must contain exactly one available organization. OBO scopes, incomplete or extra
+IAM scope sets, stale versions, empty selections and multiple organizations are
+rejected. Reload choices after a scope change and obtain consent when required.
 
-Application Basic credentials and application OAuth bearers cannot obtain SLTs or approve their own additional access. A trusted IAM client such as the CLI may submit choices using the user's direct session, after receiving the user's explicit choices.
+Application Basic credentials and application OAuth bearers cannot obtain SLTs
+or approve their own access. The official IAM CLI uses the account's direct
+session. For example:
 
-## Account onboarding without an organization
+```sh
+iam login --app-id billing --grant-org customer --approve-scopes
+```
 
-A new Carbon can sign in with explicit `org_ids: []` after consenting to the current approved `organizations.create` or `organizations.join` scope. IAM rechecks eligibility during issuance; an unapproved, removed, or stale scope does not qualify. Silicons and applications without these permissions still require at least one organization. Omitting `org_ids` is never an explicit selection.
+`--approve-scopes` records explicit approval when critical IAM consent is
+required. `--all-orgs` is rejected. The management `--org` default never selects
+application access.
 
-An empty selection adds no organization grants. Identity and profile remain available according to the token's scopes, refresh remains bound to the live parent IAM session, and introspection returns an active token with `authorizations: []` when it reaches no selected membership. Creating or joining an organization does not authorize the app to access it. Return to IAM and explicitly select that organization to add access. Existing grants on the same parent session are still preserved.
+## Account onboarding and token boundaries
 
-The CLI accepts `none` at the interactive organization prompt when eligible. A new account with no organizations can explicitly use `--all-orgs --approve-scopes`; this submits the empty current selection.
+Direct IAM signup and account login are organization-independent. Carbon signup
+signs in automatically and then asks the account to create or join its first
+organization. Independent Silicon signup waits for custodian approval, then can
+sign in and create an organization when its custodian allows it, or join through
+an invitation. Application login begins only after an active membership exists.
 
-## Scope and organization boundaries
+Every SLT and resulting application access/refresh family binds its selected
+membership. A later login for another organization issues a separate family;
+it does not widen earlier tokens. Creating or joining another organization does
+not expand existing application authority. Apps that support several
+organizations manage those separate sessions themselves.
 
-Consent is bound to the parent IAM session and target application. Additional organization choices preserve grants already approved on that session; they do not select organizations joined later. An application's owning organization does not define the user's available organizations. Tokens authorize only currently active selected memberships and currently effective consented scopes.
-
-Introspection and application reads enforce these limits synchronously. Webhook projections obey the same field restrictions and only subscribe through `webhook_scope`. Removing a scope or membership takes effect without waiting for a webhook to arrive. Null or absent fields are undisclosed information, not permissive defaults.
+Current membership, scope approval and consent are rechecked during refresh,
+introspection and API access. Application ownership does not determine the
+user's selectable organizations. Scope removal and membership removal take
+effect without waiting for a webhook. Null or absent fields mean undisclosed
+information, not permissive defaults.
 
 ## Batch and bundle consent
 
-[Batch login](BATCH_LOGIN.md) carries each application's `approved_scopes` and `scope_version` in its selection. Validation and issuance occur in one transaction; a failure leaves no partial new consent or tokens.
+[Batch login](BATCH_LOGIN.md) carries each application's one-element `org_ids`,
+exact `approved_scopes` and `scope_version`. The direct API may select a different
+organization for each app, but each issued token still represents one account
+and one organization. Validation and issuance are atomic.
 
-[Bundles](BUNDLES.md) display one bundle identity and combine member permissions for consent, then use one organization picker. The request still records every member's exact scope version and returns individual app-bound SLTs. A changed member list cannot silently add an application to a submitted login. Every empty per-app selection must qualify independently; the shared bundle picker permits no organizations only when all members qualify. A failure rolls back the entire batch or bundle.
+[Bundles](BUNDLES.md) display one bundle identity and use one browser account and
+organization picker for all members. Each member retains its own exact IAM scope
+set and version and receives its own SLT. A changed member list cannot silently
+add another application; any failure rolls back the whole issuance.
 
-All routes keep these same rules inside a [testing environment](api/testing-environments.html), with test credentials and the selected environment key.
+These rules also apply in a [testing environment](api/testing-environments.html).

@@ -30,7 +30,7 @@ use super::{
 
 const ROUTE: &str = "POST /api/v1/silicon-auth/token";
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SiliconAuthenticationInput {
     silicon_id: String,
@@ -43,9 +43,6 @@ struct CredentialRow {
     credential_id: Id,
     secret_digest: Vec<u8>,
     pepper_key_version: i16,
-    organization_id: Id,
-    membership_id: Id,
-    membership_authz_epoch: i64,
     principal_auth_epoch: i64,
     global_silicon_id: String,
 }
@@ -79,41 +76,18 @@ pub(super) async fn authenticate(
                 .commit()
                 .await
                 .map_err(|error| database_conflict(&error, "silicon_login_conflict"))?;
-            return no_store(status, response, true);
+            return no_store(&state, status, response, true);
         }
         Claim::Acquired { record_id } => record_id,
     };
     enforce_limit(&state, &input.silicon_id, &credential).await?;
-    let row = resolve_credential(&mut transaction, &state, &input.silicon_id, &credential)
-        .await?
-        .ok_or(AppError::Unauthenticated)?;
-    let expected = SecretDigest::from_parts(row.pepper_key_version, &row.secret_digest).ok_or(
-        AppError::Internal {
-            category: "silicon_credential_digest_shape",
-        },
-    )?;
-    let valid = state
-        .crypto
-        .verify_secret(DigestPurpose::SiliconCredential, &credential, expected)
-        .map_err(|_| AppError::Internal {
-            category: "silicon_credential_verify",
-        })?;
-    if !valid {
-        return Err(AppError::Unauthenticated);
-    }
+    let identity =
+        verify_credentials(&mut transaction, &state, &input.silicon_id, &credential).await?;
     let response = tokens::issue_silicon_session(
         &mut transaction,
         &state.crypto,
         &state.settings.security,
-        SiliconLoginIdentity {
-            principal_id: row.principal_id,
-            credential_id: row.credential_id,
-            principal_auth_epoch: row.principal_auth_epoch,
-            organization_id: row.organization_id,
-            membership_id: row.membership_id,
-            membership_authz_epoch: row.membership_authz_epoch,
-            global_silicon_id: row.global_silicon_id,
-        },
+        identity,
     )
     .await?;
     idempotency::complete(
@@ -129,7 +103,68 @@ pub(super) async fn authenticate(
         .commit()
         .await
         .map_err(|error| database_conflict(&error, "silicon_login_conflict"))?;
-    no_store(StatusCode::OK.as_u16(), response, false)
+    no_store(&state, StatusCode::OK.as_u16(), response, false)
+}
+
+pub(super) async fn verify_credentials(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    state: &ApiState,
+    silicon_id: &str,
+    credential: &SecretString,
+) -> Result<SiliconLoginIdentity, AppError> {
+    Ok(
+        if credential.expose_secret().starts_with("stk-") && credential.expose_secret().len() == 36
+        {
+            let row = resolve_credential(transaction, state, silicon_id, credential)
+                .await?
+                .ok_or(AppError::Unauthenticated)?;
+            let expected = SecretDigest::from_parts(row.pepper_key_version, &row.secret_digest)
+                .ok_or(AppError::Internal {
+                    category: "silicon_credential_digest_shape",
+                })?;
+            let valid = state
+                .crypto
+                .verify_secret(DigestPurpose::SiliconCredential, credential, expected)
+                .map_err(|_| AppError::Internal {
+                    category: "silicon_credential_verify",
+                })?;
+            if !valid {
+                return Err(AppError::Unauthenticated);
+            }
+            SiliconLoginIdentity {
+                principal_id: row.principal_id,
+                credential_id: Some(row.credential_id),
+                principal_auth_epoch: row.principal_auth_epoch,
+                organization_id: None,
+                membership_id: None,
+                membership_authz_epoch: None,
+                global_silicon_id: row.global_silicon_id,
+            }
+        } else {
+            let row = sqlx::query_as::<_, (Id, String, i64)>(
+                "SELECT * FROM iam_private.resolve_silicon_password($1)",
+            )
+            .bind(silicon_id)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(|_| AppError::Internal {
+                category: "silicon_password_lookup",
+            })?
+            .ok_or(AppError::Unauthenticated)?;
+            if !super::silicon_signup::verify_password(credential.clone(), row.1).await? {
+                return Err(AppError::Unauthenticated);
+            }
+            SiliconLoginIdentity {
+                principal_id: row.0,
+                credential_id: None,
+                principal_auth_epoch: row.2,
+                organization_id: None,
+                membership_id: None,
+                membership_authz_epoch: None,
+                global_silicon_id: silicon_id.to_owned(),
+            }
+        },
+    )
 }
 
 async fn resolve_credential(
@@ -165,7 +200,7 @@ async fn resolve_credential(
     })
 }
 
-async fn enforce_limit(
+pub(super) async fn enforce_limit(
     state: &ApiState,
     silicon_id: &str,
     credential: &SecretString,
@@ -199,7 +234,7 @@ async fn enforce_limit(
     Ok(())
 }
 
-fn validate_global_id(value: &str) -> Result<(), AppError> {
+pub(super) fn validate_global_id(value: &str) -> Result<(), AppError> {
     let Some(local) = value.strip_prefix("si:") else {
         return Err(validation::validation(
             "silicon_id",
@@ -222,17 +257,14 @@ fn valid_handle(value: &str, maximum: usize) -> bool {
         })
 }
 
-fn validate_credential(value: String) -> Result<SecretString, AppError> {
-    if value.len() != 36
-        || !value.starts_with("stk-")
-        || !value[4..]
+pub(super) fn validate_credential(value: String) -> Result<SecretString, AppError> {
+    let legacy = value.len() == 36
+        && value.starts_with("stk-")
+        && value[4..]
             .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-    {
-        return Err(validation::validation(
-            "silicon_token",
-            "must be an stk- prefixed 32-character lowercase hexadecimal credential",
-        ));
+            .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'));
+    if !legacy {
+        super::silicon_signup::validate_password(&value)?;
     }
     Ok(SecretString::from(value))
 }
@@ -244,11 +276,25 @@ fn silicon_login_request_digest(silicon_id: &str, credential: &SecretString) -> 
     )
 }
 
-fn no_store(status: u16, body: TokenResponse, replayed: bool) -> Result<Response, AppError> {
+fn no_store(
+    state: &ApiState,
+    status: u16,
+    body: TokenResponse,
+    replayed: bool,
+) -> Result<Response, AppError> {
     let status = StatusCode::from_u16(status).map_err(|_| AppError::Internal {
         category: "silicon_login_replay_status",
     })?;
+    let cookie = crate::infrastructure::browser_session::issue(
+        body.session_id,
+        body.refresh_expires_at,
+        &state.settings.security.cookie_key,
+    )
+    .map_err(|_| AppError::Internal {
+        category: "silicon_browser_session",
+    })?;
     let mut response = (status, Json(body)).into_response();
+    response.headers_mut().insert(header::SET_COOKIE, cookie);
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

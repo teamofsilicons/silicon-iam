@@ -268,6 +268,10 @@ impl<'de> Visitor<'de> for UniqueStringMapVisitor {
 /// External provider credentials and endpoints.
 #[derive(Clone, Debug)]
 pub struct ProviderSettings {
+    /// Optional Google OIDC client, enabled only when both credentials are configured.
+    pub google: Option<SocialProviderSettings>,
+    /// Optional Apple Services ID and its signed client-secret JWT.
+    pub apple: Option<SocialProviderSettings>,
     /// Postmark server API token.
     pub postmark_server_token: Option<SecretString>,
     /// Verified transactional sender.
@@ -292,6 +296,15 @@ pub struct ProviderSettings {
     pub allow_local_providers: bool,
     /// Whether local provider responses may reveal OTPs for developer tests.
     pub expose_local_otps: bool,
+}
+
+/// Credentials for a fixed, trusted social identity provider.
+#[derive(Clone, Debug)]
+pub struct SocialProviderSettings {
+    /// Public OAuth client identifier / Apple Services ID.
+    pub client_id: String,
+    /// Server-only client credential (Apple uses a signed, expiring client-secret JWT).
+    pub client_secret: SecretString,
 }
 
 /// Provider configuration available to the durable worker process.
@@ -659,8 +672,25 @@ fn security_settings(environment: RuntimeEnvironment) -> Result<SecuritySettings
     Ok(settings)
 }
 
+fn social_provider_settings(
+    id: &'static str,
+    secret: &'static str,
+) -> Result<Option<SocialProviderSettings>, SettingsError> {
+    let client_id = optional_string_in_range(id, 1, 512)?;
+    let client_secret = optional_secret_in_range(secret, 1, 8192)?;
+    if client_id.is_none() && client_secret.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(SocialProviderSettings {
+        client_id: client_id.ok_or(SettingsError::Missing(id))?,
+        client_secret: client_secret.ok_or(SettingsError::Missing(secret))?,
+    }))
+}
+
 fn provider_settings() -> Result<ProviderSettings, SettingsError> {
     Ok(ProviderSettings {
+        google: social_provider_settings("IAM_GOOGLE_CLIENT_ID", "IAM_GOOGLE_CLIENT_SECRET")?,
+        apple: social_provider_settings("IAM_APPLE_CLIENT_ID", "IAM_APPLE_CLIENT_SECRET")?,
         postmark_server_token: optional_secret_in_range("IAM_POSTMARK_SERVER_TOKEN", 1, 4_096)?,
         postmark_from_email: string_in_range(
             "IAM_POSTMARK_FROM_EMAIL",

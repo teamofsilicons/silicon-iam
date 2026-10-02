@@ -13,6 +13,7 @@ import {
   createScopeLookup,
   defaultAppScope,
   scopeApprovalLabel,
+  downstreamSummary,
   scopeCatalog,
   scopeNames,
   toggleScope,
@@ -30,6 +31,13 @@ export function ScopeList(props: { items: ScopeDescriptor[] }) {
               <strong>{scope.description || scope.scope}</strong>
               <code>{scope.scope}</code>
               <small>{scope.app_id || "Silicon IAM"}</small>
+              <Show when={scope.downstream?.length}>
+                <ul class="scope-downstream">
+                  <For each={scope.downstream ?? []}>
+                    {(call) => <li>{downstreamSummary(call)}</li>}
+                  </For>
+                </ul>
+              </Show>
             </div>
             <span
               class={`badge ${scope.critical ? "scope-critical" : "scope-standard"}`}

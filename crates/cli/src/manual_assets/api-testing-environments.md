@@ -6,7 +6,7 @@ Testing environments run the IAM contract against isolated data. An application 
 
 ## One API, isolated data
 
-Requests without a testing header use production. Select an environment with `X-Testing-Environment-Key`, a 32-character alphanumeric root key. Protected endpoints still require the ordinary credentials issued inside that environment. Production and testing sessions, application secrets, SLTs, refresh tokens, Silicon credentials, and OBO proofs cannot be used interchangeably. A lookup never falls back to production.
+Requests without a testing header use production. Select an environment with `X-Testing-Environment-Key`, a 32-character alphanumeric root key. Protected endpoints still require the ordinary credentials issued inside that environment. Production and testing sessions, application secrets, SLTs, refresh tokens, Silicon credentials, and OBO consent requests, grants, codes and tokens cannot be used interchangeably. A lookup never falls back to production.
 
 ```
 X-Testing-Environment-Key: <environment root key>
@@ -70,16 +70,16 @@ X-Testing-Environment-Key: <environment key>
 Idempotency-Key: <one logical import>
 Content-Type: application/json
 
-{"app_id":"storage>drive"}
+{"app_id":"drive"}
 ```
 
-Import preserves the qualified ID, backend URL, webhook URL, OBO catalog, and declared dependency permissions. IAM creates a missing owning organization in the environment and makes the importing test Carbon its owner. It returns a fresh test-only client secret. The same production app may be imported into several environments without sharing their data or credentials.
+Import preserves the bare app ID, backend URL, webhook URL, OBO catalog, and declared dependency permissions. IAM creates a missing owning organization in the environment and makes the importing test Carbon its owner. It returns a fresh test-only client secret. The same production app may be imported into several environments without sharing their data or credentials.
 
 The production webhook signing secret is inherited internally so the existing receiver can validate test deliveries, but IAM never reveals that production secret. When an app replaces its webhook destination in a testing environment, IAM creates and returns a fresh test-only `webhook_signing_secret` when no replacement was supplied. A caller may instead supply a test-only `webhook_secret`. The new endpoint activates immediately, and the secret-bearing response has a ten-minute replay window. Every testing destination replacement uses a supplied or newly generated test-only secret. Production destination changes reuse the current key.
 
 ## Application login
 
-With the verified environment key and its test Application secret, `POST /api/v1/app-auth/tokens` accepts either an IAM-issued one-time code or an existing Carbon/Silicon public ID in `slt`. For example, send `app_id=tos%3Ebriefcase&slt=alice` or `app_id=tos%3Ebriefcase&slt=worker%3Atos`. IAM issues ordinary access and rotating refresh tokens. The actor-ID shortcut selects the actor’s current active organizations and the Application’s currently approved scopes; future memberships are not added to that session automatically. Unknown or inactive actors are rejected. Production never accepts an actor ID as a login credential. Keep the same idempotency key and exact input when retrying an uncertain exchange.
+With the verified environment key and its test Application secret, `POST /api/v1/app-auth/tokens` accepts either an IAM-issued one-time code or an existing Carbon/Silicon public ID in `slt`. For example, send `app_id=briefcase&slt=c%3Aalice&org_id=customer` or `app_id=briefcase&slt=si%3Aworker&org_id=customer`. IAM issues ordinary access and rotating refresh tokens. The actor-ID shortcut binds exactly one active organization and the Application’s currently approved IAM scopes. Send `org_id` when the account has several memberships; an omitted value works only when exactly one active organization is available. Empty and multiple-organization login is rejected. Unknown or inactive actors are rejected. Production never accepts an actor ID as a login credential. Keep the same idempotency key and exact input when retrying an uncertain exchange.
 
 ## Fixed verification codes
 

@@ -4,6 +4,7 @@ import { inputValues, outputValues, schema } from "../src/forms.tsx";
 import {
   createScopeLookup,
   defaultAppScope,
+  downstreamSummary,
   scopeApprovalLabel,
   scopeCatalog,
   toggleScope,
@@ -132,4 +133,22 @@ test("late lookup successes and errors cannot replace the latest application res
   const current = lookup.run("missing>app");
   requests.get("missing>app")!.reject(new Error("app_id invalid"));
   await assert.rejects(current, /app_id invalid/);
+});
+
+test("consent names every chained call, its caller, and where it lands", () => {
+  const call = {
+    via_app_id: "waveform",
+    app_id: "storage",
+    app_name: "Briefcase",
+    endpoint_id: "briefcase.files.create",
+    description: "briefcase.files.create (/api/v1/files)",
+  };
+  assert.equal(
+    downstreamSummary(call),
+    "Lets waveform use briefcase.files.create (/api/v1/files) in Briefcase",
+  );
+  assert.equal(
+    downstreamSummary({ ...call, app_name: null }),
+    "Lets waveform use briefcase.files.create (/api/v1/files) in storage",
+  );
 });

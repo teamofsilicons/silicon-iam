@@ -60,6 +60,10 @@ pub(super) async fn process_batch(context: &WorkerContext) -> Result<(), AppErro
         .execute(&context.pool)
         .await?;
     let parameters = retention_parameters(&context.settings.worker.retention)?;
+    sqlx::query("SELECT iam_private.prune_social_signup_requests($1)")
+        .bind(parameters.batch_size)
+        .execute(&context.pool)
+        .await?;
     let mut first_error = None;
     let ephemeral = sqlx::query_as::<_, EphemeralMaintenanceOutcome>(
         "SELECT * FROM iam_private.run_worker_ephemeral_maintenance($1)",

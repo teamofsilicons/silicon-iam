@@ -1,3 +1,4 @@
+import { SiliconInvitationInbox } from "./SiliconInvitations";
 import {
   createSignal,
   For,
@@ -15,10 +16,12 @@ import {
   orgPath,
   request,
   segment,
+  uploadFile,
   type Configuration,
   type RecordValue,
   type SessionState,
 } from "./api";
+import SiliconCustodySettings from "./SiliconCustodySettings";
 import { Activity } from "./Applications";
 import { OperationForm, type Operation } from "./forms";
 import {
@@ -37,6 +40,7 @@ import {
   usePage,
 } from "./ui";
 import { OrganizationArea, JoinOrganization } from "./Organizations";
+import { OboGrants } from "./OboConsent";
 
 const honeycombConsole = "https://console.honeycomb.teamofsilicons.com/";
 
@@ -77,6 +81,12 @@ export default function Console(props: {
     { href: "/tags", id: "tags", title: "Tags", icon: "⌗" },
     { href: "/trust", id: "trust", title: "Trust", icon: "⇄" },
     { href: "/approvals", id: "approvals", title: "Approvals", icon: "✓" },
+    {
+      href: "/obo-grants",
+      id: "obo-grants",
+      title: "App permissions",
+      icon: "⇢",
+    },
   ];
   const send = mutation();
   async function logout() {
@@ -253,7 +263,10 @@ export default function Console(props: {
             </span>
             <span>
               <strong>{props.session.user?.display_name}</strong>
-              <small>{props.session.user?.carbon_id}</small>
+              <small>
+                {props.session.user?.carbon_id ||
+                  props.session.user?.silicon_id}
+              </small>
             </span>
           </a>
         </div>
@@ -312,6 +325,9 @@ export default function Console(props: {
             </Match>
             <Match when={page === "account"}>
               <Account {...props} />
+            </Match>
+            <Match when={page === "obo-grants"}>
+              <OboGrants />
             </Match>
             <Match
               when={[
@@ -457,7 +473,17 @@ export default function Console(props: {
       <Show when={secret()}>
         <SecretResult result={secret()!} close={() => setSecret()} />
       </Show>
-      <Show when={join()}>
+      <Show when={join() && props.session.actorType === "silicon"}>
+        <Modal title="Join an organization" close={() => setJoin(false)}>
+          <SiliconInvitationInbox
+            changed={() => {
+              setJoin(false);
+              void organizations.refresh();
+            }}
+          />
+        </Modal>
+      </Show>
+      <Show when={join() && props.session.actorType !== "silicon"}>
         <JoinOrganization
           config={props.config}
           close={() => setJoin(false)}
@@ -475,8 +501,36 @@ function Account(props: {
   session: SessionState;
   reloadSession: () => unknown;
 }) {
+  const silicon = () => props.session.actorType === "silicon";
   const [profile, { refetch }] = createResource(() => request("/api/v1/me")),
     sessions = usePage(() => "/api/v1/me/sessions");
+  const [photoBusy, setPhotoBusy] = createSignal(false),
+    [photoError, setPhotoError] = createSignal<unknown>();
+  async function changePhoto(event: Event) {
+    const file = (event.currentTarget as HTMLInputElement).files?.[0];
+    if (!file || !profile() || photoBusy()) return;
+    if (
+      !["image/png", "image/jpeg", "image/webp"].includes(file.type) ||
+      file.size > 512 * 1024
+    ) {
+      setPhotoError(
+        new Error("Choose a PNG, JPEG or WebP image up to 512 KB."),
+      );
+      return;
+    }
+    setPhotoBusy(true);
+    setPhotoError();
+    try {
+      await uploadFile("/api/v1/me/photo", file, profile()!.version);
+      await refetch();
+      props.reloadSession();
+      setNotice("Profile picture updated.");
+    } catch (cause) {
+      setPhotoError(cause);
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
   const [tab, setTab] = createSignal("Profile"),
     [operation, setOperation] = createSignal<Operation>(),
     [notice, setNotice] = createSignal("");
@@ -493,7 +547,11 @@ function Account(props: {
     <>
       <PageTitle
         title="Your account"
-        subtitle="Manage your Carbon identity and active sessions."
+        subtitle={
+          silicon()
+            ? "Manage your Silicon identity and profile."
+            : "Manage your Carbon identity and active sessions."
+        }
       />
       <div class="tabs" role="tablist">
         <For each={["Profile", "Sessions", "Login history"]}>
@@ -536,19 +594,50 @@ function Account(props: {
                   Edit profile
                 </button>
               </div>
+              <div class="profile-preview">
+                <Show when={profile()!.profile_photo}>
+                  <img
+                    src={profile()!.profile_photo}
+                    alt="Your profile picture"
+                    width="72"
+                    height="72"
+                  />
+                </Show>
+                <span>
+                  <strong>Your profile picture</strong>
+                  <small>PNG, JPEG or WebP · up to 512 KB</small>
+                  <label class="profile-upload">
+                    {photoBusy() ? "Uploading…" : "Upload picture"}
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      disabled={photoBusy()}
+                      onChange={changePhoto}
+                    />
+                  </label>
+                </span>
+              </div>
+              <ErrorBox error={photoError()} />
               <RecordDetails
                 value={profile()!}
                 fields={[
-                  "carbon_id",
+                  silicon() ? "silicon_id" : "carbon_id",
                   "display_name",
-                  "email",
-                  "phone_number",
+                  ...(!silicon() ? ["email", "phone_number"] : []),
                   "timezone",
                   "status",
-                  "created_at",
+                  ...(profile()?.created_at ? ["created_at"] : []),
                 ]}
               />
             </section>
+            <Show
+              when={!silicon()}
+              fallback={
+                <SiliconInvitationInbox changed={() => location.reload()} />
+              }
+            >
+              <SiliconCustodySettings />
+            </Show>
           </Show>
         </Match>
         <Match when={tab() === "Sessions"}>
@@ -628,7 +717,9 @@ function Account(props: {
                     "All IAM and related application sessions will be revoked.",
                   stepUp: {
                     action: "account.sessions_revoke_all",
-                    resource: props.session.user!.carbon_id,
+                    resource:
+                      props.session.user!.carbon_id ||
+                      props.session.user!.silicon_id,
                   },
                 })
               }
