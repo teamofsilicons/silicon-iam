@@ -276,6 +276,15 @@ pub(super) static DOCUMENTS: &[Document] = &[
         content: include_str!("manual_assets/api-applications.md"),
     },
     Document {
+        topic: "migrating-to-iam-5",
+        title: "Update an application for IAM 5",
+        source: "docs/MIGRATING_TO_IAM_5.md",
+        source_sha256: "998dd44574594409ba7d1ecd57bd4b2becd0e4006a755e908b46671a577b0d19",
+        format: "markdown",
+        aliases: &["iam5", "migration"],
+        content: include_str!("manual_assets/migrating-to-iam-5.md"),
+    },
+    Document {
         topic: "obo-cutover",
         title: "OBO token migration and rollout",
         source: "docs/OBO_CUTOVER.md",

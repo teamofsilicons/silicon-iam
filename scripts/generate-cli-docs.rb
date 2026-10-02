@@ -45,6 +45,7 @@ CATALOG = [
   ["api/silicons", "Silicon identities and credentials", "docs/api/silicons.html", %w[silicons]],
   ["api/governance", "Tags, trust and approvals", "docs/api/governance.html", %w[governance tags trust approvals]],
   ["api/applications", "Applications, registration and current authorization", "docs/api/applications.html", %w[applications apps authorization]],
+  ["migrating-to-iam-5", "Update an application for IAM 5", "docs/MIGRATING_TO_IAM_5.md", %w[iam5 migration]],
   ["obo-cutover", "OBO token migration and rollout", "docs/OBO_CUTOVER.md", %w[obo-migration]],
   ["api/obo", "On-behalf-of consent, tokens and delegated authority", "docs/api/obo.html", %w[obo]],
   ["api/webhooks", "Signed webhook delivery and verification", "docs/api/webhooks.html", %w[webhooks]],
