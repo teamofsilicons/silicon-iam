@@ -7,6 +7,7 @@ import {
   decisionResult,
   grantDetails,
   grantPage,
+  hasIamDisclosures,
   type OboEndpoint,
 } from "../src/obo-consent-model";
 
@@ -99,6 +100,55 @@ test("consent includes ten levels and fails closed on deeper chains", () => {
   assert.throws(() =>
     consentDetail({ ...detail(), endpoints: [node("extra", branch)] }, id),
   );
+});
+
+test("provider IAM disclosures remain explicit on every branch, including repeated providers", () => {
+  const value = detail();
+  value.endpoints[0].iam_disclosures = [];
+  value.endpoints[0].downstream[0].iam_disclosures = [
+    "self.identity.read",
+    "self.membership.read",
+  ];
+  value.endpoints[0].downstream[1].downstream[0].iam_disclosures = [
+    "self.tags.read",
+  ];
+  const parsed = consentDetail(value, id);
+  assert.deepEqual(parsed.endpoints, value.endpoints);
+  assert.equal(hasIamDisclosures(parsed.endpoints), true);
+  assert.equal(hasIamDisclosures(detail().endpoints), false);
+  assert.equal(
+    hasIamDisclosures([{ ...node("speech"), iam_disclosures: [] }]),
+    false,
+  );
+});
+
+test("an unreadable IAM disclosure cannot be hidden before approving an OBO chain", () => {
+  for (const iam_disclosures of [
+    null,
+    "self.identity.read",
+    ["self.email.read"],
+    ["self.identity.read", "self.identity.read"],
+    ["constructor"],
+    [null],
+  ]) {
+    const root = { ...node("speech"), iam_disclosures };
+    const nested = { ...node("files"), iam_disclosures };
+    assert.throws(
+      () => consentDetail({ ...detail(), endpoints: [root] }, id),
+      /complete OBO permissions/,
+    );
+    assert.throws(
+      () =>
+        consentDetail(
+          {
+            ...detail(),
+            endpoints: [{ ...node("speech"), downstream: [nested] }],
+          },
+          id,
+        ),
+      /complete OBO permissions/,
+    );
+  }
 });
 
 test("missing application display names fall back to their exact application IDs", () => {
@@ -207,8 +257,23 @@ test("grant pages retain older grants, deduplicate overlap and preserve a comple
 });
 
 import { safeOboRedirect } from "../src/obo-consent-model";
-test("OBO completion redirects accept only secure or local callbacks",()=>{
-  assert.equal(safeOboRedirect("https://console.honeycomb.teamofsilicons.com/storage-authorization?code=test"),"https://console.honeycomb.teamofsilicons.com/storage-authorization?code=test");
-  assert.equal(safeOboRedirect("http://127.0.0.1:4313/storage-authorization"),"http://127.0.0.1:4313/storage-authorization");
-  for(const value of ["javascript:alert(1)","http://external.example/callback","https://user:pass@example.com/", "https://example.com/#fragment",null])assert.equal(safeOboRedirect(value),undefined);
+test("OBO completion redirects accept only secure or local callbacks", () => {
+  assert.equal(
+    safeOboRedirect(
+      "https://console.honeycomb.teamofsilicons.com/storage-authorization?code=test",
+    ),
+    "https://console.honeycomb.teamofsilicons.com/storage-authorization?code=test",
+  );
+  assert.equal(
+    safeOboRedirect("http://127.0.0.1:4313/storage-authorization"),
+    "http://127.0.0.1:4313/storage-authorization",
+  );
+  for (const value of [
+    "javascript:alert(1)",
+    "http://external.example/callback",
+    "https://user:pass@example.com/",
+    "https://example.com/#fragment",
+    null,
+  ])
+    assert.equal(safeOboRedirect(value), undefined);
 });

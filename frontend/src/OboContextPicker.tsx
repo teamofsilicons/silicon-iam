@@ -111,7 +111,9 @@ export default function OboContextPicker(props: {
     >
       <h3>Where should each application act?</h3>
       <p class="muted">
-        Each application uses the account and organization selected here.
+        Each application uses the account and organization selected here. Any
+        IAM details listed above are shared from that selected account and
+        organization.
       </p>
       <ErrorBox error={error()} retry={() => void load()} />
       <Show when={!loading()} fallback={<Loading />}>

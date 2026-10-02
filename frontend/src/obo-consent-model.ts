@@ -1,3 +1,10 @@
+export const iamDisclosureLabels = {
+  "self.identity.read": "Identity",
+  "self.membership.read": "Organization membership and role",
+  "self.tags.read": "Organization tags",
+} as const;
+export type IamDisclosure = keyof typeof iamDisclosureLabels;
+
 export type OboEndpoint = {
   audience: string;
   app_name: string;
@@ -6,6 +13,7 @@ export type OboEndpoint = {
   name?: string;
   note_to_user?: string | null;
   additional_warnings?: string[];
+  iam_disclosures?: IamDisclosure[];
   description: string;
   critical: boolean;
   downstream: OboEndpoint[];
@@ -86,11 +94,28 @@ function endpoints(
       (node.additional_warnings === undefined ||
         (Array.isArray(node.additional_warnings) &&
           node.additional_warnings.every(text))) &&
+      (node.iam_disclosures === undefined ||
+        (Array.isArray(node.iam_disclosures) &&
+          node.iam_disclosures.length <= 3 &&
+          new Set(node.iam_disclosures).size === node.iam_disclosures.length &&
+          node.iam_disclosures.every(
+            (scope) =>
+              typeof scope === "string" &&
+              Object.hasOwn(iamDisclosureLabels, scope),
+          ))) &&
       text(node.description) &&
       typeof node.critical === "boolean" &&
       endpoints(node.downstream, [...callers, node.audience], depth + 1)
     );
   });
+}
+
+/** A nested provider's disclosures need the same explicit review as a root's. */
+export function hasIamDisclosures(nodes: OboEndpoint[]): boolean {
+  return nodes.some(
+    (node) =>
+      !!node.iam_disclosures?.length || hasIamDisclosures(node.downstream),
+  );
 }
 
 function endpointNames(nodes: OboEndpoint[]): OboEndpoint[] {
@@ -220,7 +245,8 @@ export function decisionResult(
     value.request_id !== requestId ||
     value.status !== (decision === "approve" ? "approved" : "declined") ||
     !timestamp(value.expires_at) ||
-    (value.redirect_uri !== undefined && !safeOboRedirect(value.redirect_uri)) ||
+    (value.redirect_uri !== undefined &&
+      !safeOboRedirect(value.redirect_uri)) ||
     (decision === "approve" && !text(value.authorization_code)) ||
     (decision === "decline" && value.authorization_code !== undefined)
   )
@@ -240,9 +266,20 @@ export function callerLabel(callerId: string, callerName: string): string {
 
 /** Only a server-bound callback from the confirmed decision may carry its code. */
 export function safeOboRedirect(value: unknown): string | undefined {
-  if(typeof value!=="string") return;
-  try {const url=new URL(value);if(url.username||url.password||url.hash)return;
-    if(url.protocol!=="https:" && !(url.protocol==="http:" && ["localhost","127.0.0.1","[::1]"].includes(url.hostname)))return;
+  if (typeof value !== "string") return;
+  try {
+    const url = new URL(value);
+    if (url.username || url.password || url.hash) return;
+    if (
+      url.protocol !== "https:" &&
+      !(
+        url.protocol === "http:" &&
+        ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+      )
+    )
+      return;
     return url.href;
-  }catch{return;}
+  } catch {
+    return;
+  }
 }

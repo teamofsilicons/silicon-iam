@@ -10,6 +10,8 @@ import {
   decisionResult,
   safeOboRedirect,
   grantPage,
+  hasIamDisclosures,
+  iamDisclosureLabels,
   type OboDecision,
   type OboEndpoint,
   type OboGrant,
@@ -22,6 +24,7 @@ export function OboEndpointTree(props: {
   callerId: string;
   callerName: string;
   endpoints: OboEndpoint[];
+  reviewing?: boolean;
 }) {
   return (
     <ul
@@ -57,6 +60,26 @@ export function OboEndpointTree(props: {
                   </For>
                 </div>
               </Show>
+              <Show when={endpoint.iam_disclosures?.length}>
+                <section
+                  class="obo-iam-disclosures"
+                  aria-label={`${endpoint.app_name} IAM details`}
+                >
+                  <strong>IAM details</strong>
+                  <p>
+                    {props.reviewing
+                      ? "By approving, you also allow "
+                      : "This approval allows "}
+                    {endpoint.app_name} to read these details from the account
+                    and organization selected for it:
+                  </p>
+                  <ul>
+                    <For each={endpoint.iam_disclosures}>
+                      {(scope) => <li>{iamDisclosureLabels[scope]}</li>}
+                    </For>
+                  </ul>
+                </section>
+              </Show>
               <div class="actions">
                 <code>{endpoint.obo_id || endpoint.endpoint_id}</code>
                 <span
@@ -71,6 +94,7 @@ export function OboEndpointTree(props: {
                 callerId={endpoint.audience}
                 callerName={endpoint.app_name}
                 endpoints={endpoint.downstream}
+                reviewing={props.reviewing}
               />
             </Show>
           </li>
@@ -155,6 +179,9 @@ export default function OboConsent() {
           {
             decision: value,
             version: detail()!.version,
+            ...(value === "approve" && hasIamDisclosures(detail()!.endpoints)
+              ? { iam_disclosures_reviewed: true }
+              : {}),
             ...(value === "approve" && detail()!.providers?.length
               ? { contexts: contexts() }
               : {}),
@@ -165,8 +192,8 @@ export default function OboConsent() {
       );
       if (!disposed) {
         setDecision(result);
-        const destination=safeOboRedirect(result.redirect_uri);
-        if(destination) window.location.replace(destination);
+        const destination = safeOboRedirect(result.redirect_uri);
+        if (destination) window.location.replace(destination);
       }
     } catch (cause) {
       if (!disposed) {
@@ -234,11 +261,12 @@ export default function OboConsent() {
                 callerId={consent().app_id}
                 callerName={consent().app_name}
                 endpoints={consent().endpoints}
+                reviewing={!decision()}
               />
-              <Show when={consent().providers?.length && !decision()}>
+              <Show when={consent().providers?.length}>
                 <OboContextPicker
                   providers={consent().providers!}
-                  disabled={!!busy() || !pending()}
+                  disabled={!!busy() || !pending() || !!decision()}
                   change={(items, ready) => {
                     setContexts(items);
                     setContextsReady(ready);
@@ -348,9 +376,13 @@ export default function OboConsent() {
                   }
                 >
                   <p class="muted">
-                    Only approve if you want these actions. Declining leaves
-                    your ordinary application login available. This request
-                    expires {date(consent().expires_at)}.
+                    Only approve if you want these actions
+                    {hasIamDisclosures(consent().endpoints)
+                      ? " and the IAM details shown for each application to be shared"
+                      : ""}
+                    . Declining leaves your ordinary application login
+                    available. This request expires {date(consent().expires_at)}
+                    .
                   </p>
                   <div class="actions">
                     <button
