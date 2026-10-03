@@ -1,41 +1,11 @@
-# Application scope approvals
+# Application permission approvals
 
-Open Applications → select the target application → Approvals. Incoming requests
-are matched by `target_app_id`; sent requests are matched by the caller's
-`app_id`. The app view includes every status by default so completed reviews
-remain visible. The shared Scope reviews page defaults to all requests and all
-statuses across every authorized application and organization. Its direction and
-status filters can narrow this combined history. Organization governance approvals remain in the
-separate Approvals section.
+Manage application permission requests and publication reviews in [Honeycomb](https://console.honeycomb.teamofsilicons.com/requests/received). Received requests show reviews you are currently authorized to handle; sent requests show approval progress for applications you manage. Each provider has its own discussion page, requested permissions, message history, and decision.
 
-A review's critical scope list is its immutable decision boundary. Requests are
-split by the provider that owns the scopes. Non-critical scopes need no review;
-previously approved critical scopes need no repeat approval. The thread also
-shows the caller's current declared scopes for this provider, clearly labeled
-as current context rather than the original submission. It never exposes scopes
-owned by unrelated providers to the target app's reviewer.
+Honeycomb owns the review inbox, discussion, notification emails, and publication workflow. IAM checks reviewer authority and enforces accepted permissions. User login consent, personal OBO consent, and organization governance approvals remain in IAM.
 
-Messages identify the current Carbon's messages as You · Sent, other participants
-as Received with their public Carbon ID, and system-authored text as Review
-instructions. Existing request ownership and decision authorization are unchanged.
+Create and configure production applications through Honeycomb. Direct IAM app registration and legacy scope-request submissions return `410 management_moved_to_honeycomb`. An internal IAM application record is required for runtime authentication, but does not itself register an application or create a review in Honeycomb.
 
-Filtered inbox reads advance across nonmatching API pages; an empty first shared
-page cannot hide an older incoming request. The backend continues authorizing
-all reads and decisions. A decision still requires a pending request, its current
-version, and target organization owner/admin (or IAM platform review authority
-for IAM scopes).
+Existing approval emails may contain an IAM `/applications?scope_request=...` or `/scope-reviews?request=...` link. IAM forwards only the validated request ID to Honeycomb. For migrated requests, Honeycomb resolves that ID to the original provider's discussion after checking the signed-in account's current access. Signing in preserves the destination. Unavailable requests show a clear message without exposing another application's details.
 
-Validation: frontend tests cover sender/target matching, cross-page discovery,
-and cursor failures; the PostgreSQL lifecycle test checks current non-critical
-scope context, exclusion of other providers, message authorship, and unchanged
-critical approval enforcement.
-
-Scope request submissions enqueue email for every active owner/admin in the
-requesting and target applications' organizations, using each person's active
-primary email. IAM scope requests notify platform reviewers. Replies and decisions
-notify the other side; recipients shared by both organizations are deduplicated.
-The worker delivers these durable jobs through Postmark.
-
-Email links (`/applications?scope_request=...`) redirect to the console's Scope
-Reviews thread. The request is preserved through sign-in and signup. Both existing
-emails and new notices use this route; no historical notices are resent.
+Migrating a request preserves its original messages and author attribution. It does not approve permissions, rotate app credentials, or publish the app. Reviewers make their decisions through Honeycomb's normal IAM-validated review flow.

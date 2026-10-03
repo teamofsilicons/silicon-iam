@@ -46,9 +46,11 @@ Configure the IAM API:
 - `IAM_HONEYCOMB_APP_ID`: the Honeycomb authentication app ID.
 - `IAM_HONEYCOMB_CREDENTIAL_SHA256`: lowercase SHA-256 hex of the complete random
   `hck_` credential. Only Honeycomb stores the plaintext service credential.
-- `IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS`: default `false`; set `true` only after
-  Honeycomb adoption and replacement management flows are ready. Service API
-  credentials can be provisioned while legacy writers remain available.
+- Production app registration, configuration, review, bundle and testing lifecycle
+  writes use Honeycomb. Legacy IAM writes return `410 management_moved_to_honeycomb`
+  even if an older deployment still sets `IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS=false`.
+  Production bootstrap persists `true`; the flag remains available to opt development
+  processes into the same boundary. Isolated test application fixtures are preserved.
 - `IAM_HONEYCOMB_SCHEDULED_TESTING`: default `false`; explicitly enable to allow
   service-authored maintenance on environments already assigned to Honeycomb.
 
@@ -403,13 +405,14 @@ UUID pagination is not a transactional change cursor: concurrent commits may
 appear behind a cursor. Use notifications plus periodic full inventory/current
 record reconciliation, including after a disconnected period.
 
-Roll out databases and IAM first, then provision the API integration and worker
-subscription when Honeycomb's adapter is ready. Enabling
-`IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS=true` retires legacy production
-app/bundle/review/test lifecycle writers with
-`410 management_moved_to_honeycomb`; IAM's identity, login and runtime APIs stay
-available. The new console directs users to Honeycomb for the moved management surfaces;
-retain the existing frontend until those replacement flows are ready.
+Production app/bundle/review/testing lifecycle writers are owned by Honeycomb.
+The former IAM routes return `410 management_moved_to_honeycomb`; IAM identity,
+login, consent and runtime APIs remain available. Existing IAM application records
+continue to authenticate applications. A legacy record does not itself constitute
+a Honeycomb registration or review request. Adopt legacy records explicitly,
+preserve credentials and review history, and create a matching Honeycomb review
+plan before exposing a migrated discussion. Adoption never grants a permission.
+Old IAM approval-email links preserve their request ID when opening Honeycomb.
 
 Enumerate existing records, preserve IDs and read current revisions. For each
 retained environment, call service-authorized

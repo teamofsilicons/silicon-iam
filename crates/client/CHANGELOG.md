@@ -1,5 +1,10 @@
 # Changelog
 
+## 5.2.1
+
+- Production application registration, configuration and permission-review writes are owned by Honeycomb. Legacy direct management methods return `management_moved_to_honeycomb`; runtime authentication and isolated test fixtures remain available.
+- SDK wire types are unchanged.
+
 ## 5.2.0
 
 - Provider authentication resolves the verified current email as an ordinary Carbon login or verified signup continuation. No provider-subject linking or additional email OTP is required.

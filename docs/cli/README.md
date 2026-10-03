@@ -1154,9 +1154,10 @@ Telemetry defaults on when configured. Use `iam config set telemetry off` to dis
 ## Management ownership
 
 Use Honeycomb for production app configuration, scope reviews, bundles and shared
-testing lifecycles. Legacy IAM management commands remain for migration-era
-servers; after `IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS=true` is enabled they receive
-`410 management_moved_to_honeycomb`. IAM continues to provide identity, login,
+testing lifecycles. Production IAM rejects legacy direct management commands with
+`410 management_moved_to_honeycomb`, including direct app registration and scope
+request submission. Register applications and follow approval discussions in
+Honeycomb. IAM continues to provide identity, login,
 consent and test-plane authentication. See [the service contract](../HONEYCOMB_INTEGRATION.md).
 
 ### Membership identifiers
