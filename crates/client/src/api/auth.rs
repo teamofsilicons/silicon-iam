@@ -89,9 +89,9 @@ impl Auth<'_> {
     }
 
     #[cfg(feature = "cli-session")]
-    /// Completes a bound provider login. Retain the proof and mutation key for retries.
+    /// Completes login for the current verified email owner. Retain proof and key for retries.
     /// # Errors
-    /// The subject must be bound to an active Carbon and ready for login.
+    /// The same active account, email contact and security epoch must still match.
     pub async fn social_complete(
         &self,
         provider: &str,
@@ -105,13 +105,12 @@ impl Auth<'_> {
     }
 
     #[cfg(feature = "cli-session")]
-    /// Links only after a fresh direct Carbon OTP login for the verified email.
+    /// Legacy linking method retained for source compatibility with older clients.
     ///
-    /// Use a client bearing that new credential; a previously saved session or
-    /// an application session cannot authorize linking. Email equality alone
-    /// never authenticates or links an account.
+    /// IAM 5.2 returns `410 provider_link_retired_restart_login`. Start a new
+    /// provider login; verified email is the account authority and no link is needed.
     /// # Errors
-    /// Wrong, stale or application credentials and mismatched proof are rejected.
+    /// This retired operation returns a structured restart error on IAM 5.2.
     pub async fn social_link(
         &self,
         provider: &str,

@@ -429,6 +429,19 @@ fn plain_identifier_after(haystack: &str, needle: &str) -> Option<String> {
 
 impl From<sqlx::Error> for AppError {
     fn from(error: sqlx::Error) -> Self {
+        // Preserve transient SQLSTATE internally. Public errors remain unchanged;
+        // only a caller that can replay its whole transaction may act on this.
+        let transient = error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .and_then(|code| match code.as_ref() {
+                "40001" => Some("database_serialization"),
+                "40P01" => Some("database_deadlock"),
+                _ => None,
+            });
+        if let Some(category) = transient {
+            return Self::Internal { category };
+        }
         let category = match error {
             sqlx::Error::PoolTimedOut => "database_pool_timeout",
             sqlx::Error::PoolClosed => "database_pool_closed",

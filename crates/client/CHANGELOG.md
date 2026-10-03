@@ -1,5 +1,10 @@
 # Changelog
 
+## 5.2.0
+
+- Provider authentication resolves the verified current email as an ordinary Carbon login or verified signup continuation. No provider-subject linking or additional email OTP is required.
+- Existing SDK response shapes remain compatible; the legacy `social_link` method remains available but returns a restart error from IAM 5.2.
+
 ## 5.1.0
 
 - Add direct Google/Apple login, status, completion, and fresh OTP identity linking for the official IAM CLI through the `cli-session` feature.

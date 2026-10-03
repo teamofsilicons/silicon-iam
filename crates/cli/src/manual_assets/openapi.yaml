@@ -6490,8 +6490,9 @@ paths:
             schema:
                 "$ref": "#/components/schemas/SocialSignupStatusInput"
       responses:
+        '410': { $ref: '#/components/responses/Gone' }
         '200':
-          description: Successful response. Do not cache.
+          description: Legacy IAM 5.1 response only. IAM 5.2 always returns the restart error.
           headers:
             Idempotency-Replayed:
               "$ref": "#/components/headers/IdempotencyReplayed"
