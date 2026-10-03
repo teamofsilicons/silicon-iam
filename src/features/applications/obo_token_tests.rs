@@ -109,6 +109,7 @@ async fn approved(state: &ApiState, subject: &str, key: &str) -> anyhow::Result<
             headers(&format!("{key}-consent-decision")),
             Path(id),
             Json(Decision {
+                iam_disclosures_reviewed: true,
                 contexts: vec![],
                 decision: DecisionKind::Approve,
                 version: 1,

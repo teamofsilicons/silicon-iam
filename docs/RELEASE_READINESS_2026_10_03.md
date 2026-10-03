@@ -97,8 +97,11 @@ Unshipped main migrations were renumbered without changing their SQL:
 | 0137 | 0140 | Selected OBO provider metadata |
 
 Testing migrations 9015–9031 keep their numbers. Gaps in migration numbering are
-intentional; use exact manifests, not the highest number as a count. Current
-counts are 138 main and 29 testing overlays, or 167 combined for a testing DB.
+intentional; use exact manifests, not the highest number as a count. The reconciliation
+inventory was 138 main and 29 testing overlays, or 167 combined for a testing DB.
+The final provider-disclosure consent additions `0141` and `9032` bring the candidate
+to 139 main and 30 testing overlays, or 169 combined. They require fresh consent for
+older OBO grants; no existing grant inherits another account’s IAM disclosure authority.
 `docs/OBO_CUTOVER.md` and its bundled CLI manual references were updated.
 
 Validation after reconciliation:

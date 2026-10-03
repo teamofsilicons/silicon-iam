@@ -84,6 +84,8 @@ struct Decision {
     version: i64,
     #[serde(default)]
     contexts: Vec<ProviderContext>,
+    #[serde(default)]
+    iam_disclosures_reviewed: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -411,7 +413,7 @@ async fn decide(
         contexts.push(json!({"app_id":selected.app_id,"org_id":selected.org_id,"token_id":account.token_id,"digests":digests}));
     }
     let mut tx = user_transaction(&state, &access).await?;
-    let canonical = json!({"request_id":request_id,"decision":input.decision,"version":input.version,"session_id":access.authentication_session_id,"contexts":contexts});
+    let canonical = json!({"request_id":request_id,"decision":input.decision,"version":input.version,"session_id":access.authentication_session_id,"contexts":contexts,"iam_disclosures_reviewed":input.iam_disclosures_reviewed});
     let claim = claim(
         &mut tx,
         &state,
@@ -429,11 +431,12 @@ async fn decide(
         }
     };
     let request_detail = read(&mut tx, request_id).await?;
-    let code = credential(
+    let mut code = credential(
         &state,
         SecretKind::OboAuthorizationCode,
         DigestPurpose::OboAuthorizationCode,
     )?;
+    code.database["iam_disclosures_reviewed"] = json!(input.iam_disclosures_reviewed);
     let approve = input.decision == DecisionKind::Approve;
     let mut result = call(
         &mut tx,
@@ -1084,6 +1087,9 @@ fn database_error(error: &sqlx::Error) -> ApiError {
                 return ApiError::conflict("obo_authorization_consumed");
             }
             "obo_consent_required" => return ApiError::forbidden("obo_consent_required"),
+            "obo_disclosure_review_required" => {
+                return ApiError::forbidden("obo_disclosure_review_required");
+            }
             "obo_token_revoked" | "obo_grant_revoked" => {
                 return ApiError::gone("obo_token_revoked");
             }

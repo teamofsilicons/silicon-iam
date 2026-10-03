@@ -67,8 +67,9 @@ where its subject has an active membership: `iam app token authorizations` lists
 reimport/onboard and log in again; old tokens cannot restore erased authority.
 
 Successful `app obo verify` identifies the user, organization, immediate caller,
-originating app and approved endpoint. Optional disclosures remain limited by current
-IAM consent and participating apps' scopes. Verification does not consume the OBO
+originating app and approved endpoint. Optional identity, membership and tag disclosures
+come from explicit OBO review for each selected provider account and organization,
+bounded by the declared and approved scopes of every app on that path. Verification does not consume the OBO
 access token; the recipient enforces payload and resource permissions on every call.
 
 ## Organization consent
@@ -411,7 +412,7 @@ invalidation; it grants no user permissions and does not replace OBO.
 | `iam app obo authorize` | `<app-id> --endpoints '[{"audience":"target","endpoint_id":"action"}]' --org-context <org>` | Requires the user's ordinary `--subject-token` and app secret. Returns the IAM approval URL and complete graph. |
 | `iam app obo status` | `<app-id> <request-id>` | Read a request as its creating application; never reveals the approval code. |
 | `iam app obo consent` | `<request-id>` | Direct IAM user session: review the requested actions, branches, classifications and displayed version. |
-| `iam app obo decide` | `<request-id> approve\|decline --consent-version <displayed-version>` | Direct IAM user decision on the graph just reviewed; approval returns a single-use code. |
+| `iam app obo decide` | `<request-id> approve\|decline --consent-version <displayed-version> [--approve-iam-disclosures]` | Direct IAM user decision on the graph just reviewed; acknowledge displayed identity, membership and tag disclosures for each selected provider account with `--approve-iam-disclosures`. Approval returns a single-use code. |
 | `iam app obo token` | `<app-id> <request-id>` | Redeem `--authorization-code` with the app secret for a dedicated pair per root endpoint. |
 | `iam app obo refresh` | `<app-id>` | Rotate `--refresh-token` using the owning app secret; retain the exact grant. |
 | `iam app obo verify` | `<audience-app-id> <endpoint-id> --method <method> --path <path>` | Use receiver credentials and `--access-token`. Verification is repeatable and does not consume the token. |
@@ -790,7 +791,7 @@ REQUEST_ID=$(printf '%s' "$REQUEST" | jq -r .id)
 iam --test "$TEST_ID" app obo consent "$REQUEST_ID"
 VERSION=$(printf '%s' "$REQUEST" | jq -r .version)
 DECISION=$(iam --test "$TEST_ID" -o json app obo decide "$REQUEST_ID" approve \
-  --consent-version "$VERSION")
+  --consent-version "$VERSION" --approve-iam-disclosures)
 CODE=$(printf '%s' "$DECISION" | jq -r .authorization_code)
 TOKENS=$(iam --test "$TEST_ID" -o json app obo token caller "$REQUEST_ID" \
   --authorization-code "$CODE" --app-secret "$CALLER_SECRET")

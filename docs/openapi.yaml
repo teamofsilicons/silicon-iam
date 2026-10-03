@@ -9455,6 +9455,12 @@ components:
       - critical
       - downstream
       properties:
+        iam_disclosures:
+          type: array
+          maxItems: 3
+          uniqueItems: true
+          description: Explicit IAM disclosures for this provider’s selected account and organization, intersected with every application’s declared and approved scopes along this path.
+          items: { type: string, enum: [self.identity.read, self.membership.read, self.tags.read] }
         obo_id: { type: string, readOnly: true, description: 'Globally unique `[app:obo:local]` identity.' }
         name: { type: string, maxLength: 160, default: '' }
         note_to_user: { type: [string, 'null'], maxLength: 2000 }
@@ -9544,6 +9550,9 @@ components:
       - decision
       - version
       properties:
+        iam_disclosures_reviewed:
+          type: boolean
+          description: Explicit acknowledgement of the displayed IAM disclosures for the reviewed graph and selected provider accounts. Required true for approval when any node requests disclosures; older clients must review using an updated IAM interface.
         contexts:
           type: array
           maxItems: 100

@@ -899,6 +899,25 @@ pub enum OboConsentNodeAdditionalWarnings {
 /// Closed vocabulary from the contract.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum OboConsentNodeIamDisclosures {
+    /// `self.identity.read`
+    #[serde(rename = "self.identity.read")]
+    SelfIdentityRead,
+    /// `self.membership.read`
+    #[serde(rename = "self.membership.read")]
+    SelfMembershipRead,
+    /// `self.tags.read`
+    #[serde(rename = "self.tags.read")]
+    SelfTagsRead,
+    /// A value this crate predates. Held verbatim rather than
+    /// failing the response it arrived in.
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// Closed vocabulary from the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OboGrantRevokedStatus {
     /// `revoked`
     Revoked,
@@ -4129,6 +4148,12 @@ pub struct OboAuthorizedEndpoint {
 /// Contract type `OboConsentDecision`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OboConsentDecision {
+    /// Explicit acknowledgement of the displayed IAM disclosures for the
+    /// reviewed graph and selected provider accounts. Required true for
+    /// approval when any node requests disclosures; older clients must review
+    /// using an updated IAM interface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iam_disclosures_reviewed: Option<bool>,
     /// One authenticated account and organization per provider; omitted
     /// providers use the root account and organization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4201,6 +4226,11 @@ pub struct OboConsentDetail {
 /// Contract type `OboConsentNode`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OboConsentNode {
+    /// Explicit IAM disclosures for this provider’s selected account and
+    /// organization, intersected with every application’s declared and
+    /// approved scopes along this path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iam_disclosures: Option<Vec<OboConsentNodeIamDisclosures>>,
     /// Globally unique `[app:obo:local]` identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obo_id: Option<String>,

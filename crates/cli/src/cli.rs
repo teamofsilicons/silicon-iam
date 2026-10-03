@@ -2134,6 +2134,10 @@ pub enum AppOboCommand {
         /// Version just displayed by `app obo consent`.
         #[arg(long)]
         consent_version: i64,
+        /// Explicitly approve the displayed IAM identity, membership and tag disclosures
+        /// for each selected provider account and organization.
+        #[arg(long)]
+        approve_iam_disclosures: bool,
         /// JSON file with provider contexts: `app_id`, `account_token` and `org_id`.
         /// Credentials remain in the file instead of command-line arguments.
         #[arg(long)]
@@ -3278,6 +3282,7 @@ mod tests {
                 "approve",
                 "--consent-version",
                 "1",
+                "--approve-iam-disclosures",
             ],
             vec!["iam", "app", "obo", "token", "checkout", request],
             vec!["iam", "app", "obo", "refresh", "checkout"],

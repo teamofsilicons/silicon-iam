@@ -125,6 +125,7 @@ pub async fn run(context: &Context, command: AppOboCommand) -> Result<()> {
             request_id,
             decision,
             consent_version,
+            approve_iam_disclosures,
             contexts_file,
             idempotency_key,
         } => {
@@ -149,6 +150,7 @@ pub async fn run(context: &Context, command: AppOboCommand) -> Result<()> {
                 .decide(
                     request_id,
                     &models::OboConsentDecision {
+                        iam_disclosures_reviewed: approve_iam_disclosures.then_some(true),
                         contexts,
                         decision,
                         version: consent_version,
@@ -385,7 +387,11 @@ fn consent(context: &Context, detail: &models::OboConsentDetail) -> Result<()> {
                 detail.app_name.as_deref().unwrap_or(&detail.app_id),
                 detail.app_id
             );
+            validate_disclosures(&detail.endpoints)?;
             nodes(&detail.endpoints, 1);
+            println!(
+                "IAM disclosures apply to the account and organization you select for each provider. Review them, then use --approve-iam-disclosures with --consent-version when approving. No authority is inherited from another account’s login."
+            );
             println!(
                 "Approval remains valid until revoked in IAM; ordinary logout does not remove it."
             );
@@ -396,6 +402,33 @@ fn consent(context: &Context, detail: &models::OboConsentDetail) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn disclosure_label(scope: &models::OboConsentNodeIamDisclosures) -> &'static str {
+    match scope {
+        models::OboConsentNodeIamDisclosures::SelfIdentityRead => "Identity",
+        models::OboConsentNodeIamDisclosures::SelfMembershipRead => {
+            "Organization membership and role"
+        }
+        models::OboConsentNodeIamDisclosures::SelfTagsRead => "Organization tags",
+        models::OboConsentNodeIamDisclosures::Other(_) => "Unsupported disclosure",
+    }
+}
+
+fn validate_disclosures(nodes: &[models::OboConsentNode]) -> Result<()> {
+    for node in nodes {
+        if node.iam_disclosures.as_ref().is_some_and(|scopes| {
+            scopes.len() > 3
+                || scopes.iter().enumerate().any(|(index, scope)| {
+                    matches!(scope, models::OboConsentNodeIamDisclosures::Other(_))
+                        || scopes[..index].contains(scope)
+                })
+        }) {
+            return Err(CliError::Usage("This consent contains unsupported IAM disclosures. Update the IAM CLI and review again before approving.".to_owned()));
+        }
+        validate_disclosures(&node.downstream)?;
+    }
+    Ok(())
 }
 
 fn nodes(items: &[models::OboConsentNode], depth: usize) {
@@ -412,6 +445,21 @@ fn nodes(items: &[models::OboConsentNode], depth: usize) {
                 "Non critical"
             }
         );
+        if let Some(scopes) = node
+            .iam_disclosures
+            .as_ref()
+            .filter(|items| !items.is_empty())
+        {
+            println!(
+                "{}IAM disclosures for this provider’s selected account and organization: {}",
+                "  ".repeat(depth + 1),
+                scopes
+                    .iter()
+                    .map(disclosure_label)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         if let Some(note) = &node.note_to_user {
             println!("{}Note: {note}", "  ".repeat(depth + 1));
         }
@@ -459,4 +507,36 @@ fn canonical_method(input: &str) -> Result<String> {
     http::Method::from_bytes(method.as_bytes())
         .map_err(|_| CliError::Usage(format!("{input:?} is not a valid HTTP request method")))?;
     Ok(method)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn disclosure_review_labels_and_unknown_nested_fields_fail_closed() {
+        let good: models::OboConsentNode = serde_json::from_value(json!({
+            "audience":"provider", "endpoint_id":"files.read", "description":"Read files", "critical":false,
+            "iam_disclosures":["self.identity.read","self.membership.read","self.tags.read"], "downstream":[]
+        })).expect("known disclosure node");
+        assert!(validate_disclosures(std::slice::from_ref(&good)).is_ok());
+        assert_eq!(
+            disclosure_label(&models::OboConsentNodeIamDisclosures::SelfMembershipRead),
+            "Organization membership and role"
+        );
+        let mut unknown = good.clone();
+        unknown.iam_disclosures = Some(vec![models::OboConsentNodeIamDisclosures::Other(
+            "directory.everything".to_owned(),
+        )]);
+        let mut parent = good.clone();
+        parent.downstream = vec![unknown];
+        assert!(validate_disclosures(&[parent]).is_err());
+        let mut duplicate = good;
+        duplicate.iam_disclosures = Some(vec![
+                models::OboConsentNodeIamDisclosures::SelfIdentityRead;
+                2
+            ]);
+        assert!(validate_disclosures(&[duplicate]).is_err());
+    }
 }

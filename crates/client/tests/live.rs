@@ -1382,6 +1382,7 @@ async fn application_testing_imports_cycles_and_preserves_obo_authority() {
         .decide(
             shown.id,
             &models::OboConsentDecision {
+                iam_disclosures_reviewed: Some(true),
                 contexts: None,
                 decision: models::OboConsentDecisionDecision::Approve,
                 version: shown.version,

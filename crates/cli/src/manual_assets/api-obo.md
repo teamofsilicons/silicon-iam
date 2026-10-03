@@ -58,8 +58,10 @@ POST /api/v1/obo-access/consents/{id}/decision
 Authorization: Bearer <direct IAM user session>
 Idempotency-Key: <stable decision key>
 
-{"decision":"approve","version":1,"contexts":[]}
+{"decision":"approve","version":1,"contexts":[],"iam_disclosures_reviewed":true}
 ```
+
+Each endpoint also displays `iam_disclosures`: identity (`self.identity.read`), organization membership and role (`self.membership.read`), and organization tags (`self.tags.read`). Only scopes both declared and currently approved for every app on that endpoint’s path are offered. These are separate OBO disclosures for the account and organization selected for that provider; an originating login cannot consent for another account. Show them before approval and send `iam_disclosures_reviewed:true` when any endpoint requests them. An older client that omits this acknowledgement receives `obo_disclosure_review_required` and must update and review the request.
 
 Use the version just displayed. Approval pins the graph reviewed by the user; a changed graph returns `412` and must be reviewed again. Use `decline` to refuse OBO without ending ordinary login. Approval displays a short-lived, single-use authorization code for the user to copy to A. A valid existing grant can be reused during approval without broadening its authority.
 
@@ -104,7 +106,7 @@ Authorization: Basic <B's credentials>
 
 IAM checks the recipient, endpoint, current user and organization membership, effective app scopes and provider approvals, the durable grant and provider context, credential security epochs, expiry and revocation. The successful result identifies the user, organization, immediate caller, originating app, endpoint and full lineage, with current `authorization`. B must then enforce resource permissions and validate payload and required metadata. Undisclosed role or tags grant no authority.
 
-**Verification does not consume the token.** The same token may authorize different bodies for its endpoint until expiry or revocation. The body and uploaded files never pass through this IAM check. Optional self disclosures remain bounded by current IAM consent and every participating app's approved scopes. Verification accepts no idempotency key and can be repeated after an uncertain result; execute only after successful current verification. B handles operation-level deduplication.
+**Verification does not consume the token.** The same token may authorize different bodies for its endpoint until expiry or revocation. The body and uploaded files never pass through this IAM check. Optional self disclosures come from the explicit per-provider OBO consent snapshot, bounded by current declarations and approvals for every app on that path. They never inherit another account’s login consent. Changing those declarations or replacing an approval requires fresh review; previously issued grants are not widened. Verification accepts no idempotency key and can be repeated after an uncertain result; execute only after successful current verification. B handles operation-level deduplication.
 
 ## Use the same token throughout the approved chain
 

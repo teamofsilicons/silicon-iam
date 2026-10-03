@@ -64,6 +64,10 @@ The same access token works at every approved endpoint in the root graph. Forwar
 
 `obo().delegate(...)` is a compatibility edge check and returns the same access token, without a child credential. It does not broaden the graph. Newly requested dependencies require fresh consent.
 
+## Direct IAM consent clients
+
+Render each recursive endpoint’s optional `iam_disclosures` list beside its selected account and organization. The supported values are `self.identity.read`, `self.membership.read` and `self.tags.read`. Reject unknown or malformed values rather than hiding requested information. After the user reviews and approves these disclosures, set `OboConsentDecision.iam_disclosures_reviewed` to `Some(true)`. Missing acknowledgement fails closed when any endpoint has disclosures. Graph or approval changes require a fresh displayed version. These additive consent fields do not change application authorization, token exchange or receiving-provider verification requests.
+
 ## User control and migration
 
 With a direct IAM user client, use `obo().grants()` to review the first page of up to 10 grants, `obo().grants_page(&Paging::new().after(cursor).limit(10))` to continue with `page.next_cursor` while `page.has_more` is true and `obo().revoke(grant_id, mutation)` to end the root and all descendant authority. Ordinary logout and session expiry preserve durable consent. Grant revocation and current membership, app, organization or graph changes stop access; account/app security resets invalidate issued credentials. Access uses the shortest graph endpoint TTL, while the rotating refresh family follows the durable grant lifetime. Recover unchanged grants with `obo().recover(grant_id, subject_token, mutation)` using a fresh originating account/app login. Another selected account's security reset requires renewed approval from that account. Requests and tokens remain isolated to their testing environment and generation.

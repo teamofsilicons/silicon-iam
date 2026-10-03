@@ -16,8 +16,8 @@ a cutover; the coordinated production deployment remains pending.
   grants and shared tokens), `0129_ata_catalog.sql`, `0130_ata_verification_credentials.sql`,
   and `0134_single_organization_application_login.sql` plus
   `0138_obo_bound_callbacks.sql`. Apply every matching testing overlay,
-  including `9020`–`9023`, `9029` and `9031`. Selected provider identity
-  and organization metadata require `0140_obo_selected_provider_metadata.sql`. These do not replace
+  including `9020`–`9023`, `9029`, `9031` and `9032`. Selected provider identity
+  and organization metadata require `0140_obo_selected_provider_metadata.sql`; explicit per-provider IAM disclosure consent requires `0141_obo_provider_disclosure_consent.sql`. The latter revokes older OBO grants for fresh review. These do not replace
   intervening migrations. Deploy matching runtime grants, API, frontend and SDK.
 - [ ] Verify ordinary app and bundle login discloses only IAM scopes. A previous
   login consent, old proof or trusted-organization exemption **cannot be converted
@@ -34,6 +34,21 @@ a cutover; the coordinated production deployment remains pending.
   of app-authenticated callback binding; it has no global redirect-URI allowlist.
   Honeycomb separately validates its configured web origins and fixed callback
   path, and checks state on completion.
+
+## Provider disclosure review
+
+Each OBO endpoint displays `iam_disclosures`, bounded to `self.identity.read`,
+`self.membership.read` and `self.tags.read` and intersected with every app's
+current declarations and approvals along its path. Consent binds this set to the
+selected provider account and organization; the originating login does not supply
+another account's disclosure consent. The direct IAM browser/CLI must review this
+information and send `iam_disclosures_reviewed:true` (CLI:
+`--approve-iam-disclosures`) when any node requests disclosures. Older clients fail
+closed. Changed scope declarations or approval records require another review;
+legacy grant snapshots are never silently upgraded. Receiver verification wire
+contracts remain compatible, including the minimum actor and organization context
+needed to identify the delegated action. These optional self disclosures govern the
+additional IAM authorization projection, not an anonymous OBO mode.
 
 ## Receiver migration status
 
@@ -53,7 +68,7 @@ client credential types and transport documentation together with each receiver.
 | Honeycomb: `crates/server/src/auth.rs::verify_obo`; `crates/server/src/obo.rs`; `crates/client/src/lib.rs::organization_apps_obo` | Uses repeatable `/token-verifications` for `honeycomb.apps.list`, `POST /api/v1/obo/apps/list`, with `X-IAM-OBO-Access-Token`. A token can serve multiple pages while every request rechecks current authority. SDK helper uses the same header. | Implemented locally; nine receiver regressions pass |
 | Waveform: `src/infrastructure/auth.rs::authorize_obo`; `src/api/headers.rs` | Repeated app-authenticated verification checks the exact TTS/STT endpoint, origin app, selected actor/org and testing world. Accepts `X-IAM-OBO-Access-Token`; retired proofs and mixed bearer credentials are rejected. SDK and CLI support incoming OBO. | Implemented locally; repeated verification and denial regressions pass, deployed integration pending |
 | Ting: `crates/ting-server/src/auth.rs::proof` | Verifies reusable `oba_` tokens for the exact registered receiver endpoint and path; retains origin-app, actor, organization, recipient and testing checks. Retired proofs are denied. | Implemented locally; receiver and full server regressions pass |
-| Commit: `src/api/auth.rs` and existing route/action authorization | Verifies `X-IAM-OBO-Access-Token` with the originating `X-App-ID`, exact endpoint and route template. Retains resource ACLs, member roles/tags and testing checks; no legacy-proof fallback. | Implemented locally; 154 library tests and strict Clippy pass. A different selected account currently lacks login-consented role disclosure, so role-dependent endpoints fail closed; resolve this contract before claiming complete cross-account support |
+| Commit: `src/api/auth.rs` and existing route/action authorization | Verifies `X-IAM-OBO-Access-Token` with the originating `X-App-ID`, exact endpoint and route template. Retains resource ACLs, member roles/tags and testing checks; no legacy-proof fallback. | Implemented locally; 154 library tests and strict Clippy pass. IAM0141 now binds explicitly reviewed disclosures to each selected provider account/org. Restricted-role production/testing regressions prove selected-account role/identity and fail-closed scope changes; receiver resource ACLs stay in place. Coordinated live verification remains pending |
 | DM: `src/api/extract.rs::realtime_bearer` | Rejects inbound OBO. Its required migration is the outgoing Ting integration below. | No incoming OBO migration identified |
 
 ## Caller migration status

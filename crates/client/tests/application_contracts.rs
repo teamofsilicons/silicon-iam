@@ -875,6 +875,7 @@ async fn obo_consent_preserves_the_displayed_version_with_direct_user_auth() {
         .decide(
             id,
             &models::OboConsentDecision {
+                iam_disclosures_reviewed: Some(true),
                 contexts: None,
                 decision: models::OboConsentDecisionDecision::Approve,
                 version: 7,
@@ -890,7 +891,10 @@ async fn obo_consent_preserves_the_displayed_version_with_direct_user_auth() {
             .to_ascii_lowercase()
             .contains("authorization: bearer cat_direct_user\r\n")
     );
-    assert_eq!(body, json!({"decision":"approve","version":7}));
+    assert_eq!(
+        body,
+        json!({"decision":"approve","version":7,"iam_disclosures_reviewed":true})
+    );
     server.join().expect("mock done");
 }
 

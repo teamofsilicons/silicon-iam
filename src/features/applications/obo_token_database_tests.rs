@@ -173,7 +173,7 @@ struct Issued {
     refresh_seed: u8,
 }
 fn credential(seed: u8) -> Value {
-    json!({"id":Uuid::now_v7(),"key_version":1,"digest":format!("{seed:02x}").repeat(32)})
+    json!({"id":Uuid::now_v7(),"key_version":1,"digest":format!("{seed:02x}").repeat(32),"iam_disclosures_reviewed":true})
 }
 fn candidates(seed: u8) -> Value {
     json!([{"key_version":1,"digest":format!("{seed:02x}").repeat(32)}])
@@ -444,11 +444,47 @@ async fn obo_durable_shared_graph_token_survives_logout_and_checks_recipient() -
 #[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL; isolated PostgreSQL"]
 async fn obo_provider_context_requires_token_proof_and_uses_selected_account_org()
 -> anyhow::Result<()> {
+    for testing in [false, true] {
+        provider_context_disclosure_case(testing).await?;
+    }
+    Ok(())
+}
+
+async fn provider_context_disclosure_case(testing: bool) -> anyhow::Result<()> {
     const ADMIN_TOKEN: &str = "00000000-0000-0000-0000-000000000211";
-    let fixture = Fixture::new(false).await?;
+    let fixture = Fixture::new(testing).await?;
     sqlx::raw_sql("INSERT INTO iam.authentication_sessions(id,subject_principal_id,subject_kind,authentication_method,assurance_level,subject_auth_epoch,idle_expires_at,absolute_expires_at) VALUES('00000000-0000-0000-0000-000000000042','c:test_admin','carbon','email_otp',1,1,now()+interval '1 day',now()+interval '2 days'); INSERT INTO iam.access_tokens(id,token_class,token_digest,digest_key_version,token_prefix,authentication_session_id,subject_principal_id,subject_kind,audience,subject_auth_epoch,expires_at) VALUES('00000000-0000-0000-0000-000000000211','carbon_access',decode(repeat('aa',32),'hex'),1,'cat_context1','00000000-0000-0000-0000-000000000042','c:test_admin','carbon','silicon-iam',1,now()+interval '1 hour'); INSERT INTO iam.access_token_scopes(access_token_id,scope) VALUES('00000000-0000-0000-0000-000000000211','iam.self');")
         .execute(&fixture.pool).await?;
     let request = fixture.request().await?;
+    let displayed = fixture.read(request).await?;
+    let expected_disclosures = json!([
+        "self.identity.read",
+        "self.membership.read",
+        "self.tags.read"
+    ]);
+    ensure!(displayed["endpoints"][0]["iam_disclosures"] == expected_disclosures);
+    ensure!(displayed["endpoints"][0]["downstream"][0]["iam_disclosures"] == expected_disclosures);
+    let mut old_client_code = credential(51);
+    old_client_code
+        .as_object_mut()
+        .context("code object")?
+        .remove("iam_disclosures_reviewed");
+    let mut tx = fixture.context("c:test_carbon", "", None).await?;
+    let missing_review = sqlx::query_scalar::<_, Json<Value>>(
+        "SELECT iam_private.obo_authorization_decide($1,$2::text::uuid,1,true,$3)",
+    )
+    .bind(request)
+    .bind(USER_TOKEN)
+    .bind(Json(old_client_code))
+    .fetch_one(&mut *tx)
+    .await;
+    ensure!(is_error(
+        &missing_review
+            .err()
+            .context("old client must not approve unseen disclosures")?,
+        "obo_disclosure_review_required"
+    ));
+    tx.rollback().await?;
     let contexts = json!([{"app_id":"store","org_id":"other_org","token_id":ADMIN_TOKEN,"digests":candidates(0xaa)}]);
     let mut forged = contexts.clone();
     forged[0]["digests"] = candidates(0xbb);
@@ -521,8 +557,11 @@ async fn obo_provider_context_requires_token_proof_and_uses_selected_account_org
         "wrong selected provider authority: {verified}"
     );
     ensure!(
-        verified["authorization"]["org_role"].is_null(),
-        "other account inherited root login disclosure"
+        verified["authorization"]["org_role"] == "owner"
+            && verified["authorization"]["actor_type"] == "carbon"
+            && verified["authorization"]["public_id"] == "c:test_admin"
+            && verified["authorization"]["membership_id"] == "00000000-0000-0000-0000-000000000033",
+        "selected account did not receive its explicitly approved disclosure snapshot: {verified}"
     );
     tx.rollback().await?;
     let mut tx = fixture.context("target", "target", None).await?;
@@ -898,6 +937,79 @@ async fn silicon_invitation_requires_shared_org_and_target_account_acceptance() 
             "acceptance ignored inviter losing shared source organization"
         );
         tx.rollback().await?;
+        f.pool.close().await;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires Docker or IAM_TEST_DATABASE_ADMIN_URL; isolated PostgreSQL"]
+async fn obo_disclosure_review_tracks_declared_approvals_without_login_inheritance()
+-> anyhow::Result<()> {
+    for testing in [false, true] {
+        let f = Fixture::new(testing).await?;
+        // An origin login cannot approve another account's disclosures. The new
+        // OBO screen makes its own explicit, bounded disclosure decision.
+        sqlx::query("DELETE FROM iam.oauth_consent_grant_scopes WHERE scope IN ('self.identity.read','self.membership.read','self.tags.read')")
+            .execute(&f.pool).await?;
+        let request = f.request().await?;
+        let shown = f.read(request).await?;
+        ensure!(
+            shown["endpoints"][0]["iam_disclosures"]
+                == json!([
+                    "self.identity.read",
+                    "self.membership.read",
+                    "self.tags.read"
+                ])
+        );
+        // A provider's declaration narrows every descendant path, even if the
+        // administrator's older approval row is still active.
+        sqlx::query("UPDATE iam.applications SET app_scope=jsonb_set(app_scope,'{iam}',(app_scope->'iam')-'self.membership.read') WHERE id='target'")
+            .execute(&f.pool).await?;
+        let error = f
+            .approve(request, 1, 201)
+            .await
+            .err()
+            .context("old review must fail")?;
+        ensure!(is_error(&error, "obo_consent_changed"));
+        let refreshed = f.read(request).await?;
+        ensure!(refreshed["version"] == 2);
+        let bounded = json!(["self.identity.read", "self.tags.read"]);
+        ensure!(refreshed["endpoints"][0]["iam_disclosures"] == bounded);
+        ensure!(refreshed["endpoints"][0]["downstream"][0]["iam_disclosures"] == bounded);
+        f.approve(request, 2, 202).await?;
+        let issued = f.issue(204).await?;
+        let verified = f.verify(&issued, None).await?;
+        ensure!(verified["authorization"]["org_role"].is_null());
+        ensure!(verified["authorization"]["public_id"] == "c:test_carbon");
+        ensure!(
+            verified["authorization"]["scopes"]
+                == json!([
+                    "obo:target:files.read",
+                    "self.identity.read",
+                    "self.tags.read"
+                ])
+        );
+        // Approved-scope identity matters as well as its spelling. Replacing an
+        // approval cannot silently reactivate a previously approved snapshot.
+        sqlx::query("UPDATE iam.application_approved_scopes SET approved_at=approved_at+interval '1 second' WHERE application_id='target' AND scope='self.identity.read' AND revoked_at IS NULL")
+            .execute(&f.pool).await?;
+        ensure!(
+            f.verify(&issued, None).await.is_err(),
+            "approval replacement kept old disclosure authority"
+        );
+        let renewed = f.issue(211).await?;
+        ensure!(f.verify(&renewed, None).await.is_ok());
+        // Pre-upgrade grants have no per-context disclosure decision and must
+        // be reapproved; their root login scope snapshot is not upgraded.
+        sqlx::query("UPDATE iam.obo_grants SET graph=graph-'_disclosure_consent' WHERE id=$1")
+            .bind(renewed.grant)
+            .execute(&f.pool)
+            .await?;
+        ensure!(
+            f.verify(&renewed, None).await.is_err(),
+            "legacy graph acquired implicit disclosures"
+        );
         f.pool.close().await;
     }
     Ok(())

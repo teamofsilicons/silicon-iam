@@ -31,9 +31,9 @@ the complete redesign to IAM alone while consumers still use those routes.
 
    This uses committed Git objects, including SQLx SHA-384 checksums. It never
    captures uncommitted SQL. The 3 October 2026 redesign inventory contains
-   138 main migrations through `0140_obo_selected_provider_metadata.sql` and
-   29 testing overlays through `9031_obo_selected_provider_metadata.sql`:
-   138 production ledger entries and 167 testing ledger entries. Numbering has
+   139 main migrations through `0141_obo_provider_disclosure_consent.sql` and
+   30 testing overlays through `9032_obo_provider_disclosure_consent.sql`:
+   139 production ledger entries and 169 testing ledger entries. Numbering has
    intentional gaps. Recalculate this inventory from the final release commit
    if it changes; do not infer counts from the highest migration number. Every
    already-applied checksum must match the corresponding committed migration.

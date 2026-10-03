@@ -199,6 +199,9 @@ impl CliError {
                         .to_owned(),
                 );
             }
+            "obo_disclosure_review_required" => {
+                return Some("Review `iam app obo consent REQUEST_ID`, including every provider’s selected account and IAM disclosures, then approve that version with --approve-iam-disclosures. Update older IAM clients first.".to_owned());
+            }
             "obo_proof_flow_retired" => {
                 return Some("Use `iam app obo authorize` for separate consent, then `app obo token` to redeem its code. Receivers use `app obo verify` with the reusable access token.".to_owned());
             }
