@@ -30,9 +30,9 @@ This product policy accepts the provider's verified-email assertion. It does not
 ## Release verification
 
 1. Pass full CI, restricted-role PostgreSQL tests, frontend checks and the exact candidate image migration rehearsal on isolated copies of both live databases.
-2. Preserve encrypted, versioned, checksum-verified paired quiesced backups and runtime configuration before applying the additive migrations and runtime grants.
-3. Deploy the tested backend before the frontend, then merge only the intended provider fields into the protected runtime configuration. Restart the relevant services through the reviewed operator and verify exact source, health and provider discovery.
+2. Preserve encrypted, versioned, checksum-verified paired quiesced backups and runtime configuration before applying migrations and runtime grants.
+3. Deploy the tested backend before the frontend and preserve the existing provider configuration. If provider configuration also needs an update, merge only the intended fields through the separate reviewed operator. Verify exact source, health and provider discovery.
 4. Verify an email-created Carbon can use provider login without an extra IAM OTP, a provider-created Carbon can use ordinary email-code login, and a new provider email can continue verified signup. Synthetic callback fixtures prove UI/retry behavior, not real Google/Apple authorization.
 5. Check user cancellation, expired proof, popup blocked/closed fallback, wrong OTP, idempotent retry and mail delivery. Keep an unconfigured provider visibly unavailable.
 
-Do not change provider issuer/subject associations manually in SQL, bypass OTP linking, or advertise provider availability before its configuration and live acceptance checks are complete.
+Do not create provider-subject bindings manually, substitute client-supplied email for a verified provider claim, or bypass current contact ownership checks. Keep provider availability tied to its configured backend capability and record live authorization acceptance separately from synthetic tests.
