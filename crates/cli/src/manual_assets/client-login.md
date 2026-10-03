@@ -1,6 +1,6 @@
 # Application login using short-lived tokens
 
-A login produces one short-lived token. The application sends somebody to IAM, gets that token back, and trades it — together with its own secret — for a session. The IAM SLT exchange has no PKCE verifier; IAM collects explicit permission and organization consent. Your application must still bind the callback to the browser's initiated login attempt; this protocol is not a substitute for callback CSRF protection.
+A login produces one short-lived token. The application sends somebody to IAM, gets that token back, and trades it — together with its own secret — for a session. The IAM SLT exchange has no PKCE verifier; IAM asks the user to choose an organization and reviews critical IAM permissions when needed. Your application must still bind the callback to the browser's initiated login attempt; this protocol is not a substitute for callback CSRF protection.
 
 Use the globally unique bare Application ID everywhere, for example `checkout`. Its owning organization is a separate property.
 
@@ -32,13 +32,15 @@ Open the popup directly from the button click so the browser can permit it. Use 
 
 1. Your backend creates a short-lived, unpredictable, single-use login state and stores the chosen identity kind with it. Put the state in your own callback URL's query, then percent-encode that complete URL as `redirect_uri`. IAM preserves callback query parameters.
 
-2. The callback backend validates and consumes state, exchanges the SLT with the app secret, and verifies the authenticated principal has the stored kind. If the exchange omits `actor`, use authenticated token introspection and its `actor_type`. Reject mismatches and missing or inactive identity proof before creating an app session.
+2. The callback backend validates state, exchanges the SLT with the app secret, and verifies the authenticated principal has the stored kind. If the exchange omits `actor`, use authenticated token introspection and its `actor_type`. Reject mismatches and missing or inactive identity proof before creating an app session. Complete the attempt once; retain the original mutation key and protected callback state while an exchange outcome is uncertain, so an identical retry cannot exchange the SLT twice.
 
 3. Set the application's secure session before serving an app-origin completion page. That page can notify its opener using `postMessage` with the exact app origin, a one-use attempt identifier and a completion status, then close itself. Never post an SLT, access token, refresh token or secret.
 
 4. The opener must check `event.origin`, `event.source === popup`, the expected message shape and attempt identifier, then reload authenticated app state. Treat a popup close or timeout as cancellation, not successful login.
 
-Store an optional post-login return URL with the same backend login attempt. After the app session is established, navigate to that approved URL; if absent, render an app completion page with a return link. Keep callback destinations and return paths under application control. A browser-selected kind or a popup message alone is not identity proof. Direct IAM clients can additionally send `X-IAM-Identity-Kind: carbon` or `silicon` when listing organizations and issuing single, batch or bundle SLTs. IAM checks the authenticated principal before issuance and binds the header into mutation replay checks. Existing requests without the optional header retain their established behavior.
+Store an optional post-login return URL with the same backend login attempt. After the app session is established, navigate to that approved URL; if absent, render an app completion page with a return link. Accept an allowlisted destination or a validated same-origin application path; reject protocol-relative URLs, credentials and unapproved origins. Keep callback destinations and return paths under application control. A browser-selected kind or a popup message alone is not identity proof.
+
+**Direct API rollout note:** the optional `X-IAM-Identity-Kind: carbon` or `silicon` header for listing organizations and issuing single, batch or bundle SLTs is documented for the next backend update, which is still under verification. Do not rely on production API enforcement of this header yet. The live IAM browser flow already keeps the selected kind, and applications must verify the exchanged principal as described above. Once deployed, the backend will reject kind mismatches before issuance and bind the header into mutation replay checks. Requests without the optional header retain their established behavior.
 
 ## Step two — take the token off the callback
 

@@ -18,7 +18,8 @@ let request = application.obo().authorize(&amp;models::OboAuthorizationRequest {
 // Save request.id; application.obo().authorization(request.id) reads status.</code></pre>
 <p>IAM shows the requesting app, user, organization and every requested root's full dependency tree. Approval creates a separate grant per root endpoint. Only a direct IAM user session may call <code>obo().consent(id)</code> and <code>obo().decide(id, decision, mutation)</code>; application credentials or app bearers cannot approve their own access. Send the displayed version with <code>OboConsentDecision</code>. A stale graph must be reviewed again. Optional <code>contexts</code> select a direct IAM account token and organization per provider; omitted providers use the root context. Direct account credentials stay inside IAM clients, never the requesting app. With a bound callback, validate returned state/request ID, clear the code from the URL and redeem it on the application server; status polling never returns it.</p>
 <h2>Approval in a popup</h2>
-<p>Open IAM's returned <code>authorization_url</code> in a popup from the user's feature action.
+<p>Open a waiting popup directly from the user's feature action before awaiting the backend
+authorization request, then navigate it to IAM's returned <code>authorization_url</code>.
 After validating its configured IAM origin and consent path, an application may add
 <code>display=popup</code> for compact presentation. Keep the consent request ID intact.
 The callback remains the exact <code>redirect_uri</code> supplied when authorization was created;
@@ -34,7 +35,11 @@ exact application origin, then close the window. The opener verifies the origin,
 source and identifier before refreshing its authenticated state or navigating to its bound
 return URL. Never pass OBO codes or tokens in a message. Cancellation, denial and a blocked
 popup need explicit recovery; reopening the same pending review must not silently create a
-new grant. The application can offer a full-page consent link as a fallback.</p>
+new grant. The application can offer a full-page consent link as a fallback. Keep the same
+exchange mutation key and protected callback state after an uncertain response; retries must
+recover that exchange instead of treating the code as a fresh credential. Status polling can
+confirm a request's state but cannot recover its code. A request created without a bound
+callback keeps its manual handoff; adding a callback to the browser URL cannot change it.</p>
 <h2>Redeem the approved code</h2>
 <pre><code>let exchange = Mutation::new();
 let issued = application.obo().exchange_code(

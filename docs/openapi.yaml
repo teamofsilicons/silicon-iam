@@ -6846,7 +6846,10 @@ components:
       in: header
       required: false
       description: >-
-        Restrict this login request to the authenticated Carbon or Silicon principal.
+        Pending backend rollout: production enforcement is still under verification.
+        Applications must independently verify the exchanged principal against their
+        server-stored requested kind. Once deployed, this optional header will
+        restrict this login request to the authenticated Carbon or Silicon principal.
         Invalid or duplicate values return 400; an authenticated principal of the
         other kind returns 403 identity_kind_mismatch before token issuance or replay.
         The selected kind is included in the mutation idempotency fingerprint.
