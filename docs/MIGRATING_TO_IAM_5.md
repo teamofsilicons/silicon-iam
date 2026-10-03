@@ -9,7 +9,7 @@ For a broader product guide, read [Building a Team of Silicons-ready application
 Use the [OpenAPI document](/openapi.yaml) for exact bodies and response types, and the [Rust client guide](/client/guide/) for the SDK. While the crates.io release is pending, the reviewed SDK candidate can be pinned directly:
 
 ```toml
-silicon-iam-client = { git = "https://github.com/teamofsilicons/silicon-iam", rev = "f1e9c4768029aacabe337ca41be52e05023d1631", version = "5.0.0" }
+silicon-iam-client = { git = "https://github.com/teamofsilicons/silicon-iam", rev = "56d4be4a85f0155277c4e5d024c093d4443ef527", version = "5.0.0" }
 ```
 
 After 5.0.0 is published, use the registry dependency with the same version. Installing the current public CLI does not opt a production backend into the new protocol. Check [the running backend version](https://backend.iam.teamofsilicons.com/api/v1/version) when coordinating your deployment.
