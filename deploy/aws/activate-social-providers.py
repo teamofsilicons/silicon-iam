@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.parse
 
 FIELDS = frozenset(("IAM_GOOGLE_CLIENT_ID", "IAM_GOOGLE_CLIENT_SECRET",
                     "IAM_APPLE_CLIENT_ID", "IAM_APPLE_CLIENT_SECRET"))
@@ -149,18 +150,37 @@ def ready(args, retry=False):
             time.sleep(2)
 
 
+def postgres_environment(url):
+    """libpq does not expand a URI supplied only through PGDATABASE."""
+    parsed = urllib.parse.urlsplit(url)
+    options = urllib.parse.parse_qs(parsed.query, strict_parsing=True)
+    require(parsed.scheme in ("postgres", "postgresql") and parsed.hostname
+            and parsed.username and parsed.password and parsed.path.startswith("/")
+            and not parsed.fragment, "Unsupported runtime database URL")
+    require(set(options) == {"sslmode", "sslrootcert"}
+            and options["sslmode"] == ["verify-full"]
+            and options["sslrootcert"] == [CERT], "Unexpected database TLS settings")
+    return {"PGHOST": parsed.hostname, "PGPORT": str(parsed.port or 5432),
+            "PGDATABASE": urllib.parse.unquote(parsed.path[1:]),
+            "PGUSER": urllib.parse.unquote(parsed.username),
+            "PGPASSWORD": urllib.parse.unquote(parsed.password),
+            "PGSSLMODE": "verify-full", "PGSSLROOTCERT": CERT}
+
+
 def schema(args):
     inventory = json.loads(args.manifest.read_text())
     require(inventory["revision"] == args.revision, "Manifest source mismatch")
     values = environment((CONFIG / "api.env").read_bytes())
     for label, key in (("production", "IAM_DATABASE_URL"), ("testing", "IAM_TESTING_DATABASE_URL")):
+        connection = postgres_environment(values[key])
+        variables = [arg for name in connection for arg in ("--env", name)]
         output = run(["docker", "run", "--rm", "--network", "host", "--read-only", "--cap-drop", "ALL",
                       "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:size=16m,mode=1777",
-                      "--volume", f"{CERT}:{CERT}:ro", "--env", "PGDATABASE",
+                      "--volume", f"{CERT}:{CERT}:ro", *variables,
                       "--entrypoint", "psql", args.postgres_image, "-X", "--no-password", "-At",
                       "-v", "ON_ERROR_STOP=1", "-c",
                       "SELECT version,encode(checksum,'hex'),success FROM _sqlx_migrations ORDER BY version"],
-                     env=dict(os.environ, PGDATABASE=values[key])).decode()
+                     env=dict(os.environ, **connection)).decode()
         expected = [f"{row['version']}|{row['checksum']}|t" for row in inventory["ledgers"][label]]
         require(output.splitlines() == expected, f"Exact {label} schema ledger mismatch")
 

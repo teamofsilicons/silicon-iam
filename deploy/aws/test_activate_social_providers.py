@@ -24,6 +24,17 @@ def candidate(header=None, claims=None):
 
 
 class ActivationTests(unittest.TestCase):
+    def test_runtime_uri_becomes_libpq_environment_without_losing_escaping(self):
+        value = activation.postgres_environment("postgresql://runtime%40iam:p%3Ass%2Fword@db.example:5433/iam%2Dprod?sslmode=verify-full&sslrootcert=" + activation.CERT)
+        self.assertEqual(value, {"PGHOST": "db.example", "PGPORT": "5433", "PGDATABASE": "iam-prod",
+            "PGUSER": "runtime@iam", "PGPASSWORD": "p:ss/word", "PGSSLMODE": "verify-full", "PGSSLROOTCERT": activation.CERT})
+
+    def test_runtime_uri_rejects_weaker_or_unexpected_tls_options(self):
+        for query in ("sslmode=disable", "sslmode=verify-full&sslrootcert=/unreviewed.pem",
+                      "sslmode=verify-full&sslmode=disable&sslrootcert=" + activation.CERT):
+            with self.assertRaises(RuntimeError):
+                activation.postgres_environment("postgresql://runtime:password@db.example/iam?" + query)
+
     def test_preserves_unrelated_environment_bytes(self):
         raw = b"# Shared keys remain byte-for-byte\nIAM_COOKIE_KEY=unchanged=padding\nIAM_GOOGLE_CLIENT_ID=old\nOTHER=last"
         updated = activation.updated_environment(raw, candidate())
