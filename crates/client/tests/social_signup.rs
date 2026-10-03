@@ -116,6 +116,7 @@ async fn provider_discovery_reports_configuration_and_unknown_providers_fail_bef
     let providers = client.signup().social_providers().await.expect("catalog");
     assert_eq!(providers.providers.len(), 2);
     assert!(!providers.providers[1].enabled);
+    assert!(!providers.providers[1].login_enabled);
     assert!(
         capture
             .recv()
@@ -131,4 +132,111 @@ async fn provider_discovery_reports_configuration_and_unknown_providers_fail_bef
             .await
             .is_err()
     );
+}
+
+#[cfg(feature = "cli-session")]
+#[tokio::test]
+async fn social_login_contract_keeps_proof_in_body_and_link_uses_direct_credential() {
+    use silicon_iam_client::Credential;
+    let id = Uuid::new_v4();
+    let proof = models::SocialSignupStatusInput {
+        request_id: id,
+        poll_token: "private-poll-proof".to_owned(),
+    };
+    let (client, capture, server) = service(
+        json!({"request_id":id,"authorization_url":"https://appleid.apple.com/auth/authorize","poll_token":"private-poll-proof","expires_at":"2030-01-01T00:00:00Z"}),
+    );
+    let start = client
+        .auth()
+        .social_start("apple", &Mutation::new())
+        .await
+        .expect("start login");
+    assert!(!format!("{start:?}").contains("private-poll-proof"));
+    let (headers, body) = capture.recv().expect("start request");
+    assert!(headers.starts_with("POST /api/v1/login/social/apple/start HTTP/1.1"));
+    assert_eq!(body, json!({}));
+    server.join().expect("start completed");
+    let (client, capture, server) = service(
+        json!({"status":"link_required","email":"person@example.test","display_name":null}),
+    );
+    let status = client
+        .auth()
+        .social_status("apple", &proof)
+        .await
+        .expect("poll login");
+    assert_eq!(status.status, models::SocialLoginStatusStatus::LinkRequired);
+    let (headers, body) = capture.recv().expect("status request");
+    assert!(headers.starts_with("POST /api/v1/login/social/apple/status HTTP/1.1"));
+    assert!(!headers.contains("private-poll-proof"));
+    assert_eq!(
+        body,
+        json!({"request_id":id,"poll_token":"private-poll-proof"})
+    );
+    server.join().expect("status completed");
+    let (client, capture, server) = service(json!({"linked":true,"provider":"apple"}));
+    let result = client
+        .with_credential(Credential::bearer("fresh-direct-carbon-token"))
+        .auth()
+        .social_link("apple", &proof, &Mutation::new())
+        .await
+        .expect("link");
+    assert!(result.linked);
+    let (headers, body) = capture.recv().expect("link request");
+    assert!(headers.starts_with("POST /api/v1/login/social/apple/link HTTP/1.1"));
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer fresh-direct-carbon-token")
+    );
+    assert!(headers.to_ascii_lowercase().contains("idempotency-key:"));
+    assert!(!headers.contains("private-poll-proof"));
+    assert_eq!(
+        body,
+        json!({"request_id":id,"poll_token":"private-poll-proof"})
+    );
+    server.join().expect("link completed");
+    assert!(
+        client
+            .auth()
+            .social_status("https://attacker.example", &proof)
+            .await
+            .is_err()
+    );
+}
+
+#[cfg(feature = "cli-session")]
+#[tokio::test]
+async fn social_login_completion_reuses_exact_mutation_and_proof_for_retry() {
+    let id = Uuid::new_v4();
+    let proof = models::SocialSignupStatusInput {
+        request_id: id,
+        poll_token: "private-proof".to_owned(),
+    };
+    let mutation = Mutation::new();
+    let response = json!({"access_token":"cat_private","refresh_token":"crt_private","token_type":"Bearer","expires_in":900,"refresh_expires_at":"2030-01-01T00:00:00Z","actor":{"public_id":"c:person","type":"carbon"},"session_id":id});
+    let mut first = None;
+    for _ in 0..2 {
+        let (client, capture, server) = service(response.clone());
+        let result = client
+            .auth()
+            .social_complete("google", &proof, &mutation)
+            .await
+            .expect("complete provider login");
+        assert_eq!(result.access_token, "cat_private");
+        let (headers, body) = capture.recv().expect("completion request");
+        assert!(headers.starts_with("POST /api/v1/login/social/google/complete HTTP/1.1"));
+        assert!(!headers.contains("private-proof"));
+        let key = headers
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("idempotency-key:"))
+            .expect("key")
+            .to_owned();
+        let request = (key, body);
+        if let Some(expected) = &first {
+            assert_eq!(&request, expected);
+        } else {
+            first = Some(request);
+        }
+        server.join().expect("complete response");
+    }
 }

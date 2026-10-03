@@ -25,6 +25,25 @@ See `iam --help`, then a noun such as `iam app --help`,
 then a verb such as `iam app create --help`. Every level includes purpose,
 arguments and related documentation. `iam commands --json` exposes the tree to agents.
 
+### Google and Apple login
+
+The next CLI release adds `iam login --provider google` and `iam login --provider apple`.
+These commands print the provider's authorization URL and wait for browser verification.
+They require a configured production provider; IAM testing environments reject external
+provider authentication. Already published CLI 5.0.0 artifacts do not include these flags.
+
+A previously linked provider signs in directly. If its verified email belongs to an
+existing account without that provider link, IAM sends a new email code. Enter that code
+to prove the existing account before linking; an old saved session cannot authorize
+this operation. The CLI stores only the independently verified IAM session and can then
+issue the usual application SLT with `--app-id` and one `--grant-org`.
+
+For a new verified email, login returns `signup_required` and a `signup_session_id`
+without creating an account. Continue with `iam signup --session-id <id>`, optionally
+adding `--phone`, `--carbon-id`, `--display-name`, `--timezone`, or `--photo`.
+Provider verification replaces email OTP; any supplied phone still requires verification.
+Polling secrets and access/refresh tokens are never printed in the normal login result.
+
 IAM is the credential issuer: Carbon verification and Silicon SID/STK login
 happen here. An application CLI must instead accept `app login '<SLT>'`, using a
 token minted by `iam login --app-id 'app'` or the IAM consent website. An

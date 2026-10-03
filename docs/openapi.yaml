@@ -6362,6 +6362,142 @@ paths:
                           type: string
                         enabled:
                           type: boolean
+                        login_enabled:
+                          type: boolean
+                          description: Whether provider login is configured for this deployment.
+        default:
+          description: Structured IAM error.
+  "/api/v1/login/social/{provider}/start":
+    post:
+      operationId: startSocialLogin
+      tags: [Authentication]
+      summary: Start Google or Apple login
+      description: Begin provider login. A previously bound provider subject may sign in. An email match alone requires a fresh direct Carbon OTP before linking. New verified emails resume signup. Providers are unavailable in testing environments.
+      security: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [google, apple]
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+                type: object
+                additionalProperties: false
+      responses:
+        '201':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SocialSignupStart"
+        default:
+          description: Structured IAM error.
+  "/api/v1/login/social/{provider}/status":
+    post:
+      operationId: pollSocialLogin
+      tags: [Authentication]
+      summary: Status Google or Apple login
+      description: Poll using the request ID and confidential polling capability. Verified means a new email can resume signup; login_ready may complete; link_required needs fresh independent Carbon OTP verification.
+      security: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [google, apple]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+                "$ref": "#/components/schemas/SocialSignupStatusInput"
+      responses:
+        '200':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SocialLoginStatus"
+        default:
+          description: Structured IAM error.
+  "/api/v1/login/social/{provider}/complete":
+    post:
+      operationId: completeSocialLogin
+      tags: [Authentication]
+      summary: Complete Google or Apple login
+      description: Issue a direct Carbon session for a bound provider subject. Reuse the same Idempotency-Key and proof after an uncertain response.
+      security: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [google, apple]
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+                "$ref": "#/components/schemas/SocialSignupStatusInput"
+      responses:
+        '200':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/IamTokenResponse"
+        default:
+          description: Structured IAM error.
+  "/api/v1/login/social/{provider}/link":
+    post:
+      operationId: linkSocialLogin
+      tags: [Authentication]
+      summary: Link Google or Apple login
+      description: Link the verified provider subject only to the exact matching Carbon after a fresh direct OTP login begun after the provider proof. Existing sessions, application sessions, and different accounts cannot link.
+      security:
+      - iamBearer: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [google, apple]
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+                "$ref": "#/components/schemas/SocialSignupStatusInput"
+      responses:
+        '200':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SocialLoginLinkResult"
         default:
           description: Structured IAM error.
   "/api/v1/signup/social/{provider}/start":
@@ -7202,6 +7338,34 @@ components:
           type: string
           writeOnly: true
       x-redact-debug: true
+    SocialLoginStatus:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [pending, verified, already_registered, login_ready, link_required, completed, failed, expired]
+        signup_session_id:
+          type: string
+          format: uuid
+          description: Present only for a verified new email; resume ordinary signup.
+        email:
+          type: string
+          nullable: true
+        display_name:
+          type: string
+          nullable: true
+    SocialLoginLinkResult:
+      type: object
+      additionalProperties: false
+      required: [linked, provider]
+      properties:
+        linked:
+          type: boolean
+        provider:
+          type: string
+          enum: [google, apple]
     SocialSignupStatus:
       type: object
       additionalProperties: false

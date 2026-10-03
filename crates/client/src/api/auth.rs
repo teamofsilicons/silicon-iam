@@ -14,6 +14,86 @@ pub struct Auth<'a>(pub(super) &'a Client);
 
 impl Auth<'_> {
     #[cfg(feature = "cli-session")]
+    /// Starts Google or Apple authentication for a direct IAM session.
+    ///
+    /// Open the returned provider URL and keep the polling capability private.
+    /// Applications continue to use SLT login, never this first-party ceremony.
+    /// # Errors
+    /// Unsupported, unconfigured or testing-plane providers are rejected.
+    pub async fn social_start(
+        &self,
+        provider: &str,
+        mutation: &Mutation,
+    ) -> Result<models::SocialSignupStart> {
+        super::signup::check_social_provider(provider)?;
+        self.0
+            .post(
+                &["login", "social", provider, "start"],
+                &serde_json::json!({}),
+                mutation,
+            )
+            .await
+    }
+
+    #[cfg(feature = "cli-session")]
+    /// Polls provider authentication without exposing its capability in a URL.
+    /// # Errors
+    /// Invalid proof, expired requests and unsupported providers are rejected.
+    pub async fn social_status(
+        &self,
+        provider: &str,
+        proof: &models::SocialSignupStatusInput,
+    ) -> Result<models::SocialLoginStatus> {
+        super::signup::check_social_provider(provider)?;
+        self.0
+            .send_json(
+                self.0
+                    .route(
+                        reqwest::Method::POST,
+                        &["login", "social", provider, "status"],
+                    )?
+                    .json(proof),
+            )
+            .await
+    }
+
+    #[cfg(feature = "cli-session")]
+    /// Completes a bound provider login. Retain the proof and mutation key for retries.
+    /// # Errors
+    /// The subject must be bound to an active Carbon and ready for login.
+    pub async fn social_complete(
+        &self,
+        provider: &str,
+        proof: &models::SocialSignupStatusInput,
+        mutation: &Mutation,
+    ) -> Result<models::IamTokenResponse> {
+        super::signup::check_social_provider(provider)?;
+        self.0
+            .post(&["login", "social", provider, "complete"], proof, mutation)
+            .await
+    }
+
+    #[cfg(feature = "cli-session")]
+    /// Links only after a fresh direct Carbon OTP login for the verified email.
+    ///
+    /// Use a client bearing that new credential; a previously saved session or
+    /// an application session cannot authorize linking. Email equality alone
+    /// never authenticates or links an account.
+    /// # Errors
+    /// Wrong, stale or application credentials and mismatched proof are rejected.
+    pub async fn social_link(
+        &self,
+        provider: &str,
+        proof: &models::SocialSignupStatusInput,
+        mutation: &Mutation,
+    ) -> Result<models::SocialLoginLinkResult> {
+        super::signup::check_social_provider(provider)?;
+        self.0
+            .post(&["login", "social", provider, "link"], proof, mutation)
+            .await
+    }
+
+    #[cfg(feature = "cli-session")]
     #[doc(hidden)]
     /// Starts a Carbon login by email, phone number, or Carbon ID.
     ///
