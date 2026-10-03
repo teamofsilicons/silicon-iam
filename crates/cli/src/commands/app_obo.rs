@@ -515,11 +515,12 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn disclosure_review_labels_and_unknown_nested_fields_fail_closed() {
+    fn disclosure_review_labels_and_unknown_nested_fields_fail_closed() -> Result<()> {
         let good: models::OboConsentNode = serde_json::from_value(json!({
             "audience":"provider", "endpoint_id":"files.read", "description":"Read files", "critical":false,
             "iam_disclosures":["self.identity.read","self.membership.read","self.tags.read"], "downstream":[]
-        })).expect("known disclosure node");
+        }))
+        .map_err(|error| CliError::Usage(error.to_string()))?;
         assert!(validate_disclosures(std::slice::from_ref(&good)).is_ok());
         assert_eq!(
             disclosure_label(&models::OboConsentNodeIamDisclosures::SelfMembershipRead),
@@ -538,5 +539,6 @@ mod tests {
                 2
             ]);
         assert!(validate_disclosures(&[duplicate]).is_err());
+        Ok(())
     }
 }
