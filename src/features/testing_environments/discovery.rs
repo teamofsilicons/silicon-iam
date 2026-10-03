@@ -221,10 +221,17 @@ fn application_route(method: &str, path: &str) -> bool {
                 | "/api/v1/obo-access/exchanges"
                 | "/api/v1/obo-access/chained-exchanges"
                 | "/api/v1/obo-access/verify"
+                | "/api/v1/obo-access/authorizations"
+                | "/api/v1/obo-access/tokens"
+                | "/api/v1/obo-access/token-verifications"
+                | "/api/v1/obo-access/delegations"
         ),
         "GET" => {
             path == "/api/v1/application/testing-context"
                 || path.starts_with("/api/v1/application-directory/")
+                || path
+                    .strip_prefix("/api/v1/obo-access/authorizations/")
+                    .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
                 || (path.starts_with("/api/v1/obo-access/applications/")
                     && path.ends_with("/endpoints"))
         }
@@ -267,6 +274,48 @@ mod tests {
         }
         assert!(!application_route("POST", "/api/v1/app-verification/admin"));
     }
+    #[test]
+    fn selectors_allow_only_iam5_application_obo_methods() {
+        for route in [
+            "/api/v1/obo-access/authorizations",
+            "/api/v1/obo-access/tokens",
+            "/api/v1/obo-access/token-verifications",
+            "/api/v1/obo-access/delegations",
+        ] {
+            assert!(application_route("POST", route));
+            for method in ["GET", "PUT", "PATCH", "DELETE"] {
+                assert!(!application_route(method, route));
+            }
+        }
+        let read = "/api/v1/obo-access/authorizations/01a102ef-c427-7dc1-915a-0a87e97e7b58";
+        assert!(application_route("GET", read));
+        for method in ["POST", "PUT", "PATCH", "DELETE"] {
+            assert!(!application_route(method, read));
+        }
+    }
+
+    #[test]
+    fn selectors_do_not_gain_consent_or_world_management_authority() {
+        for route in [
+            "/api/v1/obo-access/consents/01a102ef-c427-7dc1-915a-0a87e97e7b58",
+            "/api/v1/obo-access/consents/01a102ef-c427-7dc1-915a-0a87e97e7b58/decision",
+            "/api/v1/obo-access/grants",
+            "/api/v1/obo-access/grants/01a102ef-c427-7dc1-915a-0a87e97e7b58/revoke",
+            "/api/v1/obo-access/authorizations/",
+            "/api/v1/obo-access/authorizations/not-an-id",
+            "/api/v1/obo-access/authorizations/01a102ef-c427-7dc1-915a-0a87e97e7b58/decision",
+            "/api/v1/testing-environment/cleanings",
+            "/api/v1/testing-environment/key-rotations",
+            "/api/v1/app-auth/short-lived-tokens",
+            "/api/v1/applications",
+            "/api/v1/signup",
+        ] {
+            for method in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+                assert!(!application_route(method, route));
+            }
+        }
+    }
+
     #[test]
     fn ambiguous_selectors_fail() {
         let mut h = HeaderMap::new();

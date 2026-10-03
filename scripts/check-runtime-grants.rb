@@ -35,6 +35,7 @@ EXCLUDED_TEST_PATHS = %w[
   src/features/applications/scope_catalog_tests.rs
   src/features/applications/scoped_auth_tests.rs
   src/features/applications/testing_login_tests.rs
+  src/features/applications/testing_selector_tests.rs
   src/features/applications/oauth_family_tests.rs
   src/features/applications/oauth_empty_scope_tests.rs
   src/infrastructure/postgres/honeycomb_upgrade_tests.rs
