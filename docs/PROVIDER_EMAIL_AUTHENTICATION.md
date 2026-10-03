@@ -1,6 +1,6 @@
 # Provider email authentication
 
-Status: approved product contract, 2026-10-03. Implementation and release verification are pending. This supersedes the provider-subject account-linking behavior shipped in IAM 5.1.0.
+Status: approved product contract, 2026-10-03, implemented for IAM 5.2.0. Release verification is tracked separately from this contract. This supersedes the provider-subject account-linking behavior shipped in IAM 5.1.0.
 
 Google and Apple are alternate ways to verify the email used to authenticate a Carbon. An IAM account has no required Google or Apple link. The Carbon can switch between a provider and an email one-time code without account conversion or a separate linking step.
 

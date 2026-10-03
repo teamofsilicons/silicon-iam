@@ -238,6 +238,22 @@ printf '%s' "$APP_SECRET_JSON" | jq -r '
     .key == "IAM_HONEYCOMB_NOTIFICATION_SIGNING_KEY" or .key == "IAM_HONEYCOMB_SCHEDULED_TESTING" or
     .key == "IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS") | .key + "=" + (.value | tostring)
 ' >> /etc/silicon-iam/worker.env
+
+# Keep optional social sign-in credentials available after host replacement.
+# Reject non-string/newline values rather than injecting extra environment keys.
+SOCIAL_PROVIDER_ENV=$(printf '%s' "$APP_SECRET_JSON" | jq -er '
+  [ "IAM_GOOGLE_CLIENT_ID", "IAM_GOOGLE_CLIENT_SECRET",
+    "IAM_APPLE_CLIENT_ID", "IAM_APPLE_CLIENT_SECRET" ] as $keys |
+  [ $keys[] as $key | select(has($key) and .[$key] != null) |
+    if (.[$key] | type) != "string" or (.[$key] | test("[\r\n\u0000]"))
+    then error("Invalid social provider environment value")
+    else $key + "=" + .[$key] end ] | join("\n")
+')
+if [[ -n "$SOCIAL_PROVIDER_ENV" ]]; then
+  printf '%s\n' "$SOCIAL_PROVIDER_ENV" >> /etc/silicon-iam/api.env
+fi
+unset SOCIAL_PROVIDER_ENV
+
 chmod 0600 /etc/silicon-iam/api.env /etc/silicon-iam/worker.env
 
 install -d -m 0700 -o 10001 -g 10001 /var/lib/silicon-iam/telemetry/api /var/lib/silicon-iam/telemetry/worker
