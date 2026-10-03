@@ -206,6 +206,7 @@ export function mutation() {
       stepUp?: string;
       contentType?: string;
       accountId?: string;
+      identityKind?: "carbon" | "silicon";
     } = {},
   ): Promise<T> => {
     const serialized = body === undefined ? undefined : JSON.stringify(body);
@@ -215,6 +216,7 @@ export function mutation() {
       serialized,
       options.version,
       options.accountId,
+      options.identityKind,
     ]);
     const retryHash = await approvalRetryHash(signature);
     const key =
@@ -233,6 +235,8 @@ export function mutation() {
       headers["If-Match"] = `"${options.version}"`;
     if (options.stepUp) headers["X-Step-Up-Token"] = options.stepUp;
     if (options.accountId) headers["X-IAM-Account"] = options.accountId;
+    if (options.identityKind)
+      headers["X-IAM-Identity-Kind"] = options.identityKind;
     try {
       const result = await request<T>(path, {
         method,
@@ -324,6 +328,8 @@ export function authDestination(config: Configuration, signup = false): string {
     "app_id",
     "app_ids",
     "bundle_id",
+    "identity_kind",
+    "display",
     "redirect_uri",
     "org_id",
     "org_ids",
@@ -349,6 +355,8 @@ export function continueDestination(): string {
     "app_id",
     "app_ids",
     "bundle_id",
+    "identity_kind",
+    "display",
     "redirect_uri",
     "org_id",
     "org_ids",

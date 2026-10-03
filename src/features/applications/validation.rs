@@ -274,6 +274,26 @@ pub(super) fn scopes(values: &[String]) -> Result<(), ApiError> {
 /// Application, batch and bundle targets are exclusive. The user chooses
 /// organizations and approves the active permission set on the IAM surface.
 pub(super) fn login(query: &model::LoginQuery) -> Result<(), ApiError> {
+    if query
+        .display
+        .as_deref()
+        .is_some_and(|display| display != "popup")
+    {
+        return Err(ApiError::validation(
+            "display",
+            "the optional display value must be popup",
+        ));
+    }
+    if query
+        .identity_kind
+        .as_deref()
+        .is_some_and(|kind| !matches!(kind, "carbon" | "silicon"))
+    {
+        return Err(ApiError::validation(
+            "identity_kind",
+            "must be carbon or silicon",
+        ));
+    }
     if (query.app_id.is_some() || query.app_ids.is_some() || query.bundle_id.is_some())
         && query.org_id.is_some()
     {

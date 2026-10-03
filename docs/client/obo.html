@@ -17,6 +17,24 @@ let request = application.obo().authorize(&amp;models::OboAuthorizationRequest {
 // Open request.authorization_url in IAM for the represented user.
 // Save request.id; application.obo().authorization(request.id) reads status.</code></pre>
 <p>IAM shows the requesting app, user, organization and every requested root's full dependency tree. Approval creates a separate grant per root endpoint. Only a direct IAM user session may call <code>obo().consent(id)</code> and <code>obo().decide(id, decision, mutation)</code>; application credentials or app bearers cannot approve their own access. Send the displayed version with <code>OboConsentDecision</code>. A stale graph must be reviewed again. Optional <code>contexts</code> select a direct IAM account token and organization per provider; omitted providers use the root context. Direct account credentials stay inside IAM clients, never the requesting app. With a bound callback, validate returned state/request ID, clear the code from the URL and redeem it on the application server; status polling never returns it.</p>
+<h2>Approval in a popup</h2>
+<p>Open IAM's returned <code>authorization_url</code> in a popup from the user's feature action.
+After validating its configured IAM origin and consent path, an application may add
+<code>display=popup</code> for compact presentation. Keep the consent request ID intact.
+The callback remains the exact <code>redirect_uri</code> supplied when authorization was created;
+changing the browser consent URL must never override it.</p>
+<p>Bind the authorization request, current application session, unpredictable one-use state and
+optional post-completion return URL on the backend. The return URL is application navigation,
+not the OBO callback: allow only the application's approved origins and paths. After IAM returns
+the code, the callback backend validates state and request ID, exchanges the code and saves the
+OBO credentials before reporting success. Then redirect to the bound return URL when supplied,
+or show an application completion page with a clear return link when it was omitted.</p>
+<p>For a popup, send only a completion status and one-use attempt identifier to the opener's
+exact application origin, then close the window. The opener verifies the origin, popup window
+source and identifier before refreshing its authenticated state or navigating to its bound
+return URL. Never pass OBO codes or tokens in a message. Cancellation, denial and a blocked
+popup need explicit recovery; reopening the same pending review must not silently create a
+new grant. The application can offer a full-page consent link as a fallback.</p>
 <h2>Redeem the approved code</h2>
 <pre><code>let exchange = Mutation::new();
 let issued = application.obo().exchange_code(

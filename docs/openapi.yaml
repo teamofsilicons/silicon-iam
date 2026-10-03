@@ -445,6 +445,8 @@ paths:
         - { name: app_ids, in: query, schema: { type: string }, description: Comma-separated canonical app IDs for batch login; 1–100 unique apps. Mutually exclusive with app_id. Batch callbacks use a JSON slts array in the URL fragment. }
         - { name: app_id, in: query, schema: { $ref: '#/components/schemas/AppId' } }
         - { name: redirect_uri, in: query, schema: { type: string, format: uri, maxLength: 2048 } }
+        - { name: identity_kind, in: query, schema: { type: string, enum: [carbon, silicon] }, description: Optional strict account type for the entire sign-in flow. The application must also verify the exchanged principal against its server-stored requested kind. }
+        - { name: display, in: query, schema: { type: string, enum: [popup] }, description: Compact popup presentation. The callback and SLT exchange remain unchanged. }
       responses:
         '302':
           description: The IAM authentication and organization-consent frontend.
@@ -512,6 +514,7 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/app-auth/organizations:
     parameters:
+      - { $ref: '#/components/parameters/IdentityKind' }
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
     get:
       tags: [Login]
@@ -532,6 +535,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
   /api/v1/app-auth/batch/organizations:
     parameters:
+      - { $ref: '#/components/parameters/IdentityKind' }
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
     get:
       tags: [Login]
@@ -553,6 +557,7 @@ paths:
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
   /api/v1/app-auth/batch/short-lived-tokens:
     parameters:
+      - { $ref: '#/components/parameters/IdentityKind' }
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
     post:
       tags: [Login]
@@ -582,6 +587,7 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/app-auth/short-lived-tokens:
     parameters:
+      - { $ref: '#/components/parameters/IdentityKind' }
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
     post:
       tags: [Login]
@@ -4652,6 +4658,7 @@ paths:
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
   /api/v1/app-auth/bundles/{bundle_id}/organizations:
     parameters:
+      - { $ref: '#/components/parameters/IdentityKind' }
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
       - { name: bundle_id, in: path, required: true, schema: { type: string } }
     get:
@@ -4674,6 +4681,7 @@ paths:
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
   /api/v1/app-auth/bundles/{bundle_id}/short-lived-tokens:
     parameters:
+      - { $ref: '#/components/parameters/IdentityKind' }
       - { $ref: '#/components/parameters/TestingEnvironmentSelection' }
       - { name: bundle_id, in: path, required: true, schema: { type: string } }
     post:
@@ -6833,6 +6841,16 @@ components:
         HMAC-SHA256 over `timestamp + '.' + exact raw UTF-8 body` in constant
         time, enforces a 300-second tolerance, and deduplicates provider event ID.
   parameters:
+    IdentityKind:
+      name: X-IAM-Identity-Kind
+      in: header
+      required: false
+      description: >-
+        Restrict this login request to the authenticated Carbon or Silicon principal.
+        Invalid or duplicate values return 400; an authenticated principal of the
+        other kind returns 403 identity_kind_mismatch before token issuance or replay.
+        The selected kind is included in the mutation idempotency fingerprint.
+      schema: { type: string, enum: [carbon, silicon] }
     TestingEnvironmentSelection:
       name: X-Testing-Environment-Key
       in: header

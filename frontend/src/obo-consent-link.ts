@@ -17,8 +17,13 @@ export function oboConsentRequest(url: URL): string | undefined {
     return values[0];
 }
 
-export function oboConsentDestination(request: string, origin: string): URL {
+export function oboConsentDestination(
+  request: string,
+  origin: string,
+  popup = false,
+): URL {
   const destination = new URL("/obo/consent", origin);
   destination.searchParams.set("request", request);
+  if (popup) destination.searchParams.set("display", "popup");
   return destination;
 }

@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { Brand, ErrorBox, Field, LocalOtp } from "./ui";
 import ApplicationLogin from "./ApplicationLogin";
+import { loginIdentity, loginIdentityKind } from "./login-flow";
 import SocialSignup from "./SocialSignup";
 import SiliconSignup from "./SiliconSignup";
 import OboConsent from "./OboConsent";
@@ -21,10 +22,12 @@ export default function Auth(props: {
   session: SessionState;
 }) {
   const signup = location.pathname === "/signup";
+  const loginParams = new URL(location.href).searchParams;
+  const kindPinned = loginParams.has("identity_kind");
   const addingAccount = new URL(location.href).searchParams.has("add_account");
   const authenticated = () => props.session.authenticated && !addingAccount;
   const [kind, setKind] = createSignal<"carbon" | "silicon">(
-    new URL(location.href).searchParams.get("type") === "silicon"
+    (loginParams.get("identity_kind") || loginParams.get("type")) === "silicon"
       ? "silicon"
       : "carbon",
   );
@@ -139,11 +142,14 @@ export default function Auth(props: {
     setBusy(true);
     setError();
     try {
+      const requestedKind = loginIdentityKind(loginParams);
+      if (requestedKind && requestedKind !== kind())
+        throw new Error("Use the requested account type to continue.");
       if (signup && step() === "created") {
         await finishProfile();
       } else if (kind() === "silicon" && !signup) {
         await send("POST", "/api/v1/silicon-auth/token", {
-          silicon_id: identity().trim(),
+          silicon_id: loginIdentity("silicon", identity()),
           silicon_token: siliconToken(),
         });
         setSiliconToken("");
@@ -158,7 +164,9 @@ export default function Auth(props: {
           await continueLogin();
         } else {
           const value =
-            step() === "created" ? email().trim() : identity().trim();
+            step() === "created"
+              ? email().trim()
+              : loginIdentity("carbon", identity());
           setChallenge(
             await send(
               "POST",
@@ -228,7 +236,9 @@ export default function Auth(props: {
   const isCode = () => !!challenge() || step().endsWith("-code");
   const heading = () =>
     authenticated()
-      ? "You’re signed in"
+      ? appLogin
+        ? `Choose your ${kindPinned ? (kind() === "silicon" ? "Silicon" : "Carbon") : "IAM"} account`
+        : "You’re signed in"
       : isCode()
         ? "Check your messages"
         : !signup
@@ -241,7 +251,10 @@ export default function Auth(props: {
                 ? "Add your phone"
                 : "Create your account";
   return (
-    <main class="auth-layout">
+    <main
+      class="auth-layout"
+      classList={{ "popup-login": loginParams.get("display") === "popup" }}
+    >
       <aside class="auth-brand">
         <div class="auth-plate" aria-hidden="true">
           <span class="plate-grid" />
@@ -283,7 +296,9 @@ export default function Auth(props: {
             <h2>{heading()}</h2>
             <p class="muted">
               {authenticated()
-                ? `Continue as ${props.session.user?.display_name || props.session.user?.carbon_id}.`
+                ? appLogin
+                  ? "Select an organization to continue securely."
+                  : `Continue as ${props.session.user?.display_name || props.session.user?.carbon_id}.`
                 : isCode()
                   ? "Enter the six-digit verification code. Codes expire; use the newest one."
                   : !signup
@@ -388,13 +403,22 @@ export default function Auth(props: {
                   </div>
                 }
               >
-                <Show when={oboLogin} fallback={<ApplicationLogin />}>
+                <Show
+                  when={oboLogin}
+                  fallback={
+                    <ApplicationLogin
+                      consoleOrigin={props.config.consoleOrigin}
+                    />
+                  }
+                >
                   <OboConsent />
                 </Show>
               </Show>
             }
           >
-            <Show when={!isCode() && (!signup || step() === "email")}>
+            <Show
+              when={!kindPinned && !isCode() && (!signup || step() === "email")}
+            >
               <div
                 class="identity-tabs"
                 role="tablist"
@@ -439,6 +463,14 @@ export default function Auth(props: {
                         await prepareProfile(value.email!, value.display_name);
                         setStep("phone");
                       }}
+                    />
+                  </Show>
+                  <Show when={!signup && kind() === "carbon" && !isCode()}>
+                    <SocialSignup
+                      disabled={busy()}
+                      availabilityOnly
+                      busy={() => {}}
+                      complete={async () => {}}
                     />
                   </Show>
                   <Show when={existingAccount()}>
@@ -489,6 +521,15 @@ export default function Auth(props: {
                             onInput={(event) =>
                               setIdentity(event.currentTarget.value)
                             }
+                            onBlur={() => {
+                              try {
+                                setIdentity(
+                                  loginIdentity("silicon", identity()),
+                                );
+                              } catch (cause) {
+                                setError(cause);
+                              }
+                            }}
                             placeholder="si:atlas"
                           />
                         </Field>
@@ -512,6 +553,15 @@ export default function Auth(props: {
                             required
                             value={identity()}
                             onInput={(e) => setIdentity(e.currentTarget.value)}
+                            onBlur={() => {
+                              try {
+                                setIdentity(
+                                  loginIdentity("carbon", identity()),
+                                );
+                              } catch (cause) {
+                                setError(cause);
+                              }
+                            }}
                             placeholder="you@example.com"
                           />
                         </Field>

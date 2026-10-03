@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   canApproveOrganizationSelections,
   loginApplications,
+  loginIdentityKind,
+  loginIdentity,
   loginCallback,
   tokenDestination,
 } from "../src/login-flow.ts";
@@ -12,6 +14,7 @@ import {
   validateConsent,
 } from "../src/scope-model.ts";
 import { gateway } from "../server/gateway.ts";
+import { authDestination, continueDestination } from "../src/api.ts";
 
 test("single and 100-app URLs are unambiguous and bounded", () => {
   assert.deepEqual(
@@ -220,4 +223,87 @@ test("application login requires exactly one organization for every app", () => 
     false,
   );
   assert.equal(canApproveOrganizationSelections([], {}), false);
+});
+
+test("typed application login accepts exactly one declared account kind", () => {
+  assert.equal(loginIdentityKind(new URLSearchParams()), undefined);
+  for (const kind of ["carbon", "silicon"])
+    assert.equal(
+      loginIdentityKind(new URLSearchParams({ identity_kind: kind })),
+      kind,
+    );
+  for (const query of [
+    "identity_kind=",
+    "identity_kind=application",
+    "identity_kind=Carbon",
+    "identity_kind=carbon&identity_kind=silicon",
+  ])
+    assert.throws(() =>
+      loginApplications(new URLSearchParams(`app_id=briefcase&${query}`)),
+    );
+});
+test("identity prefixes preserve email/phone and reject another principal kind", () => {
+  assert.equal(loginIdentity("carbon", " saket "), "c:saket");
+  assert.equal(loginIdentity("carbon", "c:saket"), "c:saket");
+  assert.equal(loginIdentity("carbon", "test@example.com"), "test@example.com");
+  assert.equal(loginIdentity("carbon", "+919876543210"), "+919876543210");
+  assert.equal(loginIdentity("silicon", " atlas "), "si:atlas");
+  assert.equal(loginIdentity("silicon", "si:atlas"), "si:atlas");
+  assert.throws(() => loginIdentity("carbon", "si:atlas"));
+  for (const value of ["c:saket", "test@example.com", "+919876543210"])
+    assert.throws(() => loginIdentity("silicon", value));
+});
+test("signed-out popup continuation retains account kind and exact callback state", async () => {
+  const env = {
+    API_UPSTREAM: "http://127.0.0.1:58080",
+    CONSOLE_ORIGIN: "http://127.0.0.1:4310",
+    AUTH_ORIGIN: "http://127.0.0.1:4311",
+    SESSION_COOKIE_KEY: "A".repeat(43),
+  };
+  for (const path of ["/auth/continue", "/api/v1/login"]) {
+    const url = new URL(path, env.AUTH_ORIGIN);
+    url.search = new URLSearchParams({
+      app_id: "briefcase",
+      identity_kind: "silicon",
+      display: "popup",
+      redirect_uri: "https://app.example/callback?state=protected-state",
+    }).toString();
+    const response = await gateway(new Request(url), env);
+    const destination = new URL(response.headers.get("location")!);
+    assert.equal(destination.searchParams.get("identity_kind"), "silicon");
+    assert.equal(destination.searchParams.get("display"), "popup");
+    assert.equal(
+      destination.searchParams.get("redirect_uri"),
+      "https://app.example/callback?state=protected-state",
+    );
+  }
+});
+
+test("account signup and post-authentication navigation preserve the pinned popup flow", () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "location");
+  const url = new URL(
+    "https://auth.iam.example/login?app_id=briefcase&identity_kind=silicon&display=popup&redirect_uri=https%3A%2F%2Fapp.example%2Fcallback%3Fstate%3Dbound",
+  );
+  Object.defineProperty(globalThis, "location", {
+    configurable: true,
+    value: url,
+  });
+  try {
+    for (const target of [
+      authDestination({ authOrigin: url.origin } as any),
+      authDestination({ authOrigin: url.origin } as any, true),
+      continueDestination(),
+    ]) {
+      const next = new URL(target, url.origin);
+      assert.equal(next.searchParams.get("identity_kind"), "silicon");
+      assert.equal(next.searchParams.get("display"), "popup");
+      assert.equal(
+        next.searchParams.get("redirect_uri"),
+        "https://app.example/callback?state=bound",
+      );
+    }
+  } finally {
+    if (original) Object.defineProperty(globalThis, "location", original);
+    else Reflect.deleteProperty(globalThis, "location");
+  }
 });
