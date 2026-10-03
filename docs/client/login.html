@@ -84,14 +84,13 @@ principal kind and establish the application session. Never send long-lived cred
 access/refresh tokens through this channel, and do not exchange with an app secret in JavaScript.</p>
 <p>Store an optional post-login return URL with the same backend login attempt. After the app session is established, navigate to that approved URL; if absent, render an app completion page with a return link. Accept an allowlisted destination or a validated same-origin application path; reject protocol-relative URLs, credentials and unapproved origins. Keep callback destinations and return paths under application control. A browser-selected
 kind or a popup message alone is not identity proof.</p>
-<p><strong>Direct API rollout note:</strong> the optional
-<code>X-IAM-Identity-Kind: carbon</code> or <code>silicon</code> header for listing organizations and
-issuing single, batch or bundle SLTs is documented for the next backend update, which is still
-under verification. Do not rely on production API enforcement of this header yet. The live
-IAM browser flow already keeps the selected kind, and applications must verify the exchanged
-principal as described above. Once deployed, the backend will reject kind mismatches before
-issuance and bind the header into mutation replay checks. Requests without the optional header
-retain their established behavior.</p>
+<p>Direct IAM clients can additionally send <code>X-IAM-Identity-Kind: carbon</code> or
+<code>silicon</code> when listing organizations and issuing single, batch or bundle SLTs.
+The production backend enforces the selected kind against the authenticated principal before
+issuance or replay, and includes it in the mutation fingerprint. Invalid or duplicate values
+return <code>400</code>; a mismatched kind returns <code>403 identity_kind_mismatch</code>.
+Requests without this optional header retain their established behavior. Applications must
+still verify the exchanged principal against their server-stored login attempt.</p>
 
 <h2>Step two — take the token off the callback</h2>
 
