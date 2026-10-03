@@ -6,6 +6,7 @@ operator review step. Only `execute` changes the host. No identity/bootstrap,
 scope grant, secret-store write, or Honeycomb cutover is performed.
 """
 import argparse
+import base64
 import fcntl
 import hashlib
 import json
@@ -15,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.parse
 import urllib.request
@@ -26,9 +28,9 @@ IMAGE_RE = r"[a-zA-Z0-9._:/-]+@sha256:[a-f0-9]{64}"
 CHECKPOINTS = (
     "Validate immutable images, current health, configuration and both existing ledgers",
     "Stop API, scoped API and worker; save private units/environment and both database dumps",
-    "Validate both dump archives and checksums before marking migrations started",
+    "Validate both dump archives and retain a verified encrypted off-host recovery bundle before migration",
     "Run dual-database iam-migrate, apply image runtime grants to both databases, initialize scoped helper",
-    "Verify complete ledger checksums; force both Honeycomb cutover flags false",
+    "Verify complete ledger checksums; preserve each service's current Honeycomb feature flags",
     "Install immutable image into all three units and verify readiness/revision/container health",
 )
 
@@ -38,12 +40,30 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def cutover_flags(environment):
+    """Inspect only non-secret feature flags; a release must not change policy."""
+    values = dict(item.split("=", 1) for item in environment if "=" in item)
+    flags = {flag: values.get(flag, "false") for flag in FLAGS}
+    require(all(value in ("true", "false") for value in flags.values()),
+            "Unknown Honeycomb feature flag value requires operator review")
+    return flags
+
+
 def digest(path):
     result = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             result.update(chunk)
     return result.hexdigest()
+
+
+def backup_receipt(response, checksum, size):
+    encoded = base64.b64encode(bytes.fromhex(checksum)).decode()
+    require(response.get("VersionId") not in (None, "", "null")
+            and response.get("ChecksumSHA256") == encoded
+            and response.get("ServerSideEncryption") == "AES256"
+            and response.get("ContentLength") == size, "Private backup receipt mismatch")
+    return response["VersionId"]
 
 
 def atomic_json(path, value):
@@ -91,6 +111,9 @@ class Release:
             require(re.fullmatch(IMAGE_RE, value), "All image arguments require immutable sha256 digests")
         for value in (args.revision, args.previous_revision):
             require(re.fullmatch(r"[a-f0-9]{40}", value), "Full source revisions are required")
+        require(re.fullmatch(r"[a-z0-9.-]+", args.backup_bucket)
+                and re.fullmatch(r"releases/[A-Za-z0-9._/-]+", args.backup_prefix)
+                and ".." not in args.backup_prefix.split("/"), "Invalid private recovery destination")
         self.root = Path("/etc/silicon-iam/releases") / f"contracts-{args.revision}-{time.time_ns()}"
         self.state = {"revision": args.revision, "image": args.image, "previous_revision": args.previous_revision,
                       "previous_image": args.previous_image, "migration_started": False, "services_stopped": False}
@@ -158,11 +181,52 @@ class Release:
                 time.sleep(2)
         raise RuntimeError(f"Readiness/revision check failed on port {port}")
 
+    def upload_verified(self, path, name):
+        checksum, size = digest(path), path.stat().st_size
+        encoded = base64.b64encode(bytes.fromhex(checksum)).decode()
+        key = self.args.backup_prefix.rstrip("/") + "/" + self.root.name + "/" + name
+        response = json.loads(self.run(["aws", "s3api", "put-object", "--region", self.args.region,
+            "--bucket", self.args.backup_bucket, "--key", key, "--body", str(path),
+            "--server-side-encryption", "AES256", "--checksum-algorithm", "SHA256",
+            "--checksum-sha256", encoded, "--metadata", "sha256=" + checksum]))
+        require(response.get("VersionId") not in (None, "", "null"), "Recovery bucket must have versioning enabled")
+        verified = json.loads(self.run(["aws", "s3api", "head-object", "--region", self.args.region,
+            "--bucket", self.args.backup_bucket, "--key", key, "--version-id", response["VersionId"],
+            "--checksum-mode", "ENABLED"]))
+        version = backup_receipt(verified, checksum, size)
+        require(version == response["VersionId"], "Recovery object version mismatch")
+        return {"bucket": self.args.backup_bucket, "key": key, "version_id": version,
+                "sha256": checksum, "bytes": size}
+
+    def verify_backup_destination(self):
+        public = json.loads(self.run(["aws", "s3api", "get-public-access-block", "--region", self.args.region,
+                                     "--bucket", self.args.backup_bucket]))["PublicAccessBlockConfiguration"]
+        require(all(public.get(key) is True for key in
+                ("BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets")),
+                "Recovery bucket public access must be blocked")
+        probe = self.root / "backup-destination-probe.json"
+        atomic_json(probe, {"revision": self.args.revision, "contains_credentials": False})
+        atomic_json(self.root / "backup-destination-receipt.json", self.upload_verified(probe, probe.name))
+
+    def upload_quiesced_backup(self):
+        archive = self.root / "quiesced-backup.tar.gz"
+        paths = [self.root / name for name in (
+            "production-before.dump", "testing-before.dump", "backups.json", "migration-manifest.json",
+            "state.json", "production-ledger-before.json", "testing-ledger-before.json", "runtime-grants.sql",
+            "api.env", "scoped.env", "worker.env", *(f"silicon-iam-{service}.service" for service in SERVICES))]
+        paths += [path for path in self.root.glob("*.env") if path not in paths]
+        require(all(path.is_file() for path in paths), "Missing paired recovery component")
+        with tarfile.open(archive, "x:gz") as output:
+            for path in paths:
+                output.add(path, arcname=path.name, recursive=False)
+        atomic_json(self.root / "offhost-backup.json", self.upload_verified(archive, archive.name))
+
     def execute(self):
         require(os.geteuid() == 0, "Execute only as root on the existing IAM host")
         os.umask(0o077)
         self.root.mkdir(parents=True, mode=0o700)
         self.checkpoint("preflight")
+        self.verify_backup_destination()
         password = self.run(["aws", "ecr", "get-login-password", "--region", self.args.region], sensitive=True)
         login = subprocess.run(["docker", "login", "--username", "AWS", "--password-stdin", self.args.image.split('/')[0]],
                                input=password, capture_output=True)
@@ -176,8 +240,11 @@ class Release:
         for port in (8080, 8081):
             self.ready(port, self.args.previous_revision)
         replacements = []
+        existing_flags = {}
         for service in SERVICES:
             self.run(["systemctl", "is-active", f"silicon-iam-{service}"])
+            container = json.loads(self.run(["docker", "inspect", f"silicon-iam-{service}"], sensitive=True))[0]
+            existing_flags[service] = cutover_flags(container["Config"]["Env"])
             unit = Path(f"/etc/systemd/system/silicon-iam-{service}.service")
             text = unit.read_text()
             require(text.count(self.args.previous_image) == 1, f"Unexpected current image in {unit.name}")
@@ -193,9 +260,9 @@ class Release:
         for filename in ("api.env", "scoped.env", "worker.env"):
             path = Path("/etc/silicon-iam") / filename
             require(path.is_file(), f"Missing runtime environment {filename}")
-            lines = [line for line in path.read_text().splitlines() if line.partition("=")[0] not in FLAGS]
-            lines.extend(flag + "=false" for flag in FLAGS)
-            replacements.append((path, "\n".join(lines) + "\n"))
+            # Environment files are backed up and retained byte for byte. Enabling
+            # or disabling Honeycomb features is a separate reviewed operation.
+        self.state["preserved_cutover_flags"] = existing_flags
         for label, host, arn, name in (
             ("production", self.args.production_host, self.args.production_secret_arn, "silicon_iam"),
             ("testing", self.args.testing_host, self.args.testing_secret_arn, "silicon_iam_testing"),
@@ -238,6 +305,8 @@ class Release:
             backups[label] = {"path": str(dump), "size": dump.stat().st_size, "sha256": digest(dump)}
         atomic_json(self.root / "backups.json", backups)
         self.checkpoint("both-backups-verified")
+        self.upload_quiesced_backup()
+        self.checkpoint("offhost-paired-backup-verified")
         self.state["migration_started"] = True
         self.checkpoint("migration-started-no-image-only-rollback")
         environment = dict(os.environ, IAM_MIGRATOR_DATABASE_URL=self.databases["production"][1],
@@ -272,11 +341,11 @@ class Release:
         time.sleep(5)
         for service in SERVICES:
             self.run(["systemctl", "is-active", f"silicon-iam-{service}"])
-            state = json.loads(self.run(["docker", "inspect", f"silicon-iam-{service}"]))[0]
+            state = json.loads(self.run(["docker", "inspect", f"silicon-iam-{service}"], sensitive=True))[0]
             require(state["State"]["Running"] and state["Config"]["Image"] == self.args.image,
                     f"Unexpected running container for {service}")
-            values = dict(item.split("=", 1) for item in state["Config"]["Env"] if "=" in item)
-            require(all(values.get(flag) == "false" for flag in FLAGS), "Honeycomb cutover flag not disabled")
+            require(cutover_flags(state["Config"]["Env"]) == existing_flags[service],
+                    f"Honeycomb feature flags changed in {service}; restore reviewed configuration")
         self.state["services_stopped"] = False
         self.checkpoint("healthy-acceptance-gates-pending")
 
@@ -299,7 +368,8 @@ def main():
     for name in ("plan", "execute"):
         release = commands.add_parser(name, help="Review checkpoints" if name == "plan" else "Change the production host")
         for field in ("image", "previous-image", "postgres-image", "revision", "previous-revision",
-                      "production-host", "production-secret-arn", "testing-host", "testing-secret-arn"):
+                      "production-host", "production-secret-arn", "testing-host", "testing-secret-arn",
+                      "backup-bucket", "backup-prefix"):
             release.add_argument("--" + field, required=True)
         release.add_argument("--migration-manifest", required=True, type=Path)
         release.add_argument("--region", default="us-east-1")
@@ -311,7 +381,7 @@ def main():
     if args.command == "plan":
         print(json.dumps({"revision": args.revision, "image": args.image, "checkpoints": CHECKPOINTS,
                           "migration_counts": {key: len(value) for key, value in release.inventory["ledgers"].items()},
-                          "cutover_flags": {key: False for key in FLAGS}, "executes_changes": False}, indent=2))
+                          "cutover_flags": {key: "preserve current per-service value" for key in FLAGS}, "executes_changes": False}, indent=2))
         return
     require(os.geteuid() == 0, "Execute only as root")
     with open("/run/silicon-iam-contract-release.lock", "w") as lock:

@@ -5,10 +5,14 @@ pub(crate) mod application_reads;
 mod carbon_profile_events;
 mod directory;
 mod directory_views;
+mod directory_visibility;
 mod governance;
 mod handlers;
 mod invitations;
+mod logos;
 mod model;
+mod silicon_custody;
+mod silicon_invitations;
 mod silicon_webhooks;
 mod silicons;
 pub(crate) mod support;
@@ -18,6 +22,7 @@ mod validation;
 pub(crate) use carbon_profile_events::{
     capture_carbon_profile_silicon_routes, enqueue_carbon_profile_silicon_events,
 };
+pub(crate) use logos::{MAX_LOGO_BYTES, is_logo_upload};
 pub(crate) use support::begin_organization;
 
 use axum::{
@@ -31,6 +36,42 @@ use crate::api::ApiState;
 #[allow(clippy::too_many_lines)]
 pub fn router() -> Router<ApiState> {
     scoped_router()
+        .route(
+            "/api/v1/organizations/{org_id}/silicons/{silicon_id}/custody",
+            get(silicon_custody::get).patch(silicon_custody::patch),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/silicon-invitations",
+            get(silicon_invitations::list).post(silicon_invitations::create),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/silicon-invitations/candidates",
+            get(silicon_invitations::candidates),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/silicon-invitations/{id}/revoke",
+            post(silicon_invitations::revoke),
+        )
+        .route(
+            "/api/v1/me/silicon-invitations",
+            get(silicon_invitations::inbox),
+        )
+        .route(
+            "/api/v1/me/silicon-invitations/{id}/decision",
+            post(silicon_invitations::decide),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/directory-visibility/candidates",
+            get(directory_visibility::candidates),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/directory-visibility",
+            get(directory_visibility::get_default).put(directory_visibility::replace_default),
+        )
+        .route(
+            "/api/v1/organizations/{org_id}/members/{membership_id}/directory-visibility",
+            get(directory_visibility::get_member).put(directory_visibility::replace_member),
+        )
         .route(
             "/api/v1/organizations/{org_id}/action-policies",
             get(action_policies::list_policies),
@@ -47,6 +88,7 @@ pub fn router() -> Router<ApiState> {
             "/api/v1/organizations/{org_id}/action-approvals/{request_id}/decisions",
             post(action_policies::decide_approval),
         )
+        .route("/api/v1/organization-logos/{logo_id}", get(logos::get_logo))
         .route(
             "/api/v1/organizations/{org_id}/ownership-transfers",
             post(handlers::transfer_ownership),
@@ -92,6 +134,7 @@ pub(crate) fn scoped_router() -> Router<ApiState> {
             "/api/v1/organizations/{org_id}",
             get(handlers::get_organization).patch(handlers::update_organization),
         )
+        .route("/api/v1/organizations/{org_id}/logo", put(logos::upload_logo))
         .route(
             "/api/v1/organizations/{org_id}/members",
             get(directory::list_members),

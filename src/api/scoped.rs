@@ -150,6 +150,7 @@ mod tests {
             (Method::POST, "/api/v1/app-verification/keys"),
             (Method::POST, "/api/v1/app-verification/verify"),
             (Method::POST, "/api/v1/obo-access/exchanges"),
+            (Method::POST, "/api/v1/obo-access/chained-exchanges"),
             (Method::POST, "/api/v1/obo-access/verify"),
             (
                 Method::GET,

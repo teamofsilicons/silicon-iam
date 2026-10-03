@@ -82,6 +82,8 @@ pub struct EncryptedValue {
 /// Supported high-entropy credential wire formats.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SecretKind {
+    /// Silicon registration status bearer.
+    SiliconSignupPoll,
     /// Carbon access token.
     CarbonAccessToken,
     /// Silicon access token.
@@ -98,8 +100,18 @@ pub enum SecretKind {
     SsoState,
     /// `WorkOS` SSO OIDC nonce.
     SsoNonce,
-    /// Single-use OBO capability proof.
+    /// Single-use OBO capability proof (retired protocol).
     OboProof,
+    /// Single-use code for explicit endpoint consent.
+    OboAuthorizationCode,
+    /// Reusable endpoint-scoped OBO access token.
+    OboAccessToken,
+    /// Rotating OBO grant refresh token.
+    OboRefreshToken,
+    /// Application-only ATA access credential; never a user delegation.
+    AtaAccessToken,
+    /// Rotating ATA refresh credential owned by the originating app.
+    AtaRefreshToken,
     /// Single-use action-bound step-up assertion.
     StepUpAssertion,
     /// Short-lived application identity key.
@@ -115,6 +127,14 @@ pub enum SecretKind {
 /// Closed domain separation for credential digests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DigestPurpose {
+    /// Silicon registration status credential.
+    SiliconSignupPoll,
+    /// Social signup browser callback state, separate from SSO authority.
+    SocialSignupState,
+    /// Secret used by the initiating CLI/browser to poll social signup.
+    SocialSignupPoll,
+    /// Provider-scoped immutable subject binding.
+    SocialIdentity,
     /// Carbon access-token lookup.
     CarbonAccessToken,
     /// Silicon access-token lookup.
@@ -131,8 +151,18 @@ pub enum DigestPurpose {
     SsoState,
     /// `WorkOS` SSO OIDC nonce lookup.
     SsoNonce,
-    /// OBO proof lookup.
+    /// OBO proof lookup (retired protocol).
     OboProof,
+    /// Explicit OBO consent code lookup.
+    OboAuthorizationCode,
+    /// Endpoint-scoped OBO access-token lookup.
+    OboAccessToken,
+    /// OBO refresh-token lookup.
+    OboRefreshToken,
+    /// Application-only ATA access credential; never a user delegation.
+    AtaAccessToken,
+    /// Rotating ATA refresh credential owned by the originating app.
+    AtaRefreshToken,
     /// One-time code used to produce a step-up assertion.
     StepUpOtp,
     /// Action-bound step-up assertion lookup.
@@ -179,6 +209,10 @@ pub enum BlindIndexPurpose {
 /// Sensitive field protected by authenticated encryption.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProtectedField {
+    /// Encrypted custodian invitation destination.
+    SiliconCustodianEmail,
+    /// Encrypted signup webhook destination and signing key.
+    SiliconSignupWebhook,
     /// Carbon email address.
     CarbonEmail,
     /// Invitation email before Carbon registration.
@@ -815,12 +849,21 @@ impl DigestPurpose {
             Self::RefreshToken => b"refresh-token",
             Self::OAuthRefreshToken => b"oauth-refresh-token",
             Self::AuthorizationCode => b"authorization-code",
+            Self::SocialSignupState => b"social-signup-state",
+            Self::SocialSignupPoll => b"social-signup-poll",
+            Self::SocialIdentity => b"social-identity",
             Self::SsoState => b"sso-state",
             Self::SsoNonce => b"sso-nonce",
             Self::OboProof => b"obo-proof",
+            Self::OboAuthorizationCode => b"obo-authorization-code",
+            Self::OboAccessToken => b"obo-access-token",
+            Self::OboRefreshToken => b"obo-refresh-token",
+            Self::AtaAccessToken => b"ata-access-token",
+            Self::AtaRefreshToken => b"ata-refresh-token",
             Self::StepUpOtp => b"step-up-otp",
             Self::StepUpAssertion => b"step-up-assertion",
             Self::SiliconCredential => b"silicon-credential",
+            Self::SiliconSignupPoll => b"silicon-signup-poll",
             Self::ApplicationSecret => b"application-secret",
             Self::ApplicationAccessKey => b"application-access-key",
             Self::WebhookSigningSecret => b"webhook-signing-secret",
@@ -851,6 +894,8 @@ impl ProtectedField {
     const fn label(self) -> &'static [u8] {
         match self {
             Self::InvitationEmail => b"invitation-email",
+            Self::SiliconCustodianEmail => b"silicon-custodian-email",
+            Self::SiliconSignupWebhook => b"silicon-signup-webhook",
             Self::ActionApprovalEmail => b"action-approval-email",
             Self::CarbonEmail => b"carbon-email",
             Self::CarbonPhone => b"carbon-phone",
@@ -949,6 +994,7 @@ fn fill_random(destination: &mut [u8]) -> Result<(), CryptoError> {
 
 const fn secret_prefix(kind: SecretKind) -> &'static str {
     match kind {
+        SecretKind::SiliconSignupPoll => "ssp_",
         SecretKind::CarbonAccessToken => "cat_",
         SecretKind::SiliconAccessToken => "sat_",
         SecretKind::ApplicationAccessToken => "oat_",
@@ -958,6 +1004,11 @@ const fn secret_prefix(kind: SecretKind) -> &'static str {
         SecretKind::SsoState => "sss_",
         SecretKind::SsoNonce => "ssn_",
         SecretKind::OboProof => "obo_",
+        SecretKind::OboAuthorizationCode => "obc_",
+        SecretKind::OboAccessToken => "oba_",
+        SecretKind::OboRefreshToken => "obr_",
+        SecretKind::AtaAccessToken => "ata_",
+        SecretKind::AtaRefreshToken => "atr_",
         SecretKind::StepUpAssertion => "sup_",
         SecretKind::ApplicationSecret => "ask_",
         SecretKind::ApplicationAccessKey => "aak_",

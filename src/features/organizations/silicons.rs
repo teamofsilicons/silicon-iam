@@ -1127,9 +1127,11 @@ const SILICON_LIST_SQL: &str = concat!(
     "",
     r"
     WITH RECURSIVE hierarchy AS (
-        SELECT root.id, root.membership_id, root.reports_to_membership_id, 1::integer AS level
+        SELECT root.id, root_member.id AS membership_id,
+               CASE WHEN root.organization_id=$1 THEN root.reports_to_membership_id END AS reports_to_membership_id, 1::integer AS level
         FROM iam.silicons AS root
-        WHERE root.organization_id = $1 AND root.reports_to_membership_id IS NULL
+        JOIN iam.organization_memberships root_member ON root_member.principal_id=root.id AND root_member.organization_id=$1
+        WHERE (root.organization_id IS DISTINCT FROM $1 OR root.reports_to_membership_id IS NULL)
           AND root.provisioning_status <> 'deleted'
         UNION ALL
         SELECT child.id, child.membership_id, child.reports_to_membership_id, hierarchy.level + 1
@@ -1137,17 +1139,17 @@ const SILICON_LIST_SQL: &str = concat!(
         JOIN hierarchy ON child.reports_to_membership_id = hierarchy.membership_id
         WHERE child.organization_id = $1 AND child.provisioning_status <> 'deleted'
     )
-    SELECT silicon.id AS principal_id, silicon.membership_id,
+    SELECT silicon.id AS principal_id, membership.id AS membership_id,
            silicon.global_silicon_id AS silicon_id,
            organization.org_id,
            silicon.display_name, silicon.timezone_id AS timezone,
            COALESCE(silicon.profile_photo_override_uri,
                     $5 || '?id=' || silicon.global_silicon_id || '&level=' || hierarchy.level::text) AS profile_photo,
-           membership.job_role, silicon.reports_to_membership_id,
+           membership.job_role, CASE WHEN silicon.organization_id=membership.organization_id THEN silicon.reports_to_membership_id END AS reports_to_membership_id,
            COALESCE((SELECT jsonb_agg(jsonb_build_object('id', tag.id, 'name', tag.name) ORDER BY tag.id)
                      FROM iam.membership_tags assignment
                      JOIN iam.organization_tags tag ON tag.organization_id = assignment.organization_id AND tag.id = assignment.tag_id
-                     WHERE assignment.organization_id = silicon.organization_id AND assignment.membership_id = silicon.membership_id
+                     WHERE assignment.organization_id = membership.organization_id AND assignment.membership_id = membership.id
                        AND tag.status = 'active'), '[]'::jsonb) AS tags,
            hierarchy.level AS hierarchy_level,
            EXISTS (
@@ -1158,19 +1160,19 @@ const SILICON_LIST_SQL: &str = concat!(
                 AND signing.silicon_id = endpoint.silicon_id
                 AND signing.endpoint_id = endpoint.id
                 AND signing.status = 'active'
-               WHERE endpoint.organization_id = silicon.organization_id
+               WHERE endpoint.organization_id = membership.organization_id
                  AND endpoint.silicon_id = silicon.id
                  AND endpoint.status = 'active'
            ) AS webhook_configured,
            'active'::text AS status, silicon.version, silicon.created_at, silicon.updated_at
     FROM iam.silicons silicon
-    JOIN iam.organizations organization ON organization.id = silicon.organization_id
-    JOIN iam.organization_memberships membership ON membership.organization_id = silicon.organization_id AND membership.id = silicon.membership_id
+    JOIN iam.organization_memberships membership ON membership.principal_id=silicon.id AND membership.organization_id=$1
+    JOIN iam.organizations organization ON organization.id=membership.organization_id
     JOIN hierarchy ON hierarchy.id = silicon.id
-    WHERE silicon.organization_id = $1 AND membership.status = 'active' AND silicon.provisioning_status <> 'deleted'
+    WHERE membership.organization_id = $1 AND membership.status = 'active' AND silicon.provisioning_status <> 'deleted'
       AND ($2::text IS NULL OR silicon.id > $2)
       AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM iam.membership_tags filter_tag
-          WHERE filter_tag.organization_id = silicon.organization_id AND filter_tag.membership_id = silicon.membership_id AND filter_tag.tag_id = $4))
+          WHERE filter_tag.organization_id = membership.organization_id AND filter_tag.membership_id = membership.id AND filter_tag.tag_id = $4))
     ORDER BY silicon.id
     LIMIT $3
     "
@@ -1178,26 +1180,28 @@ const SILICON_LIST_SQL: &str = concat!(
 
 const SILICON_BY_ID_SQL: &str = r"
     WITH RECURSIVE hierarchy AS (
-        SELECT root.id, root.membership_id, root.reports_to_membership_id, 1::integer AS level
+        SELECT root.id, root_member.id AS membership_id,
+               CASE WHEN root.organization_id=$1 THEN root.reports_to_membership_id END AS reports_to_membership_id, 1::integer AS level
         FROM iam.silicons AS root
-        WHERE root.organization_id = $1 AND root.reports_to_membership_id IS NULL
+        JOIN iam.organization_memberships root_member ON root_member.principal_id=root.id AND root_member.organization_id=$1
+        WHERE (root.organization_id IS DISTINCT FROM $1 OR root.reports_to_membership_id IS NULL)
         UNION ALL
         SELECT child.id, child.membership_id, child.reports_to_membership_id, hierarchy.level + 1
         FROM iam.silicons AS child
         JOIN hierarchy ON child.reports_to_membership_id = hierarchy.membership_id
         WHERE child.organization_id = $1
     )
-    SELECT silicon.id AS principal_id, silicon.membership_id,
+    SELECT silicon.id AS principal_id, membership.id AS membership_id,
            silicon.global_silicon_id AS silicon_id,
            organization.org_id,
            silicon.display_name, silicon.timezone_id AS timezone,
            COALESCE(silicon.profile_photo_override_uri,
                     $3 || '?id=' || silicon.global_silicon_id || '&level=' || hierarchy.level::text) AS profile_photo,
-           membership.job_role, silicon.reports_to_membership_id,
+           membership.job_role, CASE WHEN silicon.organization_id=membership.organization_id THEN silicon.reports_to_membership_id END AS reports_to_membership_id,
            COALESCE((SELECT jsonb_agg(jsonb_build_object('id', tag.id, 'name', tag.name) ORDER BY tag.id)
                      FROM iam.membership_tags assignment
                      JOIN iam.organization_tags tag ON tag.organization_id = assignment.organization_id AND tag.id = assignment.tag_id
-                     WHERE assignment.organization_id = silicon.organization_id AND assignment.membership_id = silicon.membership_id
+                     WHERE assignment.organization_id = membership.organization_id AND assignment.membership_id = membership.id
                        AND tag.status = 'active'), '[]'::jsonb) AS tags,
            hierarchy.level AS hierarchy_level,
            EXISTS (
@@ -1208,42 +1212,44 @@ const SILICON_BY_ID_SQL: &str = r"
                 AND signing.silicon_id = endpoint.silicon_id
                 AND signing.endpoint_id = endpoint.id
                 AND signing.status = 'active'
-               WHERE endpoint.organization_id = silicon.organization_id
+               WHERE endpoint.organization_id = membership.organization_id
                  AND endpoint.silicon_id = silicon.id
                  AND endpoint.status = 'active'
            ) AS webhook_configured,
            CASE WHEN membership.status = 'active' AND silicon.provisioning_status <> 'deleted' THEN 'active' ELSE 'removed' END AS status,
            silicon.version, silicon.created_at, silicon.updated_at
     FROM iam.silicons silicon
-    JOIN iam.organizations organization ON organization.id = silicon.organization_id
-    JOIN iam.organization_memberships membership ON membership.organization_id = silicon.organization_id AND membership.id = silicon.membership_id
+    JOIN iam.organization_memberships membership ON membership.principal_id=silicon.id AND membership.organization_id=$1
+    JOIN iam.organizations organization ON organization.id=membership.organization_id
     JOIN hierarchy ON hierarchy.id = silicon.id
-    WHERE silicon.organization_id = $1 AND silicon.global_silicon_id = $2
+    WHERE membership.organization_id = $1 AND silicon.global_silicon_id = $2
     LIMIT 1
 ";
 
 const SILICON_BY_MEMBERSHIPS_SQL: &str = r"
     WITH RECURSIVE hierarchy AS (
-        SELECT root.id, root.membership_id, root.reports_to_membership_id, 1::integer AS level
+        SELECT root.id, root_member.id AS membership_id,
+               CASE WHEN root.organization_id=$1 THEN root.reports_to_membership_id END AS reports_to_membership_id, 1::integer AS level
         FROM iam.silicons AS root
-        WHERE root.organization_id = $1 AND root.reports_to_membership_id IS NULL
+        JOIN iam.organization_memberships root_member ON root_member.principal_id=root.id AND root_member.organization_id=$1
+        WHERE (root.organization_id IS DISTINCT FROM $1 OR root.reports_to_membership_id IS NULL)
         UNION ALL
         SELECT child.id, child.membership_id, child.reports_to_membership_id, hierarchy.level + 1
         FROM iam.silicons AS child
         JOIN hierarchy ON child.reports_to_membership_id = hierarchy.membership_id
         WHERE child.organization_id = $1
     )
-    SELECT silicon.id AS principal_id, silicon.membership_id,
+    SELECT silicon.id AS principal_id, membership.id AS membership_id,
            silicon.global_silicon_id AS silicon_id,
            organization.org_id,
            silicon.display_name, silicon.timezone_id AS timezone,
            COALESCE(silicon.profile_photo_override_uri,
                     $3 || '?id=' || silicon.global_silicon_id || '&level=' || hierarchy.level::text) AS profile_photo,
-           membership.job_role, silicon.reports_to_membership_id,
+           membership.job_role, CASE WHEN silicon.organization_id=membership.organization_id THEN silicon.reports_to_membership_id END AS reports_to_membership_id,
            COALESCE((SELECT jsonb_agg(jsonb_build_object('id', tag.id, 'name', tag.name) ORDER BY tag.id)
                      FROM iam.membership_tags assignment
                      JOIN iam.organization_tags tag ON tag.organization_id = assignment.organization_id AND tag.id = assignment.tag_id
-                     WHERE assignment.organization_id = silicon.organization_id AND assignment.membership_id = silicon.membership_id
+                     WHERE assignment.organization_id = membership.organization_id AND assignment.membership_id = membership.id
                        AND tag.status = 'active'), '[]'::jsonb) AS tags,
            hierarchy.level AS hierarchy_level,
            EXISTS (
@@ -1254,18 +1260,18 @@ const SILICON_BY_MEMBERSHIPS_SQL: &str = r"
                 AND signing.silicon_id = endpoint.silicon_id
                 AND signing.endpoint_id = endpoint.id
                 AND signing.status = 'active'
-               WHERE endpoint.organization_id = silicon.organization_id
+               WHERE endpoint.organization_id = membership.organization_id
                  AND endpoint.silicon_id = silicon.id
                  AND endpoint.status = 'active'
            ) AS webhook_configured,
            CASE WHEN membership.status = 'active' AND silicon.provisioning_status <> 'deleted' THEN 'active' ELSE 'removed' END AS status,
            silicon.version, silicon.created_at, silicon.updated_at
     FROM iam.silicons silicon
-    JOIN iam.organizations organization ON organization.id = silicon.organization_id
-    JOIN iam.organization_memberships membership ON membership.organization_id = silicon.organization_id AND membership.id = silicon.membership_id
+    JOIN iam.organization_memberships membership ON membership.principal_id=silicon.id AND membership.organization_id=$1
+    JOIN iam.organizations organization ON organization.id=membership.organization_id
     JOIN hierarchy ON hierarchy.id = silicon.id
-    WHERE silicon.organization_id = $1 AND silicon.membership_id = ANY($2)
-    ORDER BY silicon.membership_id
+    WHERE membership.organization_id = $1 AND membership.id = ANY($2)
+    ORDER BY membership.id
 ";
 
 #[cfg(test)]

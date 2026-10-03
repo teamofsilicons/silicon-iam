@@ -6,3 +6,6 @@
 *.profraw
 coverage/
 .DS_Store
+
+# Also exclude local dependency symlinks used by isolated release checkouts.
+**/node_modules

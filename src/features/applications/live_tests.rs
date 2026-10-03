@@ -40,7 +40,7 @@ async fn protocol_credentials_are_single_use_and_revocation_is_atomic() -> anyho
     private_application_authority_and_endpoint_lifetime(&pool).await?;
     cross_organization_login_selection_reports_private_restriction(&pool).await?;
 
-    unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(&pool).await?;
+    selected_silicon_oauth_authority_preserves_its_exact_live_chain(&pool).await?;
     selected_login_additions_preserve_existing_organizations(&pool).await?;
     expired_obo_proof_cannot_be_consumed_after_transaction_wait(&pool).await?;
     consent_preserves_each_parent_session(&pool).await?;
@@ -178,9 +178,9 @@ async fn private_application_authority_and_endpoint_lifetime(pool: &PgPool) -> a
 }
 
 /// SLT exchange, refresh, and introspection share this authority projection.
-/// Selected-organization Silicon logins must keep their unscoped token shape
-/// while still depending on the Silicon's own live organization and membership.
-async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
+/// Silicon application logins require one explicit organization and membership;
+/// each projection must retain the exact live subject/session/grant chain.
+async fn selected_silicon_oauth_authority_preserves_its_exact_live_chain(
     pool: &PgPool,
 ) -> anyhow::Result<()> {
     const AUTHORITY_QUERY: &str = r"
@@ -259,8 +259,16 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
             .bind(organization)
             .bind(membership)
             .fetch_optional(&mut *transaction)
-            .await?
-            .context("a live Silicon login lost its OAuth subject authority")?;
+            .await?;
+        if organization.is_none() {
+            ensure!(
+                authority.is_none(),
+                "an unscoped Silicon application login was accepted"
+            );
+            continue;
+        }
+        let authority =
+            authority.context("a live Silicon login lost its OAuth subject authority")?;
         ensure!(authority["subject_public_id"] == "si:test_silicon");
         ensure!(authority["subject_auth_epoch"] == 1);
         ensure!(
@@ -277,11 +285,11 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
         (
             "other Application",
             APP_B_ID,
-            unscoped_consent,
+            scoped_consent,
             parent_id,
             silicon_id,
-            None,
-            None,
+            Some(ORGANIZATION_ID),
+            Some(membership_id),
         ),
         (
             "other consent",
@@ -289,26 +297,26 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
             CONSENT_ID,
             parent_id,
             silicon_id,
-            None,
-            None,
+            Some(ORGANIZATION_ID),
+            Some(membership_id),
         ),
         (
             "other live parent",
             APP_A_ID,
-            unscoped_consent,
+            scoped_consent,
             second_parent_id,
             silicon_id,
-            None,
-            None,
+            Some(ORGANIZATION_ID),
+            Some(membership_id),
         ),
         (
             "other subject",
             APP_A_ID,
-            unscoped_consent,
+            scoped_consent,
             parent_id,
             CARBON_ID,
-            None,
-            None,
+            Some(ORGANIZATION_ID),
+            Some(membership_id),
         ),
         (
             "added organization binding",
@@ -396,18 +404,18 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
         ),
         (
             "revoked consent",
-            "UPDATE iam.oauth_consent_grants SET status = 'revoked', revoked_at = transaction_timestamp() WHERE id = '00000000-0000-0000-0000-000000000571'",
+            "UPDATE iam.oauth_consent_grants SET status = 'revoked', revoked_at = transaction_timestamp() WHERE id = '00000000-0000-0000-0000-000000000572'",
         ),
     ] {
         let mut savepoint = transaction.begin().await?;
         sqlx::query(mutation).execute(&mut *savepoint).await?;
         let authority = sqlx::query_scalar::<_, Value>(AUTHORITY_QUERY)
             .bind(APP_A_ID)
-            .bind(unscoped_consent)
+            .bind(scoped_consent)
             .bind(parent_id)
             .bind(silicon_id)
-            .bind(None::<Id>)
-            .bind(None::<Id>)
+            .bind(Some(ORGANIZATION_ID))
+            .bind(Some(membership_id))
             .fetch_optional(&mut *savepoint)
             .await?;
         ensure!(
@@ -423,11 +431,11 @@ async fn unscoped_silicon_oauth_authority_preserves_its_exact_live_chain(
     set_context(&mut savepoint, silicon_id, None, APP_A_ID).await?;
     let error = sqlx::query_scalar::<_, Value>(AUTHORITY_QUERY)
         .bind(APP_A_ID)
-        .bind(unscoped_consent)
+        .bind(scoped_consent)
         .bind(parent_id)
         .bind(silicon_id)
-        .bind(None::<Id>)
-        .bind(None::<Id>)
+        .bind(Some(ORGANIZATION_ID))
+        .bind(Some(membership_id))
         .fetch_optional(&mut *savepoint)
         .await
         .err()

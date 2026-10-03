@@ -22,6 +22,33 @@ pub async fn run(context: &Context, command: MemberCommand) -> Result<()> {
     let client = context.authenticated().await?;
     let org = context.organization()?;
     match command {
+        MemberCommand::DirectoryVisibility {
+            membership_id,
+            mode,
+            visible_members,
+        } => {
+            let policy = client
+                .members()
+                .directory_visibility(org, &membership_id)
+                .await?;
+            if let Some(mode) = mode {
+                json(
+                    &client
+                        .members()
+                        .replace_directory_visibility(
+                            org,
+                            &membership_id,
+                            policy.version,
+                            &mode,
+                            &visible_members,
+                            &context.mutation(),
+                        )
+                        .await?,
+                )
+            } else {
+                json(&policy)
+            }
+        }
         MemberCommand::Details => json(&client.members().details(org).await?),
         MemberCommand::List {
             principal_type,

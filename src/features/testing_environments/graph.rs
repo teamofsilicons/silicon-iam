@@ -446,20 +446,36 @@ pub(crate) async fn record_rotated_application_secret(
 /// Testing recipients validate their environment-bound app secret with IAM.
 /// The production protocol never includes this context or reveals a secret.
 pub(crate) async fn obo_context(state: &ApiState, app_id: &str) -> Result<Option<Value>, AppError> {
-    let Some(environment) = testing_plane::current() else {
+    if !testing_plane::is_active() {
         return Ok(None);
-    };
+    }
     let mut transaction = crate::infrastructure::postgres::context::begin(
         state.db(),
         crate::infrastructure::postgres::context::DatabaseContext::anonymous(),
     )
     .await
     .map_err(support::database)?;
+    let result = obo_context_in_transaction(state, app_id, &mut transaction).await?;
+    transaction.commit().await.map_err(support::database)?;
+    Ok(result)
+}
+
+/// Loads testing credentials using the operation's existing testing transaction.
+/// Holding one pool connection must not require a second connection from the
+/// same pool. The environment key is read from the separate production plane.
+pub(crate) async fn obo_context_in_transaction(
+    state: &ApiState,
+    app_id: &str,
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<Option<Value>, AppError> {
+    let Some(environment) = testing_plane::current() else {
+        return Ok(None);
+    };
     let stored = sqlx::query_as::<_, StoredImport>(
         "SELECT * FROM iam_private.get_testing_application_secret($1)",
     )
     .bind(app_id)
-    .fetch_optional(&mut *transaction)
+    .fetch_optional(&mut **transaction)
     .await
     .map_err(support::database)?;
     let Some(stored) = stored else {
@@ -479,7 +495,6 @@ pub(crate) async fn obo_context(state: &ApiState, app_id: &str) -> Result<Option
         .map_err(|_| AppError::Internal {
             category: "testing_application_secret_decrypt",
         })?;
-    transaction.commit().await.map_err(support::database)?;
     let key = sqlx::query_as::<_, (Id, Vec<u8>, Vec<u8>, i16)>(
         "SELECT * FROM iam_private.get_testing_environment_obo_key($1)",
     )

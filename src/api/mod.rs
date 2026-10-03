@@ -4,6 +4,7 @@ pub(crate) mod authentication;
 mod contracts;
 pub(crate) mod me;
 pub(crate) mod membership_ids;
+pub(crate) mod photos;
 pub(crate) mod scoped;
 mod scoped_webhook;
 
@@ -22,7 +23,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
-use tower::ServiceBuilder;
+use tower::{ServiceBuilder, ServiceExt as _};
 use tower_http::{
     catch_panic::CatchPanicLayer,
     cors::{AllowOrigin, CorsLayer},
@@ -330,6 +331,8 @@ fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
     let planed = match surface {
         Surface::Full => Router::new()
             .route("/api/v1/me", get(me::get).patch(me::patch))
+            .route("/api/v1/me/photo", axum::routing::put(photos::upload))
+            .route("/api/v1/profile-photos/{photo_id}", get(photos::get))
             .merge(crate::features::authentication::router())
             .merge(crate::features::organizations::router())
             .merge(crate::features::applications::router())
@@ -431,7 +434,10 @@ fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
                 .layer(SetSensitiveResponseHeadersLayer::new(
                     sensitive_response_headers,
                 ))
-                .layer(RequestBodyLimitLayer::new(max_body_bytes))
+                .layer(middleware::from_fn_with_state(
+                    max_body_bytes,
+                    limit_request_body,
+                ))
                 .layer(CatchPanicLayer::custom(handle_panic)),
         )
         .layer(middleware::from_fn_with_state(
@@ -450,6 +456,37 @@ fn router(state: ApiState, surface: Surface) -> anyhow::Result<Router> {
             http::HeaderValue::from_static("no-referrer"),
         ));
     Ok(router)
+}
+
+/// Applies the configured request body limit, except that an organization
+/// logo upload may carry an image up to the logo size limit.
+async fn limit_request_body(
+    State(max_body_bytes): State<usize>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let limit =
+        if crate::features::organizations::is_logo_upload(request.method(), request.uri().path())
+            || (request.method() == http::Method::PUT && request.uri().path() == "/api/v1/me/photo")
+        {
+            max_body_bytes.max(crate::features::organizations::MAX_LOGO_BYTES)
+        } else {
+            max_body_bytes
+        };
+    match ServiceBuilder::new()
+        .layer(RequestBodyLimitLayer::new(limit))
+        .map_request(
+            |request: Request<tower_http::body::Limited<axum::body::Body>>| {
+                request.map(axum::body::Body::new)
+            },
+        )
+        .service(next)
+        .oneshot(request)
+        .await
+    {
+        Ok(response) => response.map(axum::body::Body::new),
+        Err(never) => match never {},
+    }
 }
 
 /// Rewrites a non-JSON error into the contract's error envelope.
@@ -822,5 +859,50 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("Silicon-IAM-Supported-API-Versions")
         );
+    }
+
+    #[tokio::test]
+    async fn only_logo_uploads_may_exceed_the_configured_body_limit() -> anyhow::Result<()> {
+        use axum::{Router, body::Bytes, middleware};
+        use tower::ServiceExt as _;
+
+        // A fallback buffers every body without declaring contract routes here.
+        let app =
+            Router::new()
+                .fallback(|_: Bytes| async {})
+                .layer(middleware::from_fn_with_state(
+                    1_024,
+                    super::limit_request_body,
+                ));
+        let send = |path: &'static str, size: usize| {
+            let app = app.clone();
+            async move {
+                let request =
+                    axum::http::Request::put(path).body(axum::body::Body::from(vec![0; size]))?;
+                anyhow::Ok(app.oneshot(request).await?.status())
+            }
+        };
+        let logo_limit = crate::features::organizations::MAX_LOGO_BYTES;
+        assert_eq!(
+            send("/api/v1/organizations/acme/logo", 4_096).await?,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send("/api/v1/organizations/acme/logo", logo_limit).await?,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send("/api/v1/organizations/acme/logo", logo_limit + 1).await?,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(
+            send("/api/v1/organizations/acme", 4_096).await?,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(
+            send("/api/v1/organizations/acme", 1_024).await?,
+            StatusCode::OK
+        );
+        Ok(())
     }
 }

@@ -110,7 +110,7 @@ pub enum Command {
     BatchLogin(BatchLoginArgs),
     /// Sign in as a Silicon with its credential.
     SiliconLogin(SiliconLoginArgs),
-    /// End a Carbon session remotely; forget a Silicon session locally.
+    /// End a Carbon or Silicon session remotely, then forget the local credential.
     Logout(LogoutArgs),
     /// Show who is signed in.
     Whoami,
@@ -118,6 +118,10 @@ pub enum Command {
     StepUp(StepUpArgs),
     /// Create a Carbon account.
     Signup(SignupArgs),
+    /// Register an independent Silicon and wait for its custodian if requested.
+    SiliconSignup(SiliconSignupArgs),
+    /// Review, approve or reject a Silicon custody request as its verified Carbon.
+    SiliconCustody(SiliconCustodyArgs),
     /// Your Carbon profile and public Carbon lookup.
     #[command(subcommand)]
     Carbon(CarbonCommand),
@@ -181,16 +185,16 @@ pub enum Command {
 /// Batch authorization from one previously established direct IAM session.
 #[derive(Debug, Args)]
 pub struct BatchLoginArgs {
-    /// Approve every displayed IAM and external scope for this login. Required without a terminal.
+    /// Approve critical IAM permissions for this login without a terminal prompt. OBO approval is separate.
     #[arg(long)]
     pub approve_scopes: bool,
     /// Canonical app ID; repeat --app-id or supply a comma-separated list (maximum 100).
     #[arg(long = "app-id", required = true, value_delimiter = ',')]
     pub app_ids: Vec<String>,
-    /// Organizations explicitly shared with every requested app; repeat or comma-separate.
+    /// Exactly one organization to use with every requested app.
     #[arg(long = "grant-org", value_delimiter = ',', conflicts_with = "all_orgs")]
     pub grant_orgs: Vec<String>,
-    /// Explicitly share all currently active organizations with each app.
+    /// Legacy option; rejected because application login requires exactly one organization.
     #[arg(long, conflicts_with = "grant_orgs")]
     pub all_orgs: bool,
 }
@@ -213,10 +217,10 @@ pub struct LoginArgs {
     /// Check the current session with IAM without prompting for credentials.
     #[arg(value_parser = ["status"], conflicts_with_all = ["email", "phone", "carbon_id", "app_id", "code", "approve_scopes"])]
     pub status: Option<String>,
-    /// Approve every displayed IAM and external scope for this login. Required without a terminal.
+    /// Approve critical IAM permissions for this login without a terminal prompt. OBO approval is separate.
     #[arg(long)]
     pub approve_scopes: bool,
-    /// Organizations you choose to share with --app-id (comma-separated or repeated).
+    /// Exactly one organization to use with --app-id.
     /// Does not inherit --org or the stored default; existing grants are preserved.
     #[arg(
         long = "grant-org",
@@ -225,7 +229,7 @@ pub struct LoginArgs {
         conflicts_with = "all_orgs"
     )]
     pub grant_orgs: Vec<String>,
-    /// Explicitly share all current active organizations (not future memberships).
+    /// Legacy option; use --grant-org to choose exactly one organization.
     #[arg(long, requires = "app_id")]
     pub all_orgs: bool,
     /// Email address to sign in with.
@@ -248,9 +252,9 @@ pub struct LoginArgs {
 /// Arguments for signing out.
 #[derive(Debug, Args)]
 pub struct LogoutArgs {
-    /// End every Carbon session. Needs --step-up: action
-    /// `account.sessions_revoke_all`, resource = the signed-in Carbon's
-    /// principal UUID. Every affected session must be at least 12 hours old.
+    /// End every session for this account. Needs --step-up: action
+    /// `account.sessions_revoke_all`, resource = the signed-in Carbon or Silicon
+    /// ID. Every affected session must be at least 12 hours old.
     #[arg(long, conflicts_with = "local_only")]
     pub all: bool,
     /// Only forget this device's stored credential; do not call IAM.
@@ -261,10 +265,10 @@ pub struct LogoutArgs {
 /// Arguments for signing a Silicon in.
 #[derive(Debug, Args)]
 pub struct SiliconLoginArgs {
-    /// Approve every displayed IAM and external scope for this login. Required without a terminal.
+    /// Approve critical IAM permissions for this login without a terminal prompt. OBO approval is separate.
     #[arg(long)]
     pub approve_scopes: bool,
-    /// Organizations you choose to share with --app-id (comma-separated or repeated).
+    /// Exactly one organization to use with --app-id.
     #[arg(
         long = "grant-org",
         value_delimiter = ',',
@@ -272,7 +276,7 @@ pub struct SiliconLoginArgs {
         conflicts_with = "all_orgs"
     )]
     pub grant_orgs: Vec<String>,
-    /// Explicitly share all current active organizations, never future memberships.
+    /// Legacy option; use --grant-org to choose exactly one organization.
     #[arg(long, requires = "app_id")]
     pub all_orgs: bool,
     /// Silicon ID, in `si:handle` form. With only --app-id, reuse the stored Silicon session.
@@ -286,24 +290,92 @@ pub struct SiliconLoginArgs {
     pub app_id: Option<String>,
 }
 
+/// Independent Silicon signup and polling arguments.
+#[derive(Debug, Args)]
+pub struct SiliconSignupArgs {
+    /// Public Silicon identity, si:handle.
+    #[arg(long)]
+    pub sid: String,
+    /// Custodian email (required for a new request).
+    #[arg(long, required_unless_present = "request_id")]
+    pub custodian_email: Option<String>,
+    /// 12–24 character case-sensitive password; generated once when omitted.
+    #[arg(long)]
+    pub stk: Option<String>,
+    /// Profile display name.
+    #[arg(long)]
+    pub display_name: Option<String>,
+    /// IANA timezone; defaults to the local timezone.
+    #[arg(long)]
+    pub timezone: Option<String>,
+    /// Optional public HTTPS completion webhook.
+    #[arg(long)]
+    pub webhook_url: Option<String>,
+    /// PNG, JPEG or WebP profile photo uploaded after approval and login.
+    #[arg(long)]
+    pub photo: Option<std::path::PathBuf>,
+    /// Keep polling until the custodian decides and sign in on approval.
+    #[arg(long)]
+    pub wait: bool,
+    /// Resume an existing request. --poll-token is required.
+    #[arg(long, requires = "poll_token")]
+    pub request_id: Option<uuid::Uuid>,
+    /// Poll capability from the original receipt; does not grant IAM access.
+    #[arg(long, requires = "request_id")]
+    pub poll_token: Option<String>,
+}
+/// A Carbon's custody decision.
+#[derive(Debug, Args)]
+pub struct SiliconCustodyArgs {
+    /// Request UUID from the invitation.
+    pub request_id: uuid::Uuid,
+    /// Approve and become custodian.
+    #[arg(long, conflicts_with = "reject")]
+    pub approve: bool,
+    /// Reject this request.
+    #[arg(long)]
+    pub reject: bool,
+    /// Disable the Silicon's ability to create organizations when approving.
+    #[arg(long, requires = "approve")]
+    pub no_create_organizations: bool,
+}
+
 /// Arguments for creating an account.
 #[derive(Debug, Args)]
 pub struct SignupArgs {
-    /// Email address to verify.
+    /// Email address to verify when signing up without a provider.
+    #[arg(long, required_unless_present_any = ["provider", "session_id"], conflicts_with = "provider")]
+    pub email: Option<String>,
+    /// Verify your email using Google or Apple in a browser, then continue here.
+    #[arg(long, value_parser = ["google", "apple"], conflicts_with_all = ["session_id", "email_code"])]
+    pub provider: Option<String>,
+    /// Optional phone number to verify, in E.164 form.
     #[arg(long)]
-    pub email: String,
-    /// Phone number to verify, in E.164 form.
-    #[arg(long)]
-    pub phone: String,
-    /// Carbon ID: 3-30 lowercase letters, digits 1-9, underscores or hyphens (no 0).
+    pub phone: Option<String>,
+    /// Carbon ID. Omit to generate an available ID from the verified email.
     #[arg(long, value_parser = parse_carbon_id)]
-    pub carbon_id: String,
-    /// Display name. Defaults to the Carbon ID.
+    pub carbon_id: Option<String>,
+    /// Display name. Defaults to the verified email's name.
     #[arg(long)]
     pub display_name: Option<String>,
     /// IANA time zone, such as `Asia/Kolkata`.
     #[arg(long)]
     pub timezone: Option<String>,
+    /// Resume a signup session previously returned by this command.
+    #[arg(long)]
+    pub session_id: Option<Uuid>,
+    /// Email verification code for a resumed signup.
+    #[arg(long, requires = "session_id")]
+    pub email_code: Option<String>,
+    /// Phone verification code for a resumed signup.
+    #[arg(long, requires_all = ["session_id", "phone"])]
+    pub phone_code: Option<String>,
+    /// Discard a previously entered optional phone before completing signup.
+    #[arg(long, requires = "session_id", conflicts_with_all = ["phone", "phone_code"])]
+    pub skip_phone: bool,
+    /// Optional PNG, JPEG or WebP profile photo to upload after signup.
+    #[arg(long)]
+    pub photo: Option<PathBuf>,
 }
 
 /// Carbon profile and lookup commands.
@@ -311,6 +383,11 @@ pub struct SignupArgs {
 pub enum CarbonCommand {
     /// Show the signed-in Carbon's complete profile.
     Show,
+    /// Upload a PNG, JPEG or WebP profile photo, up to 512 KiB.
+    Photo {
+        /// Image file to upload.
+        path: PathBuf,
+    },
     /// Update the signed-in Carbon's profile.
     #[command(group(
         clap::ArgGroup::new("changes")
@@ -376,15 +453,18 @@ pub struct StepUpArgs {
     /// Verification code, if already known. Prompted for otherwise.
     #[arg(long)]
     pub code: Option<String>,
+    /// Current Silicon password; prompted privately when the signed-in actor is Silicon.
+    #[arg(long, conflicts_with = "code")]
+    pub stk: Option<String>,
 }
 
 /// Sensitive actions supported by the IAM step-up contract.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum StepUpActionArg {
-    /// Revoke one of the current Carbon's sessions.
+    /// Revoke one of the current account's sessions.
     #[value(name = "account.session_revoke")]
     AccountSessionRevoke,
-    /// Revoke every session belonging to the current Carbon.
+    /// Revoke every session belonging to the current account.
     #[value(name = "account.sessions_revoke_all")]
     AccountSessionsRevokeAll,
     /// Transfer an organization's ownership.
@@ -432,6 +512,18 @@ pub enum StepUpChannel {
 /// Organization commands.
 #[derive(Debug, Subcommand)]
 pub enum OrgCommand {
+    /// Read or replace the default directory visibility for this organization.
+    DirectoryVisibility {
+        /// List all membership choices available to a policy manager.
+        #[arg(long, conflicts_with_all=["mode", "visible_members"])]
+        candidates: bool,
+        /// all, self, or selected. Omit to read the current policy.
+        #[arg(long,value_parser=["all","self","selected"])]
+        mode: Option<String>,
+        /// Visible canonical membership ID; repeat for selected mode.
+        #[arg(long = "visible-member", requires = "mode")]
+        visible_members: Vec<String>,
+    },
     /// List organizations you belong to.
     List {
         /// Only active or removed memberships.
@@ -526,6 +618,17 @@ pub enum SsoCommand {
 /// Member commands.
 #[derive(Debug, Subcommand)]
 pub enum MemberCommand {
+    /// Read or replace the directory visibility for this viewing member.
+    DirectoryVisibility {
+        /// Canonical membership identifier of the viewer.
+        membership_id: String,
+        /// inherit, all, self, or selected. Omit to read the current policy.
+        #[arg(long,value_parser=["inherit","all","self","selected"])]
+        mode: Option<String>,
+        /// Visible canonical membership ID; repeat for selected mode.
+        #[arg(long = "visible-member", requires = "mode")]
+        visible_members: Vec<String>,
+    },
     /// List members.
     List {
         /// Only Carbons, or only Silicons.
@@ -672,6 +775,9 @@ pub enum MemberCommand {
 /// Invitation commands.
 #[derive(Debug, Subcommand)]
 pub enum InviteCommand {
+    /// Invite an existing Silicon account, or answer invitations as that Silicon.
+    #[command(subcommand)]
+    Silicon(SiliconInvitationCommand),
     /// List invitations this organization issued.
     List {
         /// Only invitations in this state.
@@ -1006,6 +1112,35 @@ pub enum ApprovalCommand {
 /// Silicon commands.
 #[derive(Debug, Subcommand)]
 pub enum SiliconCommand {
+    /// Read or update the selected organization's custody setting for an owned Silicon.
+    OrganizationCustody {
+        /// Silicon ID owned by this organization.
+        silicon_id: String,
+        /// Permit or prevent independent organization creation.
+        #[arg(long, action = clap::ArgAction::Set)]
+        can_create_organizations: Option<bool>,
+    },
+    /// List your Silicon custody settings or change organization creation for one Silicon.
+    Custody {
+        /// Silicon ID whose setting should be updated.
+        #[arg(long, requires = "can_create_organizations")]
+        silicon_id: Option<String>,
+        /// Whether the Silicon can create organizations.
+        #[arg(long, requires = "silicon_id", action = clap::ArgAction::Set)]
+        can_create_organizations: Option<bool>,
+    },
+    /// Show or update your independent Silicon profile.
+    Profile {
+        /// New display name.
+        #[arg(long)]
+        display_name: Option<String>,
+        /// New IANA timezone.
+        #[arg(long)]
+        timezone: Option<String>,
+        /// Upload a PNG, JPEG or WebP photo, up to 512 KiB.
+        #[arg(long)]
+        photo: Option<PathBuf>,
+    },
     /// List Silicons.
     List {
         /// Only Silicons carrying this tag UUID from `iam tag list`.
@@ -1348,6 +1483,9 @@ pub enum AppCommand {
     /// On-behalf-of access across declared applications and organizations.
     #[command(subcommand)]
     Obo(AppOboCommand),
+    /// Application-only delegation credentials and endpoint verification.
+    #[command(subcommand)]
+    Ata(AppAtaCommand),
     /// Verify a captured webhook locally, before parsing or acting on it.
     VerifyWebhook {
         /// File containing the exact delivered body bytes; use `-` for stdin.
@@ -1607,10 +1745,10 @@ pub enum AppBundleCommand {
     Login {
         /// Local or canonical bundle ID.
         bundle_id: String,
-        /// Organizations explicitly shared with each bundle member.
+        /// Exactly one organization to use with each bundle member.
         #[arg(long = "grant-org", value_delimiter = ',', conflicts_with = "all_orgs")]
         grant_orgs: Vec<String>,
-        /// Share all currently active organizations with each member.
+        /// Legacy option; use --grant-org to choose exactly one organization.
         #[arg(long)]
         all_orgs: bool,
         /// Approve the bundle's complete displayed permission set without a terminal prompt.
@@ -1731,6 +1869,52 @@ pub enum AppEnvironmentCommand {
     },
 }
 
+/// Application-only delegated credentials; never user authority.
+#[derive(Debug, Subcommand)]
+pub enum AppAtaCommand {
+    /// Discover the provider's registered ATA endpoints and dependencies.
+    Endpoints {
+        /// Provider application.
+        app_id: String,
+        /// Requesting application identity.
+        #[arg(long = "as-app-id")]
+        requester_app_id: String,
+        /// Requesting app secret; prompted when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+    },
+    /// Exchange the refresh token and save its rotated replacement.
+    Token {
+        /// Originating application that owns this verification.
+        app_id: String,
+        /// Refresh token; prompted when omitted.
+        #[arg(long)]
+        refresh_token: Option<String>,
+        /// Originating app secret; prompted when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+        /// Reuse on an uncertain identical retry.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// Verify application authority as the recipient of an exact endpoint call.
+    Verify {
+        /// Application that originated the proof.
+        app_id: String,
+        /// Exact registered endpoint path.
+        endpoint: String,
+        /// Application receiving the request.
+        #[arg(long = "as-app-id")]
+        recipient_app_id: String,
+        /// Proof token; prompted when omitted.
+        #[arg(long)]
+        app_proof_token: Option<String>,
+        /// Recipient secret; prompted when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+    },
+}
+
 /// Application identity verification commands.
 #[derive(Debug, Subcommand)]
 pub enum AppVerificationCommand {
@@ -1810,6 +1994,9 @@ pub enum AppTokenCommand {
     Exchange {
         /// Bare globally unique app ID.
         app_id: String,
+        /// Explicit organization for an actor-ID shortcut in a testing environment.
+        #[arg(long)]
+        testing_org: Option<String>,
         /// Short-lived token. Prompted for when omitted.
         #[arg(long)]
         slt: Option<String>,
@@ -1882,87 +2069,192 @@ pub enum AppTokenType {
     RefreshToken,
 }
 
-/// OBO commands called by Applications as themselves.
+/// Separate endpoint consent, reusable tokens and delegated requests.
 #[derive(Debug, Subcommand)]
 pub enum AppOboCommand {
-    /// Discover an Application's callable OBO endpoint catalog.
+    /// Discover an application's OBO endpoints and declared dependencies.
     Endpoints {
-        /// Audience bare app ID.
+        /// Receiving application ID.
         audience_app_id: String,
-        /// Requester bare app ID.
+        /// Discover as this requesting app.
         #[arg(long = "as-app-id", value_name = "APP_ID")]
         requester_app_id: String,
-        /// Requester's Application secret. Prompted for when omitted.
+        /// Requesting application secret; prompted when omitted.
         #[arg(long)]
         app_secret: Option<String>,
     },
-    /// Bind a single-use proof to one exact downstream request.
-    Exchange {
-        /// Audience bare app ID.
-        audience_app_id: String,
-        /// Registered endpoint identifier from `app obo endpoints`.
-        endpoint_id: String,
-        /// Requester bare app ID.
-        #[arg(long = "as-app-id", value_name = "APP_ID")]
-        requester_app_id: String,
-        /// Requester's Application secret. Prompted for when omitted.
+    /// Start IAM approval for a set of root endpoints and their dependencies.
+    Authorize {
+        /// Requesting application ID.
+        app_id: String,
+        /// JSON array of objects with `audience` and `endpoint_id` roots to request.
         #[arg(long)]
-        app_secret: Option<String>,
-        /// Actor-bound Application access token. Prompted for when omitted.
+        endpoints: String,
+        /// User-selected organization within the normal application login.
+        #[arg(long)]
+        org_context: String,
+        /// Exact HTTPS callback (loopback HTTP is allowed for local CLI clients).
+        #[arg(long, requires = "state")]
+        redirect_uri: Option<String>,
+        /// Callback correlation value of 32-512 bytes.
+        #[arg(long, requires = "redirect_uri")]
+        state: Option<String>,
+        /// Normal application access token for the represented user; prompted when omitted.
         #[arg(long)]
         subject_token: Option<String>,
-        /// User-selected organization for this operation; required when the subject has multiple grants.
-        #[arg(long)]
-        org_context: Option<String>,
-        /// Downstream HTTP method; normalized to uppercase.
-        #[arg(long)]
-        method: String,
-        /// JSON object required by the registered endpoint.
-        #[arg(long, default_value = "{}")]
-        metadata: String,
-        /// A 16-255 character visible-ASCII key. Reuse it with the same request
-        /// after an uncertain exchange; the timestamp may refresh. Generated
-        /// when omitted.
-        #[arg(long)]
-        idempotency_key: Option<String>,
-        /// Override the OBO Unix timestamp; normally omit so the client uses now.
-        #[arg(long)]
-        timestamp: Option<i64>,
-        /// Exact downstream body bytes.
-        #[command(flatten)]
-        body: RequestBodyArgs,
-    },
-    /// Consume and verify an OBO proof as its audience Application.
-    Verify {
-        /// Audience bare app ID.
-        audience_app_id: String,
-        /// Audience Application secret. Prompted for when omitted.
+        /// Requesting application secret; prompted when omitted.
         #[arg(long)]
         app_secret: Option<String>,
-        /// Single-use OBO proof. Prompted for when omitted.
+        /// Preserve this key for an identical uncertain retry.
         #[arg(long)]
-        access_proof: Option<String>,
-        /// Actual downstream HTTP method; normalized to uppercase.
+        idempotency_key: Option<String>,
+    },
+    /// Read request status as its creating application.
+    Status {
+        /// Requesting application ID.
+        app_id: String,
+        /// Authorization request identifier.
+        request_id: Uuid,
+        /// Requesting application secret; prompted when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+    },
+    /// Review a request's complete dependency graph as the signed-in IAM user.
+    Consent {
+        /// Authorization request identifier.
+        request_id: Uuid,
+    },
+    /// Approve the reviewed graph version or decline as the signed-in IAM user.
+    Decide {
+        /// Authorization request identifier.
+        request_id: Uuid,
+        /// Explicit decision on the reviewed request.
+        #[arg(value_enum)]
+        decision: AppOboDecision,
+        /// Version just displayed by `app obo consent`.
+        #[arg(long)]
+        consent_version: i64,
+        /// Explicitly approve the displayed IAM identity, membership and tag disclosures
+        /// for each selected provider account and organization.
+        #[arg(long)]
+        approve_iam_disclosures: bool,
+        /// JSON file with provider contexts: `app_id`, `account_token` and `org_id`.
+        /// Credentials remain in the file instead of command-line arguments.
+        #[arg(long)]
+        contexts_file: Option<std::path::PathBuf>,
+        /// Preserve this key for an identical uncertain retry.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// Restore credentials for an existing durable grant using a current app login.
+    Recover {
+        /// Originating application.
+        app_id: String,
+        /// Existing grant identifier.
+        grant_id: Uuid,
+        /// Current ordinary application login token; prompted when omitted.
+        #[arg(long)]
+        subject_token: Option<String>,
+        /// Originating app secret; prompted when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+        /// Reuse on an uncertain identical retry.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// Redeem an approved code for one token pair per root endpoint.
+    Token {
+        /// Requesting application ID.
+        app_id: String,
+        /// Authorization request identifier.
+        request_id: Uuid,
+        /// Code displayed by IAM after approval; prompted when omitted.
+        #[arg(long)]
+        authorization_code: Option<String>,
+        /// Requesting application secret; prompted when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+        /// Preserve this key for an identical uncertain retry.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// Rotate a root endpoint's OBO refresh token without widening its grant.
+    Refresh {
+        /// Owning application ID.
+        app_id: String,
+        /// OBO refresh token; prompted when omitted.
+        #[arg(long)]
+        refresh_token: Option<String>,
+        /// Owning application secret; prompted when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+        /// Preserve this key for an identical uncertain retry.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// Verify a reusable OBO access token as its intended receiver.
+    Verify {
+        /// Receiving application ID.
+        audience_app_id: String,
+        /// Actual endpoint being called.
+        endpoint_id: String,
+        /// Receiver application secret; prompted when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+        /// OBO access token; prompted when omitted.
+        #[arg(long)]
+        access_token: Option<String>,
+        /// Actual HTTP method; normalized to uppercase.
         #[arg(long)]
         method: String,
-        /// Exact registered path of the actual downstream request.
+        /// Actual registered endpoint path.
         #[arg(long)]
         path: String,
-        /// Exact downstream body bytes.
-        #[command(flatten)]
-        body: RequestBodyArgs,
+    },
+    /// Derive an access-only token for a declared, consented downstream action.
+    Delegate {
+        /// Current receiving application ID, which owns the next hop.
+        app_id: String,
+        /// Downstream receiving application ID.
+        audience_app_id: String,
+        /// Declared downstream endpoint.
+        endpoint_id: String,
+        /// Valid incoming OBO access token; prompted when omitted.
+        #[arg(long)]
+        access_token: Option<String>,
+        /// Current receiving application secret; prompted when omitted.
+        #[arg(long)]
+        app_secret: Option<String>,
+        /// Preserve this key for an identical uncertain retry.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// Review one page of the signed-in IAM user's OBO grants.
+    Grants {
+        /// Continue from a cursor a previous page returned.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Maximum grants to return, from 1 through 10 (default 10).
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=10))]
+        limit: Option<u16>,
+    },
+    /// Revoke a user-owned grant and every token derived from it.
+    Revoke {
+        /// OBO grant identifier.
+        grant_id: Uuid,
+        /// Preserve this key for an identical uncertain retry.
+        #[arg(long)]
+        idempotency_key: Option<String>,
     },
 }
 
-/// A downstream request body supplied losslessly from a file or conveniently inline.
-#[derive(Debug, Args)]
-pub struct RequestBodyArgs {
-    /// UTF-8 request body given directly; defaults to an empty body.
-    #[arg(long, conflicts_with = "body_file")]
-    pub body: Option<String>,
-    /// File containing exact request bytes; use `-` for stdin.
-    #[arg(long, value_name = "PATH", conflicts_with = "body")]
-    pub body_file: Option<PathBuf>,
+/// Explicit user decision on one OBO consent request.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum AppOboDecision {
+    /// Approve the exact graph displayed in IAM.
+    Approve,
+    /// Decline the requested OBO actions; ordinary login stays valid.
+    Decline,
 }
 
 /// Testing environment commands.
@@ -2188,6 +2480,48 @@ mod tests {
     use clap::CommandFactory as _;
 
     use super::Cli;
+
+    #[test]
+    fn signup_provider_and_contact_arguments_are_unambiguous() {
+        use clap::Parser as _;
+        assert!(Cli::try_parse_from(["iam", "signup", "--provider", "google"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "signup",
+                "--provider",
+                "apple",
+                "--phone",
+                "+14155552671"
+            ])
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(["iam", "signup", "--email", "person@example.test"]).is_ok());
+        assert!(Cli::try_parse_from(["iam", "signup"]).is_err());
+        assert!(Cli::try_parse_from(["iam", "signup", "--provider", "untrusted"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "signup",
+                "--provider",
+                "google",
+                "--email",
+                "other@example.test"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "signup",
+                "--session-id",
+                "11111111-1111-4111-8111-111111111111",
+                "--email-code",
+                "123456"
+            ])
+            .is_ok()
+        );
+    }
 
     #[test]
     fn the_grammar_is_internally_consistent() {
@@ -2923,51 +3257,75 @@ mod tests {
     }
 
     #[test]
-    fn application_obo_protocol_has_all_three_steps_and_lossless_body_input() {
+    fn obo_requires_explicit_consent_and_separates_token_actions() {
         use clap::Parser as _;
-
-        assert!(
-            Cli::try_parse_from([
+        let request = "00000000-0000-0000-0000-000000000001";
+        for args in [
+            vec![
                 "iam",
                 "app",
                 "obo",
-                "endpoints",
-                "billing",
-                "--as-app-id",
+                "authorize",
                 "checkout",
-            ])
-            .is_ok()
-        );
-        assert!(
-            Cli::try_parse_from([
+                "--endpoints",
+                r#"[{"audience":"billing","endpoint_id":"invoices.create"}]"#,
+                "--org-context",
+                "customer",
+            ],
+            vec!["iam", "app", "obo", "consent", request],
+            vec![
                 "iam",
                 "app",
                 "obo",
-                "exchange",
-                "billing",
-                "invoices.create",
-                "--as-app-id",
-                "checkout",
-                "--method",
-                "post",
-                "--body-file",
-                "invoice.json",
-            ])
-            .is_ok()
-        );
-        assert!(
-            Cli::try_parse_from([
+                "decide",
+                request,
+                "approve",
+                "--consent-version",
+                "1",
+                "--approve-iam-disclosures",
+            ],
+            vec!["iam", "app", "obo", "token", "checkout", request],
+            vec!["iam", "app", "obo", "refresh", "checkout"],
+            vec![
                 "iam",
                 "app",
                 "obo",
                 "verify",
                 "billing",
+                "invoices.create",
                 "--method",
                 "POST",
                 "--path",
                 "/v1/invoices",
-            ])
-            .is_ok()
+            ],
+            vec![
+                "iam",
+                "app",
+                "obo",
+                "delegate",
+                "billing",
+                "storage",
+                "files.create",
+            ],
+            vec!["iam", "app", "obo", "grants"],
+            vec![
+                "iam",
+                "app",
+                "obo",
+                "grants",
+                "--limit",
+                "10",
+                "--cursor",
+                "next-page",
+            ],
+            vec!["iam", "app", "obo", "revoke", request],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
+        assert!(Cli::try_parse_from(["iam", "app", "obo", "grants", "--limit", "11"]).is_err());
+        assert!(
+            Cli::try_parse_from(["iam", "app", "obo", "decide", request, "approve"]).is_err(),
+            "approval requires the displayed version"
         );
         assert!(
             Cli::try_parse_from([
@@ -2976,18 +3334,10 @@ mod tests {
                 "obo",
                 "exchange",
                 "billing",
-                "invoices.create",
-                "--as-app-id",
-                "checkout",
-                "--method",
-                "POST",
-                "--body",
-                "{}",
-                "--body-file",
-                "invoice.json",
+                "invoices.create"
             ])
             .is_err(),
-            "inline and file bodies are mutually exclusive"
+            "legacy proofs are retired"
         );
     }
 
@@ -3068,4 +3418,35 @@ pub enum DaemonCommand {
     /// Compatibility no-op for old updater services; Honeycomb manages updates.
     #[command(hide = true)]
     Check,
+}
+
+/// Invitations that preserve existing Silicon identity and custody.
+#[derive(Debug, Subcommand)]
+pub enum SiliconInvitationCommand {
+    /// Show eligible Silicons from your active source organizations.
+    Candidates,
+    /// List invitations issued by the selected organization.
+    List,
+    /// Invite an existing Silicon to the selected organization.
+    Create {
+        /// Canonical Silicon ID.
+        silicon_id: String,
+    },
+    /// List invitations addressed to your signed-in Silicon identity.
+    Inbox,
+    /// Accept an invitation as its Silicon account.
+    Accept {
+        /// Invitation UUID.
+        id: Uuid,
+    },
+    /// Decline an invitation as its Silicon account.
+    Decline {
+        /// Invitation UUID.
+        id: Uuid,
+    },
+    /// Revoke a pending invitation in the selected organization.
+    Revoke {
+        /// Invitation UUID.
+        id: Uuid,
+    },
 }

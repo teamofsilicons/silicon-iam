@@ -3,7 +3,7 @@
 use std::{io::Read as _, path::Path, time::Duration};
 
 use crate::{
-    cli::{AppCommand, AppOboCommand, AppTokenCommand, AppTokenType, RequestBodyArgs},
+    cli::{AppCommand, AppTokenCommand, AppTokenType},
     commands::silicon::dead_letters,
     context::Context,
     error::{CliError, Result},
@@ -12,7 +12,7 @@ use crate::{
 use http::{HeaderMap, HeaderValue};
 use silicon_iam_client::{
     Client, Credential, IdempotencyKey, Mutation, WebhookSecret, WebhookSecretKeyring,
-    WebhookVerifier, api::obo::body_sha256, models,
+    WebhookVerifier, models,
 };
 
 /// Runs an application command.
@@ -39,7 +39,8 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
         AppCommand::Scopes(command) => return super::app_scopes::run(context, command).await,
         AppCommand::Bundle(command) => return super::app_bundles::run(context, command).await,
         AppCommand::Testing(command) => return super::app_testing::run(context, command).await,
-        AppCommand::Obo(command) => return obo(context, command).await,
+        AppCommand::Ata(command) => return super::app_ata::run(context, command).await,
+        AppCommand::Obo(command) => return super::app_obo::run(context, command).await,
         AppCommand::VerifyWebhook {
             body_file,
             event_id,
@@ -254,6 +255,7 @@ pub async fn run(context: &Context, command: AppCommand) -> Result<()> {
         | AppCommand::Bundle(_)
         | AppCommand::Testing(_)
         | AppCommand::Obo(_)
+        | AppCommand::Ata(_)
         | AppCommand::VerifyWebhook { .. } => unreachable!(),
         AppCommand::Import { app_id } => {
             let imported = client
@@ -491,6 +493,7 @@ async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
         }
         AppTokenCommand::Exchange {
             app_id,
+            testing_org,
             slt,
             app_secret,
             idempotency_key,
@@ -498,10 +501,16 @@ async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
             let app_id = context.application_id(&app_id)?;
             let secret = prompted(app_secret, "Application secret: ", "--app-secret")?;
             let slt = prompted(slt, "Short-lived token: ", "--slt")?;
-            let tokens = application_client(context, &app_id, &secret)
-                .oauth()
-                .login(&app_id, &slt, &mutation_with_optional_key(idempotency_key)?)
-                .await?;
+            let client = application_client(context, &app_id, &secret);
+            let mutation = mutation_with_optional_key(idempotency_key)?;
+            let tokens = if let Some(org_id) = testing_org {
+                client
+                    .oauth()
+                    .login_testing_actor(&app_id, &slt, &org_id, &mutation)
+                    .await?
+            } else {
+                client.oauth().login(&app_id, &slt, &mutation).await?
+            };
             report_oauth_tokens(context, &tokens)
         }
         AppTokenCommand::Refresh {
@@ -573,128 +582,6 @@ async fn token(context: &Context, command: AppTokenCommand) -> Result<()> {
                 Format::Json => json(&serde_json::json!({ "accepted": true })),
                 Format::Text => {
                     println!("Revocation accepted.");
-                    Ok(())
-                }
-            }
-        }
-    }
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "the three protocol steps stay adjacent so their shared binding is auditable"
-)]
-async fn obo(context: &Context, command: AppOboCommand) -> Result<()> {
-    match command {
-        AppOboCommand::Endpoints {
-            audience_app_id,
-            requester_app_id,
-            app_secret,
-        } => {
-            let audience_app_id = context.application_id(&audience_app_id)?;
-            let requester_app_id = context.application_id(&requester_app_id)?;
-            let secret = prompted(
-                app_secret,
-                "Requesting Application secret: ",
-                "--app-secret",
-            )?;
-            let catalog = application_client(context, &requester_app_id, &secret)
-                .obo()
-                .endpoints(&audience_app_id)
-                .await?;
-            report_obo_catalog(context, &catalog)
-        }
-        AppOboCommand::Exchange {
-            audience_app_id,
-            endpoint_id,
-            requester_app_id,
-            app_secret,
-            subject_token,
-            org_context,
-            method,
-            metadata,
-            idempotency_key,
-            timestamp,
-            body,
-        } => {
-            let audience_app_id = context.application_id(&audience_app_id)?;
-            let requester_app_id = context.application_id(&requester_app_id)?;
-            let secret = prompted(
-                app_secret,
-                "Requesting Application secret: ",
-                "--app-secret",
-            )?;
-            let subject_token = prompted(
-                subject_token,
-                "Application access token: ",
-                "--subject-token",
-            )?;
-            let client = application_client(context, &requester_app_id, &secret);
-            let catalog = client.obo().endpoints(&audience_app_id).await?;
-            let method = canonical_method(&method)?;
-            let body = request_body(&body)?;
-            let body_sha256 = body_sha256(&body);
-            let metadata = metadata_object(&metadata)?;
-            let mutation = mutation_with_optional_key(idempotency_key)?;
-            let request = models::OboExchangeRequest {
-                org_id: org_context,
-                subject_token,
-                audience: audience_app_id,
-                endpoint_id,
-                metadata,
-                request: models::OboExchangeRequestBinding {
-                    method,
-                    body_sha256,
-                },
-            };
-            let proof = if let Some(timestamp) = timestamp {
-                if timestamp <= 0 {
-                    return Err(CliError::Usage(
-                        "an OBO timestamp must be a positive Unix timestamp".to_owned(),
-                    ));
-                }
-                client
-                    .obo()
-                    .exchange_signed_at(&request, &catalog, timestamp, &mutation)
-                    .await?
-            } else {
-                client
-                    .obo()
-                    .exchange_signed(&request, &catalog, &mutation)
-                    .await?
-            };
-            report_obo_proof(context, &proof)
-        }
-        AppOboCommand::Verify {
-            audience_app_id,
-            app_secret,
-            access_proof,
-            method,
-            path,
-            body,
-        } => {
-            let audience_app_id = context.application_id(&audience_app_id)?;
-            let secret = prompted(app_secret, "Audience Application secret: ", "--app-secret")?;
-            let access_proof = prompted(access_proof, "OBO access proof: ", "--access-proof")?;
-            let result = application_client(context, &audience_app_id, &secret)
-                .obo()
-                .verify(&models::OboVerifyRequest {
-                    access_proof,
-                    request: models::OboVerifyRequestBinding {
-                        method: canonical_method(&method)?,
-                        path,
-                        body_sha256: body_sha256(&request_body(&body)?),
-                    },
-                })
-                .await?;
-            match context.format {
-                Format::Json => json(&result),
-                Format::Text => {
-                    println!("Verified and consumed proof {}.", result.proof_id);
-                    println!("Actor: {}", result.actor.public_id);
-                    println!("Endpoint: {}", result.endpoint.endpoint_id);
-                    println!("Metadata: {}", result.metadata);
-                    print_authorization(&result.authorization);
                     Ok(())
                 }
             }
@@ -856,7 +743,7 @@ fn report_introspection(context: &Context, inspected: &models::TokenIntrospectio
     }
 }
 
-fn print_authorization(authorization: &models::ApplicationAuthorization) {
+pub(super) fn print_authorization(authorization: &models::ApplicationAuthorization) {
     println!(
         "Authorization: {} in {}",
         authorization.public_id.as_deref().unwrap_or("undisclosed"),
@@ -899,53 +786,6 @@ fn print_authorization(authorization: &models::ApplicationAuthorization) {
     println!("Disclosure scopes: {}", authorization.scopes.join(" "));
 }
 
-fn report_obo_catalog(context: &Context, catalog: &models::OboEndpointCatalog) -> Result<()> {
-    match context.format {
-        Format::Json => json(catalog),
-        Format::Text => {
-            let mut table = Table::new(["endpoint", "path", "critical", "metadata"]);
-            for endpoint in &catalog.endpoints {
-                table.row([
-                    endpoint.endpoint_id.clone(),
-                    endpoint.path.clone(),
-                    endpoint.critical.to_string(),
-                    endpoint.metadata.to_string(),
-                ]);
-            }
-            table.print();
-            Ok(())
-        }
-    }
-}
-
-fn report_obo_proof(context: &Context, proof: &models::OboProofResponse) -> Result<()> {
-    match context.format {
-        Format::Json => json(proof),
-        Format::Text => {
-            println!("OBO access proof: {}", proof.access_proof);
-            println!("Proof ID: {}", proof.proof_id);
-            if let Some(test) = &proof.testing_context {
-                println!("Testing audience: {}", test.app_id);
-                println!("Testing application secret: {}", test.app_secret);
-                println!("IAM testing key: {}", test.iam_test_key);
-            }
-            println!("Expires: {}", timestamp(proof.expires_at));
-            Ok(())
-        }
-    }
-}
-
-fn request_body(input: &RequestBodyArgs) -> Result<Vec<u8>> {
-    match (&input.body, &input.body_file) {
-        (Some(body), None) => Ok(body.as_bytes().to_vec()),
-        (None, Some(path)) => read_body(path),
-        (None, None) => Ok(Vec::new()),
-        (Some(_), Some(_)) => Err(CliError::Usage(
-            "give either --body or --body-file, not both".to_owned(),
-        )),
-    }
-}
-
 fn read_body(path: &Path) -> Result<Vec<u8>> {
     if path == Path::new("-") {
         let mut bytes = Vec::new();
@@ -954,24 +794,6 @@ fn read_body(path: &Path) -> Result<Vec<u8>> {
     } else {
         Ok(std::fs::read(path)?)
     }
-}
-
-fn canonical_method(input: &str) -> Result<String> {
-    let canonical = input.to_ascii_uppercase();
-    http::Method::from_bytes(canonical.as_bytes())
-        .map_err(|_| CliError::Usage(format!("{input:?} is not a valid HTTP request method")))?;
-    Ok(canonical)
-}
-
-fn metadata_object(input: &str) -> Result<serde_json::Value> {
-    let value = serde_json::from_str::<serde_json::Value>(input)
-        .map_err(|error| CliError::Usage(format!("--metadata is not valid JSON: {error}")))?;
-    if !value.is_object() {
-        return Err(CliError::Usage(
-            "--metadata must be a JSON object".to_owned(),
-        ));
-    }
-    Ok(value)
 }
 
 fn obo_endpoint_definitions(input: &str) -> Result<Vec<models::ApplicationOboEndpoint>> {
@@ -1052,51 +874,17 @@ fn webhook_scope_value(value: String) -> models::ApplicationWebhookScope {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        body_sha256, canonical_method, metadata_object, obo_endpoint_definitions, request_body,
-    };
-    use crate::cli::RequestBodyArgs;
+    use super::obo_endpoint_definitions;
 
     #[test]
-    fn request_binding_hashes_the_exact_body_bytes() {
-        assert_eq!(
-            body_sha256(b"hello"),
-            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-        );
-        assert_ne!(body_sha256(b"hello"), body_sha256(b"hello\n"));
-    }
-
-    #[test]
-    fn obo_inputs_are_canonical_and_metadata_is_an_object() {
-        assert_eq!(canonical_method("post").ok().as_deref(), Some("POST"));
-        assert!(canonical_method("not a method").is_err());
-        assert!(metadata_object(r#"{"reason":"checkout"}"#).is_ok());
-        assert!(metadata_object("[]").is_err());
-        assert!(metadata_object("not-json").is_err());
+    fn endpoint_catalog_requires_explicit_critical_classification() {
+        assert!(obo_endpoint_definitions(r#"[{"endpoint_id":"files.upload","path":"/v1/files","critical":true,"metadata":{}}]"#).is_ok());
         assert!(
             obo_endpoint_definitions(
-                r#"[{"endpoint_id":"files.upload","path":"/v1/files","critical":true,"metadata":{}}]"#
+                r#"[{"endpoint_id":"files.upload","path":"/v1/files","metadata":{}}]"#
             )
-            .is_ok()
+            .is_err()
         );
         assert!(obo_endpoint_definitions("{}").is_err());
-    }
-
-    #[test]
-    fn inline_bodies_preserve_their_utf8_bytes_and_empty_is_explicit() {
-        let inline = RequestBodyArgs {
-            body: Some("{}\n".to_owned()),
-            body_file: None,
-        };
-        assert_eq!(
-            request_body(&inline).ok().as_deref(),
-            Some(b"{}\n".as_slice())
-        );
-
-        let empty = RequestBodyArgs {
-            body: None,
-            body_file: None,
-        };
-        assert_eq!(request_body(&empty).ok().as_deref(), Some([].as_slice()));
     }
 }

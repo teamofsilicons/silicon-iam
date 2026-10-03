@@ -1,6 +1,7 @@
 //! Durable, actor-bound accepted configuration. HTTP retries never rotate twice.
 #![allow(clippy::too_many_lines, clippy::too_many_arguments)]
 
+mod ata;
 mod bundles;
 mod decisions;
 mod publication;
@@ -67,6 +68,8 @@ struct AcceptedConfiguration {
     app_scope: ApplicationScope,
     #[serde(default)]
     obo_endpoints: Vec<ApplicationOboEndpoint>,
+    #[serde(default)]
+    ata_endpoints: Vec<super::super::ata_catalog::Endpoint>,
     obo_review_message: Option<String>,
     #[serde(default = "default_idle_days")]
     testing_idle_days: i32,
@@ -111,6 +114,7 @@ struct StoredOperation {
 pub(super) fn router() -> Router<ApiState> {
     Router::new()
         .merge(decisions::router())
+        .merge(ata::router())
         .merge(publication::router())
         .merge(bundles::router())
         .merge(webhook_secret::router())
@@ -271,6 +275,8 @@ pub(crate) async fn complete(
     if let Some(object) = public.as_object_mut() {
         object.remove("app_secret");
         object.remove("key");
+        object.remove("refresh_token");
+        object.remove("access_token");
     }
     let (encrypted, expiry) = if secret {
         let bytes = serde_json::to_vec(response)
@@ -310,7 +316,7 @@ pub(crate) async fn complete(
         _ => "management.operation.completed",
     };
     crate::infrastructure::postgres::events::record_audit(tx, crate::infrastructure::postgres::events::AuditRecord{
-        actor:Some(crate::domain::actor::ActorRef{actor_type:if actor_kind=="application" {crate::domain::actor::ActorType::Application} else {crate::domain::actor::ActorType::Carbon},id:actor}),
+        actor:Some(crate::domain::actor::ActorRef{actor_type:match actor_kind.as_str() {"application"=>crate::domain::actor::ActorType::Application,"silicon"=>crate::domain::actor::ActorType::Silicon,_=>crate::domain::actor::ActorType::Carbon},id:actor}),
         authentication_session_id:None,organization_id:None,application_id:None,
         action:"honeycomb.operation.completed",target_type:"honeycomb_operation",target_id:Some(operation),
         authentication_method:Some("honeycomb_service_and_actor"),aggregate:None,before_state:None,after_state:None,
@@ -358,13 +364,16 @@ fn validate_configuration(path: &str, input: &AcceptedConfiguration) -> Result<(
     if let Some(url) = &input.base_url {
         validation::base_url(url)?;
     }
-    if !input.obo_endpoints.is_empty() && input.base_url.is_none() {
+    if (!input.obo_endpoints.is_empty() || !input.ata_endpoints.is_empty())
+        && input.base_url.is_none()
+    {
         return Err(ApiError::validation(
             "base_url",
             "required when exposing OBO endpoints",
         ));
     }
     validation::obo_endpoints(&input.obo_endpoints)?;
+    super::super::ata_catalog::validate(&input.ata_endpoints)?;
     scopes::validate(&input.app_scope)?;
     scopes::validate_webhook(&input.webhook.scope)?;
     validation::webhook_url(&input.webhook.url)?;
@@ -542,6 +551,7 @@ async fn apply_configuration(
         .bind(app).bind(&input.name).bind(&input.logo_url).bind(input.base_url.as_deref().unwrap_or("")).bind(&input.webhook.scope)
         .bind(&input.obo_review_message).bind(input.testing_idle_days).bind(&input.visibility).execute(&mut **tx).await.map_err(|_|ApiError::validation("configuration","invalid accepted configuration"))?;
     applications::replace_obo_endpoints(tx, app, &input.obo_endpoints).await?;
+    super::super::ata_catalog::replace(tx, app, &input.ata_endpoints).await?;
     scopes::configure(tx, app, &input.app_scope, actor.subject.id).await?;
     let fully_approved = sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT unnest(iam_private.application_scope_names(app_scope)) FROM iam.applications WHERE id=$1 EXCEPT SELECT scope FROM iam.application_approved_scopes WHERE application_id=$1 AND revoked_at IS NULL AND approval_basis<>'private_exemption')")
         .bind(app).fetch_one(&mut **tx).await.map_err(|_|ApiError::internal("honeycomb_public_approval_gate"))?;
@@ -770,3 +780,6 @@ async fn application_org(
     sqlx::query_scalar("SELECT org.org_id FROM iam.applications app JOIN iam.organizations org ON org.id=app.organization_id WHERE app.app_id=$1 AND app.deleted_at IS NULL")
         .bind(app_id).fetch_optional(&mut **tx).await.map_err(|_| ApiError::internal("application_owner_lookup"))?.ok_or_else(ApiError::not_found)
 }
+
+#[cfg(test)]
+pub(crate) mod ata_tests;

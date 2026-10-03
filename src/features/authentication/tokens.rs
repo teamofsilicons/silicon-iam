@@ -38,12 +38,13 @@ const CARBON_SESSION_INSERT_QUERY: &str = r"
 const SILICON_SESSION_INSERT_QUERY: &str = r"
     INSERT INTO iam.authentication_sessions (
         id, subject_principal_id, subject_kind, authentication_method,
-        assurance_level, subject_auth_epoch, idle_expires_at, absolute_expires_at
+        assurance_level, subject_auth_epoch, idle_expires_at, absolute_expires_at, identity_only
     )
     VALUES (
         $1, $2, 'silicon', 'silicon_credential', 2, $3,
         transaction_timestamp() + ($4::bigint * interval '1 second'),
-        transaction_timestamp() + ($4::bigint * interval '1 second')
+        transaction_timestamp() + ($4::bigint * interval '1 second'),
+        $5
     )
     RETURNING absolute_expires_at
 ";
@@ -67,11 +68,11 @@ pub(super) enum RefreshResult {
 
 pub(super) struct SiliconLoginIdentity {
     pub(super) principal_id: Id,
-    pub(super) credential_id: Id,
+    pub(super) credential_id: Option<Id>,
     pub(super) principal_auth_epoch: i64,
-    pub(super) organization_id: Id,
-    pub(super) membership_id: Id,
-    pub(super) membership_authz_epoch: i64,
+    pub(super) organization_id: Option<Id>,
+    pub(super) membership_id: Option<Id>,
+    pub(super) membership_authz_epoch: Option<i64>,
     pub(super) global_silicon_id: String,
 }
 
@@ -228,6 +229,7 @@ pub(super) async fn issue_silicon_session(
         .bind(identity.principal_id)
         .bind(identity.principal_auth_epoch)
         .bind(refresh_seconds)
+        .bind(identity.organization_id.is_none())
         .fetch_one(&mut **transaction)
         .await
         .map_err(|_| AppError::Internal {
@@ -258,6 +260,14 @@ pub(super) async fn issue_silicon_session(
     .map_err(|_| AppError::Internal {
         category: "silicon_credential_touch",
     })?;
+    if identity.credential_id.is_none() {
+        sqlx::query("SELECT iam_private.touch_silicon_password()")
+            .execute(&mut **transaction)
+            .await
+            .map_err(|_| AppError::Internal {
+                category: "silicon_password_touch",
+            })?;
+    }
     let response = insert_token_pair(
         transaction,
         crypto,
@@ -267,9 +277,9 @@ pub(super) async fn issue_silicon_session(
             subject_kind: "silicon",
             auth_epoch: identity.principal_auth_epoch,
             public_id: identity.global_silicon_id,
-            organization_id: Some(identity.organization_id),
-            membership_id: Some(identity.membership_id),
-            membership_authz_epoch: Some(identity.membership_authz_epoch),
+            organization_id: identity.organization_id,
+            membership_id: identity.membership_id,
+            membership_authz_epoch: identity.membership_authz_epoch,
             session_id,
             family_id: refresh_family_id,
             parent_refresh_token_id: None,
@@ -365,9 +375,9 @@ pub(super) async fn rotate_refresh_token(
             session.subject_kind::text AS subject_kind,
             principal.auth_epoch AS principal_auth_epoch,
             COALESCE(carbon.carbon_id, silicon.global_silicon_id) AS public_id,
-            silicon.organization_id,
-            silicon.membership_id,
-            membership.authz_epoch AS membership_authz_epoch,
+            CASE WHEN session.identity_only THEN NULL ELSE silicon.organization_id END AS organization_id,
+            CASE WHEN session.identity_only THEN NULL ELSE silicon.membership_id END AS membership_id,
+            CASE WHEN session.identity_only THEN NULL ELSE membership.authz_epoch END AS membership_authz_epoch,
             token.revoked_at IS NULL
                 AND token.expires_at > transaction_timestamp()
                 AND family.status = 'active'
@@ -411,8 +421,7 @@ pub(super) async fn rotate_refresh_token(
             OR (
                 principal.kind = 'silicon'
                 AND silicon.id IS NOT NULL
-                AND membership.id IS NOT NULL
-                AND organization.id IS NOT NULL
+                AND (session.identity_only OR (membership.id IS NOT NULL AND organization.id IS NOT NULL))
             )
         )
         LIMIT 1

@@ -4,12 +4,13 @@ Applications declare permissions in `app_scope.iam`; discover their exact names,
 descriptions and critical labels with `GET /api/v1/application-scopes`. Every new
 production mutation permission is critical and requires review. The isolated-world
 creation permission `organization.testing_environments.create` is non-critical;
-it still requires an explicit application declaration and user consent. Some
+it still requires an explicit application declaration. Login records the current
+IAM scope set; an explicit consent screen is required only for critical IAM scopes. Some
 permissions may be unavailable to an application; user consent cannot make an
 unavailable permission available.
 
 Call the API with the application's ordinary, self-audience access token. IAM
-checks its current approved and consented scopes, the user's selected organizations,
+checks its current approved and consented scopes, the user's single selected organization,
 and the represented Carbon or Silicon's current authority. An external OBO token
 cannot perform these mutations. A scope never promotes a member or replaces an
 organization capability. The IAM console's direct sessions retain their existing
@@ -17,7 +18,7 @@ behavior.
 
 | Permission | API operation |
 | --- | --- |
-| `organizations.create` | Check an organization handle and create an organization; the represented Carbon owns it |
+| `organizations.create` | Check an organization handle and create an organization; the represented Carbon or eligible Silicon owns it |
 | `organizations.join` | Send an invitation verification code, accept the verified invitation, or start SSO admission |
 | `organization.profile.update` | Update organization name, logo and description |
 | `organization.invitations.create` / `.revoke` | Issue or revoke Carbon invitations |
@@ -29,7 +30,7 @@ behavior.
 | `organization.job_roles.update` | Replace a member's job description |
 | `organization.silicon_access.update` | Change a Carbon's first or extra Silicon assignments |
 | `organization.trust.update` | Change trust defaults, rules or a Carbon's configured trust |
-| `organization.admins.promote` / `.demote` | Change a Carbon member's admin status |
+| `organization.admins.promote` / `.demote` | Change a Carbon or Silicon member's admin status |
 | `organization.capabilities.update` | Replace an admin's capability set |
 | `organization.change_requests.read` | Read role/tag change requests and decisions |
 | `organization.job_role_changes.request` / `organization.tag_changes.request` | Retired legacy request creation; use direct mutations and sensitive-action policies |
@@ -49,15 +50,19 @@ Changing an organization's join method requires `organization.sso.manage`; editi
 profile fields in the same request also requires `organization.profile.update`.
 The existing organization capability checks still apply.
 
-Creating or joining an organization is Carbon-only and does not require existing
-membership. Eligible Carbons can explicitly approve `org_ids: []` during login;
-see [organization consent](ORGANIZATION_CONSENT.md). Creating or joining does not
-automatically grant the application access to that organization. Continue through
-IAM organization consent to add it.
+Direct IAM Carbon and Silicon accounts can create an organization without an
+existing membership. Silicon creation requires its custodian to permit it.
+Carbon email/SSO admission and existing-Silicon invitations have their own
+verification requirements; one cannot substitute for another. Complete first-org
+onboarding in IAM before application login. Application SLTs require exactly one
+organization: `org_ids: []` is rejected even when an app declares
+`organizations.create` or `organizations.join`. Creating or joining another
+organization does not expand an existing application token. Start a new login
+selecting that organization. See [organization consent](ORGANIZATION_CONSENT.md).
 
 Privileged operations still require their existing `X-Step-Up-Token`, `If-Match`,
 and idempotency key. Obtain step-up verification in IAM. The assertion must match
-the represented Carbon, parent authentication session, action and resource; an
+the represented Carbon or Silicon, parent authentication session, action and resource; an
 application permission does not replace it. Idempotency responses are isolated by
 application, parent session and effective scopes.
 

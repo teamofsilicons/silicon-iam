@@ -60,6 +60,7 @@ pub(super) enum Claim {
 )]
 enum DirectIamBinding {
     Carbon,
+    IndependentSilicon,
     Silicon {
         organization_id: Id,
         membership_id: Id,
@@ -207,15 +208,6 @@ pub(crate) async fn begin_scoped_organization<'a>(
     begin_directory_organization(state, authenticated, org).await
 }
 
-pub(super) fn require_carbon(authenticated: &Authenticated) -> Result<Id, AppError> {
-    if authenticated.0.subject.actor_type != ActorType::Carbon
-        || direct_iam_binding(authenticated)? != DirectIamBinding::Carbon
-    {
-        return Err(AppError::Forbidden);
-    }
-    Ok(authenticated.0.subject.id)
-}
-
 fn direct_iam_binding(authenticated: &Authenticated) -> Result<DirectIamBinding, AppError> {
     let access = &authenticated.0;
     if access.audience != "silicon-iam"
@@ -231,6 +223,7 @@ fn direct_iam_binding(authenticated: &Authenticated) -> Result<DirectIamBinding,
         access.membership_id,
     ) {
         (ActorType::Carbon, None, None) => Ok(DirectIamBinding::Carbon),
+        (ActorType::Silicon, None, None) => Ok(DirectIamBinding::IndependentSilicon),
         (ActorType::Silicon, Some(organization_id), Some(membership_id)) => {
             Ok(DirectIamBinding::Silicon {
                 organization_id,
@@ -469,14 +462,19 @@ pub(super) async fn consume_step_up(
     resource_id: Option<Id>,
     assurance: RequiredAssurance,
 ) -> Result<Id, AppError> {
-    let carbon_id = if authenticated.0.client_application_id.is_some() {
-        if authenticated.0.subject.actor_type != ActorType::Carbon {
-            return Err(AppError::Forbidden);
+    require_application_scope(authenticated, "iam.self").or_else(|error| {
+        if authenticated.0.client_application_id.is_some()
+            && matches!(
+                authenticated.0.subject.actor_type,
+                ActorType::Carbon | ActorType::Silicon
+            )
+        {
+            Ok(())
+        } else {
+            Err(error)
         }
-        authenticated.0.subject.id
-    } else {
-        require_carbon(authenticated)?
-    };
+    })?;
+    let carbon_id = authenticated.0.subject.id;
     let token = headers
         .get("x-step-up-token")
         .and_then(|value| value.to_str().ok())
@@ -1270,8 +1268,8 @@ mod tests {
 
     use super::{
         DirectIamBinding, MutationEvent, collect_membership_ids, collect_tag_ids,
-        direct_iam_binding, idempotency_caller_scope, replay_etag_version, require_carbon,
-        silicon_webhook_topics, webhook_payload,
+        direct_iam_binding, idempotency_caller_scope, replay_etag_version,
+        require_application_scope, silicon_webhook_topics, webhook_payload,
     };
     use crate::domain::id::Id;
 
@@ -1324,13 +1322,13 @@ mod tests {
             direct_iam_binding(&direct),
             Ok(DirectIamBinding::Carbon)
         ));
-        assert!(require_carbon(&direct).is_ok());
+        assert!(require_application_scope(&direct, "self.organizations.read").is_ok());
 
         let mut delegated = direct;
         delegated.0.client_application_id = Some(Id::from_u128(4));
         delegated.0.audience = "third-party-app".to_owned();
         assert!(direct_iam_binding(&delegated).is_err());
-        assert!(require_carbon(&delegated).is_err());
+        assert!(require_application_scope(&delegated, "self.organizations.read").is_err());
     }
 
     #[test]
@@ -1352,6 +1350,11 @@ mod tests {
 
         authenticated.0.membership_id = None;
         assert!(direct_iam_binding(&authenticated).is_err());
+        authenticated.0.organization_id = None;
+        assert!(matches!(
+            direct_iam_binding(&authenticated),
+            Ok(DirectIamBinding::IndependentSilicon)
+        ));
     }
 
     #[test]

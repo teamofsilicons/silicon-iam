@@ -1,4 +1,26 @@
 /** Pure login URL and handoff rules, shared by the UI and regression checks. */
+import { validateConsent, type ScopeDescriptor } from "./scope-model";
+
+/** A stale login policy must not turn application sign-in into OBO approval. */
+export function validateLoginConsent(
+  choices: { scope_version: number; scopes: ScopeDescriptor[] }[],
+): void {
+  validateConsent(choices);
+  if (
+    choices.some((app) =>
+      app.scopes.some(
+        (scope) =>
+          scope.scope.startsWith("obo:") ||
+          !!scope.app_id ||
+          !!scope.downstream?.length,
+      ),
+    )
+  )
+    throw new Error(
+      "OBO permissions need a separate approval. IAM returned an outdated login policy; reload before continuing.",
+    );
+}
+
 export type LoginToken = {
   app_id: string;
   slt: string;
@@ -86,7 +108,7 @@ export function tokenDestination(
   return result.href;
 }
 
-/** An empty selection is allowed only when IAM confirms this user's eligibility. */
+/** Application login always carries exactly one organization. */
 export function canApproveOrganizationSelections(
   choices: {
     app_id: string;
@@ -100,8 +122,9 @@ export function canApproveOrganizationSelections(
       const ids = selected[app.app_id];
       return (
         Array.isArray(ids) &&
-        ids.length <= 1000 &&
-        (ids.length > 0 || app.allow_empty_organization_selection === true)
+        ids.length === 1 &&
+        typeof ids[0] === "string" &&
+        ids[0].length > 0
       );
     })
   );

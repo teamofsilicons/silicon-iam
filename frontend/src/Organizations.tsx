@@ -1,3 +1,6 @@
+import { SiliconInvitations } from "./SiliconInvitations";
+import { OrganizationSiliconCustody } from "./SiliconCustodySettings";
+import { DirectoryVisibility } from "./DirectoryVisibility";
 import { ActionPolicies, ActionApprovals } from "./ActionPolicies";
 import { createSignal, For, Match, Show, Switch } from "solid-js";
 import { createResource } from "./resource";
@@ -8,10 +11,13 @@ import {
   orgPath,
   request,
   segment,
+  uploadFile,
+  ApiError,
   type Configuration,
   type RecordValue,
 } from "./api";
 import { Activity } from "./Applications";
+import { BundleLogo } from "./BundleLogo";
 import { organizationAuthority, operationAllowed } from "./permissions";
 import { OperationForm, type Operation } from "./forms";
 import {
@@ -150,8 +156,15 @@ export function OrganizationArea(props: AreaProps) {
               <OrganizationSettings
                 config={props.config}
                 organization={organization()!}
+                authority={authority() || {}}
                 operate={operate}
                 revision={revision()}
+                updated={(message) => {
+                  setNotice(message);
+                  setRevision((v) => v + 1);
+                  void orgControl.refetch();
+                  void props.organizations.refresh();
+                }}
               />
             </Match>
             <Match when={props.page === "trust"}>
@@ -176,6 +189,7 @@ export function OrganizationArea(props: AreaProps) {
               </Show>
               <ResourceList
                 kind={props.page}
+                authority={authority() || {}}
                 org={props.org}
                 user={props.user}
                 config={props.config}
@@ -249,12 +263,46 @@ export function OrganizationArea(props: AreaProps) {
   );
 }
 function OrganizationSettings(props: {
+  authority: RecordValue;
   config: Configuration;
   organization: RecordValue;
   operate: (op: Operation) => void;
   revision: number;
+  updated: (message: string) => void;
 }) {
   const [tab, setTab] = createSignal("Details");
+  const [uploading, setUploading] = createSignal(false),
+    [uploadError, setUploadError] = createSignal<unknown>();
+  async function uploadLogo(event: Event) {
+    const input = event.currentTarget as HTMLInputElement,
+      file = input.files?.[0];
+    input.value = "";
+    if (!file || uploading()) return;
+    setUploadError();
+    if (file.size > 512 * 1024) {
+      setUploadError(
+        new ApiError(413, "logo_too_large", "Choose a logo of 512 KB or less."),
+      );
+      return;
+    }
+    setUploading(true);
+    try {
+      await uploadFile(`${path()}/logo`, file, props.organization.version);
+      props.updated("Organization logo updated.");
+    } catch (error) {
+      setUploadError(
+        error instanceof ApiError && error.code === "approval_required"
+          ? new ApiError(
+              error.status,
+              error.code,
+              `This logo change needs approval (request ${String(error.details?.approval_request_id || "")}). Upload the same file again once it is approved.`,
+            )
+          : error,
+      );
+    } finally {
+      setUploading(false);
+    }
+  }
   const [sso, controls] = createResource(
     () =>
       tab() === "Single sign-on"
@@ -266,7 +314,16 @@ function OrganizationSettings(props: {
   return (
     <>
       <div class="tabs" role="tablist">
-        <For each={["Details", "Single sign-on"]}>
+        <For
+          each={[
+            "Details",
+            "Single sign-on",
+            ...(props.authority.org_role === "owner" ||
+            props.authority.capabilities?.includes("organization.update")
+              ? ["Visibility"]
+              : []),
+          ]}
+        >
           {(item) => (
             <button
               role="tab"
@@ -278,137 +335,164 @@ function OrganizationSettings(props: {
           )}
         </For>
       </div>
-      <Show
-        when={tab() === "Details"}
-        fallback={
-          <section class="panel padded stack">
-            <h2>Organization SSO</h2>
-            <p class="muted">
-              SSO lets an existing Carbon join your organization. It does not
-              create or replace their IAM identity. IAM must enable SSO
-              entitlement first.
-            </p>
-            <ErrorBox error={sso.error} retry={controls.refetch} />
-            <Show when={sso.loading}>
-              <Loading />
-            </Show>
-            <Show when={sso()}>
-              <RecordDetails value={sso()!} />
-              <div class="actions">
+      <Show when={tab() !== "Visibility"}>
+        <Show
+          when={tab() === "Details"}
+          fallback={
+            <section class="panel padded stack">
+              <h2>Organization SSO</h2>
+              <p class="muted">
+                SSO lets an existing Carbon join your organization. It does not
+                create or replace their IAM identity. IAM must enable SSO
+                entitlement first.
+              </p>
+              <ErrorBox error={sso.error} retry={controls.refetch} />
+              <Show when={sso.loading}>
+                <Loading />
+              </Show>
+              <Show when={sso()}>
+                <RecordDetails value={sso()!} />
+                <div class="actions">
+                  <button
+                    class="button primary"
+                    disabled={!sso()!.entitled}
+                    onClick={() =>
+                      props.operate({
+                        title: "Generate setup link",
+                        path: `${path()}/sso/setup-link`,
+                        description:
+                          "The WorkOS setup portal link expires after five minutes.",
+                      })
+                    }
+                  >
+                    Open SSO setup
+                  </button>
+                  <button
+                    class="button"
+                    onClick={() =>
+                      props.operate({
+                        title: "Test SSO configuration",
+                        path: `${path()}/sso/test`,
+                      })
+                    }
+                  >
+                    Test connection
+                  </button>
+                  <button
+                    class="button danger"
+                    onClick={() =>
+                      props.operate({
+                        title: "Disable SSO",
+                        path: `${path()}/sso`,
+                        method: "DELETE",
+                        version: sso()!.version,
+                        danger: true,
+                        description:
+                          "Change the organization join method to email before disabling SSO.",
+                        stepUp: {
+                          action: "organization.sso_change",
+                          resource: props.organization.id,
+                        },
+                      })
+                    }
+                  >
+                    Disable SSO
+                  </button>
+                </div>
+              </Show>
+            </section>
+          }
+        >
+          <div class="detail-grid">
+            <section class="panel padded">
+              <div class="section-heading">
+                <h2>Organization details</h2>
                 <button
-                  class="button primary"
-                  disabled={!sso()!.entitled}
+                  class="button small"
                   onClick={() =>
                     props.operate({
-                      title: "Generate setup link",
-                      path: `${path()}/sso/setup-link`,
-                      description:
-                        "The WorkOS setup portal link expires after five minutes.",
+                      title: "Save organization",
+                      path: path(),
+                      method: "PATCH",
+                      schema: "OrganizationPatch",
+                      initial: props.organization,
+                      version: props.organization.version,
                     })
                   }
                 >
-                  Open SSO setup
-                </button>
-                <button
-                  class="button"
-                  onClick={() =>
-                    props.operate({
-                      title: "Test SSO configuration",
-                      path: `${path()}/sso/test`,
-                    })
-                  }
-                >
-                  Test connection
-                </button>
-                <button
-                  class="button danger"
-                  onClick={() =>
-                    props.operate({
-                      title: "Disable SSO",
-                      path: `${path()}/sso`,
-                      method: "DELETE",
-                      version: sso()!.version,
-                      danger: true,
-                      description:
-                        "Change the organization join method to email before disabling SSO.",
-                      stepUp: {
-                        action: "organization.sso_change",
-                        resource: props.organization.id,
-                      },
-                    })
-                  }
-                >
-                  Disable SSO
+                  Edit
                 </button>
               </div>
-            </Show>
-          </section>
-        }
-      >
-        <div class="detail-grid">
-          <section class="panel padded">
-            <div class="section-heading">
-              <h2>Organization details</h2>
+              <div class="organization-logo-row">
+                <BundleLogo
+                  url={props.organization.logo}
+                  alt={`${props.organization.name} logo`}
+                  fallback={<span class="muted">No logo</span>}
+                />
+                <label class="button small" aria-disabled={uploading()}>
+                  {uploading() ? "Uploading…" : "Upload logo"}
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    hidden
+                    disabled={uploading()}
+                    onChange={uploadLogo}
+                  />
+                </label>
+                <span class="muted">PNG, JPEG, WebP or GIF, up to 512 KB.</span>
+              </div>
+              <ErrorBox error={uploadError()} />
+              <RecordDetails
+                value={props.organization}
+                fields={[
+                  "org_id",
+                  "name",
+                  "description",
+                  "join_method",
+                  "sso_status",
+                  "owner_membership_id",
+                  "created_at",
+                  "version",
+                ]}
+              />
+            </section>
+            <section class="panel padded stack">
+              <h2>Ownership</h2>
+              <p class="muted">
+                The current owner can transfer ownership to an active Carbon or
+                Silicon member. The previous owner becomes an admin with the
+                backend’s default administrator capabilities, excluding
+                administrator-grant management.
+              </p>
               <button
-                class="button small"
+                class="button danger"
                 onClick={() =>
                   props.operate({
-                    title: "Save organization",
-                    path: path(),
-                    method: "PATCH",
-                    schema: "OrganizationPatch",
-                    initial: props.organization,
+                    title: "Transfer ownership",
+                    path: `${path()}/ownership-transfers`,
+                    schema: "OwnershipTransfer",
                     version: props.organization.version,
+                    danger: true,
+                    description:
+                      "This changes who owns and controls this organization. Use the target member’s membership ID, such as saket[tos].",
+                    stepUp: {
+                      action: "organization.transfer_ownership",
+                      resource: props.organization.id,
+                    },
                   })
                 }
               >
-                Edit
+                Transfer ownership
               </button>
-            </div>
-            <RecordDetails
-              value={props.organization}
-              fields={[
-                "org_id",
-                "name",
-                "description",
-                "join_method",
-                "sso_status",
-                "owner_membership_id",
-                "created_at",
-                "version",
-              ]}
-            />
-          </section>
-          <section class="panel padded stack">
-            <h2>Ownership</h2>
-            <p class="muted">
-              The current owner can transfer ownership to an active Carbon
-              member. The previous owner becomes an admin with the backend’s
-              default administrator capabilities, excluding administrator-grant
-              management.
-            </p>
-            <button
-              class="button danger"
-              onClick={() =>
-                props.operate({
-                  title: "Transfer ownership",
-                  path: `${path()}/ownership-transfers`,
-                  schema: "OwnershipTransfer",
-                  version: props.organization.version,
-                  danger: true,
-                  description:
-                    "This changes who owns and controls this organization. Use the target member’s membership ID, such as saket[tos].",
-                  stepUp: {
-                    action: "organization.transfer_ownership",
-                    resource: props.organization.id,
-                  },
-                })
-              }
-            >
-              Transfer ownership
-            </button>
-          </section>
-        </div>
+            </section>
+          </div>
+        </Show>
+      </Show>
+      <Show when={tab() === "Visibility"}>
+        <DirectoryVisibility
+          org={props.organization.org_id}
+          revision={props.revision}
+        />
       </Show>
       <ActionPolicies
         org={props.organization.org_id}
@@ -449,6 +533,7 @@ const resources: Record<
   },
 };
 function ResourceList(props: {
+  authority: RecordValue;
   kind: string;
   org: string;
   user: RecordValue;
@@ -657,6 +742,15 @@ function ResourceList(props: {
           <PageFooter page={page} />
         </Show>
       </section>
+      <Show
+        when={
+          props.kind === "silicons" &&
+          (props.authority.org_role === "owner" ||
+            props.authority.capabilities?.includes("members.invite"))
+        }
+      >
+        <SiliconInvitations org={props.org} revision={props.revision} />
+      </Show>
       <Show when={props.kind === "testing"}>
         <p class="section-note">
           These are control-plane environment settings. To use an environment,
@@ -681,6 +775,25 @@ function ResourceList(props: {
             </Show>
             <Show when={record()}>
               <RecordDetails value={record()!} />
+              <Show
+                when={
+                  ["members", "silicons"].includes(props.kind) &&
+                  (props.authority.org_role === "owner" ||
+                    props.authority.capabilities?.includes(
+                      "members.update_directory",
+                    ))
+                }
+              >
+                <DirectoryVisibility
+                  org={props.org}
+                  membership={
+                    props.kind === "members"
+                      ? selected()
+                      : record()!.membership_id
+                  }
+                  revision={props.revision}
+                />
+              </Show>
               <div class="actions wrap">
                 <Switch>
                   <Match when={props.kind === "members"}>
@@ -748,7 +861,7 @@ function ResourceList(props: {
                     <Show
                       when={
                         record()!.org_role !== "owner" &&
-                        record()!.principal.type === "carbon"
+                        ["carbon", "silicon"].includes(record()!.principal.type)
                       }
                     >
                       <button
@@ -1062,6 +1175,20 @@ function ResourceList(props: {
                 </Switch>
               </div>
               <Show when={props.kind === "silicons"}>
+                <Show
+                  when={
+                    props.authority &&
+                    (props.authority.org_role === "owner" ||
+                      props.authority.capabilities?.includes(
+                        "organization.update",
+                      ))
+                  }
+                >
+                  <OrganizationSiliconCustody
+                    org={props.org}
+                    silicon={record()!.silicon_id}
+                  />
+                </Show>
                 <SiliconExtras
                   silicon={record()!}
                   org={props.org}

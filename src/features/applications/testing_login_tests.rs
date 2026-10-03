@@ -131,7 +131,9 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
             organization_id: Id::from_u128(0x21),
         },
         async {
-            for actor in ["c:test_carbon", "si:worker", "c:oac_test_admin"] {
+            // Each shortcut selects one organization; actors without one must create/join it first.
+            ensure!(exchange(&state,"c:oac_test_admin","actor-no-organization").await?.0==StatusCode::UNPROCESSABLE_ENTITY);
+            for actor in ["c:test_carbon", "si:worker"] {
                 let key = format!("actor-login-{actor}");
                 let (status, tokens) = exchange(&state, actor, &key).await?;
                 ensure!(status == StatusCode::OK, "actor exchange failed: {tokens}");
@@ -153,6 +155,7 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
                 let (refresh_status, refreshed) = request_tokens(
                     &state,
                     AppTokenForm {
+        org_id: None,
                         app_id: Some("app-alpha".to_owned()),
                         slt: None,
                         refresh_token: tokens["refresh_token"].as_str().map(str::to_owned),
@@ -196,8 +199,8 @@ async fn testing_login_accepts_actor_ids_and_issued_codes_without_production_fal
                     session_id: Id::from_u128(0x41),
                     principal_id: Id::fixture("c:test_carbon"),
                     subject_kind: "carbon",
-                    organization_id: None,
-                    membership_id: None,
+                    organization_id: Some(Id::from_u128(0x21)),
+                    membership_id: Some(Id::from_u128(0x31)),
                     redirect_uri: None,
                     selected_membership_ids: &[Id::from_u128(0x31)],
                 },
@@ -262,6 +265,7 @@ async fn exchange(state: &ApiState, slt: &str, key: &str) -> anyhow::Result<(Sta
     request_tokens(
         state,
         AppTokenForm {
+            org_id: None,
             app_id: Some("app-alpha".to_owned()),
             slt: Some(slt.to_owned()),
             refresh_token: None,

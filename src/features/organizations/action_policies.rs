@@ -55,7 +55,12 @@ pub(super) async fn capture_request(request: Request, next: Next) -> Result<Resp
     let body = to_bytes(body, 1_048_576)
         .await
         .map_err(|_| AppError::PayloadTooLarge)?;
-    let input = if body.is_empty() {
+    // A logo is an image, not JSON: approvals bind to its type, size and digest.
+    let input = if super::logos::is_logo_upload(&parts.method, parts.uri.path()) {
+        super::logos::upload_summary(&parts.headers, &body)
+            .and_then(|summary| serde_json::to_value(summary).ok())
+            .unwrap_or(Value::Null)
+    } else if body.is_empty() {
         Value::Null
     } else {
         serde_json::from_slice(&body)
@@ -97,7 +102,7 @@ fn actions(request: &MutationRequest, actor_id: &str) -> Vec<&'static str> {
         ("POST", "/silicons" | "/carbon-invites") => {
             initial_assignment_actions(&request.body, &mut result);
         }
-        ("PATCH", "") => {
+        ("PATCH", "") | ("PUT", "/logo") => {
             result.insert("organization.profile.update");
         }
         (

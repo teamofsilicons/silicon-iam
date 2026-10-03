@@ -36,7 +36,8 @@ mod scope_policy_tests;
 mod scoped_tests;
 
 pub(crate) use graph::{
-    obo_context, record_rotated_application_secret, touch_application_activity,
+    obo_context, obo_context_in_transaction, record_rotated_application_secret,
+    touch_application_activity,
 };
 
 pub(crate) use key::{ENVIRONMENT_KEY_HEADER, select_plane};

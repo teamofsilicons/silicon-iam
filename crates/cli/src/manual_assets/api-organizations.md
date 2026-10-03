@@ -10,7 +10,7 @@ An organization is the boundary for people, machine identities, tags, trust and 
 | **Administrator** | Holds explicitly delegated capabilities, granted by the owner or by an administrator with `admins.manage`. |
 | **Member** | No organization-level authority. Invitations always join as members. |
 
-A Silicon can never be an owner or an administrator. Its authority is a separate question, covered in Tags, trust and governance (`iam docs api/governance`).
+Carbons and Silicons may be owners, administrators or members. Roles and delegated capabilities control authority; being a Silicon neither grants nor removes those powers.
 
 ## Capabilities
 
@@ -29,17 +29,21 @@ Administrator authority is a set, replaced wholesale via `PUT /api/v1/organizati
 | `admins.create` · `admins.manage` | Promotion and delegation |
 | `sso.manage` | SSO configuration, once entitled |
 
-Promotion, demotion and capability replacement all require a verified-channel step-up token and an `If-Match` on the authorization aggregate, whose version is separate from the membership's.
+Promotion, demotion and capability replacement all require a Carbon verified-channel or Silicon credential step-up token and an `If-Match` on the authorization aggregate, whose version is separate from the membership's.
 
 ## Creating an organization
 
-`GET /api/v1/organization-ids/{org_id}/availability` then `POST /api/v1/organizations`. The creator becomes the sole member and owner.
+`GET /api/v1/organization-ids/{org_id}/availability` then `POST /api/v1/organizations`. The Carbon or Silicon creator becomes the sole member and owner. Silicon creation requires its custodian to allow `can_create_organizations`.
 
-**`org_id` is permanent.** It cannot be changed and is never reused after deletion. It also becomes the suffix of every Silicon ID in the organization — a Silicon created as `head_of_growth` in `tos` is `head_of_growth:tos` forever.
+**`org_id` is permanent.** It cannot be changed and is never reused after deletion. Account IDs are independent: `si:head_of_growth` can belong to several organizations, with membership `si:head_of_growth[tos]` identifying its relationship to `tos`.
+
+### Uploading a logo
+
+Instead of linking an external image, upload the logo to IAM with `PUT /api/v1/organizations/{org_id}/logo`. Send the raw image as the body, with its `Content-Type` (`image/png`, `image/jpeg`, `image/webp` or `image/gif`, up to 512 KiB), plus `Idempotency-Key` and `If-Match`. It needs the same authority as changing the logo with `PATCH`. The response is the updated Organization. Its `logo` is now a public IAM URL, `/api/v1/organization-logos/{logo_id}`, which anyone can load without credentials and cache indefinitely. A new upload replaces the old image, and setting `logo` with `PATCH` (to another URL or `null`) deletes the stored one.
 
 ## Listing your organizations
 
-`GET /api/v1/organizations` is Carbon-only and defaults to `status=active`. Its `status=active|removed` query filters the authenticated Carbon's *membership* in each organization, not the organization's own lifecycle state. The `status` property in every returned Organization still describes the organization itself and remains `active` or `disabled`; a result reached through a removed membership may therefore describe an active organization.
+`GET /api/v1/organizations` accepts direct Carbon or Silicon sessions and defaults to `status=active`. Its `status=active|removed` query filters the authenticated account's *membership* in each organization, not the organization's own lifecycle state. The `status` property in every returned Organization still describes the organization itself and remains `active` or `disabled`; a result reached through a removed membership may therefore describe an active organization.
 
 ## The directory
 
@@ -48,7 +52,7 @@ Three read-optimised endpoints answer "who is here, and what is my relationship 
 |  | Endpoint | Returns |
 | --- | --- | --- |
 | GET | `/api/v1/organizations/{org_id}/directory/self` | The caller's own entry |
-| GET | `/api/v1/organizations/{org_id}/directory/members` | Every teammate, paginated |
+| GET | `/api/v1/organizations/{org_id}/directory/members` | Visible active teammates, paginated |
 | GET | `/api/v1/organizations/{org_id}/directory/members/{membership_id}` | One teammate |
 
 Each returns name, ID, job description, tags and trust. **Trust is always resolved from the caller's point of view** — the same pair reads differently depending on who is asking — so label the column accordingly rather than presenting it as an absolute property.
@@ -57,7 +61,13 @@ An authenticated Application access token may use these read-only directory endp
 
 All three accept `fields` to narrow the projection. On a large directory this is the difference between a 12 KB and a 400 KB page, and it is worth using.
 
-The directory deliberately exposes public handles rather than `membership_id`. To act on somebody you need the membership endpoints, which are authority-checked.
+Membership references use canonical `c:handle[org_id]` or `si:handle[org_id]` identifiers. Mutations use authority-checked membership endpoints; knowing a public identifier never grants access.
+
+## Directory visibility
+
+Organization membership does not automatically reveal the whole directory. Direct IAM managers use `GET/PUT /api/v1/organizations/{org_id}/directory-visibility` for the default, and `GET/PUT …/members/{membership_id}/directory-visibility` for an individual override. PUT takes `{mode, visible_membership_ids}`, `If-Match` and an idempotency key. Default modes are `all`, `self` or `selected`; member overrides also accept `inherit`. Use active same-org canonical memberships, with an empty list unless mode is selected.
+
+The default initially permits all members. The caller always sees itself. Visibility is directional, applied before pagination and enforced on detail reads. Changing the default requires `organization.update`; changing a member override requires `members.update_directory`. Responses include `version`, configured mode/list, and `effective_mode`/`effective_visible_membership_ids`.
 
 ## Complete directory details
 

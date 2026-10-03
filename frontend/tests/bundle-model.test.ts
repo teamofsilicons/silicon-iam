@@ -163,7 +163,7 @@ test("logo previews allow HTTPS images while scripts and API connections stay sa
   });
   assert.equal(response.status, 200);
   const csp = response.headers.get("Content-Security-Policy")!;
-  assert.match(csp, /img-src 'self' https:;/);
+  assert.match(csp, /img-src 'self' https: blob:;/);
   assert.match(csp, /script-src 'self';/);
   assert.match(csp, /connect-src 'self';/);
   assert.equal(response.headers.get("Referrer-Policy"), "no-referrer");

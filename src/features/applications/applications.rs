@@ -125,12 +125,12 @@ pub(super) async fn lock_current_application_manager(
         JOIN iam.organization_memberships AS membership
           ON membership.organization_id = organization.id
          AND membership.principal_id = $2
-         AND membership.principal_kind = 'carbon'
+         AND membership.principal_kind IN ('carbon','silicon')
          AND membership.org_role IN ('owner', 'admin')
          AND membership.status = 'active'
         JOIN iam.principals AS principal
           ON principal.id = membership.principal_id
-         AND principal.kind = 'carbon'
+         AND principal.kind = membership.principal_kind
          AND principal.status = 'active'
         WHERE organization.id = $1
           AND organization.status = 'active'
@@ -1416,7 +1416,9 @@ pub(crate) async fn load_detail(
     .map_err(|_| ApiError::internal("application_approved_scopes"))?;
     let obo_endpoints = sqlx::query_as::<_, ApplicationOboEndpoint>(
         r"
-        SELECT endpoint_id, path, metadata_definition AS metadata, critical, ttl_seconds
+        SELECT endpoint_id, path, metadata_definition AS metadata, critical, ttl_seconds,
+               downstream, downstream_ttl_seconds, name, description, note_to_user, additional_warnings,
+               '[' || (SELECT app_id FROM iam.applications WHERE id=$1) || ':obo:' || endpoint_id || ']' AS obo_id
         FROM iam.application_obo_endpoints
         WHERE application_id = $1 AND status = 'active'
         ORDER BY endpoint_id
@@ -1992,14 +1994,19 @@ pub(super) async fn replace_obo_endpoints(
     for endpoint in endpoints {
         let endpoint_query = r"
             INSERT INTO iam.application_obo_endpoints (
-                organization_id, application_id, endpoint_id, path, metadata_definition, critical, ttl_seconds
+                organization_id, application_id, endpoint_id, path, metadata_definition, critical, ttl_seconds,
+                downstream, downstream_ttl_seconds, name, description, note_to_user, additional_warnings
             )
-            SELECT application.organization_id, application.id, $2, $3, $4, $5, $6
+            SELECT application.organization_id, application.id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
             FROM iam.applications AS application
             WHERE application.id = $1
             ON CONFLICT (application_id, endpoint_id) DO UPDATE
             SET metadata_definition = EXCLUDED.metadata_definition, critical=EXCLUDED.critical,
                 ttl_seconds = EXCLUDED.ttl_seconds,
+                downstream = EXCLUDED.downstream,
+                downstream_ttl_seconds = EXCLUDED.downstream_ttl_seconds,
+                name = EXCLUDED.name, description = EXCLUDED.description,
+                note_to_user = EXCLUDED.note_to_user, additional_warnings = EXCLUDED.additional_warnings,
                 status = 'active',
                 retired_at = NULL
             WHERE application_obo_endpoints.path = EXCLUDED.path
@@ -2019,6 +2026,12 @@ pub(super) async fn replace_obo_endpoints(
             .bind(sqlx::types::Json(&endpoint.metadata))
             .bind(endpoint.critical)
             .bind(endpoint.ttl_seconds)
+            .bind(sqlx::types::Json(&endpoint.downstream))
+            .bind(endpoint.downstream_ttl_seconds)
+            .bind(&endpoint.name)
+            .bind(&endpoint.description)
+            .bind(&endpoint.note_to_user)
+            .bind(sqlx::types::Json(&endpoint.additional_warnings))
             .execute(&mut **transaction)
             .await
             .map_err(|error| map_obo_endpoint_write(&error))?;

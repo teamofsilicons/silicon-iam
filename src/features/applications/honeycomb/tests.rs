@@ -283,6 +283,8 @@ async fn management_is_authenticated_revision_bound_and_durably_replayable() -> 
         !events.contains(body["app_secret"].as_str().unwrap_or("missing")),
         "notification stored a credential"
     );
+    super::operations::ata_tests::exercise(&app, &admin, &service_secret, actor.expose_secret())
+        .await?;
     sensitive_operations(&app, &state, &admin, &service_secret, actor.expose_secret()).await?;
     lifecycle(
         &app,

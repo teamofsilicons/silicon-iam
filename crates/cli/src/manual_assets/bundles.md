@@ -5,12 +5,13 @@ several applications in the same organization. Every member remains an ordinary,
 independent application with its own permissions, secret, short-lived token,
 access tokens, refresh tokens, and webhook configuration.
 
-Create and manage bundles in the IAM console’s **App bundles** section, or use
-`POST /api/v1/application-bundles` with a direct IAM Carbon bearer token. The
+Create and manage bundles in Honeycomb. The legacy
+`POST /api/v1/application-bundles` route remains available where legacy writers
+are enabled, using a direct IAM Carbon or Silicon bearer token. The
 current organization owner or administrator can manage a bundle when bundle
 creation is available for that organization.
 
-The console shows **App bundles** only when the selected organization and your
+Honeycomb permits bundle management only when the selected organization and your
 current membership allow it. Switching organizations reloads that availability
 and the organization's bundles. A direct link cannot open the creation form for
 an unavailable organization. Integrations can read
@@ -25,7 +26,7 @@ not reserve access; creation and updates check authorization again.
   "app_id": "workspace",
   "app_name": "Workspace",
   "app_logo": "https://workspace.example/images/logo.png",
-  "app_ids": ["tos>notes", "tos>files"]
+  "app_ids": ["notes", "files"]
 }
 ```
 
@@ -62,9 +63,9 @@ https://auth.iam.teamofsilicons.com/login?bundle_id=tos%3Eworkspace&redirect_uri
 ```
 
 `bundle_id`, `app_id`, and `app_ids` are mutually exclusive. Applications do not
-choose the user’s organizations. IAM validates the bundle, presents its public
+choose the user’s organization. IAM validates the bundle, presents its public
 identity, asks for the applicable permissions, and lets the user select
-organizations. Only permissions that the backend marks as requiring consent
+one account and one active organization shared by the members. Only permissions that the backend marks as requiring consent
 are displayed. Every member receives its own declared, user-approved scope set.
 
 IAM returns the same per-application SLT array as batch login, encoded in the
@@ -87,7 +88,7 @@ credentials or verification codes.
 Read `GET /api/v1/app-auth/bundles/{bundle_id}/organizations` using the current
 Carbon or Silicon IAM session. It returns the bundle identity and one login
 choice object per member. Each object includes organizations, `scope_version`,
-`consent_required`, `allow_empty_organization_selection`, and the complete active permission descriptors.
+`consent_required`, `allow_empty_organization_selection` (always false), and the complete active IAM permission descriptors.
 
 Submit explicit choices to
 `POST /api/v1/app-auth/bundles/{bundle_id}/short-lived-tokens`:
@@ -96,13 +97,13 @@ Submit explicit choices to
 {
   "applications": [
     {
-      "app_id": "tos>notes",
+      "app_id": "notes",
       "org_ids": ["work"],
       "scope_version": 3,
       "approved_scopes": ["self.identity.read", "self.profile.read"]
     },
     {
-      "app_id": "tos>files",
+      "app_id": "files",
       "org_ids": ["work"],
       "scope_version": 8,
       "approved_scopes": ["self.identity.read", "self.profile.read"]
@@ -117,14 +118,11 @@ Membership, application status, and scope changes are revalidated atomically
 before issuing any token. If validation fails, no partial bundle login is
 created. Reload choices after a stale scope or changed-member response.
 
-The shared browser picker allows a Carbon to continue with no organization only
-when every member has `allow_empty_organization_selection: true`. That requires
-each app's current approved and consented scopes to include `organizations.create`
-or `organizations.join`. API callers may send an empty selection for eligible
-members alongside selected organizations for others; eligibility is enforced
-independently and issuance remains atomic. No organization is granted by an empty
-selection or by subsequently creating or joining one. The user must return to IAM
-to explicitly add organization access.
+Every member selection requires exactly one organization. Empty and multiple
+organization selections are rejected. The shared browser picker chooses one
+organization available to all members. Complete first-org onboarding before
+starting bundle login. Each resulting token remains bound to its original
+account and organization; later logins do not enlarge it.
 
 An idempotent retry is bound to the same IAM session and bundle, preserving the
 original tokens and expiry times. Retry the exact same body and key after an

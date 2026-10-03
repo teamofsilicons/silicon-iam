@@ -1,27 +1,34 @@
 # Carbon accounts and sessions
 
-A Carbon is a human account. Creating one requires a verified email address and a verified phone number, both bound to a single 48-hour signup session.
+A Carbon is a human account with a required verified email. Phone is optional; if supplied it must also be verified. Signup works through the official IAM CLI and website.
 
 ## Signup
 
-Six calls, in order. Every one takes an `Idempotency-Key`.
+Email signup uses a 48-hour session. Each mutation takes an `Idempotency-Key`:
 
-|  | Call | Returns |
-| --- | --- | --- |
-| POST | `/api/v1/signup/sessions` | A 48-hour session |
-| POST | `/api/v1/signup/sessions/{session_id}/email` | `already_exists`, and a code if false |
-| POST | `/api/v1/signup/sessions/{session_id}/email/verify` | `verified: true` |
-| POST | `/api/v1/signup/sessions/{session_id}/phone` | `already_exists`, and a code if false |
-| POST | `/api/v1/signup/sessions/{session_id}/phone/verify` | `verified: true` |
-| POST | `/api/v1/signup/sessions/{session_id}/complete` | The new `CarbonSelf` |
+1. `POST /api/v1/signup/sessions` creates the session.
 
-**The `already_exists` short-circuit.** When a contact already belongs to an account, the server returns `already_exists: true` and deliberately sends nothing. Rendering "check your inbox" here strands the user forever — route them to sign-in instead.
+2. `POST …/{session_id}/email` starts verification, then `POST …/{session_id}/email/verify` checks the code.
 
-Completion requires both channels verified *in that session*, and neither may belong to another account. Availability of a candidate handle is a separate public probe: `GET /api/v1/carbon-ids/{carbon_id}/availability`.
+3. Optionally call `POST …/{session_id}/phone` and `POST …/{session_id}/phone/verify`. A supplied but unverified number blocks completion. `DELETE …/{session_id}/phone` explicitly skips and clears it.
 
-New Carbon IDs accept lowercase `a–z`, the digits `1–9`, `_` and `-`, and are 3–30 characters. Note the absence of `0`: immutable legacy IDs containing it remain addressable for login and lookup, but cannot be newly registered. Rejecting it client-side is far kinder than a `422` after somebody has settled on a name.
+4. `POST …/{session_id}/complete` creates the profile and signs the Carbon in.
 
-Completion does not sign the new Carbon in. It returns the profile; the client then runs the ordinary login flow.
+If a contact is already registered, IAM returns `already_exists: true` without sending a signup code. Offer to sign in to that account instead of asking the user to wait.
+
+Completion accepts optional `carbon_id`, `display_name` and `timezone`. Omitted ID/name derive available defaults from the verified email; clients should supply the detected IANA timezone (otherwise UTC). Use `GET /api/v1/carbon-ids/{carbon_id}/availability` for an edited ID. Public Carbon IDs have the form `c:handle`; use the current schema's handle restrictions.
+
+The completion response includes the profile, access/refresh tokens, actor, session ID and `onboarding.requires_organization`; it also sets `iam_session`. No second login OTP is required. Complete profile setup, then create or join the first organization before an application login. An absent phone is returned as null.
+
+## Google and Apple
+
+`GET /api/v1/signup/social/providers` reports which providers are enabled. Start an enabled provider with `POST /api/v1/signup/social/{provider}/start` and an idempotency key. Open its `authorization_url`; keep the returned `request_id` and secret `poll_token` in memory. Poll `POST …/{provider}/status` with those two values.
+
+Status is `pending`, `verified`, `already_registered`, `failed` or `expired`. Verified results include a signup session and provider-verified email; continue with optional phone and profile setup without another email OTP. Already-registered accounts are offered login. Provider callbacks and token validation run on IAM's server; the CLI uses the same browser-and-poll protocol.
+
+## Profile pictures
+
+New profiles receive an IAM-style generated image. Upload a replacement using `PUT /api/v1/me/photo` with raw PNG, JPEG or WebP bytes, at most 512 KiB, matching `Content-Type`, `If-Match` and `Idempotency-Key`. It returns the updated profile and its immutable public `profile_photo` URL. The same self-profile upload route supports Silicon accounts.
 
 ## Login
 
@@ -61,7 +68,7 @@ Cookie-authenticated logout additionally requires `X-CSRF-Token` matching the to
 | POST | `/api/v1/carbons/resolve/email` | Exact match on a verified address |
 | POST | `/api/v1/carbons/resolve/phone` | Exact match on a verified number |
 
-These exist for invitation pickers: you cannot invite a Carbon that does not exist, so resolving first turns a guaranteed `404` into a working autocomplete. Search returns handles only — never contact details.
+These support account invitation pickers. Email invitations may also be sent before signup; they bind only after the recipient verifies the matching email. Search returns handles only — never contact details.
 
 ## How contact identities are stored
 

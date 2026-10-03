@@ -136,7 +136,7 @@ The token must have been issued to the calling Application as both client and au
 
 5. On an authoritative terminal API error, fix the request or stop; do not blindly retry it.
 
-The crate sends each call once and does not persist mutations for you. OBO proof verification is intentionally different: it consumes a single-use proof and accepts no idempotency key, so an ambiguous verification must not be retried.
+The crate sends each call once and does not persist mutations for you. OBO token verification accepts no idempotency key and does not consume the token. A receiver must obtain a successful current verification before executing and handle operation-level deduplication itself.
 
 ## Application identity keys
 

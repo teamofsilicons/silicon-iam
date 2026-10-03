@@ -33,14 +33,15 @@ use super::{
     error::ApiError,
     idempotency::{self, Claim},
     model::{
-        AppPath, ApplicationOboEndpoint, OboAccessResult, OboEndpointReference, OboExchangeRequest,
-        OboProofResponse, OboVerifyRequest,
+        AppPath, ApplicationOboEndpoint, OboAccessResult, OboChainLink, OboChainedExchangeRequest,
+        OboEndpointReference, OboExchangeRequest, OboProofResponse, OboVerifyRequest,
     },
     security::ApplicationClient,
     validation,
 };
 
 const SIGNATURE_TOLERANCE_SECONDS: u64 = 60;
+const CHAINED_EXCHANGE_ROUTE: &str = "POST /api/v1/obo-access/chained-exchanges";
 const TIMESTAMP_HEADER: &str = "x-obo-timestamp";
 const SIGNATURE_HEADER: &str = "x-obo-signature";
 
@@ -84,6 +85,42 @@ struct ProofRow {
     checked_at: OffsetDateTime,
     consumed_at: Option<OffsetDateTime>,
     revoked_at: Option<OffsetDateTime>,
+    chain_depth: i16,
+    chain: sqlx::types::Json<Vec<ChainEntry>>,
+}
+
+/// One ancestor hop persisted on a chained proof. Epochs and endpoint
+/// versions stay in the database, where the chain is rechecked.
+#[derive(serde::Deserialize)]
+struct ChainEntry {
+    proof_id: Id,
+    issuer_application_id: String,
+}
+
+#[derive(FromRow)]
+struct ChainParentRow {
+    organization_id: Id,
+    membership_id: Id,
+    subject_principal_id: Id,
+    subject_kind: String,
+}
+
+#[derive(FromRow)]
+struct ChainedAuthorityRow {
+    audience_application_id: Id,
+    endpoint_path: String,
+    metadata_definition: sqlx::types::Json<Value>,
+    endpoint_version: i64,
+    ttl_seconds: i32,
+    audience_auth_epoch: i64,
+    subject_auth_epoch: i64,
+    membership_authz_epoch: i64,
+    parent_access_token_id: Id,
+    root_issuer_application_id: Id,
+    root_proof_id: Id,
+    chain_depth: i16,
+    chain: sqlx::types::Json<Value>,
+    window_ends_at: OffsetDateTime,
 }
 
 struct SignedExchange {
@@ -413,6 +450,263 @@ pub(super) async fn exchange(
     Ok(proof_response(StatusCode::CREATED, response, false))
 }
 
+/// Exchanges a proof this application consumed for a proof to one call the
+/// consumed endpoint declared downstream, for the same subject and
+/// organization. The consumed proof is not a bearer secret: only the
+/// application that consumed it can name it here, under its own credentials
+/// and request signature.
+pub(super) async fn exchange_chained(
+    State(state): State<ApiState>,
+    client: ApplicationClient,
+    headers: HeaderMap,
+    Json(input): Json<OboChainedExchangeRequest>,
+) -> Result<Response, ApiError> {
+    reject_organization_header(&headers)?;
+    validate_chained_exchange(&input)?;
+    let request = canonical_request(&input.request.method, &input.request.body_sha256)?;
+    let canonical = chained_exchange_canonical(&input)?;
+    let mut transaction = context::begin(
+        state.db(),
+        DatabaseContext {
+            principal_id: Some(client.application_id),
+            organization_id: Some(client.organization_id),
+            application_id: Some(client.application_id),
+            signup_session_id: None,
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal("obo_chain_context"))?;
+    let transaction_now = sqlx::query_scalar::<_, OffsetDateTime>("SELECT transaction_timestamp()")
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ApiError::internal("obo_chain_time"))?;
+    let signed = signed_exchange(&headers, transaction_now)?;
+
+    let parent = sqlx::query_as::<_, ChainParentRow>(
+        "SELECT * FROM iam_private.resolve_application_obo_chain_parent($1)",
+    )
+    .bind(input.subject_proof_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("obo_chain_parent"))?
+    .ok_or_else(ApiError::not_found)?;
+    // The chain inherits the subject and organization of the consumed proof.
+    install_subject_context(
+        &mut transaction,
+        parent.subject_principal_id,
+        parent.organization_id,
+        client.application_id,
+    )
+    .await?;
+
+    // Claim before the budget-enforcing authority lock, so a retry of an
+    // issued hop replays even after the parent's budget is spent.
+    let caller_scope = format!("application:{}", client.application_id);
+    let claim = idempotency::claim::<OboProofResponse>(
+        &mut transaction,
+        &state.crypto,
+        &headers,
+        &caller_scope,
+        CHAINED_EXCHANGE_ROUTE,
+        &canonical,
+        true,
+    )
+    .await?;
+    if let Claim::Replay { status, response } = claim {
+        let Some(path) = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT iam_private.application_obo_chained_replay_path($1, $2, $3)",
+        )
+        .bind(response.proof_id)
+        .bind(client.application_id)
+        .bind(parent.organization_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ApiError::internal("obo_chain_replay_authority"))?
+        else {
+            return Err(ApiError::conflict("idempotency_response_expired"));
+        };
+        verify_chained_exchange_signature(
+            &client,
+            &signed,
+            &request,
+            &path,
+            input.subject_proof_id,
+        )?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiError::internal("obo_chain_replay_commit"))?;
+        let status = StatusCode::from_u16(status)
+            .map_err(|_| ApiError::internal("obo_chain_replay_status"))?;
+        return Ok(proof_response(status, response, true));
+    }
+    let Claim::Acquired(idempotency_id) = claim else {
+        return Err(ApiError::internal("obo_chain_idempotency"));
+    };
+
+    let authority = sqlx::query_as::<_, ChainedAuthorityRow>(
+        "SELECT * FROM iam_private.lock_application_obo_chained_exchange_authority($1, $2, $3, $4, $5)",
+    )
+    .bind(client.application_id)
+    .bind(client.auth_epoch)
+    .bind(input.subject_proof_id)
+    .bind(&input.audience)
+    .bind(&input.endpoint_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| chained_authority_error(&error))?
+    .ok_or_else(|| ApiError::gone("obo_proof_revoked"))?;
+    verify_chained_exchange_signature(
+        &client,
+        &signed,
+        &request,
+        &authority.endpoint_path,
+        input.subject_proof_id,
+    )?;
+    validation::obo_request_metadata(&authority.metadata_definition.0, &input.metadata)?;
+    let links = chain_links(&authority.chain.0)?;
+
+    let issuance_now = sqlx::query_scalar::<_, OffsetDateTime>("SELECT clock_timestamp()")
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ApiError::internal("obo_chain_issuance_time"))?;
+    ensure_signature_fresh(signed.signed_at, issuance_now)?;
+
+    let proof_id = Id::now_v7();
+    let raw_proof = state
+        .crypto
+        .generate_secret(SecretKind::OboProof)
+        .map_err(|_| ApiError::internal("obo_chain_proof_generate"))?;
+    let proof_digest = state
+        .crypto
+        .digest_secret(DigestPurpose::OboProof, &raw_proof)
+        .map_err(|_| ApiError::internal("obo_chain_proof_digest"))?;
+    let subject_kind = actor_type(&parent.subject_kind)?;
+    let expires_at = sqlx::query_scalar::<_, OffsetDateTime>(
+        r"
+        INSERT INTO iam.obo_proofs (
+            id, proof_digest, digest_key_version, proof_prefix,
+            issuer_application_id, audience_application_id,
+            subject_principal_id, subject_kind, organization_id, membership_id,
+            parent_access_token_id, endpoint_id, request_metadata, endpoint_version,
+            request_method, request_path, request_body_sha256, request_signed_at,
+            subject_auth_epoch,
+            membership_authz_epoch, issuer_auth_epoch, audience_auth_epoch,
+            created_at, expires_at,
+            root_issuer_application_id, chain_depth, parent_proof_id, root_proof_id,
+            chain, chain_not_after
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8::iam.principal_kind, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18,
+            $19, $20, $21, $22,
+            $23, LEAST($23 + ($24::bigint * interval '1 second'), $30),
+            $25, $26, $27, $28, $29, $30
+        )
+        RETURNING expires_at
+        ",
+    )
+    .bind(proof_id)
+    .bind(proof_digest.as_bytes().as_slice())
+    .bind(proof_digest.key_version())
+    .bind(secret_prefix(raw_proof.expose_secret()))
+    .bind(client.application_id)
+    .bind(authority.audience_application_id)
+    .bind(parent.subject_principal_id)
+    .bind(subject_kind.as_str())
+    .bind(parent.organization_id)
+    .bind(parent.membership_id)
+    .bind(authority.parent_access_token_id)
+    .bind(&input.endpoint_id)
+    .bind(sqlx::types::Json(&input.metadata))
+    .bind(authority.endpoint_version)
+    .bind(&request.method)
+    .bind(&authority.endpoint_path)
+    .bind(request.body_sha256.as_slice())
+    .bind(signed.signed_at)
+    .bind(authority.subject_auth_epoch)
+    .bind(authority.membership_authz_epoch)
+    .bind(client.auth_epoch)
+    .bind(authority.audience_auth_epoch)
+    .bind(issuance_now)
+    .bind(i64::from(authority.ttl_seconds))
+    .bind(authority.root_issuer_application_id)
+    .bind(authority.chain_depth)
+    .bind(input.subject_proof_id)
+    .bind(authority.root_proof_id)
+    .bind(&authority.chain)
+    .bind(authority.window_ends_at)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| ApiError::internal("obo_chain_proof_insert"))?;
+    let response = OboProofResponse {
+        testing_context: crate::features::testing_environments::obo_context(
+            &state,
+            &input.audience,
+        )
+        .await
+        .map_err(|_| ApiError::internal("obo_testing_context"))?,
+        access_proof: raw_proof.expose_secret().to_owned(),
+        proof_id,
+        expires_in: u64::try_from((expires_at - issuance_now).whole_seconds().max(0))
+            .map_err(|_| ApiError::internal("obo_chain_proof_lifetime"))?,
+        expires_at,
+    };
+    let expires_at_wire = expires_at
+        .format(&Rfc3339)
+        .map_err(|_| ApiError::internal("obo_proof_expires_at"))?;
+    record_protocol_event(
+        &mut transaction,
+        ActorRef {
+            actor_type: ActorType::Application,
+            id: client.application_id,
+        },
+        parent.organization_id,
+        client.application_id,
+        proof_id,
+        1,
+        "obo.proof.chain_issue",
+        "obo.proof_chain_issued",
+        json!({
+            "proof_id": proof_id,
+            "issuer_application_id": client.application_id,
+            "audience_application_id": authority.audience_application_id,
+            "subject": ActorRef {
+                actor_type: subject_kind,
+                id: parent.subject_principal_id,
+            },
+            "endpoint_id": input.endpoint_id,
+            "endpoint_path": &authority.endpoint_path,
+            "metadata_bound": true,
+            "request": {
+                "method": &request.method,
+                "path": &authority.endpoint_path,
+                "body_sha256": &request.body_sha256_hex,
+            },
+            "expires_at": expires_at_wire,
+            "parent_proof_id": input.subject_proof_id,
+            "root_proof_id": authority.root_proof_id,
+            "chain_depth": authority.chain_depth,
+            "chain": &links,
+        }),
+    )
+    .await?;
+    idempotency::complete_no_later_than(
+        &mut transaction,
+        &state.crypto,
+        idempotency_id,
+        201,
+        &response,
+        true,
+        expires_at,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiError::internal("obo_chain_commit"))?;
+    Ok(proof_response(StatusCode::CREATED, response, false))
+}
+
 pub(super) async fn verify(
     State(state): State<ApiState>,
     client: ApplicationClient,
@@ -453,7 +747,7 @@ pub(super) async fn verify(
     .await
     .map_err(|_| ApiError::internal("obo_verify_context"))?;
     let row = sqlx::query_as::<_, ProofRow>(
-        "SELECT * FROM iam_private.lookup_application_obo_proof($1, $2, $3)",
+        "SELECT * FROM iam_private.lookup_application_obo_proof_v2($1, $2, $3)",
     )
     .bind(versions)
     .bind(digest_bytes)
@@ -493,7 +787,11 @@ pub(super) async fn verify(
         client.application_id,
     )
     .await?;
-    let current = load_current_context(&mut transaction, &row, client.application_id).await?;
+    let current = if row.chain_depth == 0 {
+        load_current_context(&mut transaction, &row, client.application_id).await?
+    } else {
+        load_chained_context(&mut transaction, row.id).await?
+    };
     if current.subject_auth_epoch != row.subject_auth_epoch
         || current.membership_authz_epoch != row.membership_authz_epoch
         || current.issuer_auth_epoch != row.issuer_auth_epoch
@@ -537,6 +835,15 @@ pub(super) async fn verify(
     .map_err(|_| ApiError::internal("obo_consume"))?
     .ok_or_else(|| ApiError::gone("obo_proof_expired"))?;
     let actor_type = actor_type(&row.subject_kind)?;
+    let chain = row
+        .chain
+        .0
+        .iter()
+        .map(|link| OboChainLink {
+            app_id: link.issuer_application_id.clone(),
+            proof_id: link.proof_id,
+        })
+        .collect::<Vec<_>>();
     let response = OboAccessResult {
         valid: true,
         proof_id: row.id,
@@ -556,7 +863,25 @@ pub(super) async fn verify(
         metadata: row.request_metadata.0,
         expires_at: row.expires_at,
         consumed_at,
+        chain,
     };
+    let mut consumed_event = json!({
+        "proof_id": row.id,
+        "issuer_application_id": row.issuer_application_id,
+        "audience_application_id": client.application_id,
+        "subject": response.actor,
+        "endpoint_id": response.endpoint.endpoint_id,
+        "endpoint_path": response.endpoint.path,
+        "metadata_bound": true,
+        "request": {
+            "method": request.method,
+            "path": response.endpoint.path,
+            "body_sha256": request.body_sha256_hex,
+        },
+    });
+    if !response.chain.is_empty() {
+        consumed_event["chain"] = json!(response.chain);
+    }
     record_protocol_event(
         &mut transaction,
         ActorRef {
@@ -569,20 +894,7 @@ pub(super) async fn verify(
         2,
         "obo.proof.consume",
         "obo.proof_consumed",
-        json!({
-            "proof_id": row.id,
-            "issuer_application_id": row.issuer_application_id,
-            "audience_application_id": client.application_id,
-            "subject": response.actor,
-            "endpoint_id": response.endpoint.endpoint_id,
-            "endpoint_path": response.endpoint.path,
-            "metadata_bound": true,
-            "request": {
-                "method": request.method,
-                "path": response.endpoint.path,
-                "body_sha256": request.body_sha256_hex,
-            },
-        }),
+        consumed_event,
     )
     .await?;
     transaction
@@ -742,6 +1054,68 @@ fn verify_exchange_signature(
         .map_err(|_| ApiError::invalid_client())
 }
 
+/// The chained canonical string appends the consumed proof's ID, so a
+/// signature for one parent cannot be replayed against another.
+fn verify_chained_exchange_signature(
+    client: &ApplicationClient,
+    signed: &SignedExchange,
+    request: &CanonicalRequest,
+    endpoint_path: &str,
+    subject_proof_id: Id,
+) -> Result<(), ApiError> {
+    let canonical = format!(
+        "{}.{}.{}.{}.{}.{}",
+        signed.timestamp,
+        request.method,
+        endpoint_path,
+        request.body_sha256_hex,
+        signed.idempotency_key,
+        subject_proof_id
+    );
+    let mut mac = <HmacSha256 as hmac::Mac>::new_from_slice(
+        client.authenticated_secret.expose_secret().as_bytes(),
+    )
+    .map_err(|_| ApiError::internal("obo_signature_hmac"))?;
+    mac.update(canonical.as_bytes());
+    mac.verify_slice(&signed.signature)
+        .map_err(|_| ApiError::invalid_client())
+}
+
+fn chained_authority_error(error: &sqlx::Error) -> ApiError {
+    let sqlx::Error::Database(database) = error else {
+        return ApiError::internal("obo_chain_authority");
+    };
+    if database.code().as_deref() != Some("P0001") {
+        return ApiError::internal("obo_chain_authority");
+    }
+    match database.message() {
+        "obo_subject_proof_not_found" => ApiError::not_found(),
+        "obo_chain_depth_exceeded" => ApiError::forbidden("obo_chain_depth_exceeded"),
+        "obo_chain_cycle" => ApiError::forbidden("obo_chain_cycle"),
+        "obo_chain_endpoint_not_declared" => ApiError::forbidden("obo_chain_endpoint_not_declared"),
+        "obo_chain_scope_not_approved" => ApiError::forbidden("obo_chain_scope_not_approved"),
+        "obo_chain_window_closed" => ApiError::gone("obo_chain_window_closed"),
+        "obo_chain_use_limit" => ApiError::conflict("obo_chain_use_limit"),
+        "obo_chain_budget_exhausted" => ApiError::conflict("obo_chain_budget_exhausted"),
+        "obo_proof_revoked" => ApiError::gone("obo_proof_revoked"),
+        _ => ApiError::internal("obo_chain_authority"),
+    }
+}
+
+fn chain_links(chain: &Value) -> Result<Vec<OboChainLink>, ApiError> {
+    serde_json::from_value::<Vec<ChainEntry>>(chain.clone())
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|entry| OboChainLink {
+                    app_id: entry.issuer_application_id,
+                    proof_id: entry.proof_id,
+                })
+                .collect()
+        })
+        .map_err(|_| ApiError::internal("obo_chain_shape"))
+}
+
 fn valid_request_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= 2_048
@@ -777,6 +1151,16 @@ fn validate_exchange(input: &OboExchangeRequest) -> Result<(), ApiError> {
         ));
     }
     Ok(())
+}
+
+fn validate_chained_exchange(input: &OboChainedExchangeRequest) -> Result<(), ApiError> {
+    validation::app_id(&input.audience)?;
+    validation::obo_endpoint_id(&input.endpoint_id)?;
+    validation::obo_metadata("metadata", &input.metadata)
+}
+
+fn chained_exchange_canonical(input: &OboChainedExchangeRequest) -> Result<Vec<u8>, ApiError> {
+    serde_json::to_vec(input).map_err(|_| ApiError::internal("obo_chain_canonical"))
 }
 
 fn exchange_canonical(input: &OboExchangeRequest) -> Result<Vec<u8>, ApiError> {
@@ -869,6 +1253,20 @@ async fn load_current_context(
     .fetch_optional(&mut **transaction)
     .await
     .map_err(|_| ApiError::internal("obo_current_context"))?
+    .ok_or_else(|| ApiError::gone("obo_proof_revoked"))
+}
+
+async fn load_chained_context(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    proof_id: Id,
+) -> Result<CurrentProofContext, ApiError> {
+    sqlx::query_as::<_, CurrentProofContext>(
+        "SELECT * FROM iam_private.application_obo_load_chained_context($1)",
+    )
+    .bind(proof_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|_| ApiError::internal("obo_chain_current_context"))?
     .ok_or_else(|| ApiError::gone("obo_proof_revoked"))
 }
 
@@ -971,8 +1369,9 @@ mod tests {
     use time::OffsetDateTime;
 
     use super::{
-        canonical_request, exchange_canonical, reject_organization_header, request_binding_matches,
-        secret_prefix, signed_exchange, validate_verify, verify_exchange_signature,
+        canonical_request, chain_links, exchange_canonical, reject_organization_header,
+        request_binding_matches, secret_prefix, signed_exchange, validate_verify,
+        verify_chained_exchange_signature, verify_exchange_signature,
     };
     use crate::features::applications::{
         model::{OboExchangeRequest, OboExchangeRequestBinding, OboVerifyRequest},
@@ -1199,6 +1598,81 @@ mod tests {
 
         assert!(verify_exchange_signature(&client, &signed, &request, "/v1/files").is_ok());
         assert!(verify_exchange_signature(&client, &signed, &request, "/v1/other").is_err());
+    }
+
+    #[test]
+    fn chained_signature_binds_the_consumed_proof() {
+        use hmac::Mac as _;
+
+        let consumed = Id::from_u128(0x124);
+        let mut mac = <super::HmacSha256 as hmac::Mac>::new_from_slice(b"ask_test_secret")
+            .unwrap_or_else(|_| panic!("hmac"));
+        mac.update(
+            format!("1700000000.POST./v1/files.{BODY_SHA256}.{IDEMPOTENCY_KEY}.{consumed}")
+                .as_bytes(),
+        );
+        let signature = hex::encode(mac.finalize().into_bytes());
+        let mut headers = signed_headers("1700000000", "0".repeat(64).leak());
+        headers.insert(
+            HeaderName::from_static("x-obo-signature"),
+            HeaderValue::from_str(&signature).unwrap_or_else(|_| panic!("header")),
+        );
+        let Ok(now) = OffsetDateTime::from_unix_timestamp(1_700_000_000) else {
+            panic!("test timestamp must be representable");
+        };
+        let Ok(signed) = signed_exchange(&headers, now) else {
+            panic!("chained signature headers must validate");
+        };
+        let Ok(request) = canonical_request("POST", BODY_SHA256) else {
+            panic!("canonical downstream request must validate");
+        };
+        let client = ApplicationClient {
+            identity: crate::features::applications::security::ApplicationIdentity {
+                application_id: Id::from_u128(1),
+                app_id: "waveform".to_owned(),
+                organization_id: Id::from_u128(2),
+                auth_epoch: 1,
+            },
+            authenticated_secret: SecretString::from("ask_test_secret"),
+        };
+
+        assert!(
+            verify_chained_exchange_signature(&client, &signed, &request, "/v1/files", consumed)
+                .is_ok()
+        );
+        // A signature for one consumed proof cannot name another, and a
+        // direct-exchange signature is never a chained one.
+        assert!(
+            verify_chained_exchange_signature(
+                &client,
+                &signed,
+                &request,
+                "/v1/files",
+                Id::from_u128(0x125)
+            )
+            .is_err()
+        );
+        assert!(verify_exchange_signature(&client, &signed, &request, "/v1/files").is_err());
+    }
+
+    #[test]
+    fn stored_chain_projects_to_issuer_links_root_first() {
+        let links = chain_links(&json!([
+            {"proof_id": Id::from_u128(1), "issuer_application_id": "dm", "issuer_auth_epoch": 1,
+             "audience_application_id": "waveform", "audience_auth_epoch": 1,
+             "endpoint_id": "waveform.tts", "endpoint_version": 1},
+            {"proof_id": Id::from_u128(2), "issuer_application_id": "waveform", "issuer_auth_epoch": 1,
+             "audience_application_id": "storage", "audience_auth_epoch": 1,
+             "endpoint_id": "files.create", "endpoint_version": 1},
+        ]))
+        .unwrap_or_else(|_| panic!("stored chain must project"));
+        assert_eq!(
+            serde_json::to_value(links).ok(),
+            Some(json!([
+                {"app_id": "dm", "proof_id": Id::from_u128(1)},
+                {"app_id": "waveform", "proof_id": Id::from_u128(2)},
+            ]))
+        );
     }
 
     fn signed_headers(timestamp: &'static str, signature: &'static str) -> HeaderMap {

@@ -275,13 +275,10 @@ async fn resolve_by_handle(
             })
         })
         .collect::<Result<Vec<_>, AppError>>()?;
-    if contacts.len() != 2
+    if !(1..=2).contains(&contacts.len())
         || !contacts
             .iter()
             .any(|contact| contact.channel == ContactChannel::Email)
-        || !contacts
-            .iter()
-            .any(|contact| contact.channel == ContactChannel::Phone)
     {
         return Err(AppError::Internal {
             category: "login_contacts_invariant",

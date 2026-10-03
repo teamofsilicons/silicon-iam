@@ -49,7 +49,7 @@ Externally initiated mutations require an `Idempotency-Key` of 16–255 characte
 
 **A key belongs to an intent, not to a request.** Mint it when the user submits, and reuse it for every transport retry of that submission. A fresh key per attempt lets the server execute the mutation twice — which is the exact thing idempotency exists to prevent.
 
-**OBO proof verification** accepts no idempotency key, never stores a successful response, and answers `409` on every attempt after the proof is consumed — it is single-use by design. And a response containing a **newly generated secret** on a route supporting idempotency stays replayable for only ten minutes, rather than the usual twenty-four hours.
+**OBO token verification** accepts no idempotency key and does not consume the reusable access token. It may be repeated, checking current authority each time. A response containing a **newly generated secret** on a route supporting idempotency stays replayable for only ten minutes, rather than the usual twenty-four hours.
 
 **Application identity keys** are stored only as hashes. Issuance at `POST /api/v1/app-verification/keys` returns a fresh key once, without idempotent replay. Retrying after an uncertain response may create another concurrently valid key; an unused key expires independently. Verification at `POST /api/v1/app-verification/verify` does not mutate or consume the key, so it can be repeated to check current validity.
 
@@ -127,7 +127,7 @@ IP and subnet buckets are deliberately disabled until a deployment defines trust
 
 | Header | Direction | Meaning |
 | --- | --- | --- |
-| `Idempotency-Key` | request | Required on external mutations except single-use OBO verification |
+| `Idempotency-Key` | request | Required on external mutations except OBO token verification |
 | `X-Testing-Environment-Key` | request | Selects an isolated testing environment; normal route credentials still apply |
 | `Silicon-IAM-Supported-API-Versions` | request | Implemented API majors for explicit negotiation |
 | `If-Match` | request | Strong version precondition, quoted |

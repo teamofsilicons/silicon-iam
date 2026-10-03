@@ -71,9 +71,10 @@ let sandbox = Client::new("https://backend.iam.teamofsilicons.com")?
   Email and SMS are not sent; pass <code>000000</code> to each verification call. Keep the returned
   control-plane tokens under the environment UUID, never in your production token slot. When
   testing the Application itself, pass an IAM-issued test SLT or an existing Carbon/Silicon
-  ID (such as <code>alice</code> or <code>worker:tos</code>) to <code>OAuth::login</code>
-  using the paired environment key and test Application secret. Actor-ID login selects
-  current active organizations and approved Application scopes. Production requires an issued SLT.
+  ID (such as <code>c:alice</code> or <code>si:worker</code>) to
+  <code>OAuth::login_testing_actor(app_id, actor_id, org_id, mutation)</code> using the
+  paired environment key and test Application secret. Supply one active organization;
+  omission is valid only for an account with exactly one active organization. Production requires an issued SLT.
 </p>
 
 <p>
@@ -106,7 +107,7 @@ let created_app = carbon.applications().create(
     &amp;Mutation::new(),
 ).await?;
 
-assert_eq!(created_app.application.app_id, "acme&gt;checkout");
+assert_eq!(created_app.application.app_id, "checkout");
 // Store created_app.app_secret now; the webhook secret was caller-supplied.</code></pre>
 
 <p>
@@ -143,7 +144,7 @@ store_test_secret(imported.app_secret);
 <h2>Discover a base URL</h2>
 
 <pre><code>let app = sandbox.with_credential(Credential::application(
-    "acme&gt;checkout",
+    "checkout",
     test_app_secret,
 ));
 

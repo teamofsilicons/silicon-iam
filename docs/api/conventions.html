@@ -85,9 +85,9 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
 </div>
 
 <p>
-  <strong>OBO proof verification</strong> accepts no idempotency key,
-  never stores a successful response, and answers <code>409</code> on every attempt after the
-  proof is consumed — it is single-use by design. And a response containing a
+  <strong>OBO token verification</strong> accepts no idempotency key and does not consume
+  the reusable access token. It may be repeated, checking current authority each time.
+  A response containing a
   <strong>newly generated secret</strong> on a route supporting idempotency stays replayable
   for only ten minutes, rather than the usual twenty-four hours.
 </p>
@@ -212,7 +212,7 @@ Silicon-IAM-Supported-API-Versions: v1</code></pre>
 <table>
   <thead><tr><th>Header</th><th>Direction</th><th>Meaning</th></tr></thead>
   <tbody>
-    <tr><td><code>Idempotency-Key</code></td><td>request</td><td>Required on external mutations except single-use OBO verification</td></tr>
+    <tr><td><code>Idempotency-Key</code></td><td>request</td><td>Required on external mutations except OBO token verification</td></tr>
     <tr><td><code>X-Testing-Environment-Key</code></td><td>request</td><td>Selects an isolated testing environment; normal route credentials still apply</td></tr>
     <tr><td><code>Silicon-IAM-Supported-API-Versions</code></td><td>request</td><td>Implemented API majors for explicit negotiation</td></tr>
     <tr><td><code>If-Match</code></td><td>request</td><td>Strong version precondition, quoted</td></tr>

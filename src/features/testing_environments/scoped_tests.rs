@@ -468,7 +468,7 @@ async fn exercise_test_login(
             &auth,
             "login",
             Some(root),
-            &json!({"slt":"c:test_carbon"}),
+            &json!({"slt":"c:test_carbon","org_id":"tos"}),
             None,
             "before-import-world-0001"
         )
@@ -480,7 +480,7 @@ async fn exercise_test_login(
         &auth,
         "login",
         Some(root),
-        &json!({"slt":"c:test_carbon"}),
+        &json!({"slt":"c:test_carbon","org_id":"tos"}),
         None,
         "imported-world-login-0001",
     )
@@ -499,7 +499,7 @@ async fn exercise_test_login(
             &auth,
             "login",
             Some(root),
-            &json!({"slt":"c:test_carbon"}),
+            &json!({"slt":"c:test_carbon","org_id":"tos"}),
             None,
             "imported-world-login-0001"
         )
@@ -511,7 +511,7 @@ async fn exercise_test_login(
             &auth,
             "login",
             Some(other_root),
-            &json!({"slt":"c:test_carbon"}),
+            &json!({"slt":"c:test_carbon","org_id":"tos"}),
             None,
             "other-world-login-0001"
         )
@@ -523,7 +523,7 @@ async fn exercise_test_login(
             &auth,
             "login",
             None,
-            &json!({"slt":"c:test_carbon"}),
+            &json!({"slt":"c:test_carbon","org_id":"tos"}),
             None,
             "production-actor-login-0001"
         )

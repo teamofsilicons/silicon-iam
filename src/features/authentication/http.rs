@@ -114,7 +114,29 @@ pub(super) async fn complete_signup(
         json_body(payload)?,
         state.settings.environment == crate::config::RuntimeEnvironment::Production,
     )?;
-    idempotent_no_store_json(signup::complete_signup(&state, &key, session_id, input).await?)
+    let outcome = signup::complete_signup(&state, &key, session_id, input).await?;
+    let cookie = browser_session::issue(
+        outcome.value.tokens.session_id,
+        outcome.value.tokens.refresh_expires_at,
+        &state.settings.security.cookie_key,
+    )
+    .map_err(|_| AppError::Internal {
+        category: "signup_browser_session_cookie_issue",
+    })?;
+    let mut response = idempotent_no_store_json(outcome)?;
+    response
+        .headers_mut()
+        .insert(http::header::SET_COOKIE, cookie);
+    Ok(response)
+}
+
+pub(super) async fn skip_signup_phone(
+    State(state): State<ApiState>,
+    Path(session_id): Path<Id>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let key = IdempotencyKey::from_headers(&headers)?;
+    idempotent_no_store_json(signup::skip_phone(&state, &key, session_id).await?)
 }
 
 pub(super) async fn carbon_id_availability(
@@ -246,7 +268,7 @@ pub(super) async fn logout(
         .map_or_default(|Json(input)| input)
         .mode;
     let step_up_token = if matches!(mode, LogoutMode::AllSessions)
-        && matches!(identity.trigger, LogoutTrigger::FirstPartyCarbon)
+        && matches!(identity.trigger, LogoutTrigger::FirstPartyIdentity)
     {
         optional_step_up_token(&headers)?
     } else {
@@ -452,7 +474,9 @@ fn idempotent_json<T: Serialize>(outcome: Outcome<T>) -> Result<Response, AppErr
     Ok(response)
 }
 
-fn idempotent_no_store_json<T: Serialize>(outcome: Outcome<T>) -> Result<Response, AppError> {
+pub(super) fn idempotent_no_store_json<T: Serialize>(
+    outcome: Outcome<T>,
+) -> Result<Response, AppError> {
     let status = idempotency_status(outcome.status)?;
     let mut response = no_store_json(status, outcome.value);
     mark_replayed(&mut response, outcome.replayed);

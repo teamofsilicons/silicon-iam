@@ -144,6 +144,12 @@ async fn deliver(
     context: &WorkerContext,
     job: &ClaimedNotification,
 ) -> Result<DeliveryReceipt, DeliveryError> {
+    if matches!(
+        job.notification_kind.as_str(),
+        "silicon_custody" | "silicon_signup_webhook"
+    ) {
+        return deliver_silicon_signup(context, job).await;
+    }
     if job.recipient_contact_id.is_none() {
         return deliver_email_invitation(context, job).await;
     }
@@ -496,6 +502,102 @@ async fn record_failure(
     .execute(&context.pool)
     .await?;
     Ok(())
+}
+
+async fn deliver_silicon_signup(
+    context: &WorkerContext,
+    job: &ClaimedNotification,
+) -> Result<DeliveryReceipt, DeliveryError> {
+    use crate::infrastructure::providers::webhook::{self, WebhookRequest};
+    let material = sqlx::query_scalar::<_, Option<serde_json::Value>>(
+        "SELECT iam_private.get_worker_silicon_signup($1,$2)",
+    )
+    .bind(job.id)
+    .bind(&context.instance_id)
+    .fetch_one(&context.pool)
+    .await
+    .map_err(|_| DeliveryError::Unavailable)?
+    .ok_or(DeliveryError::Rejected)?;
+    let bytes = |name: &str| {
+        material[name]
+            .as_str()
+            .and_then(|s| hex::decode(s).ok())
+            .ok_or(DeliveryError::Rejected)
+    };
+    let field = if job.notification_kind == "silicon_custody" {
+        ProtectedField::SiliconCustodianEmail
+    } else {
+        ProtectedField::SiliconSignupWebhook
+    };
+    let plaintext = context
+        .encryption
+        .decrypt(
+            EncryptionContext::global(field, job.context_id),
+            &EncryptedValue {
+                ciphertext: bytes("ciphertext")?,
+                nonce: bytes("nonce")?
+                    .try_into()
+                    .map_err(|_| DeliveryError::Rejected)?,
+                key_version: material["key_version"]
+                    .as_i64()
+                    .and_then(|v| i16::try_from(v).ok())
+                    .ok_or(DeliveryError::Rejected)?,
+            },
+        )
+        .map_err(|_| DeliveryError::Unavailable)?;
+    ensure_current_lease(context, job.id).await?;
+    let silicon = material["silicon_id"]
+        .as_str()
+        .ok_or(DeliveryError::Rejected)?;
+    if job.notification_kind == "silicon_custody" {
+        let destination = SecretString::from(
+            std::str::from_utf8(&plaintext)
+                .map_err(|_| DeliveryError::Rejected)?
+                .to_owned(),
+        );
+        let mut link = context.settings.auth_base_url.clone();
+        link.set_path("/silicon-custody");
+        link.set_query(Some(&format!("request={}", job.context_id)));
+        link.set_fragment(None);
+        return context.notifications.email.send_security_notice(SecurityNotice{recipient:&destination,
+        subject:&format!("{silicon} is requesting you as its custodian"),
+        body:&format!("{silicon} wants you to be its partner during account creation. Sign in with this email, or create an account, to review and approve its request.\n\nReview request: {link}\n\nThe request expires after 48 hours. If you did not expect it, you can reject it or ignore this message.")}).await;
+    }
+    let configuration: serde_json::Value =
+        serde_json::from_slice(&plaintext).map_err(|_| DeliveryError::Rejected)?;
+    let destination = Url::parse(
+        configuration["url"]
+            .as_str()
+            .ok_or(DeliveryError::Rejected)?,
+    )
+    .map_err(|_| DeliveryError::Rejected)?;
+    let secret = SecretString::from(
+        configuration["signing_secret"]
+            .as_str()
+            .ok_or(DeliveryError::Rejected)?
+            .to_owned(),
+    );
+    let body=serde_json::to_vec(&serde_json::json!({"event_id":job.id,"event_type":"silicon.signup.completed","request_id":job.context_id,"silicon_id":silicon,"status":material["status"]})).map_err(|_|DeliveryError::Rejected)?;
+    webhook::deliver(WebhookRequest {
+        environment: context.settings.environment,
+        destination: &destination,
+        signing_secret: &secret,
+        signing_key_version: 1,
+        event_id: job.id,
+        timestamp: time::OffsetDateTime::now_utc().unix_timestamp(),
+        body: &body,
+    })
+    .await
+    .map_err(|error| {
+        if error.retryable() {
+            DeliveryError::Unavailable
+        } else {
+            DeliveryError::Rejected
+        }
+    })?;
+    Ok(DeliveryReceipt {
+        provider_message_id: format!("silicon-signup-{}", job.id),
+    })
 }
 
 #[cfg(test)]

@@ -138,7 +138,7 @@ impl FromRequestParts<ApiState> for LogoutAuthenticated {
         Ok(Self {
             principal_id: row.carbon_id,
             authentication_session_id: row.session_id,
-            trigger: LogoutTrigger::FirstPartyCarbon,
+            trigger: LogoutTrigger::FirstPartyIdentity,
             credential_state: if row.authority_active {
                 LogoutCredentialState::Active
             } else {
@@ -228,7 +228,10 @@ fn logout_bearer_identity(
     access: LogoutBearerContext<'_>,
     credential_state: LogoutCredentialState,
 ) -> Result<LogoutAuthenticated, AppError> {
-    if access.subject.actor_type != ActorType::Carbon {
+    if !matches!(
+        access.subject.actor_type,
+        ActorType::Carbon | ActorType::Silicon
+    ) {
         return Err(AppError::Forbidden);
     }
 
@@ -239,7 +242,7 @@ fn logout_bearer_identity(
                 && access.membership_id.is_none()
                 && access.scopes.iter().any(|scope| scope == "iam.self") =>
         {
-            LogoutTrigger::FirstPartyCarbon
+            LogoutTrigger::FirstPartyIdentity
         }
         (Some(application_id), Some(audience_application_id))
             if application_id == audience_application_id =>
@@ -369,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn logout_accepts_only_direct_carbon_or_bound_application_bearers() {
+    fn logout_accepts_only_direct_accounts_or_bound_application_bearers() {
         let principal_id = Id::from_u128(1);
         let mut access = AccessContext {
             token_id: Id::from_u128(2),
@@ -392,7 +395,7 @@ mod tests {
                 LogoutCredentialState::Active,
             ),
             Ok(super::LogoutAuthenticated {
-                trigger: LogoutTrigger::FirstPartyCarbon,
+                trigger: LogoutTrigger::FirstPartyIdentity,
                 credential_state: LogoutCredentialState::Active,
                 ..
             })
@@ -403,11 +406,36 @@ mod tests {
                 LogoutCredentialState::ReplayOnly,
             ),
             Ok(super::LogoutAuthenticated {
-                trigger: LogoutTrigger::FirstPartyCarbon,
+                trigger: LogoutTrigger::FirstPartyIdentity,
                 credential_state: LogoutCredentialState::ReplayOnly,
                 ..
             })
         ));
+        access.subject.actor_type = ActorType::Silicon;
+        assert!(
+            logout_bearer_identity(
+                LogoutBearerContext::from(&access),
+                LogoutCredentialState::Active
+            )
+            .is_ok()
+        );
+        access.subject.actor_type = ActorType::Application;
+        assert!(
+            logout_bearer_identity(
+                LogoutBearerContext::from(&access),
+                LogoutCredentialState::Active
+            )
+            .is_err()
+        );
+        access.subject.actor_type = ActorType::Service;
+        assert!(
+            logout_bearer_identity(
+                LogoutBearerContext::from(&access),
+                LogoutCredentialState::Active
+            )
+            .is_err()
+        );
+        access.subject.actor_type = ActorType::Silicon;
         access.client_application_id = Some(Id::from_u128(4));
         access.audience_application_id = Some(Id::from_u128(4));
         access.audience = "configured-app".to_owned();

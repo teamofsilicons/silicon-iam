@@ -219,6 +219,7 @@ fn application_route(method: &str, path: &str) -> bool {
                 | "/api/v1/app-verification/keys"
                 | "/api/v1/app-verification/verify"
                 | "/api/v1/obo-access/exchanges"
+                | "/api/v1/obo-access/chained-exchanges"
                 | "/api/v1/obo-access/verify"
         ),
         "GET" => {

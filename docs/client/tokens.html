@@ -186,9 +186,9 @@ actor.auth().logout(
 </ol>
 
 <p>
-  The crate sends each call once and does not persist mutations for you. OBO proof verification is
-  intentionally different: it consumes a single-use proof and accepts no idempotency key, so an
-  ambiguous verification must not be retried.
+  The crate sends each call once and does not persist mutations for you. OBO token verification
+  accepts no idempotency key and does not consume the token. A receiver must obtain a
+  successful current verification before executing and handle operation-level deduplication itself.
 </p>
 
 <h2>Application identity keys</h2>

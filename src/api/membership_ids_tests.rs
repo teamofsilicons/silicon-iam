@@ -38,6 +38,12 @@ async fn migrates_existing_memberships_and_serves_complete_directory() -> anyhow
         .execute(&pool).await?;
     migrations.run(&pool).await?;
     migrations.run(&pool).await?;
+    // The identifier upgrade also applies the one-organization login cutover.
+    // Historical unscoped app authority stays revoked; use the existing bound
+    // fixture below for current application-directory transport checks.
+    ensure!(sqlx::query_scalar::<_, bool>(
+        "SELECT revoked_at IS NOT NULL FROM iam.access_tokens WHERE id='00000000-0000-0000-0000-000000000101'"
+    ).fetch_one(&pool).await?, "unscoped application authority survived cutover");
     let rows: Vec<(Id, String)> = sqlx::query_as("SELECT membership_key,membership_id FROM iam_private.membership_identifiers ORDER BY membership_id")
         .fetch_all(&pool).await?;
     ensure!(rows.len() == 3);
@@ -262,6 +268,9 @@ async fn check_http(pool: PgPool) -> anyhow::Result<()> {
         .await?;
     ensure!(response.status().is_client_error());
     let mut application = actor;
+    application.0.token_id = Id::from_u128(0x102);
+    application.0.organization_id = Some(Id::from_u128(0x21));
+    application.0.membership_id = Some(Id::from_u128(0x31));
     application.0.client_application_id = Some(Id::fixture("app-alpha"));
     application.0.audience_application_id = Some(Id::fixture("app-alpha"));
     application.0.audience = "app-alpha".into();

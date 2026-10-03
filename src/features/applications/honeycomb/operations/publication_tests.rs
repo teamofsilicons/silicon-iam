@@ -230,20 +230,6 @@ pub(crate) async fn exercise(
         "activation accepted changed config"
     );
     activation["configuration"] = desired.clone();
-    sqlx::query("UPDATE iam.platform_role_grants SET revoked_at=clock_timestamp(),revoked_by_carbon_id=$2 WHERE id=$1").bind(validator_grant).bind(reviewer).execute(admin).await?;
-    ensure!(
-        app.clone()
-            .oneshot(request(
-                &format!("{prefix}/publication-activations"),
-                "POST",
-                &activation
-            )?)
-            .await?
-            .status()
-            == StatusCode::FORBIDDEN,
-        "activation accepted revoked reviewer"
-    );
-    sqlx::query("INSERT INTO iam.platform_role_grants(id,carbon_id,role,grant_source) VALUES($1,$2,'honeycomb_validator','bootstrap')").bind(Id::now_v7()).bind(reviewer).execute(admin).await?;
     // A later denial prevents choosing an older approved decision.
     decision["operation_id"] = json!(Id::now_v7());
     decision["decision"] = json!("deny");
@@ -283,6 +269,27 @@ pub(crate) async fn exercise(
     )
     .await?;
     activation["decision_ids"] = json!([validator["decision_id"], iam["decision_id"]]);
+    // Existing approvals survive reviewer role changes; only new decisions require
+    // current eligibility (the deployed persistent-approval contract).
+    sqlx::query("UPDATE iam.platform_role_grants SET revoked_at=clock_timestamp(),revoked_by_carbon_id=$2 WHERE id=$1").bind(validator_grant).bind(reviewer).execute(admin).await?;
+    let mut ineligible = decision.clone();
+    // The revoked role is the Honeycomb validator role; the independent IAM
+    // reviewer grant remains active. Exercise the gate whose authority was lost.
+    ineligible["provider"] = json!("honeycomb");
+    ineligible["scopes"] = json!([]);
+    ineligible["operation_id"] = json!(Id::now_v7());
+    ensure!(
+        app.clone()
+            .oneshot(request(
+                &format!("{prefix}/publication-decisions"),
+                "POST",
+                &ineligible
+            )?)
+            .await?
+            .status()
+            == StatusCode::FORBIDDEN,
+        "former reviewer recorded a new decision"
+    );
     let (status, accepted) = read_response(
         app.clone()
             .oneshot(request(
@@ -314,6 +321,7 @@ pub(crate) async fn exercise(
     )
     .await?;
     ensure!(accepted == replay, "activation replay changed result");
+    sqlx::query("INSERT INTO iam.platform_role_grants(id,carbon_id,role,grant_source) VALUES($1,$2,'honeycomb_validator','bootstrap')").bind(Id::now_v7()).bind(reviewer).execute(admin).await?;
     let (_, pending_result) = read_response(
         app.clone()
             .oneshot(request(

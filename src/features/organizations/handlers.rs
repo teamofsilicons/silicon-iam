@@ -93,7 +93,8 @@ pub(super) async fn list_organizations(
         }
         authenticated.0.subject.id
     } else {
-        support::require_carbon(&authenticated)?
+        support::require_application_scope(&authenticated, "self.organizations.read")?;
+        authenticated.0.subject.id
     };
     if query
         .status
@@ -127,7 +128,7 @@ pub(super) async fn list_organizations(
                 organization.name,
                 organization.logo_uri AS logo,
                 organization.description,
-                owner.id AS owner_membership_id,
+                iam_private.organization_owner_reference(organization.id) AS owner_membership_id,
                 organization.join_method,
                 COALESCE(sso.status, 'disabled') AS sso_status,
                 CASE WHEN organization.status = 'active' THEN 'active' ELSE 'disabled' END AS status,
@@ -135,10 +136,6 @@ pub(super) async fn list_organizations(
                 organization.created_at,
                 organization.updated_at
             FROM iam.organizations AS organization
-            JOIN iam.organization_memberships AS owner
-              ON owner.organization_id = organization.id
-             AND owner.org_role = 'owner'
-             AND owner.status = 'active'
             LEFT JOIN iam.organization_sso_configs AS sso
               ON sso.organization_id = organization.id
             JOIN iam.organization_memberships AS caller_membership
@@ -146,6 +143,7 @@ pub(super) async fn list_organizations(
              AND caller_membership.principal_id = $1
             WHERE caller_membership.status = 'active'
               AND (NOT $4 OR iam_private.application_token_allows_membership($5, caller_membership.id))
+              AND ($6::uuid IS NULL OR organization.id = $6)
               AND ($2::uuid IS NULL OR organization.id > $2)
             ORDER BY organization.id
             LIMIT $3
@@ -156,6 +154,7 @@ pub(super) async fn list_organizations(
         .bind(limit + 1)
         .bind(application_token)
         .bind(authenticated.0.token_id)
+        .bind(authenticated.0.organization_id)
         .fetch_all(&mut *transaction)
         .await
         .map_err(support::database)?
@@ -177,7 +176,8 @@ pub(super) async fn create_organization(
     headers: HeaderMap,
     Json(mut input): Json<OrganizationCreate>,
 ) -> Result<Response, AppError> {
-    let carbon_id = support::require_scoped_carbon(&authenticated, "organizations.create")?;
+    support::require_application_scope(&authenticated, "organizations.create")?;
+    let carbon_id = authenticated.0.subject.id;
     validation::organization_create(&mut input, state.settings.environment)?;
 
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(carbon_id))
@@ -201,51 +201,29 @@ pub(super) async fn create_organization(
 
     let organization_id = Id::now_v7();
     let owner_membership_id = Id::now_v7();
-    sqlx::query(
-        r"
-        INSERT INTO iam.organizations (
-            id, org_id, created_by_carbon_id, name, logo_uri, description
-        ) VALUES ($1, $2, $3, $4, $5, $6)
-        ",
-    )
-    .bind(organization_id)
-    .bind(&input.org_id)
-    .bind(carbon_id)
-    .bind(&input.name)
-    .bind(&input.logo)
-    .bind(&input.description)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| support::conflict_from_database(error, "organization_id_unavailable"))?;
+    sqlx::query("SELECT iam_private.create_identity_organization($1,$2,$3,$4,$5,$6)")
+        .bind(organization_id)
+        .bind(owner_membership_id)
+        .bind(&input.org_id)
+        .bind(&input.name)
+        .bind(&input.logo)
+        .bind(&input.description)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| {
+            if error
+                .as_database_error()
+                .and_then(sqlx::error::DatabaseError::code)
+                .is_some_and(|code| code == "42501")
+            {
+                AppError::Forbidden
+            } else {
+                support::conflict_from_database(error, "organization_id_unavailable")
+            }
+        })?;
     context::select_organization(&mut transaction, organization_id)
         .await
         .map_err(support::database)?;
-    sqlx::query(
-        r"
-        INSERT INTO iam.organization_memberships (
-            id, organization_id, principal_id, principal_kind, org_role
-        ) VALUES ($1, $2, $3, 'carbon', 'owner')
-        ",
-    )
-    .bind(owner_membership_id)
-    .bind(organization_id)
-    .bind(carbon_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(support::database)?;
-    sqlx::query(
-        r"
-        INSERT INTO iam.carbon_membership_settings (
-            organization_id, membership_id, carbon_id
-        ) VALUES ($1, $2, $3)
-        ",
-    )
-    .bind(organization_id)
-    .bind(owner_membership_id)
-    .bind(carbon_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(support::database)?;
 
     let organization = fetch_organization(&mut transaction, organization_id).await?;
     support::record_mutation(
@@ -482,7 +460,7 @@ pub(super) async fn transfer_ownership(
             SELECT 1
             FROM iam.organization_memberships
             WHERE organization_id = $1 AND id = $2
-              AND principal_kind = 'carbon' AND status = 'active'
+              AND principal_kind IN ('carbon','silicon') AND status = 'active'
               AND org_role IN ('member', 'admin')
         )
         ",
@@ -603,7 +581,7 @@ pub(super) async fn transfer_ownership(
         UPDATE iam.organization_memberships
         SET org_role = 'owner', role_granted_by_membership_id = NULL,
             authz_epoch = authz_epoch + 1
-        WHERE organization_id = $1 AND id = $2 AND principal_kind = 'carbon'
+        WHERE organization_id = $1 AND id = $2 AND principal_kind IN ('carbon','silicon')
           AND status = 'active'
         ",
     )
@@ -1196,7 +1174,7 @@ async fn lock_tag_webhook_scope(
     })
 }
 
-async fn fetch_organization(
+pub(super) async fn fetch_organization(
     transaction: &mut Transaction<'_, Postgres>,
     organization_id: Id,
 ) -> Result<OrganizationResponse, AppError> {
@@ -1208,7 +1186,7 @@ async fn fetch_organization(
             organization.name,
             organization.logo_uri AS logo,
             organization.description,
-            owner.id AS owner_membership_id,
+            iam_private.organization_owner_reference(organization.id) AS owner_membership_id,
             organization.join_method,
             COALESCE(sso.status, 'disabled') AS sso_status,
             CASE WHEN organization.status = 'active' THEN 'active' ELSE 'disabled' END AS status,
@@ -1216,10 +1194,6 @@ async fn fetch_organization(
             organization.created_at,
             organization.updated_at
         FROM iam.organizations AS organization
-        JOIN iam.organization_memberships AS owner
-          ON owner.organization_id = organization.id
-         AND owner.org_role = 'owner'
-         AND owner.status = 'active'
         LEFT JOIN iam.organization_sso_configs AS sso
           ON sso.organization_id = organization.id
         WHERE organization.id = $1
@@ -1233,7 +1207,7 @@ async fn fetch_organization(
     .ok_or(AppError::NotFound)
 }
 
-async fn enforce_actor_rate_limit(
+pub(super) async fn enforce_actor_rate_limit(
     state: &ApiState,
     authenticated: &Authenticated,
     name: &'static str,
@@ -1303,7 +1277,7 @@ impl PageItem for SiliconResponse {
     }
 }
 
-fn redacted_value<T: Serialize>(value: &T) -> Result<Option<Value>, AppError> {
+pub(super) fn redacted_value<T: Serialize>(value: &T) -> Result<Option<Value>, AppError> {
     serde_json::to_value(value)
         .map(Some)
         .map_err(|_| AppError::Internal {
@@ -1311,7 +1285,7 @@ fn redacted_value<T: Serialize>(value: &T) -> Result<Option<Value>, AppError> {
         })
 }
 
-fn precondition_failed() -> AppError {
+pub(super) fn precondition_failed() -> AppError {
     AppError::PreconditionFailed {
         code: Cow::Borrowed("etag_mismatch"),
     }

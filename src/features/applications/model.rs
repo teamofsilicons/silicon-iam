@@ -116,16 +116,44 @@ pub(super) struct ApplicationDirectoryEntry {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, sqlx::FromRow)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ApplicationOboEndpoint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub(super) obo_id: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(super) name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(super) description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) note_to_user: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[sqlx(json)]
+    pub(super) additional_warnings: Vec<String>,
     pub(super) endpoint_id: String,
     pub(super) path: String,
     pub(super) metadata: serde_json::Value,
     pub(super) critical: bool,
     #[serde(default = "default_obo_ttl_seconds")]
     pub(super) ttl_seconds: i32,
+    /// Calls the recipient may delegate under a separately approved OBO grant.
+    /// Omitted when empty so existing configurations retain their wire shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[sqlx(json)]
+    pub(super) downstream: Vec<ApplicationOboDownstream>,
+    /// Legacy proof-consumption window retained for configuration compatibility.
+    /// Reusable OBO tokens use the endpoint TTL and parent authority instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) downstream_ttl_seconds: Option<i32>,
 }
 
 const fn default_obo_ttl_seconds() -> i32 {
     300
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ApplicationOboDownstream {
+    pub(super) audience: String,
+    pub(super) endpoint_id: String,
 }
 
 #[derive(Clone, Deserialize)]
@@ -416,6 +444,9 @@ pub(super) struct LoginStatusQuery {
 /// way in both cases, so there is no grant type left to name.
 #[derive(Clone, Debug, Deserialize)]
 pub(super) struct AppTokenForm {
+    /// Optional explicit organization for the testing actor shortcut.
+    #[serde(default)]
+    pub(super) org_id: Option<String>,
     pub(super) app_id: Option<String>,
     #[serde(default)]
     pub(super) slt: Option<String>,
@@ -519,6 +550,18 @@ pub(super) struct OboExchangeRequestBinding {
     pub(super) body_sha256: String,
 }
 
+/// Exchange a proof this application consumed for a proof to one call that
+/// the consumed endpoint declared downstream, for the same subject.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OboChainedExchangeRequest {
+    pub(super) subject_proof_id: Id,
+    pub(super) audience: String,
+    pub(super) endpoint_id: String,
+    pub(super) metadata: serde_json::Value,
+    pub(super) request: OboExchangeRequestBinding,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct OboProofResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -566,6 +609,16 @@ pub(super) struct OboAccessResult {
     pub(super) expires_at: OffsetDateTime,
     #[serde(with = "crate::wire_time")]
     pub(super) consumed_at: OffsetDateTime,
+    /// Ancestor proofs of a chained proof, root first. Absent for a proof
+    /// exchanged directly from the subject's token.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) chain: Vec<OboChainLink>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct OboChainLink {
+    pub(super) app_id: String,
+    pub(super) proof_id: Id,
 }
 
 #[cfg(test)]
@@ -910,4 +963,18 @@ pub(super) struct ScopeDefinition {
     pub(super) description: String,
     pub(super) critical: bool,
     pub(super) app_id: Option<String>,
+    /// On consent: every call the OBO endpoint's declared chain could make
+    /// for the subject once the audience consumes a proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub(super) downstream: Option<Vec<ScopeDownstreamDefinition>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct ScopeDownstreamDefinition {
+    pub(super) via_app_id: String,
+    pub(super) app_id: String,
+    pub(super) app_name: Option<String>,
+    pub(super) endpoint_id: String,
+    pub(super) description: String,
 }

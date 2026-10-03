@@ -2,15 +2,15 @@
 
 **Honeycomb management:** Production application editing, reviews, bundles and shared test lifecycle operations are managed by Honeycomb. See the [service integration contract](../HONEYCOMB_INTEGRATION.md). The legacy management examples below apply only before that integration is provisioned; runtime authentication and isolated test APIs remain available.
 
-An application is an organization-owned confidential client. Its declared permissions determine which IAM information and external application endpoints it can use. Users approve that access in IAM and choose the organizations to share.
+An application is an organization-owned confidential client. Its declared permissions determine which IAM information and external application endpoints it can use. Users select one account and organization; IAM requests critical IAM consent during login and separate OBO consent when needed.
 
 ## Registration
 
-A current Carbon owner or administrator registers an application with `POST /api/v1/applications`. IAM qualifies its local handle: `billing` in `acme` becomes `acme>billing`. Use the qualified ID in credentials, login, discovery, and OBO. A local handle starts with a lowercase letter and contains 1–80 lowercase letters, digits, underscores, or hyphens.
+A current Carbon or Silicon owner or administrator registers an application with `POST /api/v1/applications`. The public ID is the globally unique bare handle, such as `billing`; owning organization `acme` is separate. Use the bare ID in credentials, login, discovery, and OBO. A local handle starts with a lowercase letter and contains 1–80 lowercase letters, digits, underscores, or hyphens.
 
 ```
 POST /api/v1/applications
-Authorization: Bearer <direct IAM Carbon access token>
+Authorization: Bearer <direct IAM Carbon or Silicon access token>
 Idempotency-Key: <one logical creation>
 Content-Type: application/json
 
@@ -37,7 +37,7 @@ Content-Type: application/json
 
 `app_scope` has two parts. `iam` lists IAM permission names. `external` lists `{app_id, endpoint_id}` pairs from other applications, including applications owned by other organizations. `webhook_scope` independently subscribes to event categories: `full`, `membership`, `updates`, or `trust`. A webhook subscription never grants access to data.
 
-Identity and profile permissions are selected by default. Request only the additional information the application uses. `GET /api/v1/application-scopes` lists IAM permissions as `items` containing `scope`, `description`, `critical`, and provider `app_id` (null for IAM). Supply `?app_id=org%3Eapp` to list one external application's published OBO endpoints. A valid, available application with no published endpoints returns an empty list; an unavailable application returns 404, and a malformed ID returns 422.
+Identity and profile permissions are selected by default. Request only the additional information the application uses. `GET /api/v1/application-scopes` lists IAM permissions as `items` containing `scope`, `description`, `critical`, and provider `app_id` (null for IAM). Supply `?app_id=app` to list one external application's published OBO endpoints. A valid, available application with no published endpoints returns an empty list; an unavailable application returns 404, and a malformed ID returns 422.
 
 The console lists IAM permissions as checkboxes. Enter an external application's full ID to load and select its scopes; an invalid or unavailable ID displays `app_id invalid`. Every critical permission identifies its approver: “This would require approval from IAM” or the receiving application's ID. Webhook subscriptions are selected separately with checkboxes.
 
@@ -49,7 +49,7 @@ The console lists IAM permissions as checkboxes. Enter an external application's
 | `organization.*.read` | Complete organization tag, trust, invitation, and governance data; critical review is required. |
 | `obo:{app_id}:{endpoint_id}` | A published external endpoint; its provider determines whether it is critical. |
 
-Application detail distinguishes desired `app_scope` from currently active `effective_app_scope`. Adding a noncritical permission or removing a permission can take effect directly. Critical additions require review. An initial application requiring critical scopes remains `under_review` and cannot be used until approval. An existing verified application continues using its previously approved scopes while an expansion is reviewed. User consent is still required before newly available permissions enter a login grant.
+Application detail distinguishes desired `app_scope` from currently active `effective_app_scope`. Adding a noncritical permission or removing a permission can take effect directly. Critical additions require review. An initial application requiring critical scopes remains `under_review` and cannot be used until approval. An existing verified application continues using its previously approved scopes while an expansion is reviewed. A login always records the current IAM scope set; critical IAM additions require explicit user consent. External endpoints always require separate OBO consent.
 
 ## Critical-scope review and discussion
 
@@ -63,35 +63,35 @@ IAM acknowledges submissions to the requester and notifies the appropriate revie
 
 ## Signing a user in
 
-1. Send the browser to `https://auth.iam.teamofsilicons.com/login?app_id=acme%3Ebilling&redirect_uri=https%3A%2F%2Fbilling.example%2Fcallback`. Include a browser-bound login state in the callback query. Do not supply organization IDs.
+1. Send the browser to `https://auth.iam.teamofsilicons.com/login?app_id=billing&redirect_uri=https%3A%2F%2Fbilling.example%2Fcallback`. Include a browser-bound login state in the callback query. Do not supply organization IDs.
 
-2. IAM authenticates the user, identifies the application, displays its current permissions with critical labels, and obtains consent before organization selection. The user must select at least one active organization. The backend's `consent_required` controls whether the permission step is shown.
+2. IAM authenticates the user, identifies the application, displays its current permissions with critical labels, and obtains consent before organization selection. The user must select exactly one account and active organization. The consent screen is required only for critical IAM permissions. The backend's `consent_required` controls whether the permission step is shown.
 
 3. IAM returns `?slt=…` to the callback, or displays the token when no callback was provided. The application server exchanges it at `POST /api/v1/app-auth/tokens` using HTTP Basic with its own app ID and secret and a form-encoded body containing `app_id` and `slt`.
 
-**Applications never receive IAM login credentials, IAM session tokens, passwords, or verification codes.** The login handoff contains only a short-lived token bound to that application, user, and parent IAM session. It expires after two minutes and permits one exchange. The exchange returns an application access token lasting 30 minutes and a rotating refresh token whose family has an absolute 900-day lifetime. Keep the app secret and returned credentials on the application server.
+**Applications never receive IAM login credentials, IAM session tokens, passwords, or verification codes.** The login handoff contains only a short-lived token bound to that application, user, selected membership, and parent IAM session. It expires after two minutes and permits one exchange. The exchange returns an application access token lasting 30 minutes and a rotating refresh token whose family has an absolute 900-day lifetime. Keep the app secret and returned credentials on the application server.
 
-Only the selected memberships are authorized. The application's owning-organization prefix does not restrict which organizations the user may select. Prior organization grants on the same parent IAM session are preserved; future memberships are never shared automatically. Remove the SLT from the callback URL after establishing the application session, and do not log callback credentials.
+Only the selected membership is authorized. Application ownership does not restrict the public app's selectable user organizations. A later login creates a separately bound token family and never expands earlier tokens; future memberships are never shared automatically. Remove the SLT from the callback URL after establishing the application session, and do not log callback credentials.
 
 ### Example: external application login
 
 ```
-Application: tos>briefcase
+Application: briefcase
 Callback: https://briefcase.example/auth/callback?state=<browser-login-state>
 
 POST /api/v1/app-auth/tokens
-Authorization: Basic <base64(tos>briefcase:app_secret)>
+Authorization: Basic <base64(briefcase:app_secret)>
 Idempotency-Key: <one logical exchange>
 Content-Type: application/x-www-form-urlencoded
 
-app_id=tos%3Ebriefcase&slt=<URL-encoded-SLT>
+app_id=briefcase&slt=<URL-encoded-SLT>
 ```
 
 A callback may contain a path and query but must be absolute HTTPS (literal loopback HTTP is allowed), with no credentials or fragment. There is no redirect-URI registration list. The application binds and validates its callback state. `base_url` is not the callback.
 
 ### Direct Carbon and Silicon consent
 
-A direct IAM Carbon or Silicon bearer can call `GET /api/v1/app-auth/organizations?app_id=acme%3Ebilling`. It returns the application identity, organization choices, current `scopes`, `scope_version`, and `consent_required`. Collect consent to that exact scope list, then submit:
+A direct IAM Carbon or Silicon bearer can call `GET /api/v1/app-auth/organizations?app_id=billing`. It returns the application identity, organization choices, current `scopes`, `scope_version`, and `consent_required`. Collect consent to that exact scope list, then submit:
 
 ```
 POST /api/v1/app-auth/short-lived-tokens
@@ -100,14 +100,14 @@ Idempotency-Key: <one logical consent>
 Content-Type: application/json
 
 {
-  "app_id": "acme>billing",
+  "app_id": "billing",
   "org_ids": ["acme"],
   "approved_scopes": ["self.identity.read", "self.profile.read"],
   "scope_version": 1
 }
 ```
 
-Use the version and complete active scope names returned by the choices call, not the example's literal version. External names use `obo:{app_id}:{endpoint_id}`. A changed version or mismatched scope set is rejected; reload and obtain fresh consent. Application Basic credentials and application-issued bearers cannot call the consent endpoints to increase their own access.
+Use the version and complete active scope names returned by the choices call, not the example's literal version. Login consent includes IAM permissions only; external endpoints require separate on-demand OBO consent. A changed version or mismatched scope set is rejected; reload and obtain fresh consent. Application Basic credentials and application-issued bearers cannot call the consent endpoints to increase their own access.
 
 ### Batch login and bundles
 
@@ -115,11 +115,11 @@ Use the version and complete active scope names returned by the choices call, no
 
 A bundle gives same-organization applications one public login identity. Manage it through `/api/v1/application-bundles` and `/api/v1/application-bundles/{bundle_id}`. Create with `{org_id, app_id, app_name, app_logo, app_ids}`; `app_id` is the local bundle handle. Update metadata or members with `PATCH` and its current version, or retire with `DELETE`. Bundles have no secret and cannot contain other bundles.
 
-Start `/login?bundle_id=acme%3Esuite`. Users see the bundle identity, approve the combined permissions, and choose organizations once. The API routes `GET /api/v1/app-auth/bundles/{bundle_id}/organizations` and `POST …/{bundle_id}/short-lived-tokens` provide that flow to direct IAM clients. Every member must remain active and verified; the submitted members must exactly match the current bundle. The callback carries individual application SLTs, and each app exchanges only its own token. See [Application bundles](https://docs.iam.teamofsilicons.com/bundles/).
+Start `/login?bundle_id=acme%3Esuite`. Users see the bundle identity, approve the combined permissions, and choose one account and organization once. The API routes `GET /api/v1/app-auth/bundles/{bundle_id}/organizations` and `POST …/{bundle_id}/short-lived-tokens` provide that flow to direct IAM clients. Every member must remain active and verified; the submitted members must exactly match the current bundle. The callback carries individual application SLTs, and each app exchanges only its own token. See [Application bundles](https://docs.iam.teamofsilicons.com/bundles/).
 
 ## Introspection and application reads
 
-Application tokens are opaque. Use Basic-authenticated `POST /api/v1/oauth/introspect` with form fields `token` and optional `token_type_hint` to check current validity. An active access token returns `authorization` for one selected organization, or `authorizations` when several apply. These snapshots include the principal, membership ID/version, authorization epoch, audience, and testing plane. Fetch one after first login or cache loss.
+Application tokens are opaque. Use Basic-authenticated `POST /api/v1/oauth/introspect` with form fields `token` and optional `token_type_hint` to check current validity. New application access tokens bind one selected organization; introspection returns its current `authorization`. Compatibility list forms never add an organization to that token. These snapshots include the principal, membership ID/version, authorization epoch, audience, and testing plane. Fetch one after first login or cache loss.
 
 Role, tags, capabilities, and profile fields require their corresponding currently approved and consented permissions. Basic profile means display name, photo, description, and timezone. Organization profile access is limited to identifiers, name, logo, description, and resource version; it excludes SSO/security configuration. Own trust access reveals effective trust from the user’s perspective, while raw organization trust configuration needs its separate critical scope. Null means undisclosed. An application bearer can use the documented self and organization read endpoints within those same grants; list and search operations require the matching critical directory permissions. Missing permissions never default to full access. First-party management operations remain reserved for direct IAM sessions.
 
@@ -133,7 +133,7 @@ The calling application authenticates to IAM using its own HTTP Basic app ID and
 
 ```
 POST /api/v1/app-verification/keys
-Authorization: Basic <base64(acme>billing:billing_app_secret)>
+Authorization: Basic <base64(billing:billing_app_secret)>
 Content-Type: application/json
 
 {"ttl_seconds":300}
@@ -143,7 +143,7 @@ Content-Type: application/json
 {
   "app_access_key": "aak_<43 base64url characters>",
   "valid_till": "2026-09-22T12:05:00Z",
-  "app_id": "acme>billing"
+  "app_id": "billing"
 }
 ```
 
@@ -153,11 +153,11 @@ The caller presents its `app_id` and `app_access_key` to the receiving applicati
 
 ```
 POST /api/v1/app-verification/verify
-Authorization: Basic <base64(acme>reports:reports_app_secret)>
+Authorization: Basic <base64(reports:reports_app_secret)>
 Content-Type: application/json
 
 {
-  "app_id": "acme>billing",
+  "app_id": "billing",
   "app_access_key": "<key received from billing>"
 }
 ```
@@ -168,7 +168,7 @@ For a valid key IAM returns the app ID and expiry from the stored record:
 {
   "valid_key": true,
   "valid_till": "2026-09-22T12:05:00Z",
-  "app_id": "acme>billing"
+  "app_id": "billing"
 }
 ```
 
@@ -176,18 +176,26 @@ An unknown, expired, revoked or mismatched key returns `{"valid_key":false}`, wi
 
 Accepted app-secret rotation revokes keys issued under the previous secret, and disabling an application revokes its outstanding keys. Verification requires an active caller and matching environment context. For testing, both applications use their test credentials and the same `X-Testing-Environment-Key`. A test key must match the current cleaning generation and never verifies in production, another environment, or a later generation.
 
-**A valid key proves application identity only.** It grants no user permissions, organization membership, endpoint access, or OBO authority. The receiver must authorize the requested action using its own policy. This key is reusable during its lifetime and is not bound to one receiver or request; use OBO when an action needs delegated user authority and exact request binding.
+**A valid key proves application identity only.** It grants no user permissions, organization membership, endpoint access, or OBO authority. The receiver must authorize the requested action using its own policy. This key is reusable during its lifetime and is not bound to one receiver or request; use OBO when an action needs delegated user authority for an explicitly approved endpoint.
 
 ## Credentials and revocation
 
 `POST /api/v1/oauth/revoke` uses Basic authentication, a form-encoded `token`, and an idempotency key. Revoking an access token invalidates that token. Revoking a refresh token revokes its application family. Unknown tokens return success. This operation does not revoke the parent IAM session.
 
-Client-secret rotation uses `POST /api/v1/applications/{app_id}/client-secret-rotations`, the current application version, and a verified-channel step-up for `application.client_secret.rotate`. The previous secret stops working immediately, and its application identity keys are revoked; coordinate replacement across application instances. Webhook-secret rotation uses `…/webhook-secret-rotations`, a caller-supplied successor `webhook_secret`, and `application.webhook_secret.rotate` step-up. Retain previous webhook key versions while in-flight deliveries drain.
+Client-secret rotation uses `POST /api/v1/applications/{app_id}/client-secret-rotations`, the current application version, and a actor-appropriate step-up for `application.client_secret.rotate`. The previous secret stops working immediately, and its application identity keys are revoked; coordinate replacement across application instances. Webhook-secret rotation uses `…/webhook-secret-rotations`, a caller-supplied successor `webhook_secret`, and `application.webhook_secret.rotate` step-up. Retain previous webhook key versions while in-flight deliveries drain.
 
 ## Discovery and webhook destinations
 
 A verified application can discover any other verified application's backend through Basic-authenticated `GET /api/v1/application-directory/{app_id}`. It returns only `{app_id, base_url}`. Discovery and OBO may cross application-owning organizations. In a test environment both credentials and targets resolve in that environment, without production fallback.
 
-`PUT /api/v1/applications/{app_id}/webhook` proposes a destination. Production delivery stays on the current destination until approval. A current owning-organization Carbon owner/admin or an IAM application reviewer can read the pending endpoint and approve with `POST …/webhook/approvals`, an empty body, current application `If-Match`, idempotency key, and `application.webhook.approve` step-up bound to the application UUID. Endpoint approval is available while an application is under review or verified; scope review remains separate. Testing-environment destinations activate immediately. See Webhooks (`iam docs api/webhooks`) and Testing environments (`iam docs api/testing-environments`).
+`PUT /api/v1/applications/{app_id}/webhook` proposes a destination. Production delivery stays on the current destination until approval. A current owning-organization Carbon or Silicon owner/admin or an IAM application reviewer can read the pending endpoint and approve with `POST …/webhook/approvals`, an empty body, current application `If-Match`, idempotency key, and `application.webhook.approve` step-up bound to the canonical application ID. Endpoint approval is available while an application is under review or verified; scope review remains separate. Testing-environment destinations activate immediately. See Webhooks (`iam docs api/webhooks`) and Testing environments (`iam docs api/testing-environments`).
 
 `GET /api/v1/applications/{app_id}/login-history` provides authentication history with actors, outcomes, timestamps, and request IDs. If directory access does not allow resolving an actor’s public ID, `actor.public_id` is `null`. The event stays in the history, including its principal ID and actor type; reading application history does not grant access to another organization’s directory.
+
+## App-to-app verification (ATA)
+
+ATA authorizes application actions without a user identity or user consent page. Configure `ata_endpoints` in Honeycomb, with globally unique IDs such as `[briefcase:ata:files.read]`, endpoint path, name, critical label, description, metadata, optional user note, predefined warnings and explicit ATA dependencies. Importing an OBO definition copies its fields; OBO dependencies are not ATA permissions.
+
+An authorized app manager creates a verification in Honeycomb after reviewing its expanded endpoint graph and recipient app list. The signing Carbon/Silicon is recorded and cannot be chosen separately. Verification expiry is at least one hour or never (default); access-token validity is 60–86400 seconds, default 1800. Creation reveals the refresh token once. Store it only on the originating app's server, then use Basic-authenticated `POST /api/v1/ata-access/tokens` with `{refresh_token}` and an idempotency key to rotate it and obtain access proof. Serialize refresh and retain the exact retry identity for uncertain responses.
+
+Each recipient verifies with its own Basic credentials at `POST /api/v1/ata-access/verify`, sending `{app_id, app_proof_token, endpoint}`. Here `app_id` names the originating application. Success returns `{verified: true, valid_till: …}`; an invalid proof, unapproved recipient or unauthorized endpoint returns `{verified: false}`. Discovery uses `GET /api/v1/ata-access/applications/{app_id}/endpoints`. ATA proof remains application authority throughout its chain and can never become OBO authority.

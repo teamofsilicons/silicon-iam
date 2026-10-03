@@ -83,9 +83,16 @@ pub(super) fn signup_completion(
     input: SignupCompletionInput,
     production: bool,
 ) -> Result<ValidatedSignupCompletion, AppError> {
-    let carbon_id = CarbonId::from_str(&input.carbon_id)
+    let carbon_id = input
+        .carbon_id
+        .as_deref()
+        .map(CarbonId::from_str)
+        .transpose()
         .map_err(|_| validation("carbon_id", "has an invalid format"))?;
-    let display_name = bounded_text("display_name", input.display_name, 1, 200, false)?;
+    let display_name = input
+        .display_name
+        .map(|value| bounded_text("display_name", value, 1, 200, false))
+        .transpose()?;
     let timezone = input.timezone.unwrap_or_else(|| "UTC".to_owned());
     if !crate::domain::timezone::is_valid_identifier(&timezone) {
         return Err(validation("timezone", "must be a valid IANA TZ identifier"));
@@ -194,8 +201,8 @@ mod tests {
     #[test]
     fn signup_profiles_require_a_real_tzdb_identifier() {
         let valid = SignupCompletionInput {
-            carbon_id: "c:timezone_test".to_owned(),
-            display_name: "Time Zone Test".to_owned(),
+            carbon_id: Some("c:timezone_test".to_owned()),
+            display_name: Some("Time Zone Test".to_owned()),
             timezone: Some("Asia/Kolkata".to_owned()),
             profile_photo: None,
         };
@@ -205,16 +212,16 @@ mod tests {
         ));
 
         let invalid = SignupCompletionInput {
-            carbon_id: "c:timezone_test".to_owned(),
-            display_name: "Time Zone Test".to_owned(),
+            carbon_id: Some("c:timezone_test".to_owned()),
+            display_name: Some("Time Zone Test".to_owned()),
             timezone: Some("Mars/Olympus_Mons".to_owned()),
             profile_photo: None,
         };
         assert!(signup_completion(invalid, false).is_err());
 
         let defaulted = SignupCompletionInput {
-            carbon_id: "c:timezone_test".to_owned(),
-            display_name: "Time Zone Test".to_owned(),
+            carbon_id: Some("c:timezone_test".to_owned()),
+            display_name: Some("Time Zone Test".to_owned()),
             timezone: None,
             profile_photo: None,
         };

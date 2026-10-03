@@ -24,8 +24,8 @@ pub(super) struct VerificationInput {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SignupCompletionInput {
-    pub(super) carbon_id: String,
-    pub(super) display_name: String,
+    pub(super) carbon_id: Option<String>,
+    pub(super) display_name: Option<String>,
     pub(super) timezone: Option<String>,
     pub(super) profile_photo: Option<String>,
 }
@@ -110,7 +110,7 @@ pub(super) struct CarbonSelfResponse {
     pub(super) timezone: String,
     pub(super) profile_photo: String,
     pub(super) email: String,
-    pub(super) phone_number: String,
+    pub(super) phone_number: Option<String>,
     pub(super) status: String,
     pub(super) version: i64,
     #[serde(with = "time::serde::rfc3339")]
@@ -129,6 +129,20 @@ pub(super) struct TokenResponse {
     pub(super) refresh_expires_at: OffsetDateTime,
     pub(super) actor: ActorResponse,
     pub(super) session_id: Id,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct SignupCompletionResponse {
+    #[serde(flatten)]
+    pub(super) profile: CarbonSelfResponse,
+    #[serde(flatten)]
+    pub(super) tokens: TokenResponse,
+    pub(super) onboarding: SignupOnboarding,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(super) struct SignupOnboarding {
+    pub(super) requires_organization: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -229,8 +243,8 @@ impl ValidatedLoginIdentifier {
 
 #[derive(Debug)]
 pub(super) struct ValidatedSignupCompletion {
-    pub(super) carbon_id: crate::domain::auth::CarbonId,
-    pub(super) display_name: String,
+    pub(super) carbon_id: Option<crate::domain::auth::CarbonId>,
+    pub(super) display_name: Option<String>,
     pub(super) timezone: String,
     pub(super) profile_photo: Option<url::Url>,
 }

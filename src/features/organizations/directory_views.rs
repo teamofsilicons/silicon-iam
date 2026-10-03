@@ -659,7 +659,7 @@ pub(super) async fn effective_trust_for_subjects(
         return Ok(BTreeMap::new());
     }
     let targets = sqlx::query_scalar::<_, Id>(
-        "SELECT membership.id FROM iam.organization_memberships membership JOIN iam.silicons silicon ON silicon.membership_id=membership.id AND silicon.organization_id=membership.organization_id JOIN iam.principals principal ON principal.id=silicon.id AND principal.status='active' WHERE membership.organization_id=$1 AND membership.status='active' AND silicon.provisioning_status='active' ORDER BY membership.id"
+        "SELECT membership.id FROM iam.organization_memberships membership JOIN iam.silicons silicon ON silicon.id=membership.principal_id AND membership.principal_kind='silicon' JOIN iam.principals principal ON principal.id=silicon.id AND principal.status='active' WHERE membership.organization_id=$1 AND membership.status='active' AND silicon.provisioning_status='active' ORDER BY membership.id"
     ).bind(organization_id).fetch_all(&mut **transaction).await.map_err(support::database)?;
     let defaults = sqlx::query_as::<_, DirectoryTrustDefaultRow>(DIRECTORY_TRUST_DEFAULT_SQL)
         .bind(organization_id)

@@ -7,6 +7,8 @@ use super::{error::ApiError, model};
 
 const MAX_SCOPES: usize = 100;
 const MAX_OBO_ENDPOINTS: usize = 50;
+const MAX_OBO_DOWNSTREAM: usize = 16;
+const MAX_OBO_DOWNSTREAM_TTL_SECONDS: i32 = 3_600;
 const MAX_OBO_METADATA_BYTES: usize = 16_384;
 const MAX_OBO_METADATA_DEPTH: usize = 8;
 const MAX_OBO_METADATA_NODES: usize = 512;
@@ -352,6 +354,36 @@ pub(super) fn obo_endpoints(values: &[model::ApplicationOboEndpoint]) -> Result<
     let mut identifiers = BTreeSet::new();
     let mut paths = BTreeSet::new();
     for endpoint in values {
+        if endpoint.name.len() > 160
+            || endpoint.description.len() > 4000
+            || endpoint
+                .note_to_user
+                .as_ref()
+                .is_some_and(|note| note.len() > 2000)
+            || endpoint.additional_warnings.len() > 6
+            || endpoint.additional_warnings.iter().any(|warning| {
+                ![
+                    "uses_credits",
+                    "incurs_cost",
+                    "stores_data",
+                    "shares_data",
+                    "deletes_data",
+                    "external_service",
+                ]
+                .contains(&warning.as_str())
+            })
+            || endpoint
+                .additional_warnings
+                .iter()
+                .collect::<BTreeSet<_>>()
+                .len()
+                != endpoint.additional_warnings.len()
+        {
+            return Err(ApiError::validation(
+                "obo_endpoints",
+                "invalid endpoint description or warning code",
+            ));
+        }
         if endpoint.ttl_seconds <= 0 {
             return Err(ApiError::validation(
                 "obo_endpoints.ttl_seconds",
@@ -391,6 +423,52 @@ pub(super) fn obo_endpoints(values: &[model::ApplicationOboEndpoint]) -> Result<
         }
         obo_metadata("obo_endpoints.metadata", &endpoint.metadata)?;
         validate_obo_metadata_definition(&endpoint.metadata)?;
+        obo_downstream(endpoint)?;
+    }
+    Ok(())
+}
+
+fn obo_downstream(endpoint: &model::ApplicationOboEndpoint) -> Result<(), ApiError> {
+    if endpoint.downstream.len() > MAX_OBO_DOWNSTREAM {
+        return Err(ApiError::validation(
+            "obo_endpoints.downstream",
+            "must contain at most 16 downstream calls",
+        ));
+    }
+    let mut calls = BTreeSet::new();
+    for call in &endpoint.downstream {
+        app_id(&call.audience).map_err(|_| {
+            ApiError::validation(
+                "obo_endpoints.downstream.audience",
+                "must be a valid app_id",
+            )
+        })?;
+        obo_endpoint_id(&call.endpoint_id).map_err(|_| {
+            ApiError::validation(
+                "obo_endpoints.downstream.endpoint_id",
+                "must be a valid endpoint_id",
+            )
+        })?;
+        if !calls.insert((call.audience.as_str(), call.endpoint_id.as_str())) {
+            return Err(ApiError::validation(
+                "obo_endpoints.downstream",
+                "contains duplicate downstream calls",
+            ));
+        }
+    }
+    if let Some(window) = endpoint.downstream_ttl_seconds {
+        if endpoint.downstream.is_empty() {
+            return Err(ApiError::validation(
+                "obo_endpoints.downstream_ttl_seconds",
+                "requires at least one downstream call",
+            ));
+        }
+        if !(1..=MAX_OBO_DOWNSTREAM_TTL_SECONDS).contains(&window) {
+            return Err(ApiError::validation(
+                "obo_endpoints.downstream_ttl_seconds",
+                "must be between 1 and 3600 seconds",
+            ));
+        }
     }
     Ok(())
 }
@@ -592,7 +670,7 @@ mod tests {
         app_id, base_url, local_app_id, obo_endpoint_id, obo_endpoints, obo_metadata,
         obo_request_metadata, qualify_app_id, redirect_uri, webhook_secret, webhook_url,
     };
-    use crate::features::applications::model::ApplicationOboEndpoint;
+    use crate::features::applications::model::{ApplicationOboDownstream, ApplicationOboEndpoint};
 
     #[test]
     fn application_identifiers_match_database_constraints() {
@@ -677,12 +755,94 @@ mod tests {
     }
 
     #[test]
+    fn downstream_calls_are_bounded_unique_and_windowed() {
+        let value = json!({
+            "endpoint_id": "waveform.tts",
+            "path": "/api/v1/obo/tts",
+            "metadata": {},
+            "critical": false,
+            "downstream": [{ "audience": "storage", "endpoint_id": "briefcase.files.create" }],
+            "downstream_ttl_seconds": 300,
+        });
+        let Ok(endpoint) = serde_json::from_value::<ApplicationOboEndpoint>(value.clone()) else {
+            panic!("valid chained endpoint");
+        };
+        assert!(obo_endpoints(std::slice::from_ref(&endpoint)).is_ok());
+        assert_eq!(
+            serde_json::to_value(&endpoint).ok(),
+            Some(json!({
+                "endpoint_id": "waveform.tts",
+                "path": "/api/v1/obo/tts",
+                "metadata": {},
+                "critical": false,
+                "ttl_seconds": 300,
+                "downstream": [{ "audience": "storage", "endpoint_id": "briefcase.files.create" }],
+                "downstream_ttl_seconds": 300,
+            })),
+        );
+
+        let mut duplicate = endpoint.clone();
+        duplicate.downstream.push(duplicate.downstream[0].clone());
+        assert!(obo_endpoints(&[duplicate]).is_err());
+        let mut too_many = endpoint.clone();
+        too_many.downstream = (0..17)
+            .map(|index| ApplicationOboDownstream {
+                audience: format!("app{index}"),
+                endpoint_id: "files.create".to_owned(),
+            })
+            .collect();
+        assert!(obo_endpoints(&[too_many]).is_err());
+        for window in [0, 3_601] {
+            let mut invalid = endpoint.clone();
+            invalid.downstream_ttl_seconds = Some(window);
+            assert!(obo_endpoints(&[invalid]).is_err());
+        }
+        let mut orphan_window = endpoint.clone();
+        orphan_window.downstream.clear();
+        assert!(obo_endpoints(&[orphan_window]).is_err());
+        let mut invalid_audience = endpoint.clone();
+        invalid_audience.downstream[0].audience = "Storage".to_owned();
+        assert!(obo_endpoints(&[invalid_audience]).is_err());
+
+        let mut unknown = value;
+        unknown["downstream"][0]["scope"] = json!("storage");
+        assert!(serde_json::from_value::<ApplicationOboEndpoint>(unknown).is_err());
+    }
+
+    #[test]
+    fn endpoints_without_downstream_serialize_as_before() {
+        let value =
+            json!({"endpoint_id":"files.read", "path":"/files", "metadata":{}, "critical":false});
+        let Ok(endpoint) = serde_json::from_value::<ApplicationOboEndpoint>(value) else {
+            panic!("valid endpoint");
+        };
+        assert!(endpoint.downstream.is_empty());
+        assert_eq!(
+            serde_json::to_value(&endpoint).ok(),
+            Some(json!({
+                "endpoint_id": "files.read",
+                "path": "/files",
+                "metadata": {},
+                "critical": false,
+                "ttl_seconds": 300,
+            })),
+        );
+    }
+
+    #[test]
     fn obo_endpoint_registry_requires_unique_stable_absolute_paths() {
         let endpoint = ApplicationOboEndpoint {
+            obo_id: None,
+            name: String::new(),
+            description: String::new(),
+            note_to_user: None,
+            additional_warnings: vec![],
             ttl_seconds: 300,
             critical: false,
             endpoint_id: "documents.read".to_owned(),
             path: "/v1/documents/read".to_owned(),
+            downstream: Vec::new(),
+            downstream_ttl_seconds: None,
             metadata: json!({ "document_id": { "type": "string" } }),
         };
         assert!(obo_endpoints(std::slice::from_ref(&endpoint)).is_ok());
@@ -751,10 +911,17 @@ mod tests {
     #[test]
     fn obo_endpoint_registry_rejects_invalid_declared_types() {
         let endpoint = ApplicationOboEndpoint {
+            obo_id: None,
+            name: String::new(),
+            description: String::new(),
+            note_to_user: None,
+            additional_warnings: vec![],
             ttl_seconds: 300,
             critical: false,
             endpoint_id: "documents.read".to_owned(),
             path: "/v1/documents/read".to_owned(),
+            downstream: Vec::new(),
+            downstream_ttl_seconds: None,
             metadata: json!({ "document_id": { "type": "uuid" } }),
         };
         assert!(obo_endpoints(&[endpoint]).is_err());

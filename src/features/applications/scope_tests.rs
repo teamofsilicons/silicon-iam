@@ -41,7 +41,7 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
     ))
     .execute(&pool)
     .await
-    .context("zero-organization Carbon onboarding and membership isolation")?;
+    .context("first-party onboarding and required application organization selection")?;
     sqlx::raw_sql(include_str!(
         "../../../tests/sql/unscoped_membership_disclosure.sql"
     ))
@@ -141,8 +141,20 @@ async fn critical_scope_reviews_preserve_previous_authority_and_require_target_a
     .fetch_one(&mut *tx)
     .await?
     .0;
-    ensure!(policy["consent_required"] == true);
-    ensure!(policy["scopes"].as_array().context("scope policy")?.len() == 4);
+    ensure!(
+        policy["consent_required"] == false,
+        "a provider's critical OBO approval must not require login consent for noncritical IAM scopes"
+    );
+    let login_scopes = policy["scopes"]
+        .as_array()
+        .context("scope policy")?
+        .iter()
+        .map(|scope| scope["scope"].as_str().context("login scope"))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    ensure!(
+        login_scopes == vec!["self.identity.read", "self.profile.read"],
+        "login consent must only contain the declared IAM scopes"
+    );
     let version = approved["version"].as_i64().context("approved version")?;
     let reply=sqlx::query_scalar::<_,Json<Value>>("SELECT iam_private.mutate_application_scope_request($1,$2,$3,'message','Thank you; implementation is ready.')").bind(request).bind(actor).bind(version).fetch_one(&mut *tx).await?.0;
     ensure!(

@@ -30,4 +30,7 @@ Other static hosts can publish `dist/` directly with directory index serving.
 Apply the response headers from `vercel.json` and redirect `/docs` to `/` and `/docs/:path` to `/:path`.
 
 The checker verifies generated local page links, section anchors, assets, and canonical URLs, and rejects public
-documentation that exposes internal organization-policy configuration.
+documentation that exposes internal organization-policy configuration. Operator
+readiness reports, dated redesign/deployment records, and historical fix evidence
+stay in the repository rather than the public site. Public OBO integration and
+consumer migration guides remain included.

@@ -19,9 +19,13 @@ use crate::{
     reason = "one arm per verb; splitting the match would only move it elsewhere"
 )]
 pub async fn run(context: &Context, command: InviteCommand) -> Result<()> {
+    if let InviteCommand::Silicon(command) = command {
+        return super::silicon_invitations::run(context, command).await;
+    }
     let client = context.authenticated().await?;
     let org = context.organization()?;
     match command {
+        InviteCommand::Silicon(_) => unreachable!("handled above"),
         InviteCommand::List { status, page } => {
             let listed = client
                 .invitations()

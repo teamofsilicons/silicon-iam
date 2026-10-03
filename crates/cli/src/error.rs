@@ -199,27 +199,33 @@ impl CliError {
                         .to_owned(),
                 );
             }
+            "obo_disclosure_review_required" => {
+                return Some("Review `iam app obo consent REQUEST_ID`, including every provider’s selected account and IAM disclosures, then approve that version with --approve-iam-disclosures. Update older IAM clients first.".to_owned());
+            }
+            "obo_proof_flow_retired" => {
+                return Some("Use `iam app obo authorize` for separate consent, then `app obo token` to redeem its code. Receivers use `app obo verify` with the reusable access token.".to_owned());
+            }
             "obo_request_binding_mismatch" => {
                 return Some(
-                    "The method, registered path, and body bytes must exactly match the request bound into this proof."
+                    "Check the approved endpoint and actual registered request path. Legacy proof endpoints are retired; use OBO access-token verification."
                         .to_owned(),
                 );
             }
             "obo_proof_consumed" => {
                 return Some(
-                    "OBO proofs are single-use. Issue a new proof for the next downstream request."
+                    "Legacy single-use OBO proofs are retired. Request separate endpoint consent and exchange its code for reusable OBO tokens."
                         .to_owned(),
                 );
             }
             "obo_proof_expired" => {
                 return Some(
-                    "This OBO proof exceeded its 60-second lifetime. Issue a fresh proof immediately before the downstream request."
+                    "Legacy single-use OBO proofs are retired. Obtain separate endpoint consent and reusable OBO access/refresh tokens."
                         .to_owned(),
                 );
             }
             "obo_proof_revoked" | "obo_authority_revoked" => {
                 return Some(
-                    "Authority changed after this proof was issued. Re-check access and issue a new proof."
+                    "OBO authority changed. Re-check the grant, user membership, app status and declared endpoint permissions before requesting new consent."
                         .to_owned(),
                 );
             }

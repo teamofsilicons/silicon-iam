@@ -12,6 +12,7 @@ WORKER_BINARY_PATH = "src/bin/iam_worker.rs"
 # queries. Inline `mod tests` modules are removed separately below.
 EXCLUDED_TEST_PATHS = %w[
   src/test_database.rs
+  src/features/authentication/signup_database_tests.rs
   src/api/membership_ids_tests.rs
   src/features/applications/honeycomb/operations/publication_tests.rs
   src/features/testing_environments/honeycomb/adoption_retention_tests.rs
@@ -22,6 +23,10 @@ EXCLUDED_TEST_PATHS = %w[
   src/features/applications/verification_tests.rs
   src/features/applications/live_tests.rs
   src/features/applications/login_history_tests.rs
+  src/features/applications/obo_chain_tests.rs
+  src/features/applications/obo_token_tests.rs
+  src/features/applications/obo_token_database_tests.rs
+  src/features/applications/ata_token_tests.rs
   src/features/applications/obo_disclosure_tests.rs
   src/features/organizations/scoped_tests.rs
   src/features/testing_environments/scope_policy_tests.rs
@@ -31,6 +36,7 @@ EXCLUDED_TEST_PATHS = %w[
   src/features/applications/scoped_auth_tests.rs
   src/features/applications/testing_login_tests.rs
   src/features/applications/oauth_family_tests.rs
+  src/features/applications/oauth_empty_scope_tests.rs
   src/infrastructure/postgres/honeycomb_upgrade_tests.rs
   src/infrastructure/postgres/key_rotation_tests.rs
 ].freeze
@@ -65,6 +71,20 @@ EXPECTED_DELETE_TABLES = Set.new(%w[
 # These relations deliberately stay outside the API table capability manifest.
 # Access must remain mediated by narrow fixed-path functions or another process.
 CRITICAL_DENIED_TABLES = Set.new(%w[
+  carbon_social_identities
+  application_ata_endpoints
+  obo_authorization_requests
+  obo_authorization_codes
+  obo_grants
+  obo_token_families
+  ata_verifications
+  organization_directory_policies
+  organization_silicon_invitations
+  membership_directory_visibility
+  ata_access_tokens
+  ata_refresh_tokens
+  obo_access_tokens
+  obo_refresh_tokens
   application_access_keys
   honeycomb_publication_plans
   honeycomb_publication_decisions
@@ -73,6 +93,12 @@ CRITICAL_DENIED_TABLES = Set.new(%w[
   application_testing_environments
   testing_application_imports
   oauth_scope_catalog
+  organization_logos
+  profile_photos
+  silicon_signup_requests
+  silicon_password_credentials
+  silicon_custodians
+  silicon_step_up_assertions
   contact_blind_indexes
   cryptographic_key_versions
   external_webhook_receipts

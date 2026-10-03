@@ -211,11 +211,14 @@ pub async fn silicon_login(context: &Context, args: SiliconLoginArgs) -> Result<
         .await;
     }
 
-    let signed_in = authenticated.silicons().me().await?;
+    let signed_in = authenticated.silicons().identity().await?;
     report_silicon_login(context, &signed_in)
 }
 
-fn report_silicon_login(context: &Context, signed_in: &models::Silicon) -> Result<()> {
+fn report_silicon_login(
+    context: &Context,
+    signed_in: &models::SiliconIdentityProfile,
+) -> Result<()> {
     match context.format {
         Format::Json => json(&signed_in),
         Format::Text => {
@@ -269,68 +272,41 @@ fn select_login_organizations(
     requested: &[String],
     all_orgs: bool,
 ) -> Result<Vec<String>> {
-    let app_id = &choices.app_id;
-    let org_ids = if all_orgs {
-        choices
-            .items
-            .iter()
-            .map(|org| org.org_id.clone())
-            .collect::<Vec<_>>()
-    } else if !requested.is_empty() {
-        requested.to_vec()
-    } else {
-        if !std::io::stdin().is_terminal() {
-            return Err(CliError::Usage(
-                "Choose the organizations to share: --grant-org <org>[,<org>...] or --all-orgs. --org and stored defaults never grant Application access.".to_owned(),
-            ));
-        }
+    if all_orgs {
+        return Err(CliError::Usage("Application login uses exactly one account and organization. Replace --all-orgs with --grant-org <org>.".to_owned()));
+    }
+    if choices.items.is_empty() {
+        return Err(CliError::Usage(
+            "Create or join an organization in IAM before signing in to an application.".to_owned(),
+        ));
+    }
+    let selected = if requested.is_empty() {
         eprintln!(
-            "Verified application: {} ({app_id})",
-            choices.app_name.as_deref().unwrap_or(app_id)
-        );
-        eprintln!(
-            "Choose which organizations to share. Existing grants are kept; future memberships are not included."
+            "Choose one organization for {}:",
+            choices.app_name.as_deref().unwrap_or(&choices.app_id)
         );
         for org in &choices.items {
-            eprintln!(
-                "  {} — {}{}",
-                org.org_id,
-                org.name,
-                if org.authorized {
-                    " (already authorized)"
-                } else {
-                    ""
-                }
-            );
+            eprintln!("  {} — {}", org.org_id, org.name);
         }
-        let selection = prompt(
-            if choices.allow_empty_organization_selection {
-                "Organization handles (comma-separated), all, or none for account onboarding: "
-            } else {
-                "Organization handles (comma-separated), or all: "
-            },
-            "Use --grant-org or --all-orgs.",
-        )?;
-        if choices.allow_empty_organization_selection && selection.trim() == "none" {
-            Vec::new()
-        } else if selection.trim() == "all" {
-            choices.items.iter().map(|org| org.org_id.clone()).collect()
-        } else {
-            selection
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(ToOwned::to_owned)
-                .collect()
-        }
-    };
-    if org_ids.is_empty() && !choices.allow_empty_organization_selection {
+        prompt(
+            "Organization handle: ",
+            "Pass --grant-org <org>. The stored --org default does not choose application access.",
+        )?
+    } else if requested.len() == 1 {
+        requested[0].clone()
+    } else {
         return Err(CliError::Usage(
-            "Select at least one active organization. Join or create an organization in IAM first."
+            "Application login uses exactly one organization. Pass one --grant-org <org>."
+                .to_owned(),
+        ));
+    };
+    if !choices.items.iter().any(|item| item.org_id == selected) {
+        return Err(CliError::Usage(
+            "Choose one of the available organization handles. No application token was issued."
                 .to_owned(),
         ));
     }
-    Ok(org_ids)
+    Ok(vec![selected])
 }
 
 /// Authorizes multiple apps atomically, retaining their separate credentials.
@@ -400,7 +376,17 @@ fn approve_login_scopes(
     choices: &models::LoginOrganizations,
     approve_scopes: bool,
 ) -> Result<Vec<String>> {
-    if choices.consent_required {
+    if choices.scopes.iter().any(|scope| {
+        scope.scope.starts_with("obo:")
+            || scope.app_id.is_some()
+            || scope
+                .downstream
+                .as_ref()
+                .is_some_and(|calls| !calls.is_empty())
+    }) {
+        return Err(CliError::Usage("OBO permissions require a separate approval. IAM returned an outdated login policy; retry after updating IAM.".to_owned()));
+    }
+    if choices.consent_required && choices.scopes.iter().any(|scope| scope.critical) {
         eprintln!(
             "Permissions requested by {}:",
             choices.app_name.as_deref().unwrap_or(&choices.app_id)
@@ -456,13 +442,11 @@ pub(super) fn report_batch_tokens(
     }
 }
 
-/// Ends a Carbon session remotely and then forgets the local credential.
+/// Ends an identity session remotely and then forgets the local credential.
 ///
 /// The idempotency key is persisted before sending so a retry after response
 /// loss can confirm the exact already-committed logout with the now-revoked
-/// bearer. Silicon sessions are forgotten locally because the public logout
-/// endpoint deliberately accepts Carbon authority only; rotate or remove a
-/// Silicon to revoke its server-side authority.
+/// bearer. Carbon and Silicon sessions use the same revocation workflow.
 ///
 /// # Errors
 ///
@@ -480,19 +464,6 @@ pub async fn logout(context: &Context, args: LogoutArgs) -> Result<()> {
     // network replay and deletion. A concurrent login must not be erased.
     let stored = context.lock_session()?;
     let initial = stored.session()?;
-    if initial.actor_type == SessionActor::Silicon {
-        if args.all {
-            return Err(CliError::Usage(
-                "--all applies only to Carbon sessions; use `iam logout --local-only`, or rotate/remove the Silicon to revoke its authority"
-                    .to_owned(),
-            ));
-        }
-        let existed = stored.forget().inspect_err(|_| {
-            eprintln!("Local credential removal could not be confirmed.");
-        })?;
-        return report_local_logout(context, existed);
-    }
-
     let requested_mode = if args.all {
         PendingLogoutMode::AllSessions
     } else {
@@ -595,14 +566,14 @@ pub async fn whoami(context: &Context) -> Result<()> {
     let session = context.session()?;
     let client = context.authenticated().await?;
     if session.actor_type == SessionActor::Silicon {
-        let silicon = client.silicons().me().await?;
+        let silicon = client.silicons().identity().await?;
         return match context.format {
             Format::Json => json(&silicon),
             Format::Text => {
                 let mut table = Table::new(["field", "value"]);
                 table.row(["silicon_id", &silicon.silicon_id]);
                 table.row(["display_name", &silicon.display_name]);
-                table.row(["organization", &silicon.org_id]);
+                table.row(["timezone", &silicon.timezone]);
                 table.row(["profile", &context.profile_name]);
                 table.row(["service", context.anonymous().base_url().as_str()]);
                 if let Some(environment_id) = context.testing_environment_id() {
@@ -622,7 +593,7 @@ pub async fn whoami(context: &Context) -> Result<()> {
             table.row(["carbon_id", &me.carbon_id]);
             table.row(["display_name", &me.display_name]);
             table.row(["email", &me.email]);
-            table.row(["phone", &me.phone_number]);
+            table.row(["phone", me.phone_number.as_deref().unwrap_or("Not added")]);
             table.row(["timezone", &me.timezone]);
             table.row(["profile", &context.profile_name]);
             table.row(["service", context.anonymous().base_url().as_str()]);
@@ -640,9 +611,38 @@ pub async fn whoami(context: &Context) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error when the resource is not eligible, delivery fails, the
-/// code is refused, or the current session is not a Carbon session.
+/// code or Silicon credential is refused, or the current session is invalid.
 pub async fn step_up(context: &Context, args: StepUpArgs) -> Result<()> {
     let client = context.authenticated().await?;
+    if context.session()?.actor_type == SessionActor::Silicon {
+        let credential = match args.stk {
+            Some(value) => value,
+            None => prompt_secret(
+                "Current Silicon password (hidden): ",
+                "Supply --stk or use an interactive terminal to confirm this Silicon action.",
+            )?,
+        };
+        let token = client
+            .auth()
+            .silicon_step_up(
+                &step_up_action(args.action),
+                &args.resource_id,
+                &credential,
+                &context.mutation(),
+            )
+            .await?;
+        return match context.format {
+            Format::Json => json(&token),
+            Format::Text => {
+                println!(
+                    "Step-up token: {}\nValid for {} seconds and only this action/resource.",
+                    token.step_up_token, token.expires_in
+                );
+                Ok(())
+            }
+        };
+    }
+
     let challenge = client
         .auth()
         .start_step_up(
@@ -714,75 +714,218 @@ const fn step_up_action(action: StepUpActionArg) -> models::StepUpAction {
     }
 }
 
-/// Creates a Carbon, verifying both contacts.
+/// Creates a Carbon using provider email verification or email OTP, plus any supplied phone.
 ///
 /// # Errors
 ///
 /// Returns an error when a contact is rejected, a code is wrong, or the handle
 /// is taken.
+#[allow(
+    clippy::too_many_lines,
+    clippy::single_match_else,
+    reason = "sequential signup prompts and resumable paths share the same session state"
+)]
 pub async fn signup(context: &Context, mut args: SignupArgs) -> Result<()> {
-    if !args.carbon_id.starts_with("c:") {
-        args.carbon_id = format!("c:{}", args.carbon_id);
+    if let Some(id) = &mut args.carbon_id
+        && !id.starts_with("c:")
+    {
+        *id = format!("c:{id}");
     }
     let client = context.anonymous();
-    let session = client.signup().start(&context.mutation()).await?.session_id;
-
-    let dispatched = client
-        .signup()
-        .send_email_code(session, &args.email, &context.mutation())
-        .await?;
-    if dispatched.already_exists {
-        return Err(CliError::Usage(format!(
-            "{} already belongs to a Carbon; sign in instead",
-            args.email
-        )));
+    let resuming = args.session_id.is_some();
+    let social = match args.provider.as_deref() {
+        Some(provider) => Some(social_signup(client, context, provider).await?),
+        None => None,
+    };
+    if args.display_name.is_none() {
+        args.display_name = social.as_ref().and_then(|value| value.display_name.clone());
     }
-    let code = collect_code(
-        dispatched.local_otp,
-        "Signup 1/2: email verification code (input hidden): ",
-    )?;
-    client
-        .signup()
-        .verify_email(session, &code, &context.mutation())
-        .await?;
-
-    let dispatched = client
-        .signup()
-        .send_phone_code(session, &args.phone, &context.mutation())
-        .await?;
-    if dispatched.already_exists {
-        return Err(CliError::Usage(format!(
-            "{} already belongs to a Carbon; sign in instead",
-            args.phone
-        )));
+    let session = match social
+        .as_ref()
+        .and_then(|value| value.signup_session_id)
+        .or(args.session_id)
+    {
+        Some(id) => id,
+        None => client.signup().start(&context.mutation()).await?.session_id,
+    };
+    if social.is_none() && !resuming {
+        let email = args.email.as_deref().ok_or_else(|| {
+            CliError::Usage("Give --email or --provider google|apple.".to_owned())
+        })?;
+        let dispatched = client
+            .signup()
+            .send_email_code(session, email, &context.mutation())
+            .await?;
+        if dispatched.already_exists {
+            return Err(CliError::Usage(format!(
+                "This email is already registered. Sign in with `iam login --email {email}`."
+            )));
+        }
+        let code = match dispatched.local_otp {
+            Some(code) => code,
+            None if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() => {
+                return report_signup_pending(context, session, "email_verification_required");
+            }
+            None => collect_code(None, "Email verification code (input hidden): ")?,
+        };
+        client
+            .signup()
+            .verify_email(session, &code, &context.mutation())
+            .await?;
+    } else if let Some(code) = args.email_code {
+        client
+            .signup()
+            .verify_email(session, &code, &context.mutation())
+            .await?;
     }
-    let code = collect_code(
-        dispatched.local_otp,
-        "Signup 2/2: phone verification code (input hidden): ",
-    )?;
-    client
-        .signup()
-        .verify_phone(session, &code, &context.mutation())
-        .await?;
-
-    let created = client
+    if args.skip_phone {
+        client
+            .signup()
+            .skip_phone(session, &context.mutation())
+            .await?;
+    }
+    if let Some(phone) = &args.phone {
+        let code = match args.phone_code {
+            Some(code) => code,
+            None => {
+                let dispatched = client
+                    .signup()
+                    .send_phone_code(session, phone, &context.mutation())
+                    .await?;
+                if dispatched.already_exists {
+                    return Err(CliError::Usage("This phone belongs to an existing account. Sign in to that account or resume without adding this phone.".to_owned()));
+                }
+                match dispatched.local_otp {
+                    Some(code) => code,
+                    None if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() => {
+                        return report_signup_pending(
+                            context,
+                            session,
+                            "phone_verification_required",
+                        );
+                    }
+                    None => collect_code(None, "Phone verification code (input hidden): ")?,
+                }
+            }
+        };
+        client
+            .signup()
+            .verify_phone(session, &code, &context.mutation())
+            .await?;
+    }
+    let mut created = client
         .signup()
         .complete(
             session,
             &models::CarbonSignupComplete {
-                carbon_id: args.carbon_id.clone(),
-                display_name: args.display_name.unwrap_or_else(|| args.carbon_id.clone()),
-                timezone: args.timezone,
+                carbon_id: args.carbon_id,
+                display_name: args.display_name,
+                timezone: args
+                    .timezone
+                    .or_else(|| iana_time_zone::get_timezone().ok()),
                 profile_photo: None,
             },
             &context.mutation(),
         )
         .await?;
-
+    context.remember(session_from(&created.tokens, &created.profile.carbon_id))?;
+    if let Some(path) = args.photo {
+        let authenticated =
+            client.with_credential(Credential::bearer(created.tokens.access_token.clone()));
+        created.profile =
+            super::carbon::upload_photo(&authenticated, context, created.profile.version, &path)
+                .await?;
+    }
     match context.format {
-        Format::Json => json(&created),
+        Format::Json => json(&serde_json::json!({
+            "profile": created.profile,
+            "authenticated": true,
+            "onboarding": created.onboarding,
+        })),
         Format::Text => {
-            println!("Created {}.", created.carbon_id);
+            println!("Created and signed in as {}.", created.profile.carbon_id);
+            if created.onboarding.requires_organization {
+                println!(
+                    "Create your first organization with `iam org create --help`, or accept an invitation with `iam invite --help`."
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+async fn social_signup(
+    client: &Client,
+    context: &Context,
+    provider: &str,
+) -> Result<models::SocialSignupStatus> {
+    let started = client
+        .signup()
+        .social_start(provider, &context.mutation())
+        .await?;
+    validate_social_destination(provider, &started.authorization_url)?;
+    // Keep polling capability in memory; the browser URL carries only OAuth
+    // state and never IAM credentials. stdout remains one final JSON result.
+    eprintln!(
+        "Open this {provider} sign-up page in your browser:\n{}",
+        started.authorization_url
+    );
+    eprintln!("This command will continue when email verification completes.");
+    let input = models::SocialSignupStatusInput {
+        request_id: started.request_id,
+        poll_token: started.poll_token,
+    };
+    while OffsetDateTime::now_utc() < started.expires_at {
+        let status = client.signup().social_status(provider, &input).await;
+        match status {
+            Ok(value) => match value.status {
+                models::SocialSignupStatusStatus::Verified if value.signup_session_id.is_some() => return Ok(value),
+                models::SocialSignupStatusStatus::Pending => {},
+                models::SocialSignupStatusStatus::AlreadyRegistered => return Err(CliError::Usage("This provider email is already registered. Sign in to the existing account with `iam login --email <email>`.".to_owned())),
+                models::SocialSignupStatusStatus::Expired => break,
+                _ => return Err(CliError::Usage("Provider sign-up could not be verified. Run signup again, or use --email.".to_owned())),
+            },
+            Err(silicon_iam_client::Error::Transport(_)) => {},
+            Err(silicon_iam_client::Error::Api(ref error)) if error.status >= 500 => {},
+            Err(error) => return Err(error.into()),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+    Err(CliError::Usage(
+        "Provider sign-up expired. Run signup again to open a fresh verification request."
+            .to_owned(),
+    ))
+}
+
+fn validate_social_destination(provider: &str, value: &str) -> Result<()> {
+    let url = url::Url::parse(value)
+        .map_err(|_| CliError::Usage("IAM returned an invalid provider URL.".to_owned()))?;
+    let host = match provider {
+        "google" => "accounts.google.com",
+        "apple" => "appleid.apple.com",
+        _ => return Err(CliError::Usage("Choose Google or Apple.".to_owned())),
+    };
+    if url.scheme() != "https"
+        || url.host_str() != Some(host)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+    {
+        return Err(CliError::Usage(
+            "IAM returned an invalid provider destination. No browser was opened.".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn report_signup_pending(context: &Context, session: uuid::Uuid, status: &str) -> Result<()> {
+    match context.format {
+        Format::Json => json(&serde_json::json!({ "session_id": session, "status": status })),
+        Format::Text => {
+            println!("Signup session: {session}");
+            println!(
+                "{status}. Resume with the same signup options plus --session-id {session} and --email-code or --phone-code."
+            );
             Ok(())
         }
     }
@@ -793,7 +936,7 @@ fn collect_code(echoed: Option<String>, prompt_text: &str) -> Result<String> {
         Some(code) => Ok(code),
         None => prompt_secret(
             prompt_text,
-            "Run signup in an interactive terminal: both email and phone verification are required. Noninteractive signup works only when your local/testing IAM deployment explicitly returns verification codes; the CLI never guesses or bypasses them.",
+            "Run signup in an interactive terminal: email verification and verification of any supplied phone are required. Noninteractive signup works only when your local/testing IAM deployment explicitly returns verification codes; the CLI never guesses or bypasses them.",
         ),
     }
 }
@@ -852,7 +995,7 @@ pub async fn login_status(context: &Context) -> Result<()> {
         }
         let client = context.authenticated().await?;
         if session.actor_type == SessionActor::Silicon {
-            client.silicons().me().await?;
+            client.silicons().identity().await?;
         } else {
             client.carbons().me().await?;
         }
@@ -893,6 +1036,31 @@ mod tests {
     use super::select_login_organizations;
     use silicon_iam_client::models;
 
+    #[test]
+    fn social_signup_urls_are_bound_to_the_selected_provider() {
+        assert!(
+            super::validate_social_destination(
+                "google",
+                "https://accounts.google.com/o/oauth2/v2/auth?state=opaque"
+            )
+            .is_ok()
+        );
+        assert!(
+            super::validate_social_destination("apple", "https://appleid.apple.com/auth/authorize")
+                .is_ok()
+        );
+        for value in [
+            "http://accounts.google.com/auth",
+            "https://evil.example/auth",
+            "https://accounts.google.com.evil.example/auth",
+            "https://user@accounts.google.com/auth",
+            "https://accounts.google.com:444/auth",
+            "https://appleid.apple.com/auth/authorize",
+        ] {
+            assert!(super::validate_social_destination("google", value).is_err());
+        }
+    }
+
     fn choices(allow_empty: bool) -> models::LoginOrganizations {
         models::LoginOrganizations {
             app_id: "interface".into(),
@@ -906,13 +1074,41 @@ mod tests {
     }
 
     #[test]
-    fn explicit_all_current_orgs_can_be_empty_only_when_iam_allows_it() {
+    fn ordinary_login_skips_noncritical_iam_prompt_and_refuses_obo_approval() {
+        let mut policy = choices(false);
+        policy.scopes.push(models::ApplicationConsentScope {
+            scope: "self.identity.read".into(),
+            description: "Read account identity".into(),
+            critical: false,
+            app_id: None,
+            downstream: None,
+        });
         assert_eq!(
-            select_login_organizations(&choices(true), &[], true)
-                .ok()
-                .as_deref(),
-            Some([].as_slice())
+            super::approve_login_scopes(&policy, false).ok(),
+            Some(vec!["self.identity.read".to_owned()])
         );
-        assert!(select_login_organizations(&choices(false), &[], true).is_err());
+        policy.scopes[0].scope = "obo:waveform:tts".into();
+        assert!(super::approve_login_scopes(&policy, true).is_err());
+    }
+
+    #[test]
+    fn application_login_selects_exactly_one_available_organization() {
+        assert!(select_login_organizations(&choices(true), &[], true).is_err());
+        assert!(select_login_organizations(&choices(false), &[], false).is_err());
+        let mut available = choices(false);
+        available.items.push(models::LoginOrganization {
+            org_id: "work".into(),
+            name: "Work".into(),
+            authorized: false,
+        });
+        assert_eq!(
+            select_login_organizations(&available, &["work".into()], false).ok(),
+            Some(vec!["work".to_owned()])
+        );
+        assert!(
+            select_login_organizations(&available, &["work".into(), "other".into()], false)
+                .is_err()
+        );
+        assert!(select_login_organizations(&available, &["unknown".into()], false).is_err());
     }
 }

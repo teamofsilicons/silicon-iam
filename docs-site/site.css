@@ -411,3 +411,5 @@ a:focus-visible,
 summary:focus-visible {
   outline-color: #649bee;
 }
+
+.release-notice { margin: 0 0 2rem; font-size: .9rem; line-height: 1.65; }

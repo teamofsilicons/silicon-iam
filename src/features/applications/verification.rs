@@ -152,7 +152,7 @@ async fn application_transaction<'a>(
     .map_err(|_| ApiError::internal("application_access_key_context"))
 }
 
-async fn lock_client(
+pub(super) async fn lock_client(
     tx: &mut Transaction<'_, Postgres>,
     state: &ApiState,
     client: &ApplicationClient,

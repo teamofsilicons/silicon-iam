@@ -28,7 +28,7 @@ Fixed credential lifetimes are enforced at startup. Application identity keys al
 | Step-up token | 5 minutes, bound to one action on one resource |
 | Carbon invitation | 48 hours |
 | WorkOS setup link | 5 minutes |
-| OBO proof | 60 seconds maximum, single use |
+| OBO access token | Shortest endpoint TTL in the approved graph (default 300 seconds); reusable across that graph until expiry or invalidation |
 | One-time secret replay envelope, where supported | 10 minutes; application identity key issuance has no replay |
 
 ## Refresh tokens rotate, and reuse is fatal
@@ -57,7 +57,7 @@ Access and refresh tokens are opaque 256-bit random values. There is no signing-
 
 Passwordless, in two calls. `POST /api/v1/login/challenges` takes exactly one of `email`, `phone_number` or `carbon_id`; `POST /api/v1/login/challenges/{session_id}/verify` exchanges the six-digit code for a credential pair.
 
-A `carbon_id` challenge dispatches a code to **both** verified channels, and either one satisfies the verification. Say so in your interface — a user who checks only their inbox will otherwise sit waiting for an SMS that already arrived.
+A `carbon_id` challenge dispatches a code to the account's verified email and its phone when present and verified; either delivered code satisfies verification. Only offer the channels actually configured for that account.
 
 Email codes are generated and digest-verified by IAM. Phone codes are generated, routed and validated by Twilio Verify; IAM stores only the provider attempt identifier and its own challenge lifecycle state. Phone numbers must be supplied in E.164 form.
 
@@ -65,7 +65,7 @@ Login initiation answers `404` when no active Carbon owns the submitted identity
 
 ## Silicon login
 
-`POST /api/v1/silicon-auth/token` takes the global Silicon ID as the username and the `stk-…` token as the password, and returns the same credential pair a Carbon gets. Silicon tokens are 128 bits, formatted as `stk-` plus 32 lowercase hexadecimal characters, and are stored only as a keyed digest — a lost token can be replaced, never recovered.
+`POST /api/v1/silicon-auth/token` takes the global Silicon ID as the username and its Silicon credential, and returns an identity-level access/refresh pair and browser session cookie. Independent signup accepts a case-sensitive 12–24-character password (or generates one), protected by Argon2id. Organization-created and rotated legacy credentials use `stk-` plus 32 hexadecimal characters, stored as a keyed digest. Credentials are revealed only at creation or rotation; they cannot be read back.
 
 ## Step-up
 
@@ -76,6 +76,8 @@ Some actions need proof that the person at the keyboard is still the account hol
 2. `POST /api/v1/step-up/challenges/{session_id}/verify` with the code.
 
 3. Send the resulting `sup_…` value as `X-Step-Up-Token` alongside your bearer, within five minutes.
+
+Those challenge routes verify a Carbon's email or phone. A directly authenticated Silicon instead calls `POST /api/v1/silicon-auth/step-up` with `{silicon_token, action, resource_id}` and an idempotency key. IAM checks its current credential and returns a five-minute `sup_…` assertion with `assurance: "silicon_credential"`. Both forms bind the same parent session, action and resource. A Silicon role never bypasses step-up or gains platform-admin authority.
 
 Actions that require it:
 
@@ -99,22 +101,22 @@ The partial failure count and any active cooldown **carry into a replacement cod
 
 ## The browser session
 
-A successful Carbon login also sets `iam_session`: host-only, `Secure`, `HttpOnly`, `SameSite=Lax`, and signed. It exists for the two flows that are navigations rather than API calls — application login and SSO — and it is bound to the same refresh family, so revoking the session revokes the cookie.
+Successful Carbon signup/login and Silicon login also set `iam_session`: host-only, `Secure`, `HttpOnly`, `SameSite=Lax`, and signed. It exists for the two flows that are navigations rather than API calls — application login and SSO — and it is bound to the same refresh family, so revoking the session revokes the cookie.
 
-IAM recognizes an existing session and shows Application validation followed by the current permission list with descriptions and critical labels, then its organization picker. Explicit permission consent precedes organization selection when `consent_required` is true. The user must choose at least one organization. Apps cannot supply `org_id`. GET navigation never mints a token; the trusted IAM interface submits explicit `org_ids`, the complete `approved_scopes`, and the exact `scope_version` returned by the choices API, using a direct IAM bearer. A scope change requires fresh consent.
+IAM offers configured Carbon or Silicon accounts and their active organizations. The user selects exactly one account and one organization. A consent screen is shown only when critical IAM permissions require fresh consent, as indicated by `consent_required`. OBO endpoints never appear in login consent. Apps cannot supply `org_id`. GET navigation never mints a token; the trusted IAM interface submits explicit `org_ids`, the complete `approved_scopes`, and the exact `scope_version` returned by the choices API, using a direct IAM bearer. A scope change requires fresh consent.
 
 **An application never sees IAM login credentials.** Signing in to an application never asks anyone for a password, a verification code, or any other authentication secret on that application's behalf. The only thing an application receives is a short-lived token.
 
 ## Application scopes and credentials
 
-A registration's `app_scope` declares permitted IAM data and external endpoints. Identity and profile are defaults; critical permissions require reviewer approval. The application receives only the scope intersection currently approved and consented by the user for selected active memberships. `webhook_scope` controls event subscriptions independently. A direct IAM bearer and an application OAuth bearer are distinct credentials with different authority.
+A registration's `app_scope` declares permitted IAM data and external endpoints. Identity and profile are defaults; critical permissions require reviewer approval. Ordinary login tokens carry only IAM scopes currently approved and consented by the user for the selected active membership. OBO endpoint access requires separate affirmative consent and dedicated access/refresh tokens. `webhook_scope` controls event subscriptions independently. A direct IAM bearer and an application OAuth bearer are distinct credentials with different authority.
 
 IAM Carbon and Silicon sessions can read login choices and submit explicit consent. Application secrets and app-issued bearers cannot create or expand that consent. The only login handoff to an app is an app-bound, two-minute single-use SLT, exchanged on that app's backend with its own secret. Read Applications (`iam docs api/applications`) for the complete request shapes.
 
 ## Batch and bundle login
 
-`/login?app_ids=tos%3Ebriefcase,tos%3Edm` authenticates once for 1–100 distinct applications. IAM collects each app's permissions and organization choices, then creates all SLTs atomically. Direct IAM clients use `GET /api/v1/app-auth/batch/organizations?app_ids=...` followed by `POST /api/v1/app-auth/batch/short-lived-tokens`. Each element of `applications` contains `app_id`, `org_ids`, `approved_scopes`, and `scope_version`.
+`/login?app_ids=briefcase,dm` authenticates once for 1–100 distinct applications. IAM collects each app's current IAM scope set and exactly one organization, then creates all SLTs atomically. Direct IAM clients use `GET /api/v1/app-auth/batch/organizations?app_ids=...` followed by `POST /api/v1/app-auth/batch/short-lived-tokens`. Each element of `applications` contains `app_id`, `org_ids`, `approved_scopes`, and `scope_version`.
 
-`/login?bundle_id=tos%3Esuite` displays one bundle identity with combined member permissions and a shared organization picker. The bundle routes validate the current exact member set. A bundle has no client secret, and every SLT remains bound to an individual application.
+`/login?bundle_id=tos%3Esuite` displays one bundle identity with combined member permissions and a shared picker for one account and organization. The bundle routes validate the current exact member set. A bundle has no client secret, and every SLT remains bound to an individual application.
 
 Both callbacks receive `#slts=` with a URL-encoded JSON array containing `app_id`, `slt`, `expires_in`, `expires_at`, and `request_id`. Read the fragment in browser JavaScript, verify login state and expected app IDs, clear it, and send each token to its own application server. See [Batch login](https://docs.iam.teamofsilicons.com/batch-login/) and [Bundles](https://docs.iam.teamofsilicons.com/bundles/).

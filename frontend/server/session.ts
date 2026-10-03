@@ -17,6 +17,8 @@ export type Session = {
   deadline: number;
   browserCookie: string;
   sessionId: string;
+  actorType?: "carbon" | "silicon";
+  actorId?: string;
 };
 export type Settings = {
   upstream: URL;
@@ -25,6 +27,8 @@ export type Settings = {
   key: Uint8Array<ArrayBuffer>;
   cookieName: string;
   cookieOptions: string;
+  selectedAccount?: string;
+  activeSessionId?: string;
 };
 const encoder = new TextEncoder();
 const flights = new Map<
@@ -121,18 +125,19 @@ async function seal(session: Session, config: Settings): Promise<string> {
   );
   return `v1.${encode(iv)}.${encode(new Uint8Array(cipher))}`;
 }
-export async function readSession(
+async function readCookieSession(
   request: Request,
   config: Settings,
+  cookieName = config.cookieName,
 ): Promise<Session | null> {
   const cookies = (request.headers.get("cookie") || "")
     .split(";")
     .map((v) => v.trim())
-    .filter((v) => v.startsWith(`${config.cookieName}=`));
+    .filter((v) => v.startsWith(`${cookieName}=`));
   if (cookies.length !== 1) return null;
   try {
     const [version, iv, cipher, extra] = cookies[0]
-      .slice(config.cookieName.length + 1)
+      .slice(cookieName.length + 1)
       .split(".");
     if (version !== "v1" || extra || !iv || !cipher || cipher.length > 6000)
       return null;
@@ -151,10 +156,12 @@ export async function readSession(
     const value = JSON.parse(new TextDecoder().decode(plain)) as Session;
     if (
       typeof value.access !== "string" ||
-      !value.access.startsWith("cat_") ||
+      !/^(?:cat|sat)_[A-Za-z0-9_-]+$/.test(value.access) ||
       typeof value.refresh !== "string" ||
       typeof value.browserCookie !== "string" ||
-      !value.browserCookie.startsWith("iam_session=") ||
+      (value.browserCookie !== "" &&
+        !value.browserCookie.startsWith("iam_session=")) ||
+      !accountId(value.sessionId) ||
       !Number.isFinite(value.expires) ||
       !Number.isFinite(value.deadline) ||
       value.deadline <= Date.now()
@@ -165,25 +172,115 @@ export async function readSession(
     return null;
   }
 }
+// Credentials remain in authenticated, HttpOnly cookies. Browser code receives
+// only the session handle and profile; preferences may live in localStorage.
+export const MAX_ACCOUNTS = 8;
+const accountId = (value: unknown): value is string =>
+  typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value);
+const accountCookie = (config: Settings, id: string) =>
+  `${config.cookieName}_account_${id}`;
+export async function readAccounts(
+  request: Request,
+  config: Settings,
+): Promise<Session[]> {
+  const active = await readCookieSession(request, config);
+  const prefix = `${config.cookieName}_account_`;
+  const names = [
+    ...new Set(
+      (request.headers.get("cookie") || "")
+        .split(";")
+        .map((part) => part.trim().split("=")[0])
+        .filter(
+          (name) =>
+            name.startsWith(prefix) && accountId(name.slice(prefix.length)),
+        ),
+    ),
+  ].slice(0, MAX_ACCOUNTS);
+  const saved = await Promise.all(
+    names.map(async (name) => {
+      const value = await readCookieSession(request, config, name);
+      return value && value.sessionId === name.slice(prefix.length)
+        ? value
+        : null;
+    }),
+  );
+  return [
+    ...new Map(
+      [
+        ...saved.filter((item): item is Session => !!item),
+        ...(active ? [active] : []),
+      ].map((item) => [item.sessionId, item]),
+    ).values(),
+  ];
+}
+export async function readSession(
+  request: Request,
+  config: Settings,
+): Promise<Session | null> {
+  const active = await readCookieSession(request, config);
+  config.activeSessionId = active?.sessionId;
+  if (!config.selectedAccount) return active;
+  if (!accountId(config.selectedAccount)) return null;
+  if (active?.sessionId === config.selectedAccount) return active;
+  const selected = await readCookieSession(
+    request,
+    config,
+    accountCookie(config, config.selectedAccount),
+  );
+  return selected?.sessionId === config.selectedAccount ? selected : null;
+}
+export async function accountResponse(
+  response: Response,
+  config: Settings,
+  session: Session,
+): Promise<Response> {
+  const headers = new Headers(response.headers);
+  const value = `${await seal(session, config)}; Max-Age=${Math.max(0, Math.floor((session.deadline - Date.now()) / 1000))}${config.cookieOptions}`;
+  headers.append(
+    "Set-Cookie",
+    `${accountCookie(config, session.sessionId)}=${value}`,
+  );
+  if (session.sessionId === config.activeSessionId)
+    headers.append("Set-Cookie", `${config.cookieName}=${value}`);
+  return new Response(response.body, { status: response.status, headers });
+}
+export function forgetAccountResponse(
+  response: Response,
+  config: Settings,
+  id: string,
+): Response {
+  const headers = new Headers(response.headers);
+  headers.append(
+    "Set-Cookie",
+    `${accountCookie(config, id)}=; Max-Age=0${config.cookieOptions}`,
+  );
+  return new Response(response.body, { status: response.status, headers });
+}
 export function fromTokens(
   value: Record<string, unknown>,
   upstream: Response,
   previous?: Session,
   issuedNoLaterThan = Date.now(),
 ): Session {
-  const actor = value.actor as { type?: string },
+  const actor = value.actor as { type?: string; public_id?: string },
     browserCookie =
       upstream.headers.get("set-cookie")?.split(";")[0] ||
-      previous?.browserCookie;
+      previous?.browserCookie ||
+      (actor?.type === "silicon" ? "" : undefined);
   if (
-    actor?.type !== "carbon" ||
+    !["carbon", "silicon"].includes(String(actor?.type)) ||
     typeof value.access_token !== "string" ||
-    !/^cat_[A-Za-z0-9_-]+$/.test(value.access_token) ||
+    !(
+      actor?.type === "silicon"
+        ? /^sat_[A-Za-z0-9_-]+$/
+        : /^cat_[A-Za-z0-9_-]+$/
+    ).test(value.access_token) ||
     typeof value.refresh_token !== "string" ||
     !/^rft_[A-Za-z0-9_-]+$/.test(value.refresh_token) ||
     !Number.isSafeInteger(value.expires_in) ||
     Number(value.expires_in) <= 0 ||
-    !browserCookie?.startsWith("iam_session=")
+    (actor?.type === "carbon" && !browserCookie?.startsWith("iam_session=")) ||
+    !accountId(value.session_id)
   )
     throw new Error("Unexpected IAM session response");
   const deadline = Date.parse(String(value.refresh_expires_at)),
@@ -197,7 +294,12 @@ export function fromTokens(
   return {
     access: value.access_token,
     refresh: value.refresh_token,
-    browserCookie,
+    browserCookie: browserCookie || "",
+    actorType: actor?.type as "carbon" | "silicon",
+    actorId:
+      typeof actor?.public_id === "string"
+        ? actor.public_id
+        : previous?.actorId,
     expires,
     deadline,
     sessionId: String(value.session_id),
@@ -291,16 +393,30 @@ export async function finish(
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("X-Frame-Options", "DENY");
-  if (session === null)
-    headers.set(
+  if (session === null) {
+    const id = config.selectedAccount || config.activeSessionId;
+    if (
+      !config.selectedAccount ||
+      config.selectedAccount === config.activeSessionId
+    )
+      headers.append(
+        "Set-Cookie",
+        `${config.cookieName}=; Max-Age=0${config.cookieOptions}`,
+      );
+    if (id)
+      headers.append(
+        "Set-Cookie",
+        `${accountCookie(config, id)}=; Max-Age=0${config.cookieOptions}`,
+      );
+  } else if (session) {
+    const value = `${await seal(session, config)}; Max-Age=${Math.max(0, Math.floor((session.deadline - Date.now()) / 1000))}${config.cookieOptions}`;
+    if (!config.selectedAccount || session.sessionId === config.activeSessionId)
+      headers.append("Set-Cookie", `${config.cookieName}=${value}`);
+    headers.append(
       "Set-Cookie",
-      `${config.cookieName}=; Max-Age=0${config.cookieOptions}`,
+      `${accountCookie(config, session.sessionId)}=${value}`,
     );
-  else if (session)
-    headers.set(
-      "Set-Cookie",
-      `${config.cookieName}=${await seal(session, config)}; Max-Age=${Math.max(0, Math.floor((session.deadline - Date.now()) / 1000))}${config.cookieOptions}`,
-    );
+  }
   return new Response(response.body, { status: response.status, headers });
 }
 export function apiHeaders(request: Request, session: Session | null): Headers {
@@ -316,7 +432,7 @@ export function apiHeaders(request: Request, session: Session | null): Headers {
   }
   if (session) {
     headers.set("Authorization", `Bearer ${session.access}`);
-    headers.set("Cookie", session.browserCookie);
+    if (session.browserCookie) headers.set("Cookie", session.browserCookie);
   }
   if (
     request.headers.get("x-iam-telemetry") === "off" ||

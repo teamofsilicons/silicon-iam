@@ -7,7 +7,21 @@ export type ScopeDescriptor = {
   description: string;
   critical: boolean;
   app_id: string | null;
+  /** Consent only: calls the audience's declared chain could make for the user. */
+  downstream?: ScopeDownstream[] | null;
 };
+
+export type ScopeDownstream = {
+  via_app_id: string;
+  app_id: string;
+  app_name?: string | null;
+  endpoint_id: string;
+  description: string;
+};
+
+/** One consent line per chained call, naming who makes it and where it lands. */
+export const downstreamSummary = (call: ScopeDownstream): string =>
+  `Lets ${call.via_app_id} use ${call.description} in ${call.app_name || call.app_id}`;
 
 export const defaultAppScope = (): AppScope => ({
   iam: ["self.identity.read", "self.profile.read"],

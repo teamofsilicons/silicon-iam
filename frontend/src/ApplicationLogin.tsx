@@ -1,48 +1,58 @@
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { mutation, request } from "./api";
 import {
-  canApproveOrganizationSelections,
   loginApplications,
   loginCallback,
   tokenDestination,
+  validateLoginConsent,
   type LoginToken,
 } from "./login-flow";
-import { ErrorBox } from "./ui";
+import {
+  accountHeaders,
+  accountLabel,
+  addAccountUrl,
+  collapsedAccounts,
+  configuredAccounts,
+  saveCollapsedAccounts,
+  type BrowserAccount,
+} from "./account-model";
+import { ErrorBox, Loading } from "./ui";
 import { ScopeList } from "./Scopes";
-import { BundleLogo } from "./BundleLogo";
-import { validateConsent, type ScopeDescriptor } from "./scope-model";
+import { type ScopeDescriptor } from "./scope-model";
 
 type Organization = { org_id: string; name: string; authorized: boolean };
 type Choices = {
   app_id: string;
   app_name?: string;
-  app_logo?: string | null;
   items: Organization[];
   consent_required: boolean;
-  allow_empty_organization_selection: boolean;
   scope_version: number;
   scopes: ScopeDescriptor[];
 };
-type Bundle = {
-  bundle_id: string;
-  app_name?: string;
-  app_logo?: string | null;
-  app_ids: string[];
+type AccountChoices = {
+  account: BrowserAccount;
+  choices: Choices[];
+  error?: unknown;
 };
 
-/** One IAM session approves independent, explicitly selected grants per app. */
+/** A login is exactly one authenticated account and one chosen organization. */
 export default function ApplicationLogin() {
-  const [choices, setChoices] = createSignal<Choices[]>([]);
-  const [selected, setSelected] = createSignal<Record<string, string[]>>({});
-  const [bundle, setBundle] = createSignal<Bundle>();
+  const [groups, setGroups] = createSignal<AccountChoices[]>([]);
+  const [selection, setSelection] = createSignal<{
+    accountId: string;
+    orgId: string;
+  }>();
+  const [kind, setKind] = createSignal<"carbon" | "silicon">("carbon");
+  const [collapsed, setCollapsed] = createSignal(collapsedAccounts());
   const [step, setStep] = createSignal<
-    "validate" | "consent" | "select" | "loading" | "done"
-  >("validate");
+    "select" | "consent" | "loading" | "done"
+  >("select");
+  const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<unknown>();
   const [tokens, setTokens] = createSignal<LoginToken[]>([]);
   const [expired, setExpired] = createSignal(false);
   const send = mutation();
-  let batch = false;
+  let parsed: ReturnType<typeof loginApplications>;
   let destination: URL | undefined;
   let disposed = false;
   let expiryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -50,153 +60,115 @@ export default function ApplicationLogin() {
     disposed = true;
     clearTimeout(expiryTimer);
   });
-  onMount(async () => {
+  async function load() {
+    setLoading(true);
+    setError();
     try {
       const params = new URL(location.href).searchParams;
-      const parsed = loginApplications(params);
-      batch = parsed.batch;
+      parsed = loginApplications(params);
       destination = loginCallback(params.get("redirect_uri"));
-      const bundled = parsed.bundleId
-        ? await request<{ bundle: Bundle; items: Choices[] }>(
-            `/api/v1/app-auth/bundles/${encodeURIComponent(parsed.bundleId)}/organizations`,
-          )
-        : undefined;
-      const values = bundled
-        ? bundled.items
-        : batch
-          ? (
-              await request<{ items: Choices[] }>(
-                `/api/v1/app-auth/batch/organizations?app_ids=${encodeURIComponent(parsed.ids.join(","))}`,
-              )
-            ).items
-          : [
-              await request<Choices>(
-                `/api/v1/app-auth/organizations?app_id=${encodeURIComponent(parsed.ids[0])}`,
-              ),
-            ];
-      if (disposed) return;
-      validateConsent(values);
-      if (bundled) setBundle(bundled.bundle);
-      setChoices(values);
-      const sharedExisting = bundled
-        ? [
-            ...new Set(
-              values.flatMap((app) =>
-                app.items
-                  .filter((org) => org.authorized)
-                  .map((org) => org.org_id),
-              ),
-            ),
-          ].filter((orgId) =>
-            values.every((app) =>
-              app.items.some((org) => org.org_id === orgId),
-            ),
-          )
-        : undefined;
-      setSelected(
-        Object.fromEntries(
-          values.map((app) => [
-            app.app_id,
-            sharedExisting ??
-              app.items
-                .filter((org) => org.authorized)
-                .map((org) => org.org_id),
-          ]),
-        ),
+      const accounts = await configuredAccounts();
+      const values = await Promise.all(
+        accounts.items.map(async (account): Promise<AccountChoices> => {
+          if (account.unavailable) return { account, choices: [] };
+          try {
+            const headers = accountHeaders(account.account_id);
+            const path = parsed.bundleId
+              ? `/api/v1/app-auth/bundles/${encodeURIComponent(parsed.bundleId)}/organizations`
+              : parsed.batch
+                ? `/api/v1/app-auth/batch/organizations?app_ids=${encodeURIComponent(parsed.ids.join(","))}`
+                : `/api/v1/app-auth/organizations?app_id=${encodeURIComponent(parsed.ids[0])}`;
+            const result = await request<Choices | { items: Choices[] }>(path, {
+              headers,
+            });
+            const choices =
+              "items" in result && !("app_id" in result)
+                ? (result.items as Choices[])
+                : [result as Choices];
+            validateLoginConsent(choices);
+            return { account, choices };
+          } catch (cause) {
+            return { account, choices: [], error: cause };
+          }
+        }),
       );
-    } catch (err) {
-      if (!disposed) setError(err);
+      if (disposed) return;
+      setGroups(values);
+      const active = accounts.items.find(
+        (account) => account.account_id === accounts.active_account_id,
+      );
+      if (active) setKind(active.type);
+    } catch (cause) {
+      if (!disposed) setError(cause);
+    } finally {
+      if (!disposed) setLoading(false);
     }
-  });
-  const canApprove = () =>
-    canApproveOrganizationSelections(choices(), selected());
-  const needsConsent = () =>
-    choices().some((app) => app.consent_required !== false);
-  const sharedChoices = () =>
-    bundle()
-      ? [
-          {
-            ...choices()[0],
-            allow_empty_organization_selection: choices().every(
-              (app) => app.allow_empty_organization_selection === true,
-            ),
-            app_id: bundle()!.bundle_id,
-            app_name: bundle()!.app_name,
-            app_logo: bundle()!.app_logo,
-            items: choices()[0]
-              .items.filter((org) =>
-                choices().every((app) =>
-                  app.items.some((item) => item.org_id === org.org_id),
-                ),
-              )
-              .map((org) => ({
-                ...org,
-                authorized: choices().some((app) =>
-                  app.items.some(
-                    (item) => item.org_id === org.org_id && item.authorized,
-                  ),
-                ),
-              })),
-          },
-        ]
-      : choices();
-  const selectedFor = (id: string) =>
-    bundle()
-      ? [...new Set(choices().flatMap((app) => selected()[app.app_id] || []))]
-      : selected()[id] || [];
-  function choose(appId: string, ids: string[]) {
-    const idsToChange = bundle() ? choices().map((app) => app.app_id) : [appId];
-    setSelected((current) => ({
-      ...current,
-      ...Object.fromEntries(idsToChange.map((id) => [id, ids])),
-    }));
   }
-  const consentGroups = () =>
-    bundle()
-      ? [
-          {
-            app_id: bundle()!.bundle_id,
-            app_name: bundle()!.app_name,
-            app_logo: bundle()!.app_logo,
-            scopes: [
-              ...new Map(
-                choices()
-                  .filter((app) => app.consent_required !== false)
-                  .flatMap((app) => app.scopes)
-                  .map((scope) => [scope.scope, scope]),
-              ).values(),
-            ],
-          },
-        ]
-      : choices().filter((app) => app.consent_required !== false);
-  async function approve() {
-    if (step() !== "select" || !canApprove()) return;
+  onMount(() => void load());
+  const selectedGroup = () =>
+    groups().find(
+      (group) => group.account.account_id === selection()?.accountId,
+    );
+  const organizations = (group: AccountChoices) =>
+    (group.choices[0]?.items || []).filter((org) =>
+      group.choices.every((app) =>
+        app.items.some((other) => other.org_id === org.org_id),
+      ),
+    );
+  const valid = () =>
+    !!selectedGroup() &&
+    organizations(selectedGroup()!).some(
+      (org) => org.org_id === selection()?.orgId,
+    );
+  const critical = () =>
+    (selectedGroup()?.choices || []).filter(
+      (app) =>
+        app.consent_required !== false &&
+        app.scopes.some((scope) => scope.critical && !scope.app_id),
+    );
+  function toggle(id: string) {
+    const next = collapsed().includes(id)
+      ? collapsed().filter((item) => item !== id)
+      : [...collapsed(), id];
+    setCollapsed(next);
+    saveCollapsedAccounts(next);
+  }
+  async function approve(reviewed = false) {
+    if (!valid() || !["select", "consent"].includes(step())) return;
+    if (!reviewed && critical().length) {
+      setStep("consent");
+      return;
+    }
     setError();
     setStep("loading");
     const started = Date.now();
     try {
-      const applications = choices().map((app) => ({
+      const applications = selectedGroup()!.choices.map((app) => ({
         app_id: app.app_id,
-        org_ids: selected()[app.app_id],
+        org_ids: [selection()!.orgId],
         approved_scopes: app.scopes.map((scope) => scope.scope),
         scope_version: app.scope_version,
       }));
       const callback = destination ? { redirect_uri: destination.href } : {};
-      const result = batch
+      const options = { accountId: selection()!.accountId };
+      const result = parsed.batch
         ? await send<{ items: LoginToken[] }>(
             "POST",
-            bundle()
-              ? `/api/v1/app-auth/bundles/${encodeURIComponent(bundle()!.bundle_id)}/short-lived-tokens`
+            parsed.bundleId
+              ? `/api/v1/app-auth/bundles/${encodeURIComponent(parsed.bundleId)}/short-lived-tokens`
               : "/api/v1/app-auth/batch/short-lived-tokens",
             { applications, ...callback },
+            options,
           )
         : {
             items: [
               {
-                ...(await send("POST", "/api/v1/app-auth/short-lived-tokens", {
-                  ...applications[0],
-                  ...callback,
-                })),
+                ...(await send(
+                  "POST",
+                  "/api/v1/app-auth/short-lived-tokens",
+                  { ...applications[0], ...callback },
+                  options,
+                )),
                 app_id: applications[0].app_id,
               } as LoginToken,
             ],
@@ -209,272 +181,275 @@ export default function ApplicationLogin() {
             : item.expires_in * 1000 - (Date.now() - started),
         ),
       );
-      if (remaining <= 0) {
+      if (!Number.isFinite(remaining) || remaining <= 0) {
         setExpired(true);
         setStep("done");
         return;
       }
       setStep("done");
-      if (destination) {
-        location.assign(tokenDestination(destination, result.items, batch));
-      } else {
+      if (destination)
+        location.assign(
+          tokenDestination(destination, result.items, parsed.batch),
+        );
+      else {
         setTokens(result.items);
         expiryTimer = setTimeout(() => {
           setTokens([]);
           setExpired(true);
         }, remaining);
       }
-    } catch (err) {
+    } catch (cause) {
       if (!disposed) {
-        setError(err);
+        setError(cause);
         setStep("select");
       }
     }
   }
+  async function removeAccount(accountId: string) {
+    try {
+      await send("DELETE", `/api/accounts/${encodeURIComponent(accountId)}`);
+      if (selection()?.accountId === accountId) setSelection();
+      await load();
+    } catch (cause) {
+      setError(cause);
+    }
+  }
+  async function manageOrganization(accountId: string, join: boolean) {
+    try {
+      await send("POST", "/api/accounts/select", { account_id: accountId });
+      const config = await request<{ consoleOrigin: string }>("/api/config");
+      const url = new URL(join ? "/join" : "/", config.consoleOrigin);
+      url.searchParams.set("onboarding", "1");
+      location.assign(url);
+    } catch (cause) {
+      setError(cause);
+    }
+  }
   return (
-    <div class="stack">
-      <ErrorBox error={error()} />
-      <Show
-        when={choices().length}
-        fallback={
-          <p role="status">
-            {error()
-              ? "Sign-in has not been authorized."
-              : "Validating applications…"}
+    <div class="stack account-login">
+      <ErrorBox error={error()} retry={() => void load()} />
+      <Show when={!loading()} fallback={<Loading />}>
+        <Show when={step() === "select" || step() === "loading"}>
+          <p class="muted">
+            Choose the account and organization you want to use.
           </p>
-        }
-      >
-        <Show when={step() === "validate"}>
-          <div class="notice">
-            <strong>
-              {bundle()
-                ? "Connect application bundle"
-                : choices().length === 1
-                  ? "Connect application"
-                  : `Connect ${choices().length} applications`}
-            </strong>
-            <p>
-              You decide which organizations each app can access. Your
-              credentials stay in IAM.
-            </p>
-            <ul>
-              <For
-                each={
-                  bundle()
-                    ? [
-                        {
-                          app_id: bundle()!.bundle_id,
-                          app_name: bundle()!.app_name,
-                          app_logo: bundle()!.app_logo,
-                        },
-                      ]
-                    : choices()
-                }
-              >
-                {(app) => (
-                  <li>
-                    <div class="actions">
-                      <BundleLogo url={app.app_logo} />
-                      <div>
-                        <strong>{app.app_name || app.app_id}</strong>
-                        <small> · {app.app_id}</small>
-                      </div>
-                    </div>
-                  </li>
-                )}
-              </For>
-            </ul>
-            <Show when={destination}>
-              <p>Return to: {destination?.origin}</p>
-            </Show>
+          <div class="identity-tabs" role="tablist" aria-label="Account type">
+            <For each={["carbon", "silicon"] as const}>
+              {(type) => (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={kind() === type}
+                  disabled={step() === "loading"}
+                  onClick={() => {
+                    setKind(type);
+                    setSelection();
+                  }}
+                >
+                  Continue as {type === "carbon" ? "Carbon" : "Silicon"}
+                </button>
+              )}
+            </For>
           </div>
+          <div
+            class="account-list"
+            role="radiogroup"
+            aria-label="Account and organization"
+          >
+            <For
+              each={groups().filter(
+                (group) =>
+                  group.account.type === kind() || group.account.unavailable,
+              )}
+            >
+              {(group) => (
+                <section class="account-group">
+                  <button
+                    type="button"
+                    class="account-heading"
+                    aria-expanded={
+                      !collapsed().includes(group.account.account_id)
+                    }
+                    onClick={() => toggle(group.account.account_id)}
+                  >
+                    <span class="identity-avatar">
+                      {(
+                        group.account.user?.display_name ||
+                        accountLabel(group.account)
+                      )
+                        .slice(0, 1)
+                        .toUpperCase()}
+                    </span>
+                    <span>
+                      <strong>
+                        {group.account.user?.display_name ||
+                          accountLabel(group.account)}
+                      </strong>
+                      <small>{accountLabel(group.account)}</small>
+                    </span>
+                    <span class="account-chevron" aria-hidden="true">
+                      {collapsed().includes(group.account.account_id)
+                        ? "+"
+                        : "−"}
+                    </span>
+                  </button>
+                  <Show when={!collapsed().includes(group.account.account_id)}>
+                    <ErrorBox error={group.error} />
+                    <Show
+                      when={!group.account.unavailable}
+                      fallback={
+                        <div class="account-empty">
+                          <p>
+                            {group.account.expired
+                              ? "This account needs to sign in again."
+                              : "This account is temporarily unavailable."}
+                          </p>
+                          <button
+                            type="button"
+                            class="text-button"
+                            onClick={() =>
+                              void removeAccount(group.account.account_id)
+                            }
+                          >
+                            Remove from this browser
+                          </button>
+                        </div>
+                      }
+                    >
+                      <For each={organizations(group)}>
+                        {(org) => (
+                          <label class="account-org-choice">
+                            <input
+                              type="radio"
+                              name="login-context"
+                              value={`${group.account.account_id}:${org.org_id}`}
+                              checked={
+                                selection()?.accountId ===
+                                  group.account.account_id &&
+                                selection()?.orgId === org.org_id
+                              }
+                              disabled={step() === "loading"}
+                              onChange={() =>
+                                setSelection({
+                                  accountId: group.account.account_id,
+                                  orgId: org.org_id,
+                                })
+                              }
+                            />
+                            <span>
+                              <strong>{org.name}</strong>
+                              <small>
+                                {accountLabel(group.account)}@{org.org_id}
+                              </small>
+                            </span>
+                          </label>
+                        )}
+                      </For>
+                      <Show when={!organizations(group).length && !group.error}>
+                        <p class="account-empty">
+                          Create or join an organization to continue.
+                        </p>
+                      </Show>
+                      <div class="account-actions">
+                        <button
+                          type="button"
+                          class="text-button"
+                          onClick={() =>
+                            void manageOrganization(
+                              group.account.account_id,
+                              false,
+                            )
+                          }
+                        >
+                          Create an organization
+                        </button>
+                        <button
+                          type="button"
+                          class="text-button"
+                          onClick={() =>
+                            void manageOrganization(
+                              group.account.account_id,
+                              true,
+                            )
+                          }
+                        >
+                          Join an organization
+                        </button>
+                        <button
+                          type="button"
+                          class="text-button"
+                          onClick={() =>
+                            void removeAccount(group.account.account_id)
+                          }
+                        >
+                          Remove account
+                        </button>
+                      </div>
+                    </Show>
+                  </Show>
+                </section>
+              )}
+            </For>
+          </div>
+          <a class="button add-account" href={addAccountUrl(kind())}>
+            ＋ Add another account
+          </a>
           <button
             class="button primary"
-            onClick={() => setStep(needsConsent() ? "consent" : "select")}
+            disabled={!valid() || step() === "loading"}
+            aria-busy={step() === "loading"}
+            onClick={() => void approve()}
           >
-            {needsConsent() ? "Review permissions" : "Choose organizations"}
+            {step() === "loading" ? "Signing in…" : "Continue"}
           </button>
         </Show>
         <Show when={step() === "consent"}>
-          <h2>Review requested permissions</h2>
-          <p>
-            Continuing approves these account permissions and permissions for
-            the organizations you choose next. Critical permissions include
-            access to other members or sensitive actions.
+          <h3>Review IAM permissions</h3>
+          <p class="muted">
+            These applications are requesting sensitive access in IAM for the
+            account and organization you selected.
           </p>
-          <For each={consentGroups()}>
+          <For each={critical()}>
             {(app) => (
-              <section class="stack">
-                <div class="actions">
-                  <BundleLogo url={app.app_logo} />
-                  <h3>{app.app_name || app.app_id}</h3>
-                </div>
-                <ScopeList items={app.scopes} />
+              <section class="consent-app">
+                <h3>{app.app_name || app.app_id}</h3>
+                <ScopeList
+                  items={app.scopes.filter(
+                    (scope) => scope.critical && !scope.app_id,
+                  )}
+                />
               </section>
             )}
           </For>
           <div class="actions">
-            <button class="button" onClick={() => setStep("validate")}>
+            <button class="button" onClick={() => setStep("select")}>
               Back
             </button>
-            <button class="button primary" onClick={() => setStep("select")}>
-              Approve permissions & choose organizations
+            <button class="button primary" onClick={() => void approve(true)}>
+              Approve & continue
             </button>
           </div>
         </Show>
-        <Show when={["select", "loading", "done"].includes(step())}>
-          <p>
-            Choose the organizations to share. Apps with account onboarding
-            permissions can let you continue without one. Existing access is
-            kept; future memberships are not shared automatically.
-          </p>
-          <Show when={choices().length > 1 && !bundle()}>
-            <button
-              type="button"
-              class="text-button"
-              disabled={step() !== "select"}
-              onClick={() =>
-                setSelected(
-                  Object.fromEntries(
-                    choices().map((app) => [
-                      app.app_id,
-                      app.items.map((org) => org.org_id),
-                    ]),
-                  ),
-                )
-              }
-            >
-              Share all current organizations with every listed app
-            </button>
-          </Show>
-          <For each={sharedChoices()}>
-            {(app) => (
-              <fieldset
-                disabled={step() !== "select"}
-                class="stack organization-consent"
-              >
-                <legend>{app.app_name || app.app_id}</legend>
-                <BundleLogo url={app.app_logo} />
-                <small>{app.app_id}</small>
-                <Show
-                  when={
-                    app.allow_empty_organization_selection && app.items.length
-                  }
-                >
-                  <p>You can continue without selecting an organization.</p>
-                </Show>
-                <Show
-                  when={app.items.length}
-                  fallback={
-                    <p>
-                      {app.allow_empty_organization_selection
-                        ? "You can continue without an organization and use the approved account permissions."
-                        : "Join or create an organization in IAM, then return here to sign in."}
-                    </p>
-                  }
-                >
-                  <button
-                    type="button"
-                    class="text-button"
-                    onClick={() =>
-                      choose(
-                        app.app_id,
-                        app.items.map((org) => org.org_id),
-                      )
-                    }
-                  >
-                    Select all current organizations for this app
-                  </button>
-                  <For each={app.items}>
-                    {(org) => (
-                      <label class="organization-choice">
-                        <input
-                          type="checkbox"
-                          checked={selectedFor(app.app_id).includes(org.org_id)}
-                          disabled={org.authorized}
-                          onChange={(event) => {
-                            const checked = event.currentTarget.checked;
-                            choose(
-                              app.app_id,
-                              checked
-                                ? [...selectedFor(app.app_id), org.org_id]
-                                : selectedFor(app.app_id).filter(
-                                    (id) => id !== org.org_id,
-                                  ),
-                            );
-                          }}
-                        />
-                        <span>
-                          <strong>{org.name}</strong>
-                          <small>
-                            {org.org_id}
-                            {org.authorized
-                              ? bundle()
-                                ? " · Already authorized for a member"
-                                : " · Already authorized"
-                              : ""}
-                          </small>
-                        </span>
-                      </label>
-                    )}
-                  </For>
-                </Show>
-              </fieldset>
-            )}
-          </For>
-          <p class="muted">
-            Each application receives only its declared, approved account and
-            organization permissions. Creating or joining an organization does
-            not share it automatically; approve it in IAM afterward. Your IAM
-            authentication credentials stay in IAM.
-          </p>
-          <Show when={step() === "select" && needsConsent()}>
-            <button class="text-button" onClick={() => setStep("consent")}>
-              Review permissions again
-            </button>
-          </Show>
-          <button
-            type="button"
-            class="button primary handoff-button"
-            classList={{ "handoff-ready": step() === "done" }}
-            disabled={!canApprove() || step() !== "select"}
-            aria-busy={step() === "loading"}
-            onClick={() => void approve()}
-          >
-            <span class="handoff-label" role="status" aria-live="polite">
-              <Show when={step() === "loading"}>
-                <span class="handoff-spinner" aria-hidden="true" />
-              </Show>
-              {step() === "done"
-                ? "✓ Authorized"
-                : step() === "loading"
-                  ? "Authorizing…"
-                  : `Authorize ${bundle() ? "bundle" : choices().length === 1 ? "application" : `${choices().length} applications`}`}
-            </span>
+        <Show when={step() === "done"}>
+          <div class="notice success" role="status">
+            {expired()
+              ? "This sign-in expired. Start again to continue."
+              : "Your sign-in is ready."}
+          </div>
+        </Show>
+        <For each={tokens()}>
+          {(token) => (
+            <div class="notice">
+              <strong>{token.app_id}</strong>
+              <p>Give this single-use sign-in token to the application.</p>
+              <code class="login-token">{token.slt}</code>
+            </div>
+          )}
+        </For>
+        <Show when={expired()}>
+          <button class="button" onClick={() => location.reload()}>
+            Start again
           </button>
-          <For each={tokens()}>
-            {(token) => (
-              <div class="notice">
-                <strong>{token.app_id}</strong>
-                <p>
-                  If requested, give this short-lived token only to this
-                  application.
-                </p>
-                <code class="login-token">{token.slt}</code>
-                <p>Valid for one exchange and at most two minutes.</p>
-                <Show when={token.request_id}>
-                  <a
-                    href={`/api/v1/login/status?request=${encodeURIComponent(token.request_id!)}`}
-                  >
-                    Check sign-in status
-                  </a>
-                </Show>
-              </div>
-            )}
-          </For>
-          <Show when={expired()}>
-            <p role="status">Tokens expired. Reload to start a new sign-in.</p>
-          </Show>
         </Show>
       </Show>
     </div>

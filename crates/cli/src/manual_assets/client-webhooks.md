@@ -45,7 +45,7 @@ What the verifier does before you see anything:
 Use `applications().approve_webhook(app_id, version, &mutation)`. It activates an under-review or verified application's pending first or replacement endpoint without changing Application status or scopes. The current owning organization's Carbon owner/admin or an IAM platform administrator with `applications.review` may call it. The creator field is audit metadata, not separate authority; legacy Applications still under platform review cannot use this route to become verified.
 
 ```
-let app_id = "acme>checkout";
+let app_id = "checkout";
 let current = client.applications().webhook(app_id).await?;
 // Obtain verified-channel step-up for application.webhook.approve
 // on current.application_id, the internal UUID included in fresh reads.

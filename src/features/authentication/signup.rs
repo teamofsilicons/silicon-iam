@@ -1,7 +1,8 @@
-use crate::domain::id::Id;
+use crate::domain::{auth::CarbonId, id::Id};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde_json::json;
 use sqlx::{FromRow, Postgres, Transaction};
+use std::str::FromStr as _;
 use time::OffsetDateTime;
 
 use crate::{
@@ -19,7 +20,8 @@ use super::{
     idempotency::{self, Claim, IdempotencyKey, Outcome},
     model::{
         AuthSessionResponse, CarbonSelfResponse, CodeDispatchResponse, ContactChannel, Delivery,
-        ValidatedContact, ValidatedSignupCompletion, VerificationOutcome,
+        SignupCompletionResponse, SignupOnboarding, ValidatedContact, ValidatedSignupCompletion,
+        VerificationOutcome,
     },
     otp,
 };
@@ -788,6 +790,54 @@ pub(super) async fn verify_contact(
     Ok(Outcome::fresh(if success { 200 } else { 422 }, outcome))
 }
 
+pub(super) async fn skip_phone(
+    state: &ApiState,
+    key: &IdempotencyKey,
+    signup_session_id: Id,
+) -> Result<Outcome<serde_json::Value>, AppError> {
+    let mut transaction = serializable(state.db(), "signup_skip_phone_transaction").await?;
+    let digest = idempotency::digest_parts(b"signup-skip-phone", &[signup_session_id.as_bytes()]);
+    let record_id = match idempotency::begin::<serde_json::Value>(
+        &mut transaction,
+        &state.crypto,
+        key,
+        signup_session_id.as_bytes(),
+        "DELETE /api/v1/signup/sessions/{session_id}/phone",
+        digest,
+        false,
+    )
+    .await?
+    {
+        Claim::Replay { status, response } => {
+            transaction
+                .commit()
+                .await
+                .map_err(|error| database_conflict(&error, "signup_skip_phone_conflict"))?;
+            return Ok(Outcome::replay(status, response));
+        }
+        Claim::Acquired { record_id } => record_id,
+    };
+    let session = lock_signup_session(&mut transaction, signup_session_id).await?;
+    ensure_pending_session(&session)?;
+    supersede_signup_contact(&mut transaction, signup_session_id, ContactChannel::Phone).await?;
+    bump_signup_session(&mut transaction, signup_session_id).await?;
+    let response = json!({ "skipped": true });
+    idempotency::complete(
+        &mut transaction,
+        &state.crypto,
+        record_id,
+        200,
+        &response,
+        false,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| database_conflict(&error, "signup_skip_phone_conflict"))?;
+    Ok(Outcome::fresh(200, response))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "signup completion and its security records must remain visibly atomic"
@@ -797,51 +847,36 @@ pub(super) async fn complete_signup(
     key: &IdempotencyKey,
     signup_session_id: Id,
     input: ValidatedSignupCompletion,
-) -> Result<Outcome<CarbonSelfResponse>, AppError> {
-    let profile_photo = match input.profile_photo {
-        Some(url) => url,
-        None => default_profile_photo(state, input.carbon_id.as_str())?,
-    };
+) -> Result<Outcome<SignupCompletionResponse>, AppError> {
+    // Hash the supplied choices, before availability-dependent defaults are chosen.
+    // Replaying a completed request must return the same identity and session.
     let request_digest = idempotency::digest_parts(
-        b"signup-complete",
+        b"signup-complete-authenticated-v2",
         &[
             signup_session_id.as_bytes(),
-            input.carbon_id.as_str().as_bytes(),
-            input.display_name.as_bytes(),
+            input
+                .carbon_id
+                .as_ref()
+                .map_or("", CarbonId::as_str)
+                .as_bytes(),
+            input.display_name.as_deref().unwrap_or("").as_bytes(),
             input.timezone.as_bytes(),
-            profile_photo.as_str().as_bytes(),
+            input
+                .profile_photo
+                .as_ref()
+                .map_or("", url::Url::as_str)
+                .as_bytes(),
         ],
     );
-    let request_digest = if state.crypto.replay.active() {
-        // Description was absent in the equivalent old signup contract. A
-        // previously nonempty removed Description remains a digest conflict.
-        idempotency::ReplayDigest::with_legacy(
-            request_digest,
-            idempotency::digest_parts(
-                b"signup-complete",
-                &[
-                    signup_session_id.as_bytes(),
-                    input.carbon_id.as_str().as_bytes(),
-                    input.display_name.as_bytes(),
-                    input.timezone.as_bytes(),
-                    &[0],
-                    b"",
-                    profile_photo.as_str().as_bytes(),
-                ],
-            ),
-        )
-    } else {
-        request_digest.into()
-    };
     let mut transaction = serializable(state.db(), "signup_complete_transaction").await?;
-    let record_id = match idempotency::begin::<CarbonSelfResponse>(
+    let record_id = match idempotency::begin::<SignupCompletionResponse>(
         &mut transaction,
         &state.crypto,
         key,
         signup_session_id.as_bytes(),
         "POST /api/v1/signup/sessions/{session_id}/complete",
         request_digest,
-        false,
+        true,
     )
     .await?
     {
@@ -865,10 +900,28 @@ pub(super) async fn complete_signup(
     ensure_pending_session(&session)?;
     let candidates = verified_candidates(&mut transaction, signup_session_id).await?;
     let email = candidate_plaintext(&state.crypto, &candidates, ContactChannel::Email)?;
-    let phone = candidate_plaintext(&state.crypto, &candidates, ContactChannel::Phone)?;
+    let phone = candidates
+        .iter()
+        .find(|candidate| candidate.kind == "phone")
+        .map(|_| candidate_plaintext(&state.crypto, &candidates, ContactChannel::Phone))
+        .transpose()?;
     let email_id = candidate_id(&candidates, ContactChannel::Email)?;
-    let phone_id = candidate_id(&candidates, ContactChannel::Phone)?;
-    let principal_id = Id::identity(input.carbon_id.as_str()).map_err(|_| AppError::Internal {
+    let phone_id = candidates
+        .iter()
+        .find(|candidate| candidate.kind == "phone")
+        .map(|candidate| candidate.id);
+    let carbon_id = match input.carbon_id {
+        Some(value) => value,
+        None => suggested_carbon_id(&mut transaction, email.expose_secret()).await?,
+    };
+    let display_name = input
+        .display_name
+        .unwrap_or_else(|| suggested_display_name(email.expose_secret()));
+    let profile_photo = match input.profile_photo {
+        Some(url) => url,
+        None => default_profile_photo(state, carbon_id.as_str())?,
+    };
+    let principal_id = Id::identity(carbon_id.as_str()).map_err(|_| AppError::Internal {
         category: "canonical_carbon_identity",
     })?;
     let completion = sqlx::query_as::<_, CompletionRow>(
@@ -879,8 +932,8 @@ pub(super) async fn complete_signup(
     )
     .bind(signup_session_id)
     .bind(principal_id)
-    .bind(input.carbon_id.as_str())
-    .bind(&input.display_name)
+    .bind(carbon_id.as_str())
+    .bind(&display_name)
     .bind(None::<&str>)
     .bind(profile_photo.as_str())
     .bind(&input.timezone)
@@ -892,11 +945,11 @@ pub(super) async fn complete_signup(
     let response = CarbonSelfResponse {
         principal_id: completion.principal_id,
         carbon_id: completion.carbon_handle,
-        display_name: input.display_name,
+        display_name,
         timezone: input.timezone,
         profile_photo: profile_photo.to_string(),
         email: email.expose_secret().to_owned(),
-        phone_number: phone.expose_secret().to_owned(),
+        phone_number: phone.map(|value| value.expose_secret().to_owned()),
         status: "active".to_owned(),
         version: completion.aggregate_version,
         created_at: completion.created_at,
@@ -918,17 +971,36 @@ pub(super) async fn complete_signup(
             aggregate_id: completion.principal_id,
             aggregate_version: completion.aggregate_version,
             failure_code: None,
-            metadata: json!({ "carbon_id": input.carbon_id.as_str() }),
+            metadata: json!({ "carbon_id": carbon_id.as_str() }),
         },
     )
     .await?;
+    let tokens = super::tokens::issue_login_session(
+        &mut transaction,
+        &state.crypto,
+        &state.settings.security,
+        completion.principal_id,
+        ContactChannel::Email,
+    )
+    .await?;
+    let requires_organization = !sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM iam.organization_memberships WHERE principal_id = $1 AND status = 'active')"
+    ).bind(completion.principal_id).fetch_one(&mut *transaction).await
+        .map_err(|_| AppError::Internal { category: "signup_organization_state" })?;
+    let response = SignupCompletionResponse {
+        profile: response,
+        tokens,
+        onboarding: SignupOnboarding {
+            requires_organization,
+        },
+    };
     idempotency::complete(
         &mut transaction,
         &state.crypto,
         record_id,
         201,
         &response,
-        false,
+        true,
     )
     .await?;
     transaction
@@ -1172,12 +1244,92 @@ async fn verified_candidates(
     .map_err(|_| AppError::Internal {
         category: "signup_candidates_read",
     })?;
-    if candidates.len() != 2 {
+    let has_unverified_contact = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM iam.signup_contact_candidates WHERE signup_session_id = $1 AND superseded_at IS NULL AND verified_at IS NULL)"
+    ).bind(signup_session_id).fetch_one(&mut **transaction).await
+        .map_err(|_| AppError::Internal { category: "signup_unverified_contacts" })?;
+    if has_unverified_contact || !candidates.iter().any(|candidate| candidate.kind == "email") {
         return Err(AppError::Conflict {
             code: std::borrow::Cow::Borrowed("signup_contacts_not_verified"),
         });
     }
     Ok(candidates)
+}
+
+fn suggested_display_name(email: &str) -> String {
+    let local = email.split('@').next().unwrap_or("Member");
+    let name = local
+        .split('+')
+        .next()
+        .unwrap_or(local)
+        .replace(['.', '_', '-'], " ");
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() {
+        "Member".to_owned()
+    } else {
+        name.chars().take(200).collect()
+    }
+}
+
+fn suggested_handle(email: &str) -> String {
+    let local = email.split('@').next().unwrap_or("");
+    let local = local
+        .split('+')
+        .next()
+        .unwrap_or(local)
+        .to_ascii_lowercase();
+    let mut handle: String = local
+        .chars()
+        .filter_map(|ch| match ch {
+            'a'..='z' | '1'..='9' | '_' | '-' => Some(ch),
+            '.' => Some('_'),
+            _ => None,
+        })
+        .take(30)
+        .collect();
+    if handle.len() < 3 {
+        handle.push_str("member");
+    }
+    handle
+}
+
+async fn suggested_carbon_id(
+    transaction: &mut Transaction<'_, Postgres>,
+    email: &str,
+) -> Result<CarbonId, AppError> {
+    let base = suggested_handle(email);
+    // Serialize generated claims of the same email-derived base. Database uniqueness
+    // remains authoritative for explicit IDs and concurrent signup transactions.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 122))")
+        .bind(&base)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|_| AppError::Internal {
+            category: "signup_handle_lock",
+        })?;
+    for counter in 0_u32..10_000 {
+        let suffix = if counter == 0 {
+            String::new()
+        } else {
+            let mut number = counter;
+            let mut digits = Vec::new();
+            while number > 0 {
+                number -= 1;
+                digits.push(char::from(b'1' + u8::try_from(number % 9).unwrap_or(0)));
+                number /= 9;
+            }
+            format!("_{}", digits.into_iter().rev().collect::<String>())
+        };
+        let handle = format!("c:{}{suffix}", &base[..base.len().min(30 - suffix.len())]);
+        if contacts::carbon_id_available(transaction, &handle).await? {
+            return CarbonId::from_str(&handle).map_err(|_| AppError::Internal {
+                category: "signup_suggested_handle",
+            });
+        }
+    }
+    Err(AppError::Conflict {
+        code: std::borrow::Cow::Borrowed("carbon_id_suggestion_unavailable"),
+    })
 }
 
 fn candidate_plaintext(

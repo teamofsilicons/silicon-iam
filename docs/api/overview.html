@@ -18,13 +18,12 @@
     <tr>
       <td><strong>Carbon</strong></td>
       <td>A human account.</td>
-      <td><code>carbon_id</code> — 3–30 characters of <code>a–z</code>, <code>1–9</code>,
-        <code>_</code> and <code>-</code>.</td>
+      <td><code>c:handle</code> — a globally unique Carbon identity.</td>
     </tr>
     <tr>
       <td><strong>Silicon</strong></td>
-      <td>A machine identity, always scoped to one organization.</td>
-      <td><code>{handle}:{org_id}</code> — always contains a colon.</td>
+      <td>An independent machine account with organization memberships.</td>
+      <td><code>si:handle</code> — a globally unique Silicon identity.</td>
     </tr>
     <tr>
       <td><strong>Application</strong></td>
@@ -35,10 +34,10 @@
 </table>
 
 <p>
-  A Silicon has no organization-local form. The handle you submit at creation is input only;
-  <code>head_of_growth</code> registered in <code>tos</code> is addressable forever as
-  <code>head_of_growth:tos</code> and never as anything else. That single colon is also how a
-  client tells the two principal kinds apart, since a Carbon ID cannot contain one.
+  Account IDs are independent of organization membership. A Silicon keeps the same
+  <code>si:head_of_growth</code> ID when it joins another organization. Applications use
+  globally unique bare IDs such as <code>billing</code>; bundle IDs retain their
+  <code>org&gt;bundle</code> namespace.
 </p>
 
 <h2>Identifiers, and what they are not</h2>
@@ -50,7 +49,7 @@
 <p>
   A public <code>membership_id</code> is <code>carbon_id[org_id]</code> or
   <code>silicon_id[org_id]</code>, using the full Silicon ID: for example
-  <code>saket[tos]</code> and <code>helper:tos[tos]</code>. URL-encode the brackets
+  <code>c:saket[tos]</code> and <code>si:helper[tos]</code>. URL-encode the brackets
   in path segments. These stable identifiers also appear in relationship fields,
   trust selectors and webhook membership references. UUID membership keys remain
   private to storage. Identifier resolution never grants access; tenant, consent
@@ -83,7 +82,7 @@
   If you are integrating an Application in Rust, the
   <a href="https://docs.iam.teamofsilicons.com/client/">official client</a> provides typed API calls and models, explicit version
   negotiation, credential transports, and webhook verification. Your application still owns
-  credential persistence, refresh coordination, OBO request signing, and retry decisions. These
+  credential persistence, refresh coordination, OBO consent/token coordination, and retry decisions. These
   pages explain the contract behind those calls.
 </p>
 
@@ -108,6 +107,6 @@
 
 <h2>Application authority in v1</h2>
 <p>For inter-app communication, an application can request a short-lived <code>app_access_key</code> using its own Basic credentials. A receiving application verifies the caller's ID and key using the receiver's own Basic credentials. This proves application identity; the receiver remains responsible for authorizing the action. The key grants no user permissions and does not replace OBO. See <a href="https://docs.iam.teamofsilicons.com/api/applications/#app-verification">App verification</a>.</p>
-<p>Applications declare <code>app_scope</code> separately from their <code>webhook_scope</code> subscriptions. Critical permissions go through IAM or external-provider review. Users approve effective permissions and choose organizations before IAM hands the application a short-lived token. Apps never receive IAM credentials or verification codes.</p>
+<p>Applications declare <code>app_scope</code> separately from their <code>webhook_scope</code> subscriptions. Critical permissions go through IAM or external-provider review. Users approve effective IAM permissions and choose organizations before IAM hands the application a short-lived token. OBO endpoints require separate on-demand approval and dedicated tokens. Apps never receive IAM credentials or verification codes.</p>
 <p>External OBO can connect applications owned by different organizations while preserving the user's selected membership context. Bundles offer one displayed login identity for same-organization applications; tokens remain individually bound. Application testing environments reproduce the same contract with isolated credentials, recursively imported dependencies, fixed test OTPs, and configurable inactivity retention.</p>
 <p><code>GET /api/v1/contracts</code> describes the first official <code>v1</code> contract and the current/deprecated/sunset lifecycle. Read <a href="https://docs.iam.teamofsilicons.com/api/conventions/">Request conventions</a> for negotiation and retirement rules.</p>

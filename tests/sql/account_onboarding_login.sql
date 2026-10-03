@@ -21,13 +21,13 @@ INSERT INTO iam.application_approved_scopes (application_id, scope, approved_by_
 SELECT set_config('iam.principal_id','c:new_account',true),
   set_config('iam.application_id','',true), set_config('iam.organization_id','',true);
 SET LOCAL ROLE silicon_iam_api;
-DO $$ DECLARE selected uuid[]; BEGIN
-  selected := iam_private.lock_account_login_organization_selection(
-    'c:new_account','00000000-0000-0000-0000-000000000841',
-    '{}'::text[], 'app-alpha');
-  IF selected IS DISTINCT FROM '{}'::uuid[] THEN
-    RAISE EXCEPTION 'new Carbon account cannot consent without memberships';
-  END IF;
+DO $$ BEGIN
+  BEGIN
+    PERFORM iam_private.lock_account_login_organization_selection(
+      'c:new_account','00000000-0000-0000-0000-000000000841',
+      '{}'::text[], 'app-alpha');
+    RAISE EXCEPTION 'onboarding scope allowed application login without an organization';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
   BEGIN
     PERFORM iam_private.lock_account_login_organization_selection(
       'c:new_account','00000000-0000-0000-0000-000000000841',
@@ -83,72 +83,39 @@ INSERT INTO iam.application_approved_scopes (application_id, scope, approved_by_
   ('app-alpha', 'organizations.join', 'c:test_carbon');
 SET LOCAL ROLE silicon_iam_api;
 DO $$ BEGIN
-  IF iam_private.lock_account_login_organization_selection(
-    'c:new_account','00000000-0000-0000-0000-000000000841',
-    '{}'::text[], 'app-alpha') IS DISTINCT FROM '{}'::uuid[] THEN
-    RAISE EXCEPTION 'join-only onboarding was rejected';
-  END IF;
+  BEGIN
+    PERFORM iam_private.lock_account_login_organization_selection(
+      'c:new_account','00000000-0000-0000-0000-000000000841',
+      '{}'::text[], 'app-alpha');
+    RAISE EXCEPTION 'join-only scope bypassed the required organization';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
 END $$;
 RESET ROLE;
-INSERT INTO iam.oauth_consent_grants (
-  id, application_id, subject_principal_id, subject_kind,
-  parent_authentication_session_id, selected_membership_ids
-) VALUES (
-  '00000000-0000-0000-0000-000000000871', 'app-alpha',
-  'c:new_account', 'carbon',
-  '00000000-0000-0000-0000-000000000841', '{}'
-);
-INSERT INTO iam.oauth_consent_grant_scopes (consent_grant_id, scope)
-SELECT '00000000-0000-0000-0000-000000000871', scope
-FROM unnest(ARRAY['self.identity.read','self.profile.read','organizations.join']) scope;
-INSERT INTO iam.access_tokens (
-  id, token_class, token_digest, digest_key_version, token_prefix,
-  authentication_session_id, subject_principal_id, subject_kind,
-  client_application_id, audience, audience_application_id,
-  subject_auth_epoch, client_auth_epoch, expires_at
-) VALUES (
-  '00000000-0000-0000-0000-000000000881', 'application_access', decode(repeat('81',32),'hex'), 1, 'oat_onboard1',
-  '00000000-0000-0000-0000-000000000841', 'c:new_account', 'carbon',
-  'app-alpha', 'app-alpha', 'app-alpha',
-  1, 1, transaction_timestamp() + interval '15 minutes'
-);
-INSERT INTO iam.access_token_scopes (access_token_id, scope)
-SELECT '00000000-0000-0000-0000-000000000881', scope
-FROM unnest(ARRAY['self.identity.read','self.profile.read','organizations.join']) scope;
-SELECT set_config('iam.principal_id','app-alpha',true),
-  set_config('iam.application_id','app-alpha',true);
-SET LOCAL ROLE silicon_iam_api;
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM iam_private.lock_current_application_oauth_subject_authority(
-    'app-alpha','00000000-0000-0000-0000-000000000871',
-    '00000000-0000-0000-0000-000000000841','c:new_account',
-    'carbon',NULL,NULL) WHERE subject_public_id='c:new_account' AND org_id IS NULL) THEN
-    RAISE EXCEPTION 'exchange/refresh authority required a membership for new Carbon';
-  END IF;
-END $$;
-SELECT set_config('iam.principal_id','c:new_account',true);
-DO $$ BEGIN
-  IF iam_private.list_current_application_authorizations(
-    '00000000-0000-0000-0000-000000000881','c:new_account',
-    'app-alpha',1) IS DISTINCT FROM '[]'::jsonb THEN
-    RAISE EXCEPTION 'active zero-membership token did not have an empty authorization list';
-  END IF;
-END $$;
-RESET ROLE;
+-- First-party identity sessions remain usable for onboarding. Joining does not
+-- create application authority; the application must explicitly select one org.
 INSERT INTO iam.organization_memberships (id, organization_id, principal_id, principal_kind, org_role)
 VALUES ('00000000-0000-0000-0000-000000000831','00000000-0000-0000-0000-000000000021',
   'c:new_account','carbon','member');
 SET LOCAL ROLE silicon_iam_api;
-DO $$ BEGIN
-  IF iam_private.application_token_allows_membership(
-    '00000000-0000-0000-0000-000000000881','00000000-0000-0000-0000-000000000831') THEN
-    RAISE EXCEPTION 'joining an organization implicitly granted application access';
+DO $$ DECLARE selected uuid[]; BEGIN
+  selected := iam_private.lock_account_login_organization_selection(
+    'c:new_account','00000000-0000-0000-0000-000000000841',
+    ARRAY['test_org'], 'app-alpha');
+  IF selected IS DISTINCT FROM ARRAY['00000000-0000-0000-0000-000000000831'::uuid] THEN
+    RAISE EXCEPTION 'first organization was not explicitly selected';
   END IF;
-  IF iam_private.list_current_application_authorizations(
-    '00000000-0000-0000-0000-000000000881','c:new_account',
-    'app-alpha',1) IS DISTINCT FROM '[]'::jsonb THEN
-    RAISE EXCEPTION 'new membership leaked before explicit reconsent';
-  END IF;
+  BEGIN
+    PERFORM iam_private.lock_account_login_organization_selection(
+      'c:new_account','00000000-0000-0000-0000-000000000841',
+      ARRAY['test_org','test_org'], 'app-alpha');
+    RAISE EXCEPTION 'multiple organization selections were accepted';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+  BEGIN
+    PERFORM iam_private.lock_account_login_organization_selection(
+      'c:new_account','00000000-0000-0000-0000-000000000841',
+      '{}'::text[], 'app-alpha');
+    RAISE EXCEPTION 'joining silently chose an organization';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
 END $$;
 RESET ROLE;
 ROLLBACK;
