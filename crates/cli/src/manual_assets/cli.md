@@ -27,10 +27,10 @@ arguments and related documentation. `iam commands --json` exposes the tree to a
 
 ### Google and Apple login
 
-The next CLI release adds `iam login --provider google` and `iam login --provider apple`.
+CLI 5.1.0 adds `iam login --provider google` and `iam login --provider apple`.
 These commands print the provider's authorization URL and wait for browser verification.
 They require a configured production provider; IAM testing environments reject external
-provider authentication. Already published CLI 5.0.0 artifacts do not include these flags.
+provider authentication. Earlier CLI 5.0.0 artifacts do not include these flags.
 
 A previously linked provider signs in directly. If its verified email belongs to an
 existing account without that provider link, IAM sends a new email code. Enter that code

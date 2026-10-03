@@ -1,6 +1,6 @@
 # Updating an application for IAM 5
 
-This guide describes the IAM 5.0.0 and Honeycomb 0.6.0 integration contracts. IAM 5 is running in production. Update and test each application against these contracts, then coordinate its callers, receiving endpoints and approved Honeycomb catalog before enabling production traffic. A running IAM release does not by itself prove that every dependent application has completed its migration.
+This guide describes the IAM 5.1.0 and Honeycomb 0.6.0 integration contracts. IAM 5 is running in production. Update and test each application against these contracts, then coordinate its callers, receiving endpoints and approved Honeycomb catalog before enabling production traffic. A running IAM release does not by itself prove that every dependent application has completed its migration.
 
 For a broader product guide, read [Building a Team of Silicons-ready application](https://docs.honeycomb.teamofsilicons.com/guides/team-of-silicons-ready-applications/). This page focuses on changes an existing application needs to make.
 
@@ -9,7 +9,7 @@ For a broader product guide, read [Building a Team of Silicons-ready application
 Use the [OpenAPI document](/openapi.yaml) for exact bodies and response types, and the [Rust client guide](/client/guide/) for the SDK. The Rust SDK is published on crates.io:
 
 ```toml
-silicon-iam-client = "5.0.0"
+silicon-iam-client = "5.1.0"
 ```
 
 Installing the CLI does not migrate an application backend into the new protocol. Check [the running backend version](https://backend.iam.teamofsilicons.com/api/v1/version) when coordinating your deployment.
