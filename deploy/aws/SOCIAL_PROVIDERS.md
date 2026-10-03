@@ -19,6 +19,35 @@ The callback path intentionally retains `signup/social` for both signup and logi
 
 Apple private-relay delivery must allow IAM's actual verified mail sender. Current production sender is `iam@teamofsilicons.com`; register the appropriate sender/domain in Apple's relay configuration and preserve the verified Postmark sender configuration. Do not infer delivery success from provider login: verify relay email delivery separately.
 
+## Apple client-secret generation and rotation
+
+Use `deploy/aws/apple-client-secret.py` with Python 3 and `cryptography` installed. It performs local signing only: no provider requests, AWS calls, runtime updates, private-key changes or service restarts. Keep the Apple-downloaded PKCS#8 `.p8` file in an existing private directory owned by the operator (0700); the regular key file must have no group/world permissions (normally 0600) and no hard links. Input and output paths, including directory components, must not be symlinks. On systems where `/tmp` is a symlink, use its real directory path or a private folder under the operator's home.
+
+Prepare a fresh candidate in a private output directory:
+
+```sh
+python3 deploy/aws/apple-client-secret.py generate \
+  --key /absolute/private/apple/AuthKey_KEYID.p8 \
+  --team-id APPLE_TEAM_ID \
+  --key-id APPLE_KEY_ID \
+  --services-id com.example.service \
+  --output /absolute/private/apple/apple-candidate-YYYYMMDD.json
+```
+
+Replace the example IDs with the exact Apple registration values. Team ID and Key ID are ten uppercase alphanumeric characters; Services ID is case-sensitive. `--lifetime-days` defaults to 90 and accepts 1 through 180. The helper requires P-256 and produces ES256 with `kid`, `iss` equal to Team ID, `sub` equal to Services ID and `aud` equal to `https://appleid.apple.com`, then independently verifies the encoded signature. Apple's [client-secret specification](https://developer.apple.com/documentation/AccountOrganizationalDataSharing/creating-a-client-secret) limits expiry to six months; this operator's 180-day maximum stays within that limit.
+
+The new candidate contains only `IAM_APPLE_CLIENT_ID` and `IAM_APPLE_CLIENT_SECRET`. Its adjacent `.receipt.json` contains nonsecret JWT header/claims, generation and expiry dates, public-key fingerprint, local signature-verification result and rotation due date. Both files are created with mode 0600. Standard output includes only the output paths and expiry/rotation dates; never `cat` the candidate into logs or pass its JWT as a command argument. The helper refuses existing files, including dangling symlinks, and atomically publishes each file without replacement after flushing both temporary files. An ordinary publication failure removes only files it created. A process or host crash can leave a partial file pair: treat that attempt as incomplete, preserve or privately remove its files, and regenerate with new names. Require both files and a successful exit before consuming the candidate.
+
+For rotation, run the same command with `rotate` instead of `generate` and a **new** output filename. The existing key, previous candidate and live credential are preserved. Rotation is due 14 days before expiry; for lifetimes shorter than 28 days the lead is half the lifetime. Arrange operational tracking from the nonsecret receipt. The helper does not create an automatic rotation schedule or activate credentials. A valid local signature does not prove that the key is still enabled in Apple or that its Services ID/return URL is configured correctly.
+
+After review, merge only the candidate's two fields into the current protected runtime configuration through the separate deployment operator. Preserve unrelated fields, record the previous/new secret version IDs and retain the previous version for rollback. Run the normal release and live provider acceptance checks below. Do not replace the whole runtime secret with this two-field candidate. Keep the `.p8` as the protected signing source for future rotations; do not upload it as a runtime variable or commit any generated file.
+
+Synthetic-key validation (does not read a real Apple key):
+
+```sh
+python3 -B -m unittest discover -s deploy/aws -p test_apple_client_secret.py -v
+```
+
 ## Account binding and recovery
 
 IAM verifies provider token signature, issuer, audience, nonce and verified email before accepting the callback. Existing provider subjects authenticate only their bound active Carbon, even if a provider email changes. Suspended bindings cannot move to another account by matching an email. First-time provider linking to an existing IAM email requires a new, independent OTP session for that exact Carbon created after the provider request. Successful linking is audited and consumes the provider proof; the already-established OTP session continues the login.
