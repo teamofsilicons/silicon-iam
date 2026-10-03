@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.1.0
+
+- Add direct Google/Apple login, status, completion, and fresh OTP identity linking for the official IAM CLI through the `cli-session` feature.
+- Add separate login-provider capability types while preserving the existing signup-provider struct shape for Rust source compatibility.
+- Keep application integrations on the typed popup/SLT protocol; provider credentials and account linking remain internal IAM concerns.
+
 ## 5.0.0
 
 This is a breaking release. Deploy callers and receivers with the matching IAM
