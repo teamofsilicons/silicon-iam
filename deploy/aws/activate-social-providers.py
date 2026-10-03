@@ -20,6 +20,7 @@ import sys
 import time
 import urllib.request
 import urllib.parse
+import urllib.error
 
 FIELDS = frozenset(("IAM_GOOGLE_CLIENT_ID", "IAM_GOOGLE_CLIENT_SECRET",
                     "IAM_APPLE_CLIENT_ID", "IAM_APPLE_CLIENT_SECRET"))
@@ -235,6 +236,20 @@ def start(args):
         run(["systemctl", "is-active", f"silicon-iam-{service}"])
 
 
+def verify_provider_discovery():
+    response = get(8080, "/api/v1/signup/social/providers")
+    rows = response.get("providers", response.get("data", {}).get("providers", []))
+    require({row["id"] for row in rows if row.get("enabled") and row.get("login_enabled")} == {"google", "apple"},
+            "Both providers did not become available")
+    # src/api/mod.rs deliberately excludes authentication::router from Scoped.
+    try:
+        get(8081, "/api/v1/signup/social/providers")
+    except urllib.error.HTTPError as error:
+        require(error.code == 404, "Unexpected scoped provider discovery response")
+    else:
+        raise RuntimeError("Provider signup route unexpectedly exposed on scoped API")
+
+
 def plan(args):
     require(not args.directory.exists(), "Activation directory already exists")
     version, _ = secret(args)
@@ -283,11 +298,7 @@ def apply(args):
         for name, old_hash in state["env_hashes"].items():
             require(after["env_hashes"][name] == (digest(updated[name]) if name in updated else old_hash),
                     "Unexpected environment mutation")
-        for port in (8080, 8081):
-            response = get(port, "/api/v1/signup/social/providers")
-            rows = response.get("providers", response.get("data", {}).get("providers", []))
-            require({row["id"] for row in rows if row.get("enabled") and row.get("login_enabled")} == {"google", "apple"},
-                    "Both providers did not become available")
+        verify_provider_discovery()
         require(secret(args)[0] == current, "Current secret changed during activation")
         receipt = {"activated": True, "revision": args.revision, "previous_version": args.previous_version,
                    "candidate_version": current, "changed_fields": sorted(FIELDS), "runtime": after,

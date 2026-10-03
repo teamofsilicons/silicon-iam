@@ -24,6 +24,16 @@ def candidate(header=None, claims=None):
 
 
 class ActivationTests(unittest.TestCase):
+    def test_provider_discovery_respects_full_and_scoped_router_boundary(self):
+        enabled = {"providers": [{"id": p, "enabled": True, "login_enabled": True} for p in ("google", "apple")]}
+        scoped404 = activation.urllib.error.HTTPError("http://localhost", 404, "Not found", None, None)
+        with patch.object(activation, "get", side_effect=[enabled, scoped404]):
+            activation.verify_provider_discovery()
+        with patch.object(activation, "get", side_effect=[enabled, enabled]):
+            with self.assertRaises(RuntimeError): activation.verify_provider_discovery()
+        with patch.object(activation, "get", return_value={"providers": []}):
+            with self.assertRaises(RuntimeError): activation.verify_provider_discovery()
+
     def test_runtime_uri_becomes_libpq_environment_without_losing_escaping(self):
         value = activation.postgres_environment("postgresql://runtime%40iam:p%3Ass%2Fword@db.example:5433/iam%2Dprod?sslmode=verify-full&sslrootcert=" + activation.CERT)
         self.assertEqual(value, {"PGHOST": "db.example", "PGPORT": "5433", "PGDATABASE": "iam-prod",
