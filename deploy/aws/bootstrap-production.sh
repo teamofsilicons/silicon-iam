@@ -162,6 +162,7 @@ TESTING_WORKER_DB_URL="postgresql://silicon_iam_worker_runtime:$WORKER_DB_PASSWO
 
 cat > /etc/silicon-iam/api.env <<EOF
 IAM_ENVIRONMENT=production
+IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS=true
 IAM_TELEMETRY=on
 IAM_TELEMETRY_HOME=/var/lib/silicon-iam/telemetry
 IAM_BIND_ADDR=0.0.0.0:8080
@@ -202,12 +203,13 @@ printf '%s' "$APP_SECRET_JSON" | jq -r '
 ' >> /etc/silicon-iam/api.env
 printf '%s' "$APP_SECRET_JSON" | jq -r '
   to_entries[] | select(.key == "IAM_HONEYCOMB_APP_ID" or .key == "IAM_HONEYCOMB_CREDENTIAL_SHA256" or
-    .key == "IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS" or .key == "IAM_HONEYCOMB_SCHEDULED_TESTING") |
+    .key == "IAM_HONEYCOMB_SCHEDULED_TESTING") |
   .key + "=" + (.value | tostring)
 ' >> /etc/silicon-iam/api.env
 
 cat > /etc/silicon-iam/worker.env <<EOF
 IAM_ENVIRONMENT=production
+IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS=true
 IAM_TELEMETRY=on
 IAM_TELEMETRY_HOME=/var/lib/silicon-iam/telemetry
 IAM_AUTH_BASE_URL=https://auth.iam.teamofsilicons.com
@@ -235,8 +237,7 @@ printf '%s' "$APP_SECRET_JSON" | jq -r '
 ' >> /etc/silicon-iam/worker.env
 printf '%s' "$APP_SECRET_JSON" | jq -r '
   to_entries[] | select(.key == "IAM_HONEYCOMB_APP_ID" or .key == "IAM_HONEYCOMB_NOTIFICATION_URL" or
-    .key == "IAM_HONEYCOMB_NOTIFICATION_SIGNING_KEY" or .key == "IAM_HONEYCOMB_SCHEDULED_TESTING" or
-    .key == "IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS") | .key + "=" + (.value | tostring)
+    .key == "IAM_HONEYCOMB_NOTIFICATION_SIGNING_KEY" or .key == "IAM_HONEYCOMB_SCHEDULED_TESTING") | .key + "=" + (.value | tostring)
 ' >> /etc/silicon-iam/worker.env
 
 # Keep optional social sign-in credentials available after host replacement.

@@ -123,7 +123,7 @@ impl ApiError {
         Self::new(
             StatusCode::GONE,
             "management_moved_to_honeycomb",
-            "Manage applications, bundles, scope reviews and testing environments in Honeycomb.",
+            "Manage applications, bundles and testing environments at https://console.honeycomb.teamofsilicons.com/apps and review requests at https://console.honeycomb.teamofsilicons.com/requests/received.",
         )
     }
 

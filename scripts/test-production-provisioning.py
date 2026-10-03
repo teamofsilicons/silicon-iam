@@ -216,7 +216,8 @@ class BootstrapTests(unittest.TestCase):
         self.assertLess(bootstrap.index("direct-ingress.py preflight"), bootstrap.index("configure_database()"))
         self.assertIn("iam-scoped-auth-init", bootstrap)
         self.assertIn("IAM_HONEYCOMB_SCHEDULED_TESTING", bootstrap)
-        self.assertIn("IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS", bootstrap)
+        self.assertEqual(bootstrap.count("IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS=true"), 2)
+        self.assertNotIn('.key == "IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS"', bootstrap)
 
 
 if __name__ == "__main__":
