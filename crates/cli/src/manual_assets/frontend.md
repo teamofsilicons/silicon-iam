@@ -82,7 +82,7 @@ Allowlist `https://auth.iam.teamofsilicons.com/api/v1/sso/callback` in WorkOS. T
 
 ## Authentication and application integration
 
-Carbon signup requires a verified email; phone is optional, and a supplied phone must be verified or explicitly skipped. Google and Apple appear only when their backend providers are configured. A provider-verified email skips email OTP verification. Profile setup offers an available Carbon ID, display name, detected timezone, generated image and image upload. Completion signs the Carbon in automatically and prompts for first-org onboarding when no membership exists. An already-registered email offers login.
+Carbon signup requires a verified email; phone is optional, and a supplied phone must be verified or explicitly skipped. Google and Apple are shown together; signup buttons are enabled only when their backend providers are configured. Native Carbon sign-in explains that provider sign-in is not yet available, rather than starting a signup flow for an existing account. A provider-verified email skips email OTP verification. Profile setup offers an available Carbon ID, display name, detected timezone, generated image and image upload. Completion signs the Carbon in automatically and prompts for first-org onboarding when no membership exists. An already-registered email offers login.
 
 Silicon signup collects an ID, optional 12–24-character password, custodian email, timezone and optional webhook. A generated password is revealed once. The request waits for its verified-email Carbon custodian to approve. `/silicon-custody?request=…` preserves that request through login/signup. Approved Silicons can sign in, edit their own profile and create an organization when their custodian allows it. Organization owners can also seed an organization-custodied Silicon or invite an existing one from a shared organization.
 
@@ -151,3 +151,12 @@ https://docs.iam.teamofsilicons.com. Its static build and hosting configuration
 are in `docs-site/`; it is deployed separately from the authenticated frontend.
 
 The console and login page include **Telemetry settings** for a persistent browser opt-out. The gateway collects sanitized Space Station analytics and explicit events using a server-only key; see [telemetry](../TELEMETRY.md).
+
+
+## Typed application popup login
+
+Applications select `identity_kind=carbon|silicon` and optionally `display=popup` on `/login`. The kind remains pinned through account addition and gateway redirects. Organization buttons show the logo when available and immediately continue, preserving critical IAM consent. Account administration lives behind the single Silicon IAM management link.
+
+The gateway forwards `X-IAM-Identity-Kind` on organization choices and SLT issuance; it validates the encrypted account session type first. The backend independently checks the authenticated principal for single, batch and bundle issuance. The header is optional for compatibility and is included in the idempotency fingerprint when supplied.
+
+Applications own popup creation and their callback. They must bind the selected kind to server-side state, verify it after exchanging the SLT, establish the app session, then send a token-free completion message from their own origin. The opener checks exact origin, window source and attempt ID. See the [client login guide](../client/login.html).

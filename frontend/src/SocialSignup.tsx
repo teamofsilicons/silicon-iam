@@ -10,6 +10,7 @@ type SocialStatus = {
 };
 export default function SocialSignup(props: {
   disabled: boolean;
+  availabilityOnly?: boolean;
   complete: (value: SocialStatus) => Promise<void>;
   busy: (value: boolean) => void;
 }) {
@@ -54,7 +55,13 @@ export default function SocialSignup(props: {
     clearTimeout(timer);
   });
   async function start(provider: Provider) {
-    if (props.disabled || active()) return;
+    if (
+      props.disabled ||
+      active() ||
+      props.availabilityOnly ||
+      !providers().includes(provider)
+    )
+      return;
     const current = ++generation;
     const popup = window.open(
       "about:blank",
@@ -159,27 +166,28 @@ export default function SocialSignup(props: {
     }
   }
   return (
-    <Show
-      when={providers().length}
-      fallback={
-        <Show when={loaded()}>
-          <p class="muted social-availability">
-            Google and Apple sign-up are not available here yet. Continue with
-            email to create your account.
-          </p>
-        </Show>
-      }
-    >
-      <div
-        class="social-signin"
-        classList={{ "single-provider": providers().length === 1 }}
-      >
-        <For each={providers()}>
+    <>
+      <div class="social-signin" aria-label="Google and Apple account options">
+        <For each={["google", "apple"] as Provider[]}>
           {(provider) => (
             <button
               type="button"
               class="button"
-              disabled={props.disabled || !!active()}
+              disabled={
+                !loaded() ||
+                props.disabled ||
+                !!active() ||
+                !providers().includes(provider) ||
+                props.availabilityOnly
+              }
+              title={
+                !providers().includes(provider)
+                  ? "This provider is not configured yet."
+                  : props.availabilityOnly
+                    ? "Provider signup is available when creating an account."
+                    : undefined
+              }
+              aria-describedby="social-availability"
               onClick={() => void start(provider)}
             >
               {provider === "google" ? "Google" : "Apple"}
@@ -187,6 +195,13 @@ export default function SocialSignup(props: {
           )}
         </For>
       </div>
+      <Show when={loaded() && (!providers().length || props.availabilityOnly)}>
+        <p id="social-availability" class="muted social-availability">
+          {props.availabilityOnly
+            ? "Google and Apple sign-in are not available yet. Use your email, phone number or Carbon ID."
+            : "Google and Apple sign-up are not configured yet. Continue with email to create your account."}
+        </p>
+      </Show>
       <Show when={active()}>
         <div class="notice" role="status">
           <p>
@@ -204,6 +219,6 @@ export default function SocialSignup(props: {
         </div>
       </Show>
       <ErrorBox error={error()} />
-    </Show>
+    </>
   );
 }

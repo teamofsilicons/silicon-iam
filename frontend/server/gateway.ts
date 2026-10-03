@@ -159,7 +159,11 @@ export async function gateway(
   )
     return finish(
       Response.redirect(
-        oboConsentDestination(oboRequest, config.auth.origin),
+        oboConsentDestination(
+          oboRequest,
+          config.auth.origin,
+          url.searchParams.get("display") === "popup",
+        ),
         303,
       ),
       config,
@@ -236,6 +240,32 @@ export async function gateway(
   let session = await readSession(request, config),
     changed: Session | null | undefined;
   const publicRequest = isPublic(path, request.method);
+  const requestedKind = request.headers.get("x-iam-identity-kind");
+  const typedLoginRoute =
+    /^\/api\/v1\/app-auth\/(?:organizations|short-lived-tokens|batch\/(?:organizations|short-lived-tokens)|bundles\/[^/]+\/(?:organizations|short-lived-tokens))$/.test(
+      path,
+    );
+  if (typedLoginRoute && requestedKind !== null) {
+    if (!["carbon", "silicon"].includes(requestedKind))
+      return finish(
+        fail(
+          "invalid_identity_kind",
+          "Choose Carbon or Silicon for this sign-in.",
+          400,
+        ),
+        config,
+      );
+    if (session && session.actorType !== requestedKind)
+      return finish(
+        fail(
+          "identity_kind_mismatch",
+          "Choose an account of the requested type to continue.",
+          403,
+        ),
+        config,
+      );
+  }
+
   if (
     session &&
     !publicRequest &&
@@ -303,6 +333,8 @@ export async function gateway(
       "app_id",
       "app_ids",
       "bundle_id",
+      "identity_kind",
+      "display",
       "redirect_uri",
       "org_id",
       "org_ids",
@@ -333,7 +365,11 @@ export async function gateway(
         return finish(
           oboRequest
             ? Response.redirect(
-                oboConsentDestination(oboRequest, config.auth.origin),
+                oboConsentDestination(
+                  oboRequest,
+                  config.auth.origin,
+                  url.searchParams.get("display") === "popup",
+                ),
                 303,
               )
             : fail(
@@ -601,6 +637,8 @@ export async function gateway(
         "app_id",
         "app_ids",
         "bundle_id",
+        "identity_kind",
+        "display",
         "redirect_uri",
         "org_id",
         "org_ids",
@@ -823,6 +861,8 @@ export async function gateway(
         "app_id",
         "app_ids",
         "bundle_id",
+        "identity_kind",
+        "display",
         "redirect_uri",
         "org_id",
         "org_ids",

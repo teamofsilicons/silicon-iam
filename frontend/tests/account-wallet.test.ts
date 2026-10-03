@@ -286,3 +286,49 @@ test("custodian continuation preserves only the validated request identifier", a
     `${env.CONSOLE_ORIGIN}/silicon-custody?request=${requestId}`,
   );
 });
+
+test("typed login rejects the wrong saved account before forwarding, including batches and bundles", async () => {
+  const original = globalThis.fetch,
+    cookie = await cookies();
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return Response.json({ slt: "synthetic" });
+  };
+  try {
+    for (const path of [
+      "/api/v1/app-auth/short-lived-tokens",
+      "/api/v1/app-auth/batch/short-lived-tokens",
+      "/api/v1/app-auth/bundles/tos>suite/short-lived-tokens",
+      "/api/v1/app-auth/organizations?app_id=briefcase",
+    ]) {
+      const request = req(
+        cookie,
+        path,
+        "second",
+        path.includes("short-lived") ? { app_id: "briefcase" } : undefined,
+      );
+      request.headers.set("x-iam-identity-kind", "carbon");
+      const response = await gateway(request, env);
+      assert.equal(response.status, 403);
+      assert.equal(
+        (await response.json()).error.code,
+        "identity_kind_mismatch",
+      );
+    }
+    assert.equal(calls, 0);
+    const valid = req(cookie, "/api/v1/app-auth/short-lived-tokens", "second", {
+      app_id: "briefcase",
+    });
+    valid.headers.set("x-iam-identity-kind", "silicon");
+    globalThis.fetch = async (_url, init) => {
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get("x-iam-identity-kind"), "silicon");
+      assert.equal(headers.get("authorization"), "Bearer sat_second");
+      return Response.json({ slt: "synthetic" });
+    };
+    assert.equal((await gateway(valid, env)).status, 200);
+  } finally {
+    globalThis.fetch = original;
+  }
+});

@@ -523,8 +523,10 @@ pub(super) async fn organizations(
     State(state): State<ApiState>,
     Bearer(access): Bearer,
     Path(path): Path<BundlePath>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     oauth::require_direct_login(&access)?;
+    oauth::requested_identity_kind(&headers, access.subject.actor_type)?;
     validation::bundle_id(&path.bundle_id)?;
     let mut tx = context::begin(state.db(), DatabaseContext::principal(access.subject.id))
         .await
@@ -547,6 +549,7 @@ pub(super) async fn issue(
     Json(input): Json<BatchLoginRequest>,
 ) -> Result<Response, ApiError> {
     oauth::require_direct_login(&access)?;
+    oauth::requested_identity_kind(&headers, access.subject.actor_type)?;
     validation::bundle_id(&path.bundle_id)?;
     batch_login::validate(&input)?;
     let mut tx = context::begin(state.db(), DatabaseContext::principal(access.subject.id))

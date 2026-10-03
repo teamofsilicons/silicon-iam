@@ -2,6 +2,7 @@ import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { mutation, request } from "./api";
 import {
   loginApplications,
+  loginIdentityKind,
   loginCallback,
   tokenDestination,
   validateLoginConsent,
@@ -9,6 +10,7 @@ import {
 } from "./login-flow";
 import {
   accountHeaders,
+  accountOrganizations,
   accountLabel,
   addAccountUrl,
   collapsedAccounts,
@@ -20,7 +22,12 @@ import { ErrorBox, Loading } from "./ui";
 import { ScopeList } from "./Scopes";
 import { type ScopeDescriptor } from "./scope-model";
 
-type Organization = { org_id: string; name: string; authorized: boolean };
+type Organization = {
+  org_id: string;
+  name: string;
+  authorized: boolean;
+  logo?: string | null;
+};
 type Choices = {
   app_id: string;
   app_name?: string;
@@ -32,11 +39,14 @@ type Choices = {
 type AccountChoices = {
   account: BrowserAccount;
   choices: Choices[];
+  logos?: Record<string, string>;
   error?: unknown;
 };
 
 /** A login is exactly one authenticated account and one chosen organization. */
-export default function ApplicationLogin() {
+export default function ApplicationLogin(props: { consoleOrigin: string }) {
+  const params = new URL(location.href).searchParams;
+  const kindPinned = params.has("identity_kind");
   const [groups, setGroups] = createSignal<AccountChoices[]>([]);
   const [selection, setSelection] = createSignal<{
     accountId: string;
@@ -67,37 +77,60 @@ export default function ApplicationLogin() {
       const params = new URL(location.href).searchParams;
       parsed = loginApplications(params);
       destination = loginCallback(params.get("redirect_uri"));
+      const requestedKind = loginIdentityKind(params);
+      if (requestedKind) setKind(requestedKind);
       const accounts = await configuredAccounts();
       const values = await Promise.all(
-        accounts.items.map(async (account): Promise<AccountChoices> => {
-          if (account.unavailable) return { account, choices: [] };
-          try {
-            const headers = accountHeaders(account.account_id);
-            const path = parsed.bundleId
-              ? `/api/v1/app-auth/bundles/${encodeURIComponent(parsed.bundleId)}/organizations`
-              : parsed.batch
-                ? `/api/v1/app-auth/batch/organizations?app_ids=${encodeURIComponent(parsed.ids.join(","))}`
-                : `/api/v1/app-auth/organizations?app_id=${encodeURIComponent(parsed.ids[0])}`;
-            const result = await request<Choices | { items: Choices[] }>(path, {
-              headers,
-            });
-            const choices =
-              "items" in result && !("app_id" in result)
-                ? (result.items as Choices[])
-                : [result as Choices];
-            validateLoginConsent(choices);
-            return { account, choices };
-          } catch (cause) {
-            return { account, choices: [], error: cause };
-          }
-        }),
+        accounts.items
+          .filter((account) => !requestedKind || account.type === requestedKind)
+          .map(async (account): Promise<AccountChoices> => {
+            if (account.unavailable) return { account, choices: [] };
+            try {
+              const headers = {
+                ...accountHeaders(account.account_id),
+                ...(requestedKind
+                  ? { "X-IAM-Identity-Kind": requestedKind }
+                  : {}),
+              };
+              const path = parsed.bundleId
+                ? `/api/v1/app-auth/bundles/${encodeURIComponent(parsed.bundleId)}/organizations`
+                : parsed.batch
+                  ? `/api/v1/app-auth/batch/organizations?app_ids=${encodeURIComponent(parsed.ids.join(","))}`
+                  : `/api/v1/app-auth/organizations?app_id=${encodeURIComponent(parsed.ids[0])}`;
+              const result = await request<Choices | { items: Choices[] }>(
+                path,
+                {
+                  headers,
+                },
+              );
+              const choices =
+                "items" in result && !("app_id" in result)
+                  ? (result.items as Choices[])
+                  : [result as Choices];
+              validateLoginConsent(choices);
+              const orgs = await accountOrganizations(account.account_id).catch(
+                () => [],
+              );
+              return {
+                account,
+                choices,
+                logos: Object.fromEntries(
+                  orgs
+                    .filter((org) => typeof org.logo === "string")
+                    .map((org) => [org.org_id, org.logo!]),
+                ),
+              };
+            } catch (cause) {
+              return { account, choices: [], error: cause };
+            }
+          }),
       );
       if (disposed) return;
       setGroups(values);
       const active = accounts.items.find(
         (account) => account.account_id === accounts.active_account_id,
       );
-      if (active) setKind(active.type);
+      if (active && !requestedKind) setKind(active.type);
     } catch (cause) {
       if (!disposed) setError(cause);
     } finally {
@@ -117,6 +150,7 @@ export default function ApplicationLogin() {
     );
   const valid = () =>
     !!selectedGroup() &&
+    selectedGroup()!.account.type === kind() &&
     organizations(selectedGroup()!).some(
       (org) => org.org_id === selection()?.orgId,
     );
@@ -150,7 +184,10 @@ export default function ApplicationLogin() {
         scope_version: app.scope_version,
       }));
       const callback = destination ? { redirect_uri: destination.href } : {};
-      const options = { accountId: selection()!.accountId };
+      const options = {
+        accountId: selection()!.accountId,
+        identityKind: kind(),
+      };
       const result = parsed.batch
         ? await send<{ items: LoginToken[] }>(
             "POST",
@@ -205,26 +242,6 @@ export default function ApplicationLogin() {
       }
     }
   }
-  async function removeAccount(accountId: string) {
-    try {
-      await send("DELETE", `/api/accounts/${encodeURIComponent(accountId)}`);
-      if (selection()?.accountId === accountId) setSelection();
-      await load();
-    } catch (cause) {
-      setError(cause);
-    }
-  }
-  async function manageOrganization(accountId: string, join: boolean) {
-    try {
-      await send("POST", "/api/accounts/select", { account_id: accountId });
-      const config = await request<{ consoleOrigin: string }>("/api/config");
-      const url = new URL(join ? "/join" : "/", config.consoleOrigin);
-      url.searchParams.set("onboarding", "1");
-      location.assign(url);
-    } catch (cause) {
-      setError(cause);
-    }
-  }
   return (
     <div class="stack account-login">
       <ErrorBox error={error()} retry={() => void load()} />
@@ -233,34 +250,33 @@ export default function ApplicationLogin() {
           <p class="muted">
             Choose the account and organization you want to use.
           </p>
-          <div class="identity-tabs" role="tablist" aria-label="Account type">
-            <For each={["carbon", "silicon"] as const}>
-              {(type) => (
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={kind() === type}
-                  disabled={step() === "loading"}
-                  onClick={() => {
-                    setKind(type);
-                    setSelection();
-                  }}
-                >
-                  Continue as {type === "carbon" ? "Carbon" : "Silicon"}
-                </button>
-              )}
-            </For>
-          </div>
+          <Show when={!kindPinned}>
+            <div class="identity-tabs" role="tablist" aria-label="Account type">
+              <For each={["carbon", "silicon"] as const}>
+                {(type) => (
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={kind() === type}
+                    disabled={step() === "loading"}
+                    onClick={() => {
+                      setKind(type);
+                      setSelection();
+                    }}
+                  >
+                    Continue as {type === "carbon" ? "Carbon" : "Silicon"}
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
           <div
             class="account-list"
-            role="radiogroup"
+            role="group"
             aria-label="Account and organization"
           >
             <For
-              each={groups().filter(
-                (group) =>
-                  group.account.type === kind() || group.account.unavailable,
-              )}
+              each={groups().filter((group) => group.account.type === kind())}
             >
               {(group) => (
                 <section class="account-group">
@@ -304,45 +320,48 @@ export default function ApplicationLogin() {
                               ? "This account needs to sign in again."
                               : "This account is temporarily unavailable."}
                           </p>
-                          <button
-                            type="button"
-                            class="text-button"
-                            onClick={() =>
-                              void removeAccount(group.account.account_id)
-                            }
-                          >
-                            Remove from this browser
-                          </button>
                         </div>
                       }
                     >
                       <For each={organizations(group)}>
                         {(org) => (
-                          <label class="account-org-choice">
-                            <input
-                              type="radio"
-                              name="login-context"
-                              value={`${group.account.account_id}:${org.org_id}`}
-                              checked={
-                                selection()?.accountId ===
-                                  group.account.account_id &&
-                                selection()?.orgId === org.org_id
-                              }
-                              disabled={step() === "loading"}
-                              onChange={() =>
-                                setSelection({
-                                  accountId: group.account.account_id,
-                                  orgId: org.org_id,
-                                })
-                              }
-                            />
+                          <button
+                            type="button"
+                            class="account-org-choice"
+                            disabled={step() === "loading"}
+                            onClick={() => {
+                              setSelection({
+                                accountId: group.account.account_id,
+                                orgId: org.org_id,
+                              });
+                              void approve();
+                            }}
+                          >
+                            <span
+                              class="organization-avatar"
+                              aria-hidden="true"
+                            >
+                              {org.name.slice(0, 1).toUpperCase()}
+                              <Show when={group.logos?.[org.org_id]}>
+                                <img
+                                  src={group.logos?.[org.org_id]}
+                                  alt=""
+                                  onError={(event) => {
+                                    event.currentTarget.style.display = "none";
+                                  }}
+                                />
+                              </Show>
+                            </span>
                             <span>
                               <strong>{org.name}</strong>
                               <small>
                                 {accountLabel(group.account)}@{org.org_id}
                               </small>
                             </span>
-                          </label>
+                            <span class="org-continue" aria-hidden="true">
+                              →
+                            </span>
+                          </button>
                         )}
                       </For>
                       <Show when={!organizations(group).length && !group.error}>
@@ -350,58 +369,37 @@ export default function ApplicationLogin() {
                           Create or join an organization to continue.
                         </p>
                       </Show>
-                      <div class="account-actions">
-                        <button
-                          type="button"
-                          class="text-button"
-                          onClick={() =>
-                            void manageOrganization(
-                              group.account.account_id,
-                              false,
-                            )
-                          }
-                        >
-                          Create an organization
-                        </button>
-                        <button
-                          type="button"
-                          class="text-button"
-                          onClick={() =>
-                            void manageOrganization(
-                              group.account.account_id,
-                              true,
-                            )
-                          }
-                        >
-                          Join an organization
-                        </button>
-                        <button
-                          type="button"
-                          class="text-button"
-                          onClick={() =>
-                            void removeAccount(group.account.account_id)
-                          }
-                        >
-                          Remove account
-                        </button>
-                      </div>
                     </Show>
                   </Show>
                 </section>
               )}
             </For>
           </div>
+          <Show when={!groups().some((group) => group.account.type === kind())}>
+            <p class="account-empty">
+              Add a {kind() === "carbon" ? "Carbon" : "Silicon"} account to
+              continue.
+            </p>
+          </Show>
           <a class="button add-account" href={addAccountUrl(kind())}>
             ＋ Add another account
           </a>
-          <button
-            class="button primary"
-            disabled={!valid() || step() === "loading"}
-            aria-busy={step() === "loading"}
-            onClick={() => void approve()}
-          >
-            {step() === "loading" ? "Signing in…" : "Continue"}
-          </button>
+          <p class="account-management-note">
+            For managing accounts and organisations visit{" "}
+            <a
+              href={props.consoleOrigin}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Silicon IAM
+            </a>
+            .
+          </p>
+          <Show when={step() === "loading"}>
+            <p class="muted" role="status">
+              Signing in…
+            </p>
+          </Show>
         </Show>
         <Show when={step() === "consent"}>
           <h3>Review IAM permissions</h3>

@@ -14,13 +14,31 @@ For an external-app walkthrough using example ID `briefcase` and callback `https
 let mut login = url::Url::parse(auth_base_url)?.join("/login")?;
 login.query_pairs_mut()
     .append_pair("app_id", app_id)
-    .append_pair("redirect_uri", callback); // IAM asks the user to choose one account and organization.
+    .append_pair("redirect_uri", callback_with_state)
+    .append_pair("identity_kind", "carbon") // or silicon, from the chosen app button
+    .append_pair("display", "popup"); // optional compact presentation
 // Redirect the user agent to `login`; query values are percent-encoded.
 ```
 
 Naming `app_id` is what makes this a login on your behalf; without one it is an ordinary Silicon IAM login and no token is minted. `redirect_uri` is optional and decides delivery only — give one and the token comes back on it, omit it and IAM shows the token to the person instead. Applications must not supply `org_id`. IAM validates the app and the selected account/organization. It shows the IAM consent screen only when critical IAM permissions require it. OBO endpoints require separate on-demand consent. Only the selected active memberships are disclosed, never future memberships automatically.
 
 The URI does not have to be registered anywhere, so an application may send people to different callbacks on different days without changing its configuration.
+
+## Carbon and Silicon buttons, with popup sign-in
+
+Offer **Continue as Carbon** and **Continue as Silicon** in your application. Pass `identity_kind=carbon` or `identity_kind=silicon` on the IAM login URL. IAM shows only that kind of configured account and preserves it while adding another account. The user clicks an organization to continue; critical IAM permissions still receive their own review. Each session is bound to exactly one account and organization.
+
+Open the popup directly from the button click so the browser can permit it. Use `display=popup` for IAM's compact layout. Keep a full-page fallback when popups are blocked. Popup presentation does not change the SLT or its callback format.
+
+1. Your backend creates a short-lived, unpredictable, single-use login state and stores the chosen identity kind with it. Put the state in your own callback URL's query, then percent-encode that complete URL as `redirect_uri`. IAM preserves callback query parameters.
+
+2. The callback backend validates and consumes state, exchanges the SLT with the app secret, and verifies the authenticated principal has the stored kind. If the exchange omits `actor`, use authenticated token introspection and its `actor_type`. Reject mismatches and missing or inactive identity proof before creating an app session.
+
+3. Set the application's secure session before serving an app-origin completion page. That page can notify its opener using `postMessage` with the exact app origin, a one-use attempt identifier and a completion status, then close itself. Never post an SLT, access token, refresh token or secret.
+
+4. The opener must check `event.origin`, `event.source === popup`, the expected message shape and attempt identifier, then reload authenticated app state. Treat a popup close or timeout as cancellation, not successful login.
+
+Store an optional post-login return URL with the same backend login attempt. After the app session is established, navigate to that approved URL; if absent, render an app completion page with a return link. Keep callback destinations and return paths under application control. A browser-selected kind or a popup message alone is not identity proof. Direct IAM clients can additionally send `X-IAM-Identity-Kind: carbon` or `silicon` when listing organizations and issuing single, batch or bundle SLTs. IAM checks the authenticated principal before issuance and binds the header into mutation replay checks. Existing requests without the optional header retain their established behavior.
 
 ## Step two — take the token off the callback
 

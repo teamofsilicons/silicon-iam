@@ -11,7 +11,11 @@ export type AccountPage = {
   active_account_id?: string;
   maximum_accounts: number;
 };
-export type AccountOrganization = { org_id: string; name: string };
+export type AccountOrganization = {
+  org_id: string;
+  name: string;
+  logo?: string | null;
+};
 export const accountLabel = (account: BrowserAccount): string =>
   account.user?.carbon_id ||
   account.user?.silicon_id ||

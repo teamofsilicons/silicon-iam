@@ -40,11 +40,11 @@ test("OBO links accept one request pointer without ordinary login selectors", ()
 });
 
 test("OBO consent uses the auth host and survives sign-in or signup", async () => {
-  const href = `${env.CONSOLE_ORIGIN}/obo/consent?request=${id}`;
+  const href = `${env.CONSOLE_ORIGIN}/obo/consent?request=${id}&display=popup`;
   const response = await gateway(new Request(href), env);
   assert.equal(
     response.headers.get("location"),
-    `${env.AUTH_ORIGIN}/obo/consent?request=${id}`,
+    `${env.AUTH_ORIGIN}/obo/consent?request=${id}&display=popup`,
   );
   const previous = Object.getOwnPropertyDescriptor(globalThis, "location");
   Object.defineProperty(globalThis, "location", {
@@ -62,6 +62,7 @@ test("OBO consent uses the auth host and survives sign-in or signup", async () =
       assert.equal(destination.pathname, signup ? "/signup" : "/login");
       assert.equal(destination.searchParams.get("request"), id);
       assert.equal(destination.searchParams.get("next"), "obo-consent");
+      assert.equal(destination.searchParams.get("display"), "popup");
     }
     const next = await gateway(
       new Request(new URL(continueDestination(), env.CONSOLE_ORIGIN)),
@@ -71,6 +72,7 @@ test("OBO consent uses the auth host and survives sign-in or signup", async () =
     assert.equal(destination.origin, env.AUTH_ORIGIN);
     assert.equal(destination.searchParams.get("request"), id);
     assert.equal(destination.searchParams.get("next"), "obo-consent");
+    assert.equal(destination.searchParams.get("display"), "popup");
   } finally {
     if (previous) Object.defineProperty(globalThis, "location", previous);
     else Reflect.deleteProperty(globalThis, "location");
@@ -91,6 +93,11 @@ test("signed-in OBO continuation cannot follow a supplied external URL", async (
     [
       `next=obo-consent&request=${id}`,
       `${env.AUTH_ORIGIN}/obo/consent?request=${id}`,
+      303,
+    ],
+    [
+      `next=obo-consent&request=${id}&display=popup&redirect_uri=https://outside.example`,
+      `${env.AUTH_ORIGIN}/obo/consent?request=${id}&display=popup`,
       303,
     ],
     ["next=obo-consent&request=https://outside.example", null, 400],

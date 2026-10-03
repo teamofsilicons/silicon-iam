@@ -21,6 +21,31 @@ export function validateLoginConsent(
     );
 }
 
+export type IdentityKind = "carbon" | "silicon";
+export function loginIdentityKind(
+  params: URLSearchParams,
+): IdentityKind | undefined {
+  const values = params.getAll("identity_kind");
+  if (!values.length) return;
+  if (values.length !== 1 || !["carbon", "silicon"].includes(values[0]))
+    throw new Error("Choose one valid identity_kind: carbon or silicon.");
+  return values[0] as IdentityKind;
+}
+export function loginIdentity(kind: IdentityKind, input: string): string {
+  const value = input.trim();
+  if (!value) return "";
+  if (kind === "carbon") {
+    if (value.startsWith("si:"))
+      throw new Error("Use a Carbon ID for this sign-in.");
+    if (value.includes("@") || value.startsWith("+") || value.startsWith("c:"))
+      return value;
+    return `c:${value}`;
+  }
+  if (value.startsWith("c:") || value.includes("@") || value.startsWith("+"))
+    throw new Error("Use a Silicon ID for this sign-in.");
+  return value.startsWith("si:") ? value : `si:${value}`;
+}
+
 export type LoginToken = {
   app_id: string;
   slt: string;
@@ -33,6 +58,12 @@ export function loginApplications(params: URLSearchParams): {
   batch: boolean;
   bundleId?: string;
 } {
+  loginIdentityKind(params);
+  if (
+    params.getAll("display").length > 1 ||
+    (params.has("display") && params.get("display") !== "popup")
+  )
+    throw new Error("The optional display value must be popup.");
   if (params.has("org_id") || params.has("org_ids"))
     throw new Error(
       "Applications cannot choose your organizations. Remove org_id / org_ids and choose them in IAM.",

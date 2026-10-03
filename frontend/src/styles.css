@@ -1715,3 +1715,19 @@ input:focus, select:focus, textarea:focus { border-color: #699aec; box-shadow: 0
 .one-time-secret { display: block; padding: 12px; margin: 12px 0; overflow-wrap: anywhere; background: #fff; border: 1px solid var(--line); border-radius: 8px; }
 .social-availability { font-size: .84rem; margin: 20px 0; }
 .social-signin.single-provider { grid-template-columns: 1fr; }
+
+/* A login choice performs one explicit account + organization handoff. */
+.account-org-choice { width: calc(100% - 20px); text-align: left; background: #fff; color: var(--ink); min-height: 68px; transition: background .15s, border-color .15s; }
+.account-org-choice:hover:not(:disabled) { background: #f2f6ff; border-color: #cbdcf8; }
+.account-org-choice:focus-visible { outline: 3px solid #bed2f5; outline-offset: 2px; }
+.organization-avatar { position: relative; width: 38px; height: 38px; flex: 0 0 38px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 10px; background: #f4f7fc; color: var(--blue); overflow: hidden; font-weight: 600; }
+.organization-avatar img { position: absolute; inset: 0; background: #fff; width: 100%; height: 100%; object-fit: cover; }
+.org-continue { margin-left: auto; color: var(--blue); font-size: 1.15rem; }
+.account-management-note { margin: 0; color: var(--muted); text-align: center; font-size: .74rem; line-height: 1.6; }
+.account-management-note a { white-space: nowrap; }
+.auth-layout.popup-login { display: block; min-height: 100dvh; }
+.popup-login .auth-panel { min-height: 100dvh; padding: 32px 22px; }
+.popup-login .auth-brand { display: none; }
+.popup-login .auth-card { width: 100%; max-width: 440px; }
+
+.popup-login .auth-footer { display: none; }

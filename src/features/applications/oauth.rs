@@ -348,8 +348,10 @@ pub(super) async fn login_organizations(
     State(state): State<ApiState>,
     Bearer(access): Bearer,
     Query(query): Query<super::model::LoginOrganizationsQuery>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     require_direct_login(&access)?;
+    requested_identity_kind(&headers, access.subject.actor_type)?;
     validation::app_id(&query.app_id)?;
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(access.subject.id))
         .await
@@ -403,6 +405,42 @@ pub(super) async fn login_choices(
         app_name: app.app_name,
         items,
     })
+}
+
+/// Optional typed sign-in is checked against authenticated authority, never UI state.
+pub(super) fn requested_identity_kind(
+    headers: &HeaderMap,
+    actual: ActorType,
+) -> Result<Option<String>, ApiError> {
+    let values = headers
+        .get_all("x-iam-identity-kind")
+        .iter()
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return Ok(None);
+    }
+    if values.len() != 1 {
+        return Err(ApiError::bad_request(
+            "invalid_identity_kind",
+            "Choose exactly one account type.",
+        ));
+    }
+    let kind = values[0]
+        .to_str()
+        .map_err(|_| ApiError::bad_request("invalid_identity_kind", "Choose Carbon or Silicon."))?;
+    if !matches!(kind, "carbon" | "silicon") {
+        return Err(ApiError::bad_request(
+            "invalid_identity_kind",
+            "Choose Carbon or Silicon.",
+        ));
+    }
+    if !matches!(
+        (kind, actual),
+        ("carbon", ActorType::Carbon) | ("silicon", ActorType::Silicon)
+    ) {
+        return Err(ApiError::forbidden("identity_kind_mismatch"));
+    }
+    Ok(Some(kind.to_owned()))
 }
 
 pub(super) fn require_direct_login(access: &tokens::AccessContext) -> Result<(), ApiError> {
@@ -515,6 +553,7 @@ pub(super) async fn issue_short_lived_token(
     Json(input): Json<ShortLivedTokenRequest>,
 ) -> Result<Response, ApiError> {
     require_direct_login(&access)?;
+    let identity_kind = requested_identity_kind(&headers, access.subject.actor_type)?;
     validation::app_id(&input.app_id)?;
     if input.org_id.is_some() {
         return Err(ApiError::bad_request(
@@ -546,14 +585,18 @@ pub(super) async fn issue_short_lived_token(
         "{subject_kind}:{}:{}",
         access.subject.id, access.authentication_session_id
     );
-    let canonical = serde_json::to_vec(&json!({
+    let mut canonical_input = json!({
         "app_id": input.app_id,
         "scope_version": input.scope_version,
         "approved_scopes": input.approved_scopes,
         "org_ids": input.org_ids,
         "redirect_uri": input.redirect_uri,
-    }))
-    .map_err(|_| ApiError::internal("short_lived_token_canonical"))?;
+    });
+    if let Some(kind) = identity_kind {
+        canonical_input["identity_kind"] = json!(kind);
+    }
+    let canonical = serde_json::to_vec(&canonical_input)
+        .map_err(|_| ApiError::internal("short_lived_token_canonical"))?;
     let claim = idempotency::claim::<ShortLivedTokenResponse>(
         &mut transaction,
         &state.crypto,
@@ -739,6 +782,12 @@ fn sign_in_location(state: &ApiState, query: &LoginQuery) -> Result<String, ApiE
         .map_err(|_| ApiError::internal("login_sign_in_url"))?;
     {
         let mut pairs = location.query_pairs_mut();
+        if let Some(display) = &query.display {
+            pairs.append_pair("display", display);
+        }
+        if let Some(kind) = &query.identity_kind {
+            pairs.append_pair("identity_kind", kind);
+        }
         if let Some(app_id) = &query.app_id {
             pairs.append_pair("app_id", app_id);
         }
@@ -3134,3 +3183,55 @@ mod oauth_family_tests;
 #[cfg(test)]
 #[path = "oauth_empty_scope_tests.rs"]
 mod oauth_empty_scope_tests;
+
+#[cfg(test)]
+mod typed_login_tests {
+    use super::*;
+    #[test]
+    fn login_query_preserves_and_validates_optional_kind_and_popup() -> Result<(), serde_json::Error>
+    {
+        for kind in ["carbon", "silicon"] {
+            let query: LoginQuery = serde_json::from_value(json!({
+                "app_id": "briefcase", "identity_kind": kind, "display": "popup"
+            }))?;
+            assert!(validation::login(&query).is_ok());
+        }
+        for input in [
+            json!({"app_id":"briefcase", "identity_kind":"application"}),
+            json!({"app_id":"briefcase", "identity_kind":""}),
+            json!({"app_id":"briefcase", "display":"iframe"}),
+        ] {
+            let query: LoginQuery = serde_json::from_value(input)?;
+            assert!(validation::login(&query).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn requested_identity_kind_requires_the_authenticated_principal_kind() {
+        let mut headers = HeaderMap::new();
+        assert!(requested_identity_kind(&headers, ActorType::Carbon).is_ok());
+        for (value, accepted, rejected) in [
+            ("carbon", ActorType::Carbon, ActorType::Silicon),
+            ("silicon", ActorType::Silicon, ActorType::Carbon),
+        ] {
+            headers.insert("x-iam-identity-kind", HeaderValue::from_static(value));
+            assert_eq!(
+                requested_identity_kind(&headers, accepted)
+                    .ok()
+                    .flatten()
+                    .as_deref(),
+                Some(value)
+            );
+            assert!(requested_identity_kind(&headers, rejected).is_err());
+            assert!(requested_identity_kind(&headers, ActorType::Application).is_err());
+        }
+        for value in ["", "Carbon", "application", "carbon,silicon"] {
+            headers.insert("x-iam-identity-kind", HeaderValue::from_static(value));
+            assert!(requested_identity_kind(&headers, ActorType::Carbon).is_err());
+        }
+        headers.insert("x-iam-identity-kind", HeaderValue::from_static("carbon"));
+        headers.append("x-iam-identity-kind", HeaderValue::from_static("carbon"));
+        assert!(requested_identity_kind(&headers, ActorType::Carbon).is_err());
+    }
+}

@@ -25,6 +25,14 @@ let request = application.obo().authorize(&models::OboAuthorizationRequest {
 
 IAM shows the requesting app, user, organization and every requested root's full dependency tree. Approval creates a separate grant per root endpoint. Only a direct IAM user session may call `obo().consent(id)` and `obo().decide(id, decision, mutation)`; application credentials or app bearers cannot approve their own access. Send the displayed version with `OboConsentDecision`. A stale graph must be reviewed again. Optional `contexts` select a direct IAM account token and organization per provider; omitted providers use the root context. Direct account credentials stay inside IAM clients, never the requesting app. With a bound callback, validate returned state/request ID, clear the code from the URL and redeem it on the application server; status polling never returns it.
 
+## Approval in a popup
+
+Open IAM's returned `authorization_url` in a popup from the user's feature action. After validating its configured IAM origin and consent path, an application may add `display=popup` for compact presentation. Keep the consent request ID intact. The callback remains the exact `redirect_uri` supplied when authorization was created; changing the browser consent URL must never override it.
+
+Bind the authorization request, current application session, unpredictable one-use state and optional post-completion return URL on the backend. The return URL is application navigation, not the OBO callback: allow only the application's approved origins and paths. After IAM returns the code, the callback backend validates state and request ID, exchanges the code and saves the OBO credentials before reporting success. Then redirect to the bound return URL when supplied, or show an application completion page with a clear return link when it was omitted.
+
+For a popup, send only a completion status and one-use attempt identifier to the opener's exact application origin, then close the window. The opener verifies the origin, popup window source and identifier before refreshing its authenticated state or navigating to its bound return URL. Never pass OBO codes or tokens in a message. Cancellation, denial and a blocked popup need explicit recovery; reopening the same pending review must not silently create a new grant. The application can offer a full-page consent link as a fallback.
+
 ## Redeem the approved code
 
 ```
@@ -40,6 +48,8 @@ for token in issued.items {
 Code exchange returns `OboTokenResponse` with one `OboTokenPair` per root endpoint and organization. Refresh through `obo().refresh(refresh_token, mutation)`; this returns a single replacement pair and rotates the refresh token. Keep one refresh in flight per family, and retain one mutation key for an uncertain identical retry. Neither refresh nor replay can expand endpoints or extend an already issued token's original expiry.
 
 ## The receiver verifies each request
+
+Each OBO action has a unique, stable registered path within its application. Verification uses that exact canonical path; for a parameterized route, use the router’s matched template (for example `/api/v1/obo/todos/{todo_id}/read`), not an expanded resource path. Select the endpoint ID and path from the matched server handler, never caller-supplied authorization fields. Distinct HTTP methods on one REST path do not create distinct OBO paths; use separate action routes when needed. The handler still checks the actual method, resource ID, payload and resource permissions.
 
 ```
 let receiver = Client::new("https://backend.iam.teamofsilicons.com")?

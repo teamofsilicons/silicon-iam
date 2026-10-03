@@ -27,8 +27,10 @@ pub(super) async fn organizations(
     State(state): State<ApiState>,
     Bearer(access): Bearer,
     Query(query): Query<BatchLoginChoicesQuery>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     oauth::require_direct_login(&access)?;
+    oauth::requested_identity_kind(&headers, access.subject.actor_type)?;
     validation::batch_app_ids(query.app_ids.split(','))?;
     let mut transaction = context::begin(state.db(), DatabaseContext::principal(access.subject.id))
         .await
@@ -112,8 +114,16 @@ pub(super) async fn issue_in_transaction(
     caller: &str,
     route: &'static str,
 ) -> Result<(StatusCode, BatchLoginResponse), ApiError> {
-    let canonical =
-        serde_json::to_vec(input).map_err(|_| ApiError::internal("batch_login_canonical"))?;
+    let kind = oauth::requested_identity_kind(headers, access.subject.actor_type)?;
+    let canonical = if let Some(kind) = kind {
+        let mut value =
+            serde_json::to_value(input).map_err(|_| ApiError::internal("batch_login_canonical"))?;
+        value["identity_kind"] = json!(kind);
+        serde_json::to_vec(&value)
+    } else {
+        serde_json::to_vec(input)
+    }
+    .map_err(|_| ApiError::internal("batch_login_canonical"))?;
     let claim = idempotency::claim::<BatchLoginResponse>(
         transaction,
         &state.crypto,

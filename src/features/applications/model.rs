@@ -383,6 +383,10 @@ pub(super) struct LoginEventPage {
 #[derive(Clone, Debug, Deserialize)]
 pub(super) struct LoginQuery {
     #[serde(default)]
+    pub(super) identity_kind: Option<String>,
+    #[serde(default)]
+    pub(super) display: Option<String>,
+    #[serde(default)]
     pub(super) app_ids: Option<String>,
     #[serde(default)]
     pub(super) app_id: Option<String>,

@@ -426,6 +426,7 @@ export function apiHeaders(request: Request, session: Session | null): Headers {
     "idempotency-key",
     "if-match",
     "x-step-up-token",
+    "x-iam-identity-kind",
   ]) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
