@@ -81,15 +81,16 @@ def main():
                 sql += f"BEGIN; SELECT pg_temp.seed_identity_upgrade({plane},{str(testing).lower()}); COMMIT;\n"
             sql += include(ROOT / "tests/sql/canonical_identity_upgrade_security.sql")
             sql += "SET SESSION AUTHORIZATION \"" + database + "\";\n"
-            for path in after + ([p for p in overlays if int(p.name.split('_')[0]) > 9013] if testing else []):
+            for path in after + ([p for p in overlays if int(p.name.split('_')[0]) == 9014] if testing else []):
                 sql += "BEGIN;\n" + include(path) + "COMMIT;\n"
                 if int(path.name.split('_')[0]) == 111:
                     sql += "RESET SESSION AUTHORIZATION; SELECT pg_temp.assert_identity_migration_security(); SET SESSION AUTHORIZATION \"" + database + "\";\n"
             if testing:
                 sql += "SELECT iam_private.reconcile_testing_environment_security();\n"
-            grants = ROOT.joinpath("deploy/postgres/runtime-grants.sql").read_text()
-            # 0118 adds its own AAD-only reader; the historical schema has none.
-            sql += grants.replace("        'public_id_application_contexts',\n", "")
+            # This historical fixture ends before 0118. Current runtime grants
+            # require later tables/functions and are covered by the forward
+            # public-ID upgrade and fresh-schema release smoke checks.
+            sql += include(ROOT / "tests/sql/canonical_identity_runtime_grants.sql")
             sql += "RESET SESSION AUTHORIZATION;\n"
             sql += assertion
             for plane in planes:

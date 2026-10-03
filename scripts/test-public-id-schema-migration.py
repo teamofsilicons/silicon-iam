@@ -58,7 +58,10 @@ def main():
             for plane in planes:
                 sql += f'BEGIN; SELECT pg_temp.seed_identity_upgrade({plane},{str(testing).lower()}); COMMIT;\n'
             sql += f'SET SESSION AUTHORIZATION {name};\n'
-            for path in [p for p in base if 111 <= int(p.name[:4]) < 118] + ([p for p in overlays if int(p.name[:4]) >= 9014] if testing else []):
+            # This fixture exercises the historical schema immediately before 0118.
+            # Later overlays require later parent migrations and belong to the
+            # full current-schema and release-image rehearsals, not this fixture.
+            for path in [p for p in base if 111 <= int(p.name[:4]) < 118] + ([p for p in overlays if int(p.name[:4]) == 9014] if testing else []):
                 sql += 'BEGIN;\n' + include(path) + 'COMMIT;\n'
             run(sql, name)
             # Consumed proof rows contain a cross-column CHECK: the consumer
@@ -110,6 +113,8 @@ COMMIT;'''
             # Forward migrations apply on top of the released schema as the same
             # restricted owner; runtime grants describe the latest schema.
             later = [p for p in base if int(p.name[:4]) > 118]
+            if testing:
+                later += [p for p in overlays if int(p.name[:4]) > 9014]
             if later:
                 run(f'SET SESSION AUTHORIZATION {name}; SET client_min_messages=warning;\n'
                     + ''.join('BEGIN;\n' + include(path) + 'COMMIT;\n' for path in later), name)

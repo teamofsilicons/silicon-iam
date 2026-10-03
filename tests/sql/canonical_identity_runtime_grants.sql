@@ -1,0 +1,1039 @@
+-- Historical pre-0118 grants used only by the canonical identity test.
+-- Source: 4012aac deploy/postgres/runtime-grants.sql, with the 0118-only
+-- public_id_application_contexts reader omitted. Do not use for deployment.
+\set ON_ERROR_STOP on
+
+BEGIN;
+
+DO $roles$
+BEGIN
+    IF pg_catalog.to_regrole('silicon_iam_api') IS NULL THEN
+        RAISE EXCEPTION 'required database role silicon_iam_api does not exist';
+    END IF;
+    IF pg_catalog.to_regrole('silicon_iam_worker') IS NULL THEN
+        RAISE EXCEPTION 'required database role silicon_iam_worker does not exist';
+    END IF;
+    IF pg_catalog.to_regrole('silicon_iam_key_operator') IS NULL THEN
+        RAISE EXCEPTION 'required database role silicon_iam_key_operator does not exist';
+    END IF;
+END;
+$roles$;
+
+REVOKE ALL ON SCHEMA iam FROM PUBLIC;
+REVOKE ALL ON SCHEMA iam_private FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA iam FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA iam_private FROM PUBLIC;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA iam FROM PUBLIC;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA iam_private FROM PUBLIC;
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA iam_private FROM PUBLIC;
+
+-- Rebuild privileges from zero on every run. Without these revokes, a
+-- privilege removed from this allowlist would survive an upgrade.
+REVOKE ALL ON SCHEMA iam
+    FROM silicon_iam_api, silicon_iam_worker, silicon_iam_key_operator;
+REVOKE ALL ON SCHEMA iam_private
+    FROM silicon_iam_api, silicon_iam_worker, silicon_iam_key_operator;
+REVOKE ALL ON ALL TABLES IN SCHEMA iam
+    FROM silicon_iam_api, silicon_iam_worker, silicon_iam_key_operator;
+REVOKE ALL ON ALL TABLES IN SCHEMA iam_private
+    FROM silicon_iam_api, silicon_iam_worker, silicon_iam_key_operator;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA iam
+    FROM silicon_iam_api, silicon_iam_worker, silicon_iam_key_operator;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA iam_private
+    FROM silicon_iam_api, silicon_iam_worker, silicon_iam_key_operator;
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA iam_private
+    FROM silicon_iam_api, silicon_iam_worker, silicon_iam_key_operator;
+
+GRANT USAGE ON SCHEMA iam TO silicon_iam_api;
+GRANT USAGE ON SCHEMA iam_private TO silicon_iam_api;
+GRANT USAGE ON SCHEMA public TO silicon_iam_api;
+
+-- Every API table capability is derived from production SQL. The SELECT list
+-- also includes the relations read by invoker-rights deferred trigger helpers.
+-- Relations absent from the manifest remain inaccessible, and partitions are
+-- always accessed through their explicitly listed parent table.
+DO $api_tables$
+DECLARE
+    table_name text;
+    matched_table_count integer;
+    unclassified_table_names text[];
+    select_table_names text[] := ARRAY[
+        'honeycomb_operations',
+        'honeycomb_management_events',
+
+        'access_token_scopes',
+        'access_tokens',
+        'application_approved_scopes',
+        'application_obo_endpoints',
+        'application_requested_scopes',
+        'application_reviews',
+        'application_secrets',
+        'application_webhook_endpoints',
+        'application_webhook_event_projections',
+        'application_webhook_signing_keys',
+        'applications',
+        'approval_decisions',
+        'approval_requests',
+        'approval_requirements',
+        'audit_events',
+        'authentication_events',
+        'authentication_sessions',
+        'carbon_contacts',
+        'carbon_membership_settings',
+        'carbons',
+        'extra_silicon_access_grants',
+        'idempotency_records',
+        'invitation_verification_challenges',
+        'job_role_change_requests',
+        'job_role_history',
+        'login_challenge_channels',
+        'login_challenges',
+        'membership_tag_change_history',
+        'membership_tags',
+        'notification_jobs',
+        'oauth_authorization_codes',
+        'oauth_authorization_request_scopes',
+        'oauth_authorization_requests',
+        'oauth_consent_grant_scopes',
+        'oauth_consent_grants',
+        'oauth_refresh_family_scopes',
+        'obo_proofs',
+        'organization_capability_catalog',
+        'organization_capability_grants',
+        'organization_invitation_extra_silicons',
+        'organization_invitation_silicon_trust_overrides',
+        'organization_invitation_tag_trust_overrides',
+        'organization_invitation_tags',
+        'organization_invitations',
+        'organization_memberships',
+        'organization_sso_configs',
+        'organization_tags',
+        'organizations',
+        'outbox_event_affected_tags',
+        'outbox_event_own_tag_memberships',
+        'outbox_event_recipients',
+        'outbox_event_topics',
+        'outbox_events',
+        'platform_role_grants',
+        'principals',
+        'rate_limit_buckets',
+        'refresh_token_families',
+        'refresh_tokens',
+        'service_principals',
+        'signup_candidate_blind_indexes',
+        'signup_contact_candidates',
+        'signup_otp_challenges',
+        'signup_sessions',
+        'silicon_credential_history',
+        'silicon_credentials',
+        'silicon_token_rotation_requests',
+        'silicon_webhook_endpoints',
+        'silicon_webhook_signing_keys',
+        'silicon_webhook_subscription_extra_tags',
+        'silicon_webhook_subscription_topics',
+        'silicon_webhook_subscriptions',
+        'silicons',
+        'sso_authorization_transactions',
+        'sso_connections',
+        'sso_setup_sessions',
+        'step_up_assertions',
+        'step_up_challenges',
+        'tag_change_requests',
+        'testing_environments',
+        'trust_rules',
+        'webhook_deliveries',
+        'application_scope_requests',
+        'application_bundles'
+    ];
+    insert_table_names text[] := ARRAY[
+        'honeycomb_operations',
+        'honeycomb_management_events',
+
+        'access_token_scopes',
+        'access_tokens',
+        'application_approved_scopes',
+        'application_obo_endpoints',
+        'application_reviews',
+        'application_secrets',
+        'application_webhook_endpoints',
+        'application_webhook_event_projections',
+        'application_webhook_signing_keys',
+        'applications',
+        'approval_decisions',
+        'approval_requests',
+        'approval_requirements',
+        'audit_events',
+        'authentication_events',
+        'authentication_sessions',
+        'carbon_membership_settings',
+        'extra_silicon_access_grants',
+        'idempotency_records',
+        'invitation_verification_challenges',
+        'job_role_history',
+        'login_challenge_channels',
+        'login_challenges',
+        'notification_jobs',
+        'oauth_authorization_codes',
+        'oauth_authorization_request_scopes',
+        'oauth_authorization_requests',
+        'oauth_consent_grant_scopes',
+        'oauth_consent_grants',
+        'oauth_refresh_family_scopes',
+        'obo_proofs',
+        'organization_capability_grants',
+        'organization_invitation_extra_silicons',
+        'organization_invitation_silicon_trust_overrides',
+        'organization_invitation_tag_trust_overrides',
+        'organization_invitation_tags',
+        'organization_invitations',
+        'organization_memberships',
+        'organization_tags',
+        'organizations',
+        'outbox_event_affected_tags',
+        'outbox_event_own_tag_memberships',
+        'outbox_event_topics',
+        'outbox_events',
+        'principals',
+        'rate_limit_buckets',
+        'refresh_token_families',
+        'refresh_tokens',
+        'signup_candidate_blind_indexes',
+        'signup_contact_candidates',
+        'signup_otp_challenges',
+        'signup_sessions',
+        'silicon_credential_history',
+        'silicon_credentials',
+        'silicon_token_rotation_requests',
+        'silicon_webhook_endpoints',
+        'silicon_webhook_signing_keys',
+        'silicon_webhook_subscription_extra_tags',
+        'silicon_webhook_subscription_topics',
+        'silicon_webhook_subscriptions',
+        'silicons',
+        'sso_setup_sessions',
+        'step_up_assertions',
+        'step_up_challenges',
+        'testing_environments',
+        'trust_rules'
+    ];
+    update_table_names text[] := ARRAY[
+        'honeycomb_operations',
+
+        'access_tokens',
+        'application_approved_scopes',
+        'application_obo_endpoints',
+        'application_secrets',
+        'application_webhook_endpoints',
+        'application_webhook_signing_keys',
+        'applications',
+        'approval_requests',
+        'authentication_sessions',
+        'carbon_membership_settings',
+        'carbons',
+        'extra_silicon_access_grants',
+        'idempotency_records',
+        'invitation_verification_challenges',
+        'login_challenge_channels',
+        'login_challenges',
+        'notification_jobs',
+        'oauth_authorization_codes',
+        'oauth_authorization_requests',
+        'oauth_consent_grants',
+        'obo_proofs',
+        'organization_capability_grants',
+        'organization_invitations',
+        'organization_memberships',
+        'organization_sso_configs',
+        'organization_tags',
+        'organizations',
+        'outbox_event_recipients',
+        'principals',
+        'rate_limit_buckets',
+        'refresh_token_families',
+        'refresh_tokens',
+        'signup_contact_candidates',
+        'signup_otp_challenges',
+        'signup_sessions',
+        'silicon_credentials',
+        'silicon_token_rotation_requests',
+        'silicon_webhook_endpoints',
+        'silicon_webhook_signing_keys',
+        'silicon_webhook_subscriptions',
+        'silicons',
+        'sso_authorization_transactions',
+        'sso_connections',
+        'sso_setup_sessions',
+        'step_up_assertions',
+        'step_up_challenges',
+        'testing_environments',
+        'trust_rules',
+        'webhook_deliveries'
+    ];
+    delete_table_names text[] := ARRAY[
+        'application_requested_scopes',
+        'idempotency_records',
+        'oauth_consent_grant_scopes',
+        'silicon_webhook_subscription_extra_tags',
+        'silicon_webhook_subscription_topics',
+        'silicon_webhook_subscriptions'
+    ];
+    denied_table_names text[] := ARRAY[
+        'application_access_keys',
+        'honeycomb_publication_plans',
+        'honeycomb_publication_decisions',
+        'application_testing_environments',
+        'testing_application_imports',
+        'contact_blind_indexes',
+        'cryptographic_key_versions',
+        'external_webhook_receipts',
+        'ownership_transfer_requests',
+        'platform_capability_catalog',
+        'platform_role_capabilities',
+        'platform_role_catalog',
+        'runtime_key_activations',
+        'silicon_hooks',
+        'sso_identities',
+        'webhook_delivery_attempts',
+        'application_scope_messages',
+        'application_bundle_members',
+        'oauth_scope_catalog'
+    ];
+BEGIN
+    IF pg_catalog.cardinality(select_table_names) <> (
+        SELECT pg_catalog.count(DISTINCT listed_name)
+        FROM pg_catalog.unnest(select_table_names) AS listed_name
+    ) OR pg_catalog.cardinality(insert_table_names) <> (
+        SELECT pg_catalog.count(DISTINCT listed_name)
+        FROM pg_catalog.unnest(insert_table_names) AS listed_name
+    ) OR pg_catalog.cardinality(update_table_names) <> (
+        SELECT pg_catalog.count(DISTINCT listed_name)
+        FROM pg_catalog.unnest(update_table_names) AS listed_name
+    ) OR pg_catalog.cardinality(delete_table_names) <> (
+        SELECT pg_catalog.count(DISTINCT listed_name)
+        FROM pg_catalog.unnest(delete_table_names) AS listed_name
+    ) OR pg_catalog.cardinality(denied_table_names) <> (
+        SELECT pg_catalog.count(DISTINCT listed_name)
+        FROM pg_catalog.unnest(denied_table_names) AS listed_name
+    ) THEN
+        RAISE EXCEPTION 'API table capability manifest contains a duplicate';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.unnest(
+            insert_table_names || update_table_names || delete_table_names
+        ) AS writable_name
+        WHERE writable_name <> ALL (select_table_names)
+    ) THEN
+        RAISE EXCEPTION 'every writable API table must also be SELECT-authorized';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.unnest(denied_table_names) AS denied_name
+        WHERE denied_name = ANY (select_table_names)
+    ) THEN
+        RAISE EXCEPTION 'API table capability and deny manifests overlap';
+    END IF;
+
+    FOREACH table_name IN ARRAY select_table_names || denied_table_names
+    LOOP
+        SELECT pg_catalog.count(*)
+        INTO matched_table_count
+        FROM pg_catalog.pg_class AS relation
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'iam'
+          AND relation.relname = table_name
+          AND relation.relkind IN ('r', 'p')
+          AND NOT relation.relispartition;
+
+        IF matched_table_count <> 1 THEN
+            RAISE EXCEPTION
+                'API table manifest expected one non-partition iam.%, found %',
+                table_name,
+                matched_table_count;
+        END IF;
+    END LOOP;
+
+    FOREACH table_name IN ARRAY select_table_names
+    LOOP
+        EXECUTE pg_catalog.format(
+            'GRANT SELECT ON TABLE %I.%I TO silicon_iam_api',
+            'iam',
+            table_name
+        );
+    END LOOP;
+    FOREACH table_name IN ARRAY insert_table_names
+    LOOP
+        EXECUTE pg_catalog.format(
+            'GRANT INSERT ON TABLE %I.%I TO silicon_iam_api',
+            'iam',
+            table_name
+        );
+    END LOOP;
+    FOREACH table_name IN ARRAY update_table_names
+    LOOP
+        EXECUTE pg_catalog.format(
+            'GRANT UPDATE ON TABLE %I.%I TO silicon_iam_api',
+            'iam',
+            table_name
+        );
+    END LOOP;
+    FOREACH table_name IN ARRAY delete_table_names
+    LOOP
+        EXECUTE pg_catalog.format(
+            'GRANT DELETE ON TABLE %I.%I TO silicon_iam_api',
+            'iam',
+            table_name
+        );
+    END LOOP;
+
+    SELECT pg_catalog.array_agg(relation.relname ORDER BY relation.relname)
+    INTO unclassified_table_names
+    FROM pg_catalog.pg_class AS relation
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'iam'
+      AND relation.relkind IN ('r', 'p')
+      AND NOT relation.relispartition
+      AND relation.relname <> ALL (select_table_names || denied_table_names);
+
+    IF unclassified_table_names IS NOT NULL THEN
+        RAISE EXCEPTION
+            'unclassified IAM tables exist: %',
+            unclassified_table_names;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_class AS relation
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'iam'
+          AND relation.relispartition
+          AND (
+              pg_catalog.has_table_privilege(
+                  'silicon_iam_api', relation.oid, 'SELECT'
+              )
+              OR pg_catalog.has_table_privilege(
+                  'silicon_iam_api', relation.oid, 'INSERT'
+              )
+              OR pg_catalog.has_table_privilege(
+                  'silicon_iam_api', relation.oid, 'UPDATE'
+              )
+              OR pg_catalog.has_table_privilege(
+                  'silicon_iam_api', relation.oid, 'DELETE'
+              )
+          )
+    ) THEN
+        RAISE EXCEPTION 'API table capability manifest granted a partition directly';
+    END IF;
+END;
+$api_tables$;
+
+DO $api_sequences$
+DECLARE
+    sequence_name text;
+    matched_sequence_count integer;
+    unclassified_sequence_names text[];
+    usage_sequence_names text[] := ARRAY[
+        'audit_events_global_sequence_seq',
+        'outbox_events_global_sequence_seq'
+    ];
+    denied_sequence_names text[] := ARRAY[
+        'honeycomb_publication_decisions_ordinal_seq',
+        'runtime_key_activations_id_seq'
+    ];
+BEGIN
+    IF pg_catalog.cardinality(usage_sequence_names) <> (
+        SELECT pg_catalog.count(DISTINCT listed_name)
+        FROM pg_catalog.unnest(usage_sequence_names) AS listed_name
+    ) OR pg_catalog.cardinality(denied_sequence_names) <> (
+        SELECT pg_catalog.count(DISTINCT listed_name)
+        FROM pg_catalog.unnest(denied_sequence_names) AS listed_name
+    ) OR EXISTS (
+        SELECT 1
+        FROM pg_catalog.unnest(denied_sequence_names) AS denied_name
+        WHERE denied_name = ANY (usage_sequence_names)
+    ) THEN
+        RAISE EXCEPTION 'API sequence capability manifest is invalid';
+    END IF;
+
+    FOREACH sequence_name IN ARRAY usage_sequence_names || denied_sequence_names
+    LOOP
+        SELECT pg_catalog.count(*)
+        INTO matched_sequence_count
+        FROM pg_catalog.pg_class AS relation
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'iam'
+          AND relation.relname = sequence_name
+          AND relation.relkind = 'S';
+
+        IF matched_sequence_count <> 1 THEN
+            RAISE EXCEPTION
+                'API sequence manifest expected one iam.%, found %',
+                sequence_name,
+                matched_sequence_count;
+        END IF;
+    END LOOP;
+
+    FOREACH sequence_name IN ARRAY usage_sequence_names
+    LOOP
+        EXECUTE pg_catalog.format(
+            'GRANT USAGE ON SEQUENCE %I.%I TO silicon_iam_api',
+            'iam',
+            sequence_name
+        );
+    END LOOP;
+
+    SELECT pg_catalog.array_agg(relation.relname ORDER BY relation.relname)
+    INTO unclassified_sequence_names
+    FROM pg_catalog.pg_class AS relation
+    JOIN pg_catalog.pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'iam'
+      AND relation.relkind = 'S'
+      AND relation.relname <> ALL (
+          usage_sequence_names || denied_sequence_names
+      );
+
+    IF unclassified_sequence_names IS NOT NULL THEN
+        RAISE EXCEPTION
+            'unclassified IAM sequences exist: %',
+            unclassified_sequence_names;
+    END IF;
+END;
+$api_sequences$;
+
+GRANT SELECT ON public._sqlx_migrations TO silicon_iam_api;
+
+DO $api_functions$
+DECLARE
+    allowed_function_name text;
+    matched_function_count integer;
+    function_record record;
+    api_function_names text[] := ARRAY[
+        'application_encryption_contexts',
+        'canonical_replay_contexts',
+        'resolve_membership_identifiers',
+        'authorize_scoped_testing_environment_creation',
+        'create_testing_actor_login',
+        'discover_application_obo_endpoints',
+        'resolve_application_obo_memberships',
+        'lookup_application_obo_proof',
+        'application_obo_exchange_replay_is_live',
+        'application_obo_load_current_context',
+        'get_testing_application_secret',
+        'import_testing_application_configuration',
+        'activate_testing_application_scopes',
+        'get_testing_source_iam_scope_policies',
+        'list_testing_import_iam_scope_sources',
+        'apply_testing_import_iam_scope_policies',
+        'create_application_testing_environment',
+        'link_application_testing_environment',
+        'list_application_testing_environments',
+        'is_application_testing_environment_administrator',
+        'testing_environment_organization_handle',
+        'touch_application_testing_environment',
+        'lock_application_testing_environment',
+        'touch_testing_application',
+        'update_testing_application_secret',
+        'get_testing_environment_obo_key',
+        'test_application_environment',
+        'test_application_backfill_environments',
+
+        'active_organization_membership_id',
+        'apply_approved_tag_change',
+        'application_token_allows_membership',
+        'application_allows_subject',
+        'honeycomb_webhook_destinations',
+        'honeycomb_publication_plan',
+        'honeycomb_publication_read',
+        'honeycomb_publication_decide',
+        'honeycomb_publication_accept',
+        'honeycomb_publication_complete_pending',
+        'honeycomb_publication_recipients',
+        'honeycomb_organization_recipients',
+        'honeycomb_reviewer_eligible',
+        'honeycomb_testing_app_control_ready',
+        'honeycomb_testing_application_authority',
+        'honeycomb_testing_application_import_allowed',
+        'honeycomb_configure_testing_application',
+        'honeycomb_testing_application_source',
+        'honeycomb_testing_application_record',
+        'honeycomb_testing_application_webhook',
+        'honeycomb_rotate_testing_application_secret',
+        'honeycomb_adoption_export',
+        'honeycomb_adoption_key',
+        'honeycomb_remember_testing_key',
+        'honeycomb_testing_root_authority',
+        'honeycomb_testing_root_app_authority',
+        'honeycomb_testing_link_imports',
+        'honeycomb_retention_start',
+        'honeycomb_retention_finish',
+        'resolve_honeycomb_application',
+        'honeycomb_operation_status',
+        'honeycomb_application_record',
+        'honeycomb_scope_decision',
+        'testing_import_revision',
+        'testing_import_webhook_endpoint',
+        'honeycomb_scope_catalog',
+        'honeycomb_bundle_revision',
+        'honeycomb_bundle_record',
+        'honeycomb_inventory',
+        'honeycomb_testing_record',
+        'honeycomb_testing_start',
+        'honeycomb_testing_finish',
+        'honeycomb_testing_key',
+        'honeycomb_testing_purge_receipts',
+        'resolve_testing_environment_v2',
+        'testing_runtime_version',
+        'honeycomb_testing_actor',
+        'honeycomb_testing_organization',
+        'replay_honeycomb_management_event',
+        'honeycomb_management_events',
+        'application_is_discoverable',
+        'discover_application_origin',
+        'application_private_token_is_current',
+        'application_private_consent_is_current',
+        'apply_workos_connection_event',
+        'archive_organization_tag',
+        'assert_active_carbon_contacts',
+        'assert_active_principal_subtype',
+        'assert_approval_request_shape',
+        'assert_pending_approval_request_shape',
+        'assert_exactly_one_organization_owner',
+        'assert_platform_administrator_present',
+        'assign_initial_silicon_tags',
+        'begin_sso_authorization',
+        'can_administer_application',
+        'can_manage_application',
+        'can_manage_application_technical',
+        'can_read_application',
+        'cancel_silicon_webhook_deliveries',
+        'carbon_handle_is_available',
+        'complete_sso_authorization',
+        'complete_verified_organization_invitation',
+        'complete_verified_signup',
+        'current_application_id',
+        'current_organization_id',
+        'current_principal_id',
+        'current_subject_membership',
+        'current_subject_organization',
+        'deactivate_silicon_webhook_for_removal',
+        'describe_testing_environment',
+        'get_current_application_authorization',
+        'get_organization_invitation_destination',
+        'get_testing_application_import',
+        'get_testing_application_import_v1',
+        'get_testing_application_import_v2',
+        'grant_application_scope_catalogue',
+        'has_organization_capability',
+        'has_platform_capability',
+        'is_active_organization_member',
+        'is_active_organization_owner_or_admin',
+        'is_organization_creator',
+        'is_testing_environment_administrator',
+        'is_valid_sso_callback_correlation',
+        'list_active_carbon_login_contacts',
+        'list_application_login_approved_scopes',
+        'list_current_application_authorizations',
+        'list_organization_member_webhook_authorizations',
+        'list_organization_member_webhook_projection_sources',
+        'list_profile_webhook_authorization_scopes',
+        'list_removed_organizations_for_current_carbon',
+        'lock_application_creation_organization',
+        'lock_application_webhook_reviewer',
+        'lock_carbon_profile_silicon_routes',
+        'lock_silicon_self_profile',
+        'update_silicon_self_profile',
+        'action_execution_allowed',
+        'action_execution_capability',
+        'list_action_policies',
+        'configure_action_policy',
+        'authorize_sensitive_action',
+        'list_action_approvals',
+        'decide_action_approval',
+        'lock_current_application_client',
+        'lock_application_verification_client',
+        'issue_application_access_key',
+        'verify_application_access_key',
+        'lock_current_application_oauth_subject_authority',
+        'lock_current_application_obo_exchange_authority',
+        'lock_current_application_obo_exchange_authority_v2',
+        'lock_governance_request_target',
+        'lock_invitation_verification_challenge',
+        'lock_login_organization_selection',
+        'lock_account_login_organization_selection',
+        'lock_membership_removal_event_scope',
+        'lock_organization_tag_scope',
+        'lock_silicon_webhook_delivery_scope',
+        'lock_silicon_webhook_own_tag_audience',
+        'lock_silicon_webhook_target',
+        'lock_sso_membership_activation_state',
+        'locked_application_approved_scopes',
+        'non_deleted_carbon_contact_exists',
+        'organization_handle_is_available',
+        'production_application_id_is_reserved',
+        'reconcile_runtime_keyring',
+        'record_ignored_workos_event',
+        'record_testing_environment_cleaning',
+        'remove_organization_membership',
+        'replace_membership_job_role_direct',
+        'replace_membership_tags_direct',
+        'replace_organization_sso_entitlement',
+        'resolve_active_carbon_by_contact_digest',
+        'resolve_active_carbon_by_handle',
+        'resolve_active_silicon_credential',
+        'resolve_application_client',
+        'resolve_authorized_application_organization',
+        'resolve_organization_invitation_tenant',
+        'resolve_pending_email_join_invitation',
+        'resolve_platform_sso_organization',
+        'resolve_silicon_webhook_replay_target',
+        'resolve_testing_environment',
+        'set_organization_admin_role',
+        'touch_testing_environment',
+        'application_scope_names',
+        'iam_scope_catalog',
+        'application_iam_scope_allowed',
+        'application_scope_catalog',
+        'configure_application_scopes',
+        'application_login_scope_policy',
+        'current_application_resource_scopes',
+        'list_organization_webhook_scope_authorizations',
+        'application_scope_request_view',
+        'application_scope_request_context',
+        'submit_application_scope_requests',
+        'mutate_application_scope_request',
+        'application_token_allows_external_scope',
+        'application_bundle_view',
+        'application_bundle_availability',
+        'application_bundle_management_organization',
+        'mutate_application_bundle',
+        'record_contract_request',
+        'list_contract_versions',
+        'application_webhook_accepts_event',
+        'application_webhook_event_scope',
+        'application_webhook_has_event_scope'
+    ];
+    non_api_definer_names text[] := ARRAY[
+        'revoke_application_access_keys',
+        'register_membership_identifier',
+        'honeycomb_publication_gates',
+        'honeycomb_publication_is_current',
+        'honeycomb_publication_reused_current',
+        'organization_iam_scope_allowed',
+        'get_worker_testing_environment_webhook_key_v2',
+        'claim_honeycomb_management_events',
+        'finish_honeycomb_management_event',
+        'enforce_private_application_activation',
+        'lock_application_private_consent',
+        'enforce_application_iam_scope_policy',
+        'revoke_unavailable_iam_scopes',
+        'list_testing_application_orphan_candidates',
+        'testing_environment_record_exists',
+        'list_idle_application_testing_candidates',
+        'retire_idle_testing_application',
+        'record_application_testing_maintenance',
+
+        'activate_runtime_key_version',
+        'assert_active_carbon_contacts',
+        'assert_active_principal_subtype',
+        'assert_approval_request_shape',
+        'assert_exactly_one_organization_owner',
+        'assert_outbox_event_affected_tag_tenant',
+        'assert_outbox_event_own_tag_membership_tenant',
+        'assert_silicon_webhook_subscription_topics',
+        'check_approval_shape_from_payload',
+        'check_approval_shape_from_request',
+        'check_carbon_contacts_from_contact',
+        'check_carbon_contacts_from_principal',
+        'check_owner_after_membership_change',
+        'check_owner_after_organization_change',
+        'check_principal_subtype_from_principal',
+        'check_principal_subtype_from_subtype',
+        'complete_worker_silicon_hook',
+        'enforce_selected_obo_parent_binding',
+        'expire_idle_testing_environments',
+        'erase_testing_environment',
+        'fail_worker_silicon_hook',
+        'get_audit_public_identifiers',
+        'get_worker_application_webhook_event_projection',
+        'get_worker_application_webhook_material',
+        'get_worker_invitation_context',
+        'get_worker_email_invitation',
+        'get_worker_notification_contact',
+        'get_worker_security_notice_contact',
+        'get_worker_silicon_hook_identity',
+        'get_worker_silicon_webhook_material',
+        'get_worker_testing_environment_webhook_key',
+        'list_testing_environments_for_purge',
+        'list_worker_application_webhook_recipients',
+        'list_worker_application_webhook_recipients_legacy',
+        'list_worker_captured_application_webhook_recipients',
+        'list_worker_silicon_webhook_recipients',
+        'prevent_oauth_refresh_family_scope_mutation',
+        'prevent_silicon_reporting_cycle',
+        'purge_testing_environment',
+        'reconcile_worker_contact_aead_keyring',
+        'reject_audit_mutation',
+        'reject_immutable_history_mutation',
+        'run_worker_ephemeral_maintenance',
+        'run_worker_retention_maintenance',
+        'can_review_application_scopes',
+        'enqueue_application_scope_notice',
+        'get_worker_application_scope_notice',
+        'invalidate_upgraded_obo_endpoint_scope',
+        'sunset_idle_contract_versions'
+    ];
+BEGIN
+    -- Optional scoped-only bootstrap is deliberately outside the shared ledger.
+    IF to_regprocedure('iam_private.resolve_scoped_iam_application()') IS NOT NULL THEN
+        api_function_names := api_function_names || ARRAY['resolve_scoped_iam_application'];
+    END IF;
+    IF to_regprocedure('iam_private.current_testing_environment_id()') IS NOT NULL THEN
+        non_api_definer_names := non_api_definer_names || ARRAY['stamp_testing_outbox_generation'];
+        api_function_names := api_function_names || ARRAY[
+            'honeycomb_testing_app_readiness',
+            'honeycomb_testing_activate_apps',
+            'honeycomb_testing_store_snapshot',
+            'honeycomb_testing_source_snapshots',
+            'honeycomb_testing_import_records',
+            'honeycomb_test_app_receipt',
+            'honeycomb_test_app_complete',
+            'honeycomb_adoption_imports',
+            'erase_testing_applications',
+            'register_test_application_selector', 'resolve_test_application_selector',
+            'set_testing_runtime_state', 'lock_testing_runtime_state',
+            'test_application_selector_backfill', 'resolve_testing_scoped_iam_application'
+        ];
+    END IF;
+    FOREACH allowed_function_name IN ARRAY api_function_names
+    LOOP
+        SELECT pg_catalog.count(*)
+        INTO matched_function_count
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = 'iam_private'
+          AND procedure.proname = allowed_function_name;
+
+        IF matched_function_count <> 1 THEN
+            RAISE EXCEPTION
+                'API allowlist expected exactly one iam_private.%, found %',
+                allowed_function_name,
+                matched_function_count;
+        END IF;
+
+        SELECT
+            namespace.nspname,
+            procedure.proname,
+            pg_catalog.pg_get_function_identity_arguments(procedure.oid) AS arguments
+        INTO STRICT function_record
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = 'iam_private'
+          AND procedure.proname = allowed_function_name;
+
+        EXECUTE pg_catalog.format(
+            'GRANT EXECUTE ON FUNCTION %I.%I(%s) TO silicon_iam_api',
+            function_record.nspname,
+            function_record.proname,
+            function_record.arguments
+        );
+    END LOOP;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = 'iam_private'
+          AND procedure.prosecdef
+          AND procedure.proname <> ALL (
+              api_function_names || non_api_definer_names
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'unclassified SECURITY DEFINER function exists in iam_private';
+    END IF;
+END;
+$api_functions$;
+
+GRANT USAGE ON SCHEMA iam TO silicon_iam_worker;
+GRANT USAGE ON SCHEMA iam_private TO silicon_iam_worker;
+GRANT SELECT, UPDATE ON iam.outbox_events TO silicon_iam_worker;
+GRANT SELECT, INSERT ON iam.outbox_event_recipients TO silicon_iam_worker;
+GRANT SELECT, INSERT, UPDATE ON iam.webhook_deliveries TO silicon_iam_worker;
+GRANT SELECT, INSERT, UPDATE ON iam.webhook_delivery_attempts TO silicon_iam_worker;
+GRANT SELECT, UPDATE ON iam.notification_jobs TO silicon_iam_worker;
+GRANT SELECT ON public._sqlx_migrations TO silicon_iam_worker;
+
+-- Worker policy roles are bound only after deployment has provisioned the
+-- fixed NOLOGIN roles. Keeping role names out of migrations makes a schema
+-- bootstrap portable while preventing worker sessions from evaluating API
+-- policy helpers whose EXECUTE privilege they intentionally do not receive.
+ALTER POLICY silicons_member_select
+    ON iam.silicons TO silicon_iam_api;
+ALTER POLICY silicon_webhook_endpoints_manage
+    ON iam.silicon_webhook_endpoints TO silicon_iam_api;
+ALTER POLICY silicon_webhook_signing_keys_manage
+    ON iam.silicon_webhook_signing_keys TO silicon_iam_api;
+ALTER POLICY silicon_webhook_subscriptions_manage
+    ON iam.silicon_webhook_subscriptions TO silicon_iam_api;
+ALTER POLICY silicon_webhook_subscription_topics_manage
+    ON iam.silicon_webhook_subscription_topics TO silicon_iam_api;
+ALTER POLICY silicon_webhook_subscription_extra_tags_manage
+    ON iam.silicon_webhook_subscription_extra_tags TO silicon_iam_api;
+ALTER POLICY tag_change_requests_member_select
+    ON iam.tag_change_requests TO silicon_iam_api;
+ALTER POLICY tag_change_requests_create
+    ON iam.tag_change_requests TO silicon_iam_api;
+ALTER POLICY membership_tag_change_history_member_select
+    ON iam.membership_tag_change_history TO silicon_iam_api;
+
+-- Remove stale worker policies from deployments that previously provisioned
+-- provider-managed Silicon Hooks. Table privileges are rebuilt from zero above.
+DROP POLICY IF EXISTS silicons_worker_select ON iam.silicons;
+DROP POLICY IF EXISTS silicon_hooks_worker_select ON iam.silicon_hooks;
+DROP POLICY IF EXISTS silicon_hooks_worker_update ON iam.silicon_hooks;
+
+DO $worker_functions$
+DECLARE
+    allowed_function_name text;
+    matched_function_count integer;
+    function_record record;
+    worker_function_names text[] := ARRAY[
+        'application_encryption_contexts',
+        'canonical_replay_contexts',
+        'resolve_membership_identifiers',
+        'get_worker_testing_environment_webhook_key_v2',
+        'claim_honeycomb_management_events',
+        'finish_honeycomb_management_event',
+        'list_testing_application_orphan_candidates',
+        'testing_environment_record_exists',
+        'list_idle_application_testing_candidates',
+        'retire_idle_testing_application',
+        'record_application_testing_maintenance',
+
+        'expire_idle_testing_environments',
+        'get_worker_application_webhook_material',
+        'get_worker_application_webhook_event_projection',
+        'get_worker_invitation_context',
+        'get_worker_email_invitation',
+        'get_worker_notification_contact',
+        'get_worker_security_notice_contact',
+        'get_worker_silicon_webhook_material',
+        'get_worker_testing_environment_webhook_key',
+        'list_worker_application_webhook_recipients',
+        'list_worker_captured_application_webhook_recipients',
+        'list_worker_silicon_webhook_recipients',
+        'list_testing_environments_for_purge',
+        'lock_silicon_webhook_delivery_scope',
+        'purge_testing_environment',
+        'reconcile_worker_contact_aead_keyring',
+        'run_worker_ephemeral_maintenance',
+        'run_worker_retention_maintenance',
+        'get_worker_application_scope_notice',
+        'sunset_idle_contract_versions',
+        'application_webhook_accepts_event',
+        'application_webhook_event_scope',
+        'application_webhook_has_event_scope'
+    ];
+BEGIN
+    FOREACH allowed_function_name IN ARRAY worker_function_names
+    LOOP
+        SELECT pg_catalog.count(*)
+        INTO matched_function_count
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = 'iam_private'
+          AND procedure.proname = allowed_function_name;
+
+        IF matched_function_count <> 1 THEN
+            RAISE EXCEPTION
+                'worker allowlist expected exactly one iam_private.%, found %',
+                allowed_function_name,
+                matched_function_count;
+        END IF;
+
+        SELECT
+            namespace.nspname,
+            procedure.proname,
+            pg_catalog.pg_get_function_identity_arguments(procedure.oid) AS arguments
+        INTO STRICT function_record
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = 'iam_private'
+          AND procedure.proname = allowed_function_name;
+
+        EXECUTE pg_catalog.format(
+            'GRANT EXECUTE ON FUNCTION %I.%I(%s) TO silicon_iam_worker',
+            function_record.nspname,
+            function_record.proname,
+            function_record.arguments
+        );
+    END LOOP;
+END;
+$worker_functions$;
+
+-- Functions that exist only in a testing database.
+--
+-- The testing overlay in migrations/testing adds per-environment row scoping
+-- on top of the identical production schema. Its helpers are absent from a
+-- production database, so each grant here is conditional: applying this file
+-- to either database must succeed unchanged.
+--
+-- current_testing_environment_id is what every environment policy calls, so
+-- both runtime roles need EXECUTE on it or nothing in that database is
+-- readable at all. erase_testing_environment backs the API's "clean this
+-- environment" operation and the worker's final purge.
+DO $testing_plane_functions$
+DECLARE
+    allowed_function_name text;
+    function_record record;
+    testing_plane_function_names text[] := ARRAY[
+        'current_testing_environment_id',
+        'erase_testing_environment'
+    ];
+BEGIN
+    FOREACH allowed_function_name IN ARRAY testing_plane_function_names
+    LOOP
+        SELECT
+            namespace.nspname,
+            procedure.proname,
+            pg_catalog.pg_get_function_identity_arguments(procedure.oid) AS arguments
+        INTO function_record
+        FROM pg_catalog.pg_proc AS procedure
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname = 'iam_private'
+          AND procedure.proname = allowed_function_name;
+
+        CONTINUE WHEN NOT FOUND;
+
+        EXECUTE pg_catalog.format(
+            'GRANT EXECUTE ON FUNCTION %I.%I(%s) TO silicon_iam_api, silicon_iam_worker',
+            function_record.nspname,
+            function_record.proname,
+            function_record.arguments
+        );
+    END LOOP;
+END;
+$testing_plane_functions$;
+
+-- The operator role has no IAM table access. Its only authority is the
+-- compare-and-swap transition implemented by this fixed-path definer function.
+GRANT USAGE ON SCHEMA iam_private TO silicon_iam_key_operator;
+GRANT EXECUTE ON FUNCTION iam_private.activate_runtime_key_version(
+    text, smallint, smallint
+) TO silicon_iam_key_operator;
+
+
+COMMIT;
