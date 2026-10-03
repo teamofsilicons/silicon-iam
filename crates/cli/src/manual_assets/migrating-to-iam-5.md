@@ -18,6 +18,8 @@ Installing the CLI does not migrate an application backend into the new protocol
 
 Continue sending the user to IAM and exchanging the returned short-lived token on your application's server. Keep your application secret on that server and bind the callback to the login attempt. Your application receives an application session, not the user's IAM password, Silicon STK, OTP, or direct IAM account token.
 
+Offer **Continue as Carbon** and **Continue as Silicon**, passing the chosen `identity_kind=carbon|silicon` with `display=popup` to IAM. Store that choice with unpredictable callback state on your backend. Complete the SLT exchange and check the authenticated principal kind before establishing your application session. With a server callback, the popup sends only a completion status and one-use attempt identifier to its exact app-origin opener; the opener checks both the origin and popup window. A single-page callback can instead hand the one-use SLT and bound state to that opener for backend exchange; no access or refresh tokens may pass in messages, and completion waits for verified backend success. Keep a full-page fallback and treat closure as cancellation. Direct IAM API clients can also send `X-IAM-Identity-Kind`; production enforces it before SLT issuance. The application still verifies the exchanged identity against its own login attempt. See the [login guide](/client/login/) for details.
+
 Every application login selects exactly one Carbon or Silicon account and one organization. An application that supports several organizations should retain separate sessions for those contexts and show an explicit context switcher. Keep caches, data queries, permission checks, background tasks and outgoing requests bound to their originating session. Do not combine several organizations into one IAM token.
 
 Read the [login integration](/client/login/) and [organization consent contract](/organization-consent/). Older unscoped application credentials are revoked during the rollout; handle reauthentication as a normal user flow and ask the user to choose an organization again. Do not infer OBO authority from an ordinary login or an old consent record.
@@ -34,6 +36,8 @@ The caller implements this lifecycle:
 4. Complete either a bound callback or a manual code flow. For a callback, supply `redirect_uri` and a 32–512-byte `state` together, then validate the returned state and authorization request ID. Redeem the one-use code on your server at `POST /api/v1/obo-access/tokens`.
 5. Store each returned root's OBO access/refresh pair separately from ordinary login credentials. Persist its grant, endpoint, account, organization, testing environment and generation binding.
 6. Serialize refreshes per token family. Refresh at the same token endpoint and save the replacement pair atomically. After an uncertain response, retry the identical request with the same persisted idempotency key.
+
+For browser OBO approval, reserve the popup from the user's click and navigate it to IAM's validated consent URL with `display=popup`. Bind the callback, state, request ID and optional return destination when creating the authorization. After the server exchanges and stores credentials, notify the exact app-origin opener with status only. Redirect to the approved return destination when supplied, otherwise show a return-to-app page. Preserve the pending action on denial, popup closure or a lost exchange response; keep an identical retry's original mutation key. See the [popup approval contract](/client/obo/#approval-in-a-popup).
 
 The response can contain several root token pairs. Each root's access token covers that root's approved dependency graph. It does not grant every unrelated root or endpoint. The root application alone retains the refresh credential.
 
@@ -63,13 +67,15 @@ Configure `ata_endpoints` within each application in Honeycomb. Create and manag
 
 The originating app stores the once-revealed refresh credential. It obtains and rotates proof through Basic-authenticated `POST /api/v1/ata-access/tokens` with `{refresh_token}` and an idempotency key. Each receiving app verifies with its own credentials at `POST /api/v1/ata-access/verify`, sending `{app_id, app_proof_token, endpoint}`. Here `app_id` is the originating app and `endpoint` is the exact registered recipient path.
 
-Success returns `{verified: true, valid_till: ...}`; `valid_till` is a UTC `YYYYMMDDHHMMSS` integer. Invalid proof, unapproved recipient or unauthorized endpoint returns `{verified: false}`. ATA never represents a user and cannot become OBO anywhere in its chain. See [the ATA contract](/api/applications/#app-to-app-verification-ata) and [Honeycomb's endpoint configuration](https://docs.honeycomb.teamofsilicons.com/scopes-and-obo/).
+Success returns `{verified: true, valid_till: ...}`; `valid_till` is a UTC `YYYYMMDDHHMMSS` integer. Invalid proof, unapproved recipient or unauthorized endpoint returns `{verified: false}`. ATA never represents a user and cannot become OBO anywhere in its chain. See [the ATA SDK guide](/client/ata/), [the ATA contract](/api/applications/#app-to-app-verification-ata) and [Honeycomb's endpoint configuration](https://docs.honeycomb.teamofsilicons.com/scopes-and-obo/).
 
 ## Test and publish the integration
 
 Use an isolated testing environment with all required apps and dependencies. Carry the environment and cleaning generation through authorization, token storage, provider verification, webhooks and resource access; never fall back to production when a testing lookup fails. Exercise both Carbons and Silicons, and keep the CLI capable of completing the same authorization flows as the website.
 
 - [ ] Login supports Carbon and Silicon accounts and selects exactly one organization.
+- [ ] Popup callbacks verify state, principal kind, exact opener origin/window and attempt ID before reporting success.
+- [ ] Blocked/closed popups and declined OBO preserve the action; return destinations are validated.
 - [ ] Multiple contexts have separate sessions and isolated caches, requests and jobs.
 - [ ] OBO is requested by the feature, and decline preserves the pending action.
 - [ ] Endpoint dependencies, warnings and provider approvals match the actual calls.

@@ -56,6 +56,7 @@ CATALOG = [
   ["client/login", "Application login using short-lived tokens", "docs/client/login.html", []],
   ["client/tokens", "Application tokens and authorization snapshots", "docs/client/tokens.html", %w[tokens]],
   ["client/obo", "Rust client OBO consent, tokens and verification", "docs/client/obo.html", []],
+  ["client/ata", "Rust client app-to-app verification", "docs/client/ata.html", %w[ata]],
   ["client/webhooks", "Rust client webhook verification", "docs/client/webhooks.html", []],
   ["client/testing-environments", "Rust client testing environment workflow", "docs/client/testing-environments.html", []],
   ["client/errors", "Rust client errors and safe retry policy", "docs/client/errors.html", []],

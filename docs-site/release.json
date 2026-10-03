@@ -1,7 +1,7 @@
 {
   "version": "5.0.0",
   "status": "rollout",
-  "published_cli": "4.0.0",
+  "published_cli": "5.0.0",
   "published_sdk": "5.0.0",
   "migration_path": "/migrating-to-iam-5/"
 }
