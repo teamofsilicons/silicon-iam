@@ -328,21 +328,13 @@ jobs:
             cat /tmp/silicon-iam-api.log
             exit 1
           fi
+          # Run every live flow in one harness. Rust reports all four results
+          # even when an earlier assertion fails, without changing the gate.
           cargo test -p silicon-iam-client \
             --features cli-session \
             --test live \
             --locked \
-            the_client_speaks_the_contract_end_to_end \
-            -- --ignored --exact --test-threads=1
-          cargo test -p silicon-iam-client --features cli-session --test live --locked \
-            batch_login_is_atomic_and_application_bound \
-            -- --ignored --exact --test-threads=1
-          cargo test -p silicon-iam-client --features cli-session --test live --locked \
-            application_testing_imports_cycles_and_preserves_obo_authority \
-            -- --ignored --exact --test-threads=1
-          cargo test -p silicon-iam-client --features cli-session --test live --locked \
-            a_testing_environment_is_the_same_api_against_its_own_data \
-            -- --ignored --exact --test-threads=1
+            -- --ignored --test-threads=1
           kill -TERM "${api_pid}"
           wait "${api_pid}"
           trap - EXIT
