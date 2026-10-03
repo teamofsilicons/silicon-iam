@@ -23,63 +23,65 @@ const request = (path: string, cookie = "", origin = env.AUTH_ORIGIN) =>
       poll_token: "synthetic-provider-proof",
     }),
   });
-test("provider completion stores credentials in the encrypted wallet, never browser JSON", async () => {
-  const original = globalThis.fetch;
-  let forwarded = 0;
-  globalThis.fetch = async (url, init) => {
-    forwarded++;
-    assert.equal(
-      String(url),
-      env.API_UPSTREAM + "/api/v1/login/social/google/complete",
-    );
-    assert.equal(
-      new Headers(init?.headers).get("idempotency-key"),
-      "social-proof-completion",
-    );
-    return Response.json(
-      {
-        actor: { type: "carbon", public_id: "c:provider" },
-        access_token: "cat_provider",
-        refresh_token: "rft_provider",
-        session_id: "provider-session",
-        expires_in: 1800,
-        refresh_expires_at: new Date(Date.now() + 86400000).toISOString(),
-      },
-      {
-        headers: {
-          "set-cookie": "iam_session=provider; HttpOnly; Secure; Path=/",
+for (const provider of ["google", "apple"]) {
+  test(`${provider} completion stores credentials in the encrypted wallet, never browser JSON`, async () => {
+    const original = globalThis.fetch;
+    let forwarded = 0;
+    globalThis.fetch = async (url, init) => {
+      forwarded++;
+      assert.equal(
+        String(url),
+        env.API_UPSTREAM + `/api/v1/login/social/${provider}/complete`,
+      );
+      assert.equal(
+        new Headers(init?.headers).get("idempotency-key"),
+        "social-proof-completion",
+      );
+      return Response.json(
+        {
+          actor: { type: "carbon", public_id: "c:provider" },
+          access_token: "cat_provider",
+          refresh_token: "rft_provider",
+          session_id: "provider-session",
+          expires_in: 1800,
+          refresh_expires_at: new Date(Date.now() + 86400000).toISOString(),
         },
-      },
-    );
-  };
-  try {
-    const response = await gateway(
-      request("/api/v1/login/social/google/complete"),
-      env,
-    );
-    assert.equal(response.status, 200);
-    const value = await response.json();
-    assert.equal(value.authenticated, true);
-    assert.equal(value.access_token, undefined);
-    assert.equal(value.refresh_token, undefined);
-    assert.equal(forwarded, 1);
-    const cookies = response.headers
-      .getSetCookie()
-      .map((value) => value.split(";")[0])
-      .join("; ");
-    const saved = await readSession(
-      new Request(env.AUTH_ORIGIN, { headers: { cookie: cookies } }),
-      settings(env),
-    );
-    assert.equal(saved?.actorType, "carbon");
-    assert.equal(saved?.actorId, "c:provider");
-    assert.equal(saved?.access, "cat_provider");
-    assert.equal(saved?.refresh, "rft_provider");
-  } finally {
-    globalThis.fetch = original;
-  }
-});
-test("provider linking needs a direct session and all provider mutations need same-origin CSRF protection", async () => {
+        {
+          headers: {
+            "set-cookie": "iam_session=provider; HttpOnly; Secure; Path=/",
+          },
+        },
+      );
+    };
+    try {
+      const response = await gateway(
+        request(`/api/v1/login/social/${provider}/complete`),
+        env,
+      );
+      assert.equal(response.status, 200);
+      const value = await response.json();
+      assert.equal(value.authenticated, true);
+      assert.equal(value.access_token, undefined);
+      assert.equal(value.refresh_token, undefined);
+      assert.equal(forwarded, 1);
+      const cookies = response.headers
+        .getSetCookie()
+        .map((value) => value.split(";")[0])
+        .join("; ");
+      const saved = await readSession(
+        new Request(env.AUTH_ORIGIN, { headers: { cookie: cookies } }),
+        settings(env),
+      );
+      assert.equal(saved?.actorType, "carbon");
+      assert.equal(saved?.actorId, "c:provider");
+      assert.equal(saved?.access, "cat_provider");
+      assert.equal(saved?.refresh, "rft_provider");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+}
+test("legacy provider compatibility route remains authenticated and provider mutations require same-origin CSRF protection", async () => {
   const original = globalThis.fetch;
   let forwarded = 0;
   globalThis.fetch = async () => {

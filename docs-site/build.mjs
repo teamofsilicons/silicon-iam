@@ -25,6 +25,7 @@ const historical = new Set([
   "SESSION_BOUND_CONSENT_FIX.md",
   "PRIVATE_APPLICATION_LOGIN_ERRORS.md",
   "HONEYCOMB_IMPLEMENTATION.md",
+  "PROVIDER_EMAIL_AUTHENTICATION.md",
   "frontend/deployment.md",
   "frontend/manual-qa.md",
   "frontend/scope-approvals.md",

@@ -214,7 +214,7 @@ pub struct BatchLoginArgs {
         .multiple(true)
 ))]
 pub struct LoginArgs {
-    /// Sign in through Google or Apple; linking an existing account requires a fresh OTP.
+    /// Sign in through Google or Apple using their verified email, without an extra IAM code.
     #[arg(long, value_parser = ["google", "apple"])]
     pub provider: Option<String>,
     /// Check the current session with IAM without prompting for credentials.
@@ -349,7 +349,7 @@ pub struct SignupArgs {
     /// Email address to verify when signing up without a provider.
     #[arg(long, required_unless_present_any = ["provider", "session_id"], conflicts_with = "provider")]
     pub email: Option<String>,
-    /// Verify your email using Google or Apple in a browser, then continue here.
+    /// Verify email with Google or Apple; sign into an existing account or continue signup here.
     #[arg(long, value_parser = ["google", "apple"], conflicts_with_all = ["session_id", "email_code"])]
     pub provider: Option<String>,
     /// Optional phone number to verify, in E.164 form.

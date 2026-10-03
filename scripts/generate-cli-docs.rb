@@ -137,6 +137,7 @@ end
 # New consumer guides must receive a discoverable topic, not silently disappear
 # from installed CLI builds. These fix reports are evidence, not user manuals.
 excluded = %w[
+  docs/PROVIDER_EMAIL_AUTHENTICATION.md
   docs/IAM_REDESIGN_2026_10_02.md
   docs/RELEASE_READINESS_2026_10_03.md
   docs/INTEGRATION_FIXES_2026-09-05.md

@@ -22,9 +22,13 @@ The completion response includes the profile, access/refresh tokens, actor, sess
 
 ## Google and Apple
 
-`GET /api/v1/signup/social/providers` reports which providers are enabled. Start an enabled provider with `POST /api/v1/signup/social/{provider}/start` and an idempotency key. Open its `authorization_url`; keep the returned `request_id` and secret `poll_token` in memory. Poll `POST …/{provider}/status` with those two values.
+`GET /api/v1/signup/social/providers` reports which providers are enabled. The official IAM website and CLI use `POST /api/v1/login/social/{provider}/start` for provider sign-in and signup. Send an idempotency key with the request. Open its `authorization_url`; keep the returned `request_id` and secret `poll_token` in memory. Poll `POST /api/v1/login/social/{provider}/status` with those two values.
 
-Status is `pending`, `verified`, `already_registered`, `failed` or `expired`. Verified results include a signup session and provider-verified email; continue with optional phone and profile setup without another email OTP. Already-registered accounts are offered login. Provider callbacks and token validation run on IAM's server; the CLI uses the same browser-and-poll protocol.
+A provider-verified email belonging to an active Carbon returns `login_ready`. Complete the proof with `POST /api/v1/login/social/{provider}/complete` to sign in to that account, without an IAM email code or account-linking step. Keep the same idempotency key and proof when retrying an uncertain completion.
+
+A new provider-verified email returns `verified` with a signup session; continue with optional phone and profile setup without an email OTP. The resulting Carbon can also sign in later using an ordinary IAM email code. Provider callbacks and token validation run on IAM's server. Historical provider-subject associations do not choose the Carbon account; IAM resolves and revalidates the verified email.
+
+The older `/api/v1/signup/social/{provider}/start` and status routes remain available for existing clients. They return `already_registered` for an existing email; current clients use the shared provider login flow above.
 
 ## Profile pictures
 

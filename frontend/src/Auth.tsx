@@ -12,7 +12,7 @@ import {
 import { Brand, ErrorBox, Field, LocalOtp } from "./ui";
 import ApplicationLogin from "./ApplicationLogin";
 import { loginIdentity, loginIdentityKind } from "./login-flow";
-import SocialSignup, { type SocialStatus } from "./SocialSignup";
+import SocialSignup from "./SocialSignup";
 import SiliconSignup from "./SiliconSignup";
 import OboConsent from "./OboConsent";
 import { isOboConsentLocation } from "./obo-consent-link";
@@ -37,7 +37,6 @@ export default function Auth(props: {
     Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
   );
   const [existingAccount, setExistingAccount] = createSignal(false);
-  const [socialLink, setSocialLink] = createSignal<SocialStatus["link"]>();
   const [photo, setPhoto] = createSignal<File>();
   const [photoPreview, setPhotoPreview] = createSignal("");
   onCleanup(() => {
@@ -102,16 +101,8 @@ export default function Auth(props: {
     new Promise<void>((resolve) => setTimeout(resolve, ms));
   async function continueLogin() {
     if (handoff() !== "idle") return;
-    const link = socialLink();
-    if (link) {
-      await send("POST", `/api/v1/login/social/${link.provider}/link`, {
-        request_id: link.request_id,
-        poll_token: link.poll_token,
-      });
-      setSocialLink();
-    }
     if (appLogin) {
-      // After OTP verification reload IAM's consent surface with its new
+      // After authentication reload IAM's consent surface with its new
       // HttpOnly session. Never navigate to an app until selection is approved.
       const destination = new URL(authDestination(props.config));
       destination.searchParams.delete("add_account");
@@ -174,8 +165,7 @@ export default function Auth(props: {
               `/api/v1/login/challenges/${challengeId}/verify`,
               { code: code() },
             );
-            // A failed provider link retries that exact mutation, not the
-            // already-consumed OTP which established this protected session.
+            // A continuation retry must not consume an already verified OTP again.
             setVerifiedChallenge(challengeId);
           }
           await continueLogin();
@@ -445,7 +435,6 @@ export default function Auth(props: {
                   aria-selected={kind() === "carbon"}
                   disabled={busy()}
                   onClick={() => {
-                    setSocialLink();
                     setKind("carbon");
                   }}
                 >
@@ -457,7 +446,6 @@ export default function Auth(props: {
                   aria-selected={kind() === "silicon"}
                   disabled={busy()}
                   onClick={() => {
-                    setSocialLink();
                     setKind("silicon");
                   }}
                 >
@@ -476,11 +464,11 @@ export default function Auth(props: {
                       disabled={busy()}
                       busy={setBusy}
                       complete={async (value) => {
-                        setEmail(value.email!);
-                        if (value.status === "already_registered") {
-                          setExistingAccount(true);
+                        if (value.status === "signed_in") {
+                          await continueLogin();
                           return;
                         }
+                        setEmail(value.email!);
                         setSignupId(value.signup_session_id!);
                         setExistingAccount(false);
                         await prepareProfile(value.email!, value.display_name);
@@ -491,21 +479,10 @@ export default function Auth(props: {
                   <Show when={!signup() && kind() === "carbon" && !isCode()}>
                     <SocialSignup
                       disabled={busy()}
-                      login
                       busy={setBusy}
                       complete={async (value) => {
                         if (value.status === "signed_in") {
                           await continueLogin();
-                          return;
-                        }
-                        if (
-                          value.status === "link_required" &&
-                          value.link &&
-                          value.email
-                        ) {
-                          setSocialLink(value.link);
-                          setIdentity(value.email);
-                          setChallenge();
                           return;
                         }
                         if (
@@ -523,26 +500,6 @@ export default function Auth(props: {
                         setIdentity(value.email || "");
                       }}
                     />
-                  </Show>
-                  <Show when={socialLink()}>
-                    <div class="notice" role="status">
-                      <strong>Confirm your existing IAM account</strong>
-                      <p>
-                        Sign in once with your verified contact to connect{" "}
-                        {socialLink()!.provider === "google"
-                          ? "Google"
-                          : "Apple"}
-                        . Future provider sign-ins will use this account
-                        directly.
-                      </p>
-                      <button
-                        type="button"
-                        class="text-button"
-                        onClick={() => setSocialLink()}
-                      >
-                        Continue without linking
-                      </button>
-                    </div>
                   </Show>
                   <Show when={existingAccount()}>
                     <div class="notice">

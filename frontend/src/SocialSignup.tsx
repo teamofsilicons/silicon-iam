@@ -1,25 +1,9 @@
 import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { ApiError, mutation, request } from "./api";
 import { ErrorBox } from "./ui";
-type Provider = "google" | "apple";
-export type SocialStatus = {
-  status:
-    | "pending"
-    | "verified"
-    | "already_registered"
-    | "failed"
-    | "expired"
-    | "login_ready"
-    | "link_required"
-    | "signed_in";
-  link?: { provider: Provider; request_id: string; poll_token: string };
-  signup_session_id?: string;
-  email?: string;
-  display_name?: string;
-};
+import { socialAttempt, type Provider, type SocialStatus } from "./social-flow";
 export default function SocialSignup(props: {
   disabled: boolean;
-  login?: boolean;
   complete: (value: SocialStatus) => Promise<void>;
   busy: (value: boolean) => void;
 }) {
@@ -46,7 +30,8 @@ export default function SocialSignup(props: {
           value.providers
             .filter(
               (item) =>
-                (props.login ? item.login_enabled === true : item.enabled) &&
+                item.enabled &&
+                item.login_enabled === true &&
                 ["google", "apple"].includes(item.id),
             )
             .map((item) => item.id),
@@ -80,10 +65,9 @@ export default function SocialSignup(props: {
   async function start(provider: Provider) {
     if (props.disabled || active() || !providers().includes(provider)) return;
     const current = ++generation;
-    const purpose = props.login ? "login" : "signup";
     const popup = window.open(
       "about:blank",
-      "iam-social-signup",
+      "iam-social-authentication",
       "popup,width=520,height=700",
     );
     if (popup) popup.opener = null;
@@ -96,7 +80,7 @@ export default function SocialSignup(props: {
         authorization_url: string;
         poll_token: string;
         expires_at: string;
-      }>("POST", `/api/v1/${purpose}/social/${provider}/start`, {});
+      }>("POST", `/api/v1/login/social/${provider}/start`, {});
       const url = new URL(value.authorization_url);
       if (
         url.protocol !== "https:" ||
@@ -117,18 +101,13 @@ export default function SocialSignup(props: {
       const expires = Date.parse(value.expires_at);
       if (!Number.isFinite(expires))
         throw new Error(
-          "IAM returned an invalid sign-up lifetime. Please try again.",
+          "IAM returned an invalid sign-in lifetime. Please try again.",
         );
-      let completing = false;
-      const proof = {
-        request_id: value.request_id,
-        poll_token: value.poll_token,
-      };
-      const finishLogin = async () => {
-        await send("POST", `/api/v1/login/social/${provider}/complete`, proof);
-        if (disposed || current !== generation) return;
-        await deliver({ status: "signed_in" });
-      };
+      const attempt = socialAttempt(
+        provider,
+        { request_id: value.request_id, poll_token: value.poll_token },
+        (path, proof) => send("POST", path, proof),
+      );
       const poll = async () => {
         if (disposed || current !== generation) return;
         if (Date.now() >= expires) {
@@ -141,63 +120,29 @@ export default function SocialSignup(props: {
           return;
         }
         try {
-          if (completing) {
-            await finishLogin();
-            return;
-          }
-          const result = await send<SocialStatus>(
-            "POST",
-            `/api/v1/${purpose}/social/${provider}/status`,
-            proof,
-          );
+          const result = await attempt();
           if (disposed || current !== generation) return;
           if (result.status === "pending") {
             timer = setTimeout(() => void poll(), 2000);
             return;
           }
-          if (props.login && result.status === "login_ready") {
-            completing = true;
-            await finishLogin();
+          if (result.status === "signed_in") {
+            await deliver(result);
             return;
           }
-          if (
-            props.login &&
-            result.status === "link_required" &&
-            result.email
-          ) {
-            await deliver({ ...result, link: { provider, ...proof } });
-            return;
-          }
-          if (
-            result.status === "verified" ||
-            result.status === "already_registered"
-          ) {
-            if (
-              !result.email ||
-              (result.status === "verified" && !result.signup_session_id)
-            )
-              throw new Error(
-                "IAM could not confirm your verified profile. Please start again.",
-              );
+          if (result.status === "verified") {
             await props.complete(result);
             stop();
             return;
           }
-          setError(
-            new Error(
-              result.status === "expired"
-                ? "This verification expired. Start again to continue."
-                : "The provider could not complete verification. Try again or use your email.",
-            ),
-          );
-          stop();
         } catch (cause) {
           if (disposed || current !== generation) return;
           if (
-            cause instanceof ApiError &&
-            cause.status >= 400 &&
-            cause.status < 500 &&
-            ![408, 425, 429].includes(cause.status)
+            !(cause instanceof ApiError) ||
+            (cause instanceof ApiError &&
+              cause.status >= 400 &&
+              cause.status < 500 &&
+              ![408, 425, 429].includes(cause.status))
           ) {
             setError(cause);
             stop();
@@ -249,9 +194,7 @@ export default function SocialSignup(props: {
       </div>
       <Show when={loaded() && !providers().length}>
         <p id="social-availability" class="muted social-availability">
-          {props.login
-            ? "Google and Apple sign-in are not available yet. Use your email, phone number or Carbon ID."
-            : "Google and Apple sign-up are not configured yet. Continue with email to create your account."}
+          Google and Apple are not available yet. Continue with your email.
         </p>
       </Show>
       <Show when={active()}>

@@ -27,22 +27,31 @@ arguments and related documentation. `iam commands --json` exposes the tree to a
 
 ### Google and Apple login
 
-The next CLI release adds `iam login --provider google` and `iam login --provider apple`.
-These commands print the provider's authorization URL and wait for browser verification.
-They require a configured production provider; IAM testing environments reject external
-provider authentication. Already published CLI 5.0.0 artifacts do not include these flags.
+Use `iam login --provider google` or `iam login --provider apple` to verify your
+email in the provider's browser window. The CLI waits for verification and signs
+into the Carbon that currently owns that verified email. No account connection
+step or additional IAM email code is needed. Both providers require production
+configuration; isolated testing environments reject external provider login.
 
-A previously linked provider signs in directly. If its verified email belongs to an
-existing account without that provider link, IAM sends a new email code. Enter that code
-to prove the existing account before linking; an old saved session cannot authorize
-this operation. The CLI stores only the independently verified IAM session and can then
-issue the usual application SLT with `--app-id` and one `--grant-org`.
+For a new verified email, login returns `signup_required` and a
+`signup_session_id` without creating an account. Continue with
+`iam signup --session-id <id>`, optionally adding `--phone`, `--carbon-id`,
+`--display-name`, `--timezone`, or `--photo`. This reuses email verification; it
+does not reopen the provider or send an IAM email code. A supplied phone still
+requires verification, and profile completion remains explicit.
 
-For a new verified email, login returns `signup_required` and a `signup_session_id`
-without creating an account. Continue with `iam signup --session-id <id>`, optionally
-adding `--phone`, `--carbon-id`, `--display-name`, `--timezone`, or `--photo`.
-Provider verification replaces email OTP; any supplied phone still requires verification.
-Polling secrets and access/refresh tokens are never printed in the normal login result.
+`iam signup --provider google` or `--provider apple` follows the same email rule:
+an existing email signs into that account, preserving its profile; a new email
+continues signup. Any Carbon, including one created through Google or Apple,
+can instead use `iam login --email <email>` and an ordinary IAM email code.
+Apple's Hide My Email address is a distinct verified email; it does not identify
+your undisclosed underlying email.
+
+These email-based flows supersede IAM 5.1's provider-account connection step.
+Published 5.1 login clients can use the existing `login_ready` response; new CLI
+flows do not invoke the retired connection endpoint. An old in-flight request
+may need a fresh start. Polling secrets and access/refresh tokens are never
+printed in the normal login result.
 
 IAM is the credential issuer: Carbon verification and Silicon SID/STK login
 happen here. An application CLI must instead accept `app login '<SLT>'`, using a
@@ -274,7 +283,7 @@ command line. Options may appear before or after positional identifiers. Applica
 | `iam logout` | None | Ends the current Carbon or Silicon session remotely. `--local-only` and `--all` conflict. `--all` uses step-up action `account.sessions_revoke_all` on the account principal ID, and affected sessions must satisfy the 12-hour rule. |
 | `iam whoami` | None | Requires an IAM session in the selected production or test plane. |
 | `iam step-up` | `<action> <resource-id>` | Carbon: OTP prompt or `--code`; Silicon: hidden current-password prompt or `--stk`. The action and exact resource must match the later protected mutation. |
-| `iam signup` | `--email <email>` or `--provider google\|apple`; optional `--phone`, `--carbon-id`, `--display-name`, `--timezone`, `--photo` | Creates and signs in a Carbon. Omitted ID and name receive available defaults. Provider signup requires configured production provider credentials; testing email signup uses the explicitly returned test code. Create or join your first organization afterward. |
+| `iam signup` | `--email <email>` or `--provider google\|apple`; optional `--phone`, `--carbon-id`, `--display-name`, `--timezone`, `--photo` | Creates and signs in a Carbon; a provider-verified existing email signs into its current account without changing the profile. Omitted ID and name receive available defaults. Providers require production configuration; testing email signup uses the returned test code. Create or join your first organization afterward. |
 | `iam commands` | None | Prints this same complete command tree from the installed binary. |
 | `iam docs` | Optional `<topic>` and/or `--search <words>` | Offline API/client/CLI manuals. `-o json` returns structured metadata, content or search results. No session or configuration is required. |
 

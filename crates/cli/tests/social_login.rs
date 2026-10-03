@@ -1,4 +1,4 @@
-//! Provider proof is separate from direct OTP authority and never silently creates accounts.
+//! Verified provider email signs in directly; new accounts remain explicit and email OTP stays available.
 #![allow(clippy::expect_used)]
 use serde_json::{Value, json};
 use std::{
@@ -10,7 +10,10 @@ use std::{
     time::Duration,
 };
 
-fn run_login(responses: Vec<(u16, Value)>) -> (std::process::Output, Vec<(String, Value)>) {
+fn run_auth(
+    arguments: &[&str],
+    responses: Vec<(u16, Value)>,
+) -> (std::process::Output, Vec<(String, Value)>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
     listener.set_nonblocking(true).expect("nonblocking");
     let url = format!("http://{}", listener.local_addr().expect("address"));
@@ -28,6 +31,9 @@ fn run_login(responses: Vec<(u16, Value)>) -> (std::process::Output, Vec<(String
                     Err(e) => panic!("accept: {e}"),
                 }
             };
+            stream
+                .set_nonblocking(false)
+                .expect("blocking accepted stream");
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .expect("timeout");
@@ -78,7 +84,8 @@ fn run_login(responses: Vec<(u16, Value)>) -> (std::process::Output, Vec<(String
         .env("SILICON_IAM_AUTO_UPDATE", "off")
         .env("IAM_TELEMETRY", "off")
         .stdin(Stdio::null())
-        .args(["--url", &url, "--json", "login", "--provider", "google"])
+        .args(["--url", &url, "--json"])
+        .args(arguments)
         .output()
         .expect("run CLI");
     server.join().unwrap_or_else(|_| {
@@ -91,11 +98,14 @@ fn run_login(responses: Vec<(u16, Value)>) -> (std::process::Output, Vec<(String
     let _ = std::fs::remove_dir_all(home);
     (result, requests)
 }
+fn run_login(responses: Vec<(u16, Value)>) -> (std::process::Output, Vec<(String, Value)>) {
+    run_auth(&["login", "--provider", "google"], responses)
+}
 fn start(id: uuid::Uuid) -> Value {
     json!({"request_id":id,"authorization_url":"https://accounts.google.com/o/oauth2/v2/auth?state=public-oauth-state","poll_token":"secret-poll-proof","expires_at":"2099-01-01T00:00:00Z"})
 }
 fn tokens(id: uuid::Uuid) -> Value {
-    json!({"access_token":"cat_fresh-otp","refresh_token":"crt_private","token_type":"Bearer","expires_in":900,"refresh_expires_at":"2099-01-01T00:00:00Z","actor":{"type":"carbon","public_id":"c:person"},"session_id":id})
+    json!({"access_token":"cat_provider","refresh_token":"crt_private","token_type":"Bearer","expires_in":900,"refresh_expires_at":"2099-01-01T00:00:00Z","actor":{"type":"carbon","public_id":"c:person"},"session_id":id})
 }
 fn profile() -> Value {
     json!({"carbon_id":"c:person","display_name":"Person","profile_photo":"https://example.test/photo.png","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","timezone":"UTC","email":"person@example.test","phone_number":null,"status":"active","version":1})
@@ -129,7 +139,118 @@ fn new_verified_email_returns_signup_continuation_without_creating_an_account() 
     assert!(!String::from_utf8_lossy(&result.stderr).contains("secret-poll-proof"));
 }
 #[test]
-fn email_match_requires_fresh_otp_and_link_retry_keeps_code_authority_and_key() {
+fn both_provider_entrypoints_sign_in_existing_email_without_otp_or_profile_mutation() {
+    for provider in ["google", "apple"] {
+        for command in ["login", "signup"] {
+            let id = uuid::Uuid::new_v4();
+            let mut begin = start(id);
+            if provider == "apple" {
+                begin["authorization_url"] =
+                    json!("https://appleid.apple.com/auth/authorize?state=opaque");
+            }
+            let mut arguments = vec![command, "--provider", provider];
+            if command == "signup" {
+                arguments.extend(["--display-name", "Must not overwrite"]);
+            }
+            let (result, requests) = run_auth(
+                &arguments,
+                vec![
+                    (201, begin),
+                    (
+                        200,
+                        json!({"status":"login_ready","email":"person@example.test"}),
+                    ),
+                    (200, tokens(id)),
+                    (200, profile()),
+                ],
+            );
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let output: Value = serde_json::from_slice(&result.stdout).expect("output");
+            if command == "signup" {
+                assert_eq!(output["authenticated"], true);
+                assert_eq!(output["existing_account"], true);
+                assert_eq!(output["profile"]["display_name"], "Person");
+            } else {
+                assert_eq!(output["display_name"], "Person");
+            }
+            assert_eq!(requests.len(), 4);
+            assert!(
+                requests[0]
+                    .0
+                    .starts_with(&format!("POST /api/v1/login/social/{provider}/start "))
+            );
+            assert!(
+                requests[2]
+                    .0
+                    .starts_with(&format!("POST /api/v1/login/social/{provider}/complete "))
+            );
+            assert!(
+                requests
+                    .iter()
+                    .all(|(headers, _)| !headers.contains("/login/challenges")
+                        && !headers.contains("/link ")
+                        && !headers.contains("/signup/sessions"))
+            );
+            assert!(!String::from_utf8_lossy(&result.stdout).contains("cat_provider"));
+        }
+    }
+}
+#[test]
+fn provider_signup_new_email_completes_profile_without_email_otp() {
+    let id = uuid::Uuid::new_v4();
+    let mut completed = profile();
+    for (key, value) in tokens(id).as_object().expect("tokens") {
+        completed[key] = value.clone();
+    }
+    completed["onboarding"] = json!({"requires_organization":true});
+    let (result, requests) = run_auth(
+        &[
+            "signup",
+            "--provider",
+            "google",
+            "--carbon-id",
+            "c:person",
+            "--timezone",
+            "UTC",
+        ],
+        vec![
+            (201, start(id)),
+            (
+                200,
+                json!({"status":"verified","signup_session_id":id,"email":"new@example.test","display_name":"New Person"}),
+            ),
+            (201, completed),
+        ],
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests[2]
+            .0
+            .starts_with(&format!("POST /api/v1/signup/sessions/{id}/complete "))
+    );
+    assert_eq!(requests[2].1["display_name"], "New Person");
+    assert_eq!(requests[2].1["carbon_id"], "c:person");
+    assert!(
+        !requests.iter().any(
+            |(headers, _)| headers.contains("/email/") || headers.contains("/login/challenges")
+        )
+    );
+    let output: Value = serde_json::from_slice(&result.stdout).expect("output");
+    assert_eq!(output["authenticated"], true);
+    assert_eq!(output["onboarding"]["requires_organization"], true);
+}
+
+#[test]
+fn retired_provider_status_restarts_without_sending_otp_or_linking() {
     let id = uuid::Uuid::new_v4();
     let (result, requests) = run_login(vec![
         (201, start(id)),
@@ -137,64 +258,45 @@ fn email_match_requires_fresh_otp_and_link_retry_keeps_code_authority_and_key() 
             200,
             json!({"status":"link_required","email":"person@example.test"}),
         ),
-        (
-            201,
-            json!({"session_id":id,"expires_at":"2099-01-01T00:00:00Z","local_otp":"123456"}),
-        ),
-        (200, tokens(id)),
-        (
-            503,
-            json!({"error":{"code":"unavailable","message":"lost response","request_id":"test-request"}}),
-        ),
-        (200, json!({"linked":true,"provider":"google"})),
-        (200, profile()),
     ]);
+    assert!(!result.status.success());
+    assert_eq!(requests.len(), 2);
+    assert!(String::from_utf8_lossy(&result.stderr).contains("older flow"));
+    assert!(!String::from_utf8_lossy(&result.stderr).contains("secret-poll-proof"));
+}
+
+#[test]
+fn ordinary_email_otp_remains_an_independent_sign_in_option() {
+    let id = uuid::Uuid::new_v4();
+    let (result, requests) = run_auth(
+        &["login", "--email", "person@example.test"],
+        vec![
+            (
+                201,
+                json!({"session_id":id,"expires_at":"2099-01-01T00:00:00Z","local_otp":"123456"}),
+            ),
+            (200, tokens(id)),
+            (200, profile()),
+        ],
+    );
     assert!(
         result.status.success(),
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert_eq!(requests.len(), 7);
-    assert!(requests[2].0.starts_with("POST /api/v1/login/challenges "));
-    assert_eq!(requests[2].1["email"], "person@example.test");
-    assert!(requests[3].0.contains("/verify "));
-    assert_eq!(requests[3].1, json!({"code":"123456"}));
-    for request in [&requests[4], &requests[5]] {
-        assert!(
-            request
-                .0
-                .starts_with("POST /api/v1/login/social/google/link ")
-        );
-        assert!(
-            request
-                .0
-                .to_ascii_lowercase()
-                .contains("authorization: bearer cat_fresh-otp")
-        );
-        assert_eq!(
-            request.1,
-            json!({"request_id":id,"poll_token":"secret-poll-proof"})
-        );
-    }
-    let key = |headers: &str| {
-        headers
-            .lines()
-            .find(|line| line.to_ascii_lowercase().starts_with("idempotency-key:"))
-            .expect("key")
-            .to_owned()
-    };
-    assert_eq!(key(&requests[4].0), key(&requests[5].0));
-    assert!(requests[6].0.starts_with("GET /api/v1/me "));
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0].0.starts_with("POST /api/v1/login/challenges "));
+    assert_eq!(requests[0].1, json!({"email":"person@example.test"}));
+    assert_eq!(requests[1].1, json!({"code":"123456"}));
     assert!(
-        requests
+        !requests
             .iter()
-            .all(|request| !request.0.contains("/social/google/complete"))
+            .any(|(headers, _)| headers.contains("/social/"))
     );
-    assert!(!String::from_utf8_lossy(&result.stdout).contains("cat_fresh-otp"));
 }
 
 #[test]
-fn linked_provider_completes_with_same_proof_and_key_after_an_uncertain_response() {
+fn verified_email_completes_with_same_proof_and_key_after_an_uncertain_response() {
     let id = uuid::Uuid::new_v4();
     let (result, requests) = run_login(vec![
         (201, start(id)),
@@ -240,5 +342,5 @@ fn linked_provider_completes_with_same_proof_and_key_after_an_uncertain_response
             .iter()
             .all(|request| !request.0.contains("/login/challenges"))
     );
-    assert!(!String::from_utf8_lossy(&result.stdout).contains("cat_fresh-otp"));
+    assert!(!String::from_utf8_lossy(&result.stdout).contains("cat_provider"));
 }
