@@ -53,3 +53,31 @@ perform user authorization. An `activated: true` receipt proves configuration
 and service health, not successful Google/Apple login. Apple JWT renewal is an
 explicit operator task described in `SOCIAL_PROVIDERS.md`, with a saved due date;
 this release does not install an unattended renewal scheduler.
+
+## Disable a failing Apple registration while preserving Google
+
+This is a reviewed alternative to supplying an Apple candidate, not a general
+provider removal or credential rotation mode. Use a **fresh** host plan directory
+and workstation receipt, bound to the current secret version. Never reuse an
+already-applied activation plan.
+
+- Pass `--disable-apple` to both host `plan` and `apply` actions.
+- Stage with the protected existing `--google <candidate.json>` and
+  `--disable-apple`; `--apple` and `--disable-apple` are mutually exclusive.
+- Promotion uses the saved receipt and fresh host plan. It rejects an
+  enable/disable mode mismatch before changing `AWSCURRENT`.
+
+The staging helper removes only `IAM_APPLE_CLIENT_ID` and
+`IAM_APPLE_CLIENT_SECRET`. It requires Google values to equal the current secret,
+retains all unrelated fields, and preserves the same version CAS and rollback
+rules. The host additionally checks that both authentication environment files'
+Google values match the preserved candidate before stopping any service. It
+removes only Apple environment lines, preserving every remaining byte, including
+Google lines. Partial or empty provider pairs are rejected. When Apple is
+present, the existing exact Services ID, Team ID, Key ID and JWT checks remain.
+
+Successful apply must show Google signup/login enabled and Apple signup/login
+disabled; the scoped API must still return 404 for discovery. Source, schema,
+image, unit and worker checks remain unchanged. The receipt records the two
+removed Apple fields and the disabled provider. No CloudFormation change is
+needed when its optional-provider rendering is already deployed.

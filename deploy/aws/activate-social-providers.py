@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan/apply a four-field provider configuration change on an installed IAM host.
+"""Plan/apply a scoped provider configuration change on an installed IAM host.
 
 An external operator stages a new Secrets Manager version and moves AWSCURRENT
 with RemoveFromVersionId equal to the plan's prior version. This script requires
@@ -22,8 +22,9 @@ import urllib.request
 import urllib.parse
 import urllib.error
 
-FIELDS = frozenset(("IAM_GOOGLE_CLIENT_ID", "IAM_GOOGLE_CLIENT_SECRET",
-                    "IAM_APPLE_CLIENT_ID", "IAM_APPLE_CLIENT_SECRET"))
+GOOGLE_FIELDS = frozenset(("IAM_GOOGLE_CLIENT_ID", "IAM_GOOGLE_CLIENT_SECRET"))
+APPLE_FIELDS = frozenset(("IAM_APPLE_CLIENT_ID", "IAM_APPLE_CLIENT_SECRET"))
+FIELDS = GOOGLE_FIELDS | APPLE_FIELDS
 SERVICES = {"api": "api.env", "scoped-api": "scoped.env", "worker": "worker.env"}
 AUTH_SERVICES = ("api", "scoped-api")
 CONFIG = Path("/etc/silicon-iam")
@@ -74,33 +75,49 @@ def environment(raw):
     return result
 
 
-def updated_environment(raw, values):
-    environment(raw)
-    require(set(values) == FIELDS, "Exactly four provider fields required")
+def validate_values(values):
+    require(set(values) in (GOOGLE_FIELDS, FIELDS), "A complete Google pair and complete or absent Apple pair are required")
     for value in values.values():
         require(isinstance(value, str) and value and not any(c in value for c in "\r\n\x00"),
                 "Provider values must be nonempty single-line strings")
+
+
+def updated_environment(raw, values):
+    existing = environment(raw)
+    validate_values(values)
+    if set(values) == GOOGLE_FIELDS:
+        require(all(existing.get(key) == values[key] for key in GOOGLE_FIELDS),
+                "Existing runtime Google credentials differ; refusing Apple-only removal")
+        # Disable is strictly subtractive, retaining Google and all other bytes.
+        return b"".join(line for line in raw.splitlines(keepends=True)
+                        if line.split(b"=", 1)[0].decode() not in APPLE_FIELDS)
     # Preserve all unrelated bytes, including comments and order.
     kept = b"".join(line for line in raw.splitlines(keepends=True)
                     if line.split(b"=", 1)[0].decode() not in FIELDS)
     if kept and not kept.endswith(b"\n"):
         kept += b"\n"
-    updated = kept + "".join(f"{key}={values[key]}\n" for key in sorted(FIELDS)).encode()
+    updated = kept + "".join(f"{key}={values[key]}\n" for key in sorted(values)).encode()
     require({k: v for k, v in environment(raw).items() if k not in FIELDS}
             == {k: v for k, v in environment(updated).items() if k not in FIELDS},
             "Unrelated environment change")
     return updated
 
 
-def provider_values(previous, candidate):
+def provider_values(previous, candidate, disable_apple=False):
     require(isinstance(previous, dict) and isinstance(candidate, dict), "Expected secret objects")
     require({k: v for k, v in previous.items() if k not in FIELDS}
             == {k: v for k, v in candidate.items() if k not in FIELDS},
             "Unrelated secret fields changed")
-    values = {key: candidate.get(key) for key in FIELDS}
-    updated_environment(b"", values)
+    expected_fields = GOOGLE_FIELDS if disable_apple else FIELDS
+    require(set(candidate) & FIELDS == expected_fields, "Provider fields do not match the reviewed Apple enable/disable mode")
+    values = {key: candidate[key] for key in expected_fields}
+    validate_values(values)
     require(values["IAM_GOOGLE_CLIENT_ID"].endswith(".apps.googleusercontent.com"),
             "Unexpected Google client ID")
+    if disable_apple:
+        require(all(previous.get(key) == values[key] for key in GOOGLE_FIELDS),
+                "Disabling Apple must preserve the existing Google credentials")
+        return values
     require(values["IAM_APPLE_CLIENT_ID"] == "com.teamofsilicons.interface", "Unexpected Apple Services ID")
     try:
         header, claims, signature = values["IAM_APPLE_CLIENT_SECRET"].split(".")
@@ -236,11 +253,14 @@ def start(args):
         run(["systemctl", "is-active", f"silicon-iam-{service}"])
 
 
-def verify_provider_discovery():
+def verify_provider_discovery(disable_apple=False):
     response = get(8080, "/api/v1/signup/social/providers")
     rows = response.get("providers", response.get("data", {}).get("providers", []))
-    require({row["id"] for row in rows if row.get("enabled") and row.get("login_enabled")} == {"google", "apple"},
-            "Both providers did not become available")
+    expected = {"google": True, "apple": not disable_apple}
+    require(len(rows) == 2 and {row.get("id") for row in rows} == set(expected)
+            and all(row.get("enabled") is expected[row["id"]]
+                    and row.get("login_enabled") is expected[row["id"]] for row in rows),
+            "Provider discovery does not match the reviewed Google/Apple state")
     # src/api/mod.rs deliberately excludes authentication::router from Scoped.
     try:
         get(8081, "/api/v1/signup/social/providers")
@@ -260,7 +280,8 @@ def plan(args):
         shutil.copy2(CONFIG / name, args.directory / name)
         (args.directory / name).chmod(0o600)
     state.update(revision=args.revision, previous_version=version, secret_arn=args.secret_arn,
-                 manifest_sha256=digest(args.manifest.read_bytes()), operator_sha256=digest(Path(__file__).read_bytes()))
+                 manifest_sha256=digest(args.manifest.read_bytes()), operator_sha256=digest(Path(__file__).read_bytes()),
+                 disable_apple=args.disable_apple)
     save(args.directory / "plan.json", state)
     print(json.dumps({"prepared": True, "directory": str(args.directory), **state}))
 
@@ -269,13 +290,14 @@ def apply(args):
     state = json.loads((args.directory / "plan.json").read_text())
     require(not (args.directory / "started.json").exists(), "Activation already attempted; inspect its receipt")
     require(state["revision"] == args.revision and state["previous_version"] == args.previous_version
-            and state["secret_arn"] == args.secret_arn, "Activation plan mismatch")
+            and state["secret_arn"] == args.secret_arn
+            and state.get("disable_apple", False) == args.disable_apple, "Activation plan mismatch")
     require(state["manifest_sha256"] == digest(args.manifest.read_bytes())
             and state["operator_sha256"] == digest(Path(__file__).read_bytes()), "Reviewed source changed")
     current, candidate = secret(args)
     require(current == args.candidate_version, "Candidate is not AWSCURRENT")
     _, previous = secret(args, args.previous_version)
-    values = provider_values(previous, candidate)
+    values = provider_values(previous, candidate, disable_apple=args.disable_apple)
     require(snapshot(args) == {key: state[key] for key in ("env_hashes", "unit_hashes", "images")},
             "Runtime changed after preparation")
     updated = {SERVICES[service]: updated_environment((CONFIG / SERVICES[service]).read_bytes(), values)
@@ -298,10 +320,11 @@ def apply(args):
         for name, old_hash in state["env_hashes"].items():
             require(after["env_hashes"][name] == (digest(updated[name]) if name in updated else old_hash),
                     "Unexpected environment mutation")
-        verify_provider_discovery()
+        verify_provider_discovery(disable_apple=args.disable_apple)
         require(secret(args)[0] == current, "Current secret changed during activation")
         receipt = {"activated": True, "revision": args.revision, "previous_version": args.previous_version,
-                   "candidate_version": current, "changed_fields": sorted(FIELDS), "runtime": after,
+                   "candidate_version": current, "changed_fields": sorted(key for key in FIELDS if previous.get(key) != candidate.get(key)),
+                   "disabled_providers": ["apple"] if args.disable_apple else [], "runtime": after,
                    "oauth_acceptance": "Not performed by this configuration operator"}
         save(args.directory / "result.json", receipt)
         print(json.dumps(receipt))
@@ -336,6 +359,7 @@ def main():
     parser.add_argument("--secret-arn", required=True)
     parser.add_argument("--previous-version", required=True)
     parser.add_argument("--candidate-version")
+    parser.add_argument("--disable-apple", action="store_true", help="Remove only Apple credentials and retain the existing Google pair; bind this mode in both plan and apply.")
     parser.add_argument("--postgres-image", required=True)
     parser.add_argument("--region", default="us-east-1")
     args = parser.parse_args()

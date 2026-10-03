@@ -41,11 +41,15 @@ def serialized(value):
 
 
 def stage(args):
-    require(args.google and args.apple and args.previous_version, "Both candidates and prior version required")
+    require(args.google and args.previous_version, "Google candidate and prior version required")
+    require(bool(args.apple) != args.disable_apple, "Choose an Apple candidate or explicit --disable-apple")
     current, previous = get(args)
     require(current == args.previous_version, "AWSCURRENT changed; refresh the activation plan")
     patch = {}
-    for provider, path in (("GOOGLE", args.google), ("APPLE", args.apple)):
+    providers = [("GOOGLE", args.google)]
+    if args.apple:
+        providers.append(("APPLE", args.apple))
+    for provider, path in providers:
         require(path.is_file() and not path.is_symlink() and path.stat().st_mode & 0o077 == 0,
                 "Candidate must be a private regular file")
         value = json.loads(path.read_text())
@@ -53,18 +57,23 @@ def stage(args):
                 "Candidate contains unexpected fields")
         patch.update(value)
     candidate = dict(previous, **patch)
-    activation.provider_values(previous, candidate)
+    if args.disable_apple:
+        for key in activation.APPLE_FIELDS:
+            candidate.pop(key, None)
+    activation.provider_values(previous, candidate, disable_apple=args.disable_apple)
     payload = serialized(candidate)
     payload_hash = hashlib.sha256(payload).hexdigest()
     if args.receipt.exists():
         state = json.loads(args.receipt.read_text())
         require(state["previous_version"] == current and state["secret_arn"] == args.secret_arn
-                and state["candidate_sha256"] == payload_hash, "Existing operation belongs to different input")
+                and state["candidate_sha256"] == payload_hash
+                and state.get("disable_apple", False) == args.disable_apple, "Existing operation belongs to different input")
         require(state["stage"] in ("prepared", "staged"), "Operation already promoted or restored")
     else:
         state = {"previous_version": current, "candidate_version": str(uuid.uuid4()),
                  "candidate_sha256": payload_hash, "secret_arn": args.secret_arn,
-                 "changed_fields": sorted(activation.FIELDS), "stage": "prepared"}
+                 "changed_fields": sorted(key for key in activation.FIELDS if previous.get(key) != candidate.get(key)),
+                 "disable_apple": args.disable_apple, "stage": "prepared"}
         activation.save(args.receipt, state)
     with tempfile.NamedTemporaryFile(dir=args.receipt.parent, prefix=".secret-", delete=False) as stream:
         path = Path(stream.name)
@@ -102,12 +111,13 @@ def move(args):
     require(hashlib.sha256(serialized(candidate)).hexdigest() == state["candidate_sha256"],
             "Candidate content mismatch")
     if args.action == "promote":
-        activation.provider_values(previous, candidate)
+        activation.provider_values(previous, candidate, disable_apple=state.get("disable_apple", False))
         require(args.host_plan and args.host_plan.is_file(), "A successful installed-host activation plan is required")
         plan = json.loads(args.host_plan.read_text())
         require(plan.get("prepared") is True and plan["previous_version"] == source
                 and plan["secret_arn"] == args.secret_arn
-                and plan["revision"] == "45a3fdf90c32c9e35b61cb3bed789ebff71d800e",
+                and plan["revision"] == "45a3fdf90c32c9e35b61cb3bed789ebff71d800e"
+                and plan.get("disable_apple", False) == state.get("disable_apple", False),
                 "Installed-host plan does not match this activation")
     # AWS checks that this label is still on RemoveFromVersionId atomically.
     if current != target:
@@ -126,7 +136,9 @@ def main():
     parser.add_argument("--secret-arn", required=True)
     parser.add_argument("--previous-version")
     parser.add_argument("--google", type=Path)
-    parser.add_argument("--apple", type=Path)
+    apple = parser.add_mutually_exclusive_group()
+    apple.add_argument("--apple", type=Path)
+    apple.add_argument("--disable-apple", action="store_true", help="Stage removal of only the Apple pair while preserving current Google credentials.")
     parser.add_argument("--receipt", required=True, type=Path)
     parser.add_argument("--host-plan", type=Path)
     parser.add_argument("--profile", default="silicon-production")

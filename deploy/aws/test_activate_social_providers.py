@@ -1,3 +1,4 @@
+import argparse
 import base64
 import importlib.util
 import json
@@ -5,6 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 import time
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -33,6 +35,67 @@ class ActivationTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): activation.verify_provider_discovery()
         with patch.object(activation, "get", return_value={"providers": []}):
             with self.assertRaises(RuntimeError): activation.verify_provider_discovery()
+
+    def test_explicit_disable_removes_exact_apple_pair_and_preserves_google(self):
+        previous = dict(candidate(), IAM_COOKIE_KEY="unchanged", nested={"keep": [1, 2]})
+        disabled = {key: value for key, value in previous.items() if key not in activation.APPLE_FIELDS}
+        values = activation.provider_values(previous, disabled, disable_apple=True)
+        self.assertEqual(set(values), activation.GOOGLE_FIELDS)
+        raw = b"# Keep this comment\r\nIAM_COOKIE_KEY=unchanged=padding\r\n" + "".join(f"{k}={v}\n" for k, v in candidate().items()).encode()
+        updated = activation.updated_environment(raw, values)
+        self.assertTrue(updated.startswith(b"# Keep this comment\r\nIAM_COOKIE_KEY=unchanged=padding\r\n"))
+        self.assertFalse(any(key in activation.environment(updated) for key in activation.APPLE_FIELDS))
+        for key in activation.GOOGLE_FIELDS:
+            self.assertEqual(activation.environment(updated)[key], previous[key])
+        with self.assertRaises(RuntimeError):
+            activation.provider_values(previous, disabled)
+        with self.assertRaises(RuntimeError):
+            activation.provider_values(previous, previous, disable_apple=True)
+
+    def test_disable_is_byte_exact_except_apple_lines_and_rejects_runtime_google_drift(self):
+        values = {key: value for key, value in candidate().items() if key in activation.GOOGLE_FIELDS}
+        preserved = b"# comment\r\nIAM_GOOGLE_CLIENT_ID=test.apps.googleusercontent.com\r\nIAM_GOOGLE_CLIENT_SECRET=test-secret\nLAST=no-newline"
+        raw = b"IAM_APPLE_CLIENT_ID=old\n" + preserved + b"\nIAM_APPLE_CLIENT_SECRET=old-secret\r\n"
+        self.assertEqual(activation.updated_environment(raw, values), preserved + b"\n")
+        self.assertEqual(activation.updated_environment(preserved, values), preserved)
+        for broken in (raw.replace(b"test-secret", b"drifted-secret"), raw.replace(b"IAM_GOOGLE_CLIENT_ID=", b"OLD_GOOGLE_CLIENT_ID=")):
+            with self.assertRaisesRegex(RuntimeError, "runtime Google credentials differ"):
+                activation.updated_environment(broken, values)
+
+    def test_disable_rejects_partial_empty_google_rotation_and_unrelated_changes(self):
+        previous = dict(candidate(), keep="unchanged")
+        disabled = {key: value for key, value in previous.items() if key not in activation.APPLE_FIELDS}
+        bad_cases = [dict(disabled, IAM_APPLE_CLIENT_ID=None), dict(disabled, IAM_APPLE_CLIENT_SECRET=""),
+                     dict(disabled, IAM_GOOGLE_CLIENT_SECRET="rotated"), dict(disabled, keep="changed")]
+        missing_google = dict(disabled); missing_google.pop("IAM_GOOGLE_CLIENT_ID")
+        bad_cases.append(missing_google)
+        for bad in bad_cases:
+            with self.subTest(keys=list(bad)), self.assertRaises(RuntimeError):
+                activation.provider_values(previous, bad, disable_apple=True)
+
+    def test_disabled_discovery_requires_google_on_and_apple_fully_off(self):
+        def rows(apple_enabled=False, apple_login=False):
+            return {"providers": [{"id": "google", "enabled": True, "login_enabled": True},
+                                  {"id": "apple", "enabled": apple_enabled, "login_enabled": apple_login}]}
+        scoped404 = activation.urllib.error.HTTPError("http://localhost", 404, "Not found", None, None)
+        self.addCleanup(scoped404.close)
+        with patch.object(activation, "get", side_effect=[rows(), scoped404]):
+            activation.verify_provider_discovery(disable_apple=True)
+        for response in (rows(True, True), rows(True, False), rows(False, True),
+                         {"providers": [{"id": "google", "enabled": True, "login_enabled": True}]}):
+            with self.subTest(response=response), patch.object(activation, "get", return_value=response), self.assertRaises(RuntimeError):
+                activation.verify_provider_discovery(disable_apple=True)
+
+    def test_apply_rejects_mode_mismatch_before_secret_or_service_access(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            state = {"revision": "source", "previous_version": "old", "secret_arn": "arn", "disable_apple": False}
+            (directory / "plan.json").write_text(json.dumps(state))
+            args = argparse.Namespace(directory=directory, revision="source", previous_version="old", secret_arn="arn", disable_apple=True)
+            with patch.object(activation, "secret") as secret, patch.object(activation, "stop") as stop, self.assertRaisesRegex(RuntimeError, "plan mismatch"):
+                activation.apply(args)
+            secret.assert_not_called()
+            stop.assert_not_called()
 
     def test_runtime_uri_becomes_libpq_environment_without_losing_escaping(self):
         value = activation.postgres_environment("postgresql://runtime%40iam:p%3Ass%2Fword@db.example:5433/iam%2Dprod?sslmode=verify-full&sslrootcert=" + activation.CERT)
