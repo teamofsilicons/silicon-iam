@@ -84,7 +84,7 @@ class DisableAppleStage(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.google = {"IAM_GOOGLE_CLIENT_ID": "test.apps.googleusercontent.com", "IAM_GOOGLE_CLIENT_SECRET": "synthetic-google-secret"}
-        self.previous = dict(self.google, IAM_APPLE_CLIENT_ID="com.teamofsilicons.interface", IAM_APPLE_CLIENT_SECRET="retained-previous-apple-secret", keep={"nested": ["untouched"]})
+        self.previous = dict(self.google, IAM_APPLE_CLIENT_ID="com.teamofsilicons.iam.web", IAM_APPLE_CLIENT_SECRET="retained-previous-apple-secret", keep={"nested": ["untouched"]})
         self.google_path = self.root / "google.json"
         self.google_path.write_text(json.dumps(self.google)); self.google_path.chmod(0o600)
         self.args = argparse.Namespace(action="stage", google=self.google_path, apple=None, disable_apple=True,

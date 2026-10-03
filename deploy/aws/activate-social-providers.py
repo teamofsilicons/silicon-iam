@@ -118,7 +118,7 @@ def provider_values(previous, candidate, disable_apple=False):
         require(all(previous.get(key) == values[key] for key in GOOGLE_FIELDS),
                 "Disabling Apple must preserve the existing Google credentials")
         return values
-    require(values["IAM_APPLE_CLIENT_ID"] == "com.teamofsilicons.interface", "Unexpected Apple Services ID")
+    require(values["IAM_APPLE_CLIENT_ID"] == "com.teamofsilicons.iam.web", "Unexpected Apple Services ID")
     try:
         header, claims, signature = values["IAM_APPLE_CLIENT_SECRET"].split(".")
         decode = lambda value: json.loads(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)))

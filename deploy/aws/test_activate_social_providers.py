@@ -18,10 +18,10 @@ spec.loader.exec_module(activation)
 def candidate(header=None, claims=None):
     encode = lambda value: base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
     header = header if header is not None else {"alg": "ES256", "kid": "RB4CTQPLR5"}
-    claims = claims if claims is not None else {"iss": "LTBSK59BJ2", "sub": "com.teamofsilicons.interface",
+    claims = claims if claims is not None else {"iss": "LTBSK59BJ2", "sub": "com.teamofsilicons.iam.web",
         "aud": "https://appleid.apple.com", "iat": int(time.time()), "exp": int(time.time()) + 90 * 86400}
     return {"IAM_GOOGLE_CLIENT_ID": "test.apps.googleusercontent.com", "IAM_GOOGLE_CLIENT_SECRET": "test-secret",
-            "IAM_APPLE_CLIENT_ID": "com.teamofsilicons.interface",
+            "IAM_APPLE_CLIENT_ID": "com.teamofsilicons.iam.web",
             "IAM_APPLE_CLIENT_SECRET": encode(header) + "." + encode(claims) + "." + base64.urlsafe_b64encode(b"x" * 64).decode().rstrip("=")}
 
 
@@ -135,12 +135,12 @@ class ActivationTests(unittest.TestCase):
 
     def test_accepts_reviewed_helper_header_with_optional_typ(self):
         for header in ({"alg": "ES256", "kid": "RB4CTQPLR5"}, {"alg": "ES256", "kid": "RB4CTQPLR5", "typ": "JWT"}):
-            self.assertEqual(activation.provider_values({}, candidate(header))["IAM_APPLE_CLIENT_ID"], "com.teamofsilicons.interface")
+            self.assertEqual(activation.provider_values({}, candidate(header))["IAM_APPLE_CLIENT_ID"], "com.teamofsilicons.iam.web")
 
     def test_rejects_wrong_apple_key_algorithm_and_audience(self):
         for header in ({"alg": "none", "kid": "RB4CTQPLR5"}, {"alg": "ES256", "kid": "wrong"}, {"alg": "ES256", "kid": "RB4CTQPLR5", "jku": "https://invalid.example"}):
             with self.assertRaises(RuntimeError): activation.provider_values({}, candidate(header))
-        claims = {"iss": "LTBSK59BJ2", "sub": "com.teamofsilicons.interface", "aud": "wrong",
+        claims = {"iss": "LTBSK59BJ2", "sub": "com.teamofsilicons.iam.web", "aud": "wrong",
                   "iat": int(time.time()), "exp": int(time.time()) + 90 * 86400}
         with self.assertRaises(RuntimeError): activation.provider_values({}, candidate(claims=claims))
 
