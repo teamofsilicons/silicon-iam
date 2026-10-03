@@ -17,7 +17,6 @@ use crate::error::AppError;
 const RESPONSE_LIMIT: usize = 64 * 1024;
 
 pub(super) struct VerifiedIdentity {
-    pub(super) subject: String,
     pub(super) email: String,
     pub(super) display_name: Option<String>,
 }
@@ -250,7 +249,6 @@ fn validate_identity(
         return Err(AppError::Unauthenticated);
     }
     Ok(VerifiedIdentity {
-        subject: claims.sub,
         email: claims.email,
         display_name: claims.name.filter(|name| {
             !name.trim().is_empty() && name.len() <= 200 && !name.chars().any(char::is_control)
@@ -325,7 +323,6 @@ IrGq/9Lz/9jPEqvE1azV+ns=
     fn valid_provider_signatures_return_only_verified_identity() {
         for provider in ["google", "apple"] {
             let identity = check(provider, &claims(provider)).expect("valid provider claims");
-            assert_eq!(identity.subject, "subject-123");
             assert_eq!(identity.email, "member@example.test");
             assert_eq!(identity.display_name.as_deref(), Some("Test Member"));
         }

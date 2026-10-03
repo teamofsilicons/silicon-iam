@@ -111,40 +111,7 @@ async fn management_is_authenticated_revision_bound_and_durably_replayable() -> 
         }),
         settings: Arc::new(settings),
     };
-    for retired in [false, true] {
-        let mut cutover_state = state.clone();
-        Arc::make_mut(&mut cutover_state.settings)
-            .honeycomb
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("integration settings"))?
-            .retire_legacy_writers = retired;
-        let legacy = axum::Router::new()
-            .route(
-                "/api/v1/applications",
-                axum::routing::post(|| async { StatusCode::OK }),
-            )
-            .route_layer(axum::middleware::from_fn_with_state(
-                cutover_state,
-                super::legacy_writer_guard,
-            ));
-        let response = legacy
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/applications")
-                    .body(Body::empty())?,
-            )
-            .await?;
-        ensure!(
-            response.status()
-                == if retired {
-                    StatusCode::GONE
-                } else {
-                    StatusCode::OK
-                },
-            "service provisioning must not implicitly cut over legacy writers"
-        );
-    }
+    assert_legacy_cutover(&state).await?;
     let app = super::router().with_state(state.clone());
     let id = Id::now_v7();
     let configuration = json!({"operation_id":id,"expected_iam_revision":0,"configuration_revision":1,"environment_id":null,
@@ -991,6 +958,149 @@ async fn legacy_key_transfer(
             response.status() == StatusCode::CONFLICT,
             "purged legacy root could authorize a new environment"
         );
+    }
+    Ok(())
+}
+
+/// Exercise the guard with matched routes and request-local plane selection,
+/// including production with an absent integration or a stale false flag.
+async fn assert_legacy_cutover(state: &ApiState) -> anyhow::Result<()> {
+    use crate::config::RuntimeEnvironment::{Development, Production};
+    for (environment, configured, retired) in [
+        (Development, Some(false), false),
+        (Development, Some(true), true),
+        (Production, Some(false), true),
+        (Production, Some(true), true),
+        (Production, None, true),
+    ] {
+        let mut cutover_state = state.clone();
+        let settings = Arc::make_mut(&mut cutover_state.settings);
+        settings.environment = environment;
+        if let Some(configured) = configured {
+            settings
+                .honeycomb
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("integration settings"))?
+                .retire_legacy_writers = configured;
+        } else {
+            settings.honeycomb = None;
+        }
+        let legacy = axum::Router::new()
+            .route(
+                "/api/v1/applications",
+                axum::routing::get(|| async { StatusCode::OK }).post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/v1/applications/{app_id}/scope-requests",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/v1/application-scope-requests/{request_id}/messages",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/v1/application-scope-requests/{request_id}/decisions",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/v1/honeycomb/applications/{app_id}/configuration",
+                axum::routing::put(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/v1/testing-environment/applications/imports",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/v1/app-auth/short-lived-tokens",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .route_layer(axum::middleware::from_fn_with_state(
+                cutover_state,
+                super::legacy_writer_guard,
+            ));
+        for path in [
+            "/api/v1/applications",
+            "/api/v1/applications/ring/scope-requests",
+            "/api/v1/application-scope-requests/request/messages",
+            "/api/v1/application-scope-requests/request/decisions",
+        ] {
+            let response = legacy
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .body(Body::empty())?,
+                )
+                .await?;
+            ensure!(
+                response.status()
+                    == if retired {
+                        StatusCode::GONE
+                    } else {
+                        StatusCode::OK
+                    },
+                "cutover must close all production management writes: {path}"
+            );
+            if retired {
+                let body: Value =
+                    serde_json::from_slice(&to_bytes(response.into_body(), 4096).await?)?;
+                ensure!(body["error"]["code"] == "management_moved_to_honeycomb");
+                ensure!(
+                    body.to_string()
+                        .contains("https://console.honeycomb.teamofsilicons.com/requests/received")
+                );
+            }
+        }
+        for (method, path) in [
+            ("GET", "/api/v1/applications"),
+            ("PUT", "/api/v1/honeycomb/applications/ring/configuration"),
+            ("POST", "/api/v1/app-auth/short-lived-tokens"),
+        ] {
+            let response = legacy
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())?,
+                )
+                .await?;
+            ensure!(
+                response.status() == StatusCode::OK,
+                "read/service/runtime flow must remain available: {path}"
+            );
+        }
+        let selected = crate::infrastructure::testing_plane::SelectedEnvironment {
+            id: Id::now_v7(),
+            organization_id: Id::now_v7(),
+        };
+        for (path, expected) in [
+            ("/api/v1/applications", StatusCode::OK),
+            (
+                "/api/v1/testing-environment/applications/imports",
+                if retired {
+                    StatusCode::GONE
+                } else {
+                    StatusCode::OK
+                },
+            ),
+        ] {
+            let response = crate::infrastructure::testing_plane::scope(
+                selected,
+                legacy.clone().oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .body(Body::empty())?,
+                ),
+            )
+            .await?;
+            ensure!(
+                response.status() == expected,
+                "isolated fixtures and control-plane imports must remain distinct"
+            );
+        }
     }
     Ok(())
 }

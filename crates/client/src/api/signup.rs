@@ -306,7 +306,7 @@ pub struct SocialProvider {
     /// Whether this deployment has usable provider credentials.
     pub enabled: bool,
 }
-fn check_social_provider(provider: &str) -> Result<()> {
+pub(super) fn check_social_provider(provider: &str) -> Result<()> {
     if matches!(provider, "google" | "apple") {
         Ok(())
     } else {

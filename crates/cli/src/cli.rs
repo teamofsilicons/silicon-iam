@@ -203,19 +203,22 @@ pub struct BatchLoginArgs {
 #[derive(Debug, Args)]
 #[command(group(
     clap::ArgGroup::new("identity")
-        .args(["email", "phone", "carbon_id"])
+        .args(["email", "phone", "carbon_id", "provider"])
         .required(false)
         .multiple(false)
 ))]
 #[command(group(
     clap::ArgGroup::new("login_source")
-        .args(["email", "phone", "carbon_id", "app_id", "status"])
+        .args(["email", "phone", "carbon_id", "provider", "app_id", "status"])
         .required(true)
         .multiple(true)
 ))]
 pub struct LoginArgs {
+    /// Sign in through Google or Apple using their verified email, without an extra IAM code.
+    #[arg(long, value_parser = ["google", "apple"])]
+    pub provider: Option<String>,
     /// Check the current session with IAM without prompting for credentials.
-    #[arg(value_parser = ["status"], conflicts_with_all = ["email", "phone", "carbon_id", "app_id", "code", "approve_scopes"])]
+    #[arg(value_parser = ["status"], conflicts_with_all = ["email", "phone", "carbon_id", "provider", "app_id", "code", "approve_scopes"])]
     pub status: Option<String>,
     /// Approve critical IAM permissions for this login without a terminal prompt. OBO approval is separate.
     #[arg(long)]
@@ -346,7 +349,7 @@ pub struct SignupArgs {
     /// Email address to verify when signing up without a provider.
     #[arg(long, required_unless_present_any = ["provider", "session_id"], conflicts_with = "provider")]
     pub email: Option<String>,
-    /// Verify your email using Google or Apple in a browser, then continue here.
+    /// Verify email with Google or Apple; sign into an existing account or continue signup here.
     #[arg(long, value_parser = ["google", "apple"], conflicts_with_all = ["session_id", "email_code"])]
     pub provider: Option<String>,
     /// Optional phone number to verify, in E.164 form.
@@ -2744,6 +2747,24 @@ mod tests {
         use clap::Parser as _;
 
         assert!(Cli::try_parse_from(["iam", "login", "--email", "a@b.test"]).is_ok());
+        assert!(Cli::try_parse_from(["iam", "login", "--provider", "google"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["iam", "login", "--provider", "apple", "--app-id", "example"])
+                .is_ok()
+        );
+        assert!(Cli::try_parse_from(["iam", "login", "--provider", "unknown"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "iam",
+                "login",
+                "--provider",
+                "google",
+                "--email",
+                "a@b.test"
+            ])
+            .is_err()
+        );
+        assert!(Cli::try_parse_from(["iam", "login", "status", "--provider", "google"]).is_err());
         assert!(Cli::try_parse_from(["iam", "login"]).is_err());
         // Two identities is ambiguous, and the grammar says so rather than
         // silently preferring one.

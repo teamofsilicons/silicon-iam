@@ -16,7 +16,8 @@ jobs:
         env:
           REVISION: ${{ github.sha }}
         run: |
-          docker build --build-arg BUILD_REVISION="$REVISION" --build-arg CARGO_BUILD_JOBS=4 --tag "silicon-iam:release-$REVISION" .
+          VERSION=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          docker build --build-arg BUILD_REVISION="$REVISION" --build-arg BUILD_VERSION="$VERSION" --build-arg CARGO_BUILD_JOBS=4 --tag "silicon-iam:release-$REVISION" .
           docker image inspect "silicon-iam:release-$REVISION" > image.json
           docker save "silicon-iam:release-$REVISION" | gzip -1 > iam-arm64-image.tar.gz
           sha256sum iam-arm64-image.tar.gz > iam-arm64-image.tar.gz.sha256

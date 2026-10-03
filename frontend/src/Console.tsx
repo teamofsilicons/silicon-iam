@@ -41,6 +41,10 @@ import {
 } from "./ui";
 import { OrganizationArea, JoinOrganization } from "./Organizations";
 import { OboGrants } from "./OboConsent";
+import {
+  scopeReviewDestination,
+  scopeReviewRequest,
+} from "./scope-review-link";
 
 const honeycombConsole = "https://console.honeycomb.teamofsilicons.com/";
 
@@ -50,6 +54,12 @@ export default function Console(props: {
   reloadSession: () => unknown;
 }) {
   const page = location.pathname.split("/")[1] || "overview";
+  const legacyReview = scopeReviewRequest(new URL(location.href));
+  const managementDestination = legacyReview
+    ? scopeReviewDestination(legacyReview).href
+    : page === "scope-reviews"
+      ? new URL("/requests/received", honeycombConsole).href
+      : honeycombConsole;
   const organizations = usePage(() => "/api/v1/organizations");
   const [org, setOrg] = createSignal(
       new URL(location.href).searchParams.get("org") || "",
@@ -247,7 +257,7 @@ export default function Console(props: {
           </For>
         </nav>
         <div class="sidebar-bottom">
-          <a href={honeycombConsole}>Honeycomb console ↗</a>
+          <a href={managementDestination}>Honeycomb console ↗</a>
           <a
             href="https://docs.iam.teamofsilicons.com/"
             target="_blank"
@@ -315,7 +325,7 @@ export default function Console(props: {
                 permissions.
               </Empty>
               <div class="actions">
-                <a class="button primary" href={honeycombConsole}>
+                <a class="button primary" href={managementDestination}>
                   Open Honeycomb →
                 </a>
                 <a class="button" href={href("/")}>
@@ -438,7 +448,7 @@ export default function Console(props: {
                   <h3>Members & access ↗</h3>
                   <p>Manage your organization's members and permissions.</p>
                 </a>
-                <a href={honeycombConsole}>
+                <a href={managementDestination}>
                   <h3>Honeycomb console ↗</h3>
                   <p>
                     Manage applications, bundles, scope reviews and testing

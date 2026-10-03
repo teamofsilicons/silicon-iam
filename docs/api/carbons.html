@@ -24,15 +24,24 @@ No second login OTP is required. Complete profile setup, then create or join the
 organization before an application login. An absent phone is returned as null.</p>
 <h2>Google and Apple</h2>
 <p><code>GET /api/v1/signup/social/providers</code> reports which providers are enabled.
-Start an enabled provider with <code>POST /api/v1/signup/social/{provider}/start</code>
-and an idempotency key. Open its <code>authorization_url</code>; keep the returned
+The official IAM website and CLI use <code>POST /api/v1/login/social/{provider}/start</code>
+for provider sign-in and signup. Send an idempotency key with the request.
+Open its <code>authorization_url</code>; keep the returned
 <code>request_id</code> and secret <code>poll_token</code> in memory. Poll
-<code>POST …/{provider}/status</code> with those two values.</p>
-<p>Status is <code>pending</code>, <code>verified</code>, <code>already_registered</code>,
-<code>failed</code> or <code>expired</code>. Verified results include a signup session and
-provider-verified email; continue with optional phone and profile setup without another
-email OTP. Already-registered accounts are offered login. Provider callbacks and token
-validation run on IAM's server; the CLI uses the same browser-and-poll protocol.</p>
+<code>POST /api/v1/login/social/{provider}/status</code> with those two values.</p>
+<p>A provider-verified email belonging to an active Carbon returns
+<code>login_ready</code>. Complete the proof with
+<code>POST /api/v1/login/social/{provider}/complete</code> to sign in to that account,
+without an IAM email code or account-linking step. Keep the same idempotency key and
+proof when retrying an uncertain completion.</p>
+<p>A new provider-verified email returns <code>verified</code> with a signup session;
+continue with optional phone and profile setup without an email OTP. The resulting
+Carbon can also sign in later using an ordinary IAM email code. Provider callbacks and
+token validation run on IAM's server. Historical provider-subject associations do not
+choose the Carbon account; IAM resolves and revalidates the verified email.</p>
+<p>The older <code>/api/v1/signup/social/{provider}/start</code> and status routes remain
+available for existing clients. They return <code>already_registered</code> for an
+existing email; current clients use the shared provider login flow above.</p>
 <h2>Profile pictures</h2>
 <p>New profiles receive an IAM-style generated image. Upload a replacement using
 <code>PUT /api/v1/me/photo</code> with raw PNG, JPEG or WebP bytes, at most 512 KiB,

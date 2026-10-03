@@ -21,7 +21,8 @@ export default function Auth(props: {
   config: Configuration;
   session: SessionState;
 }) {
-  const signup = location.pathname === "/signup";
+  const [providerSignup, setProviderSignup] = createSignal(false);
+  const signup = () => location.pathname === "/signup" || providerSignup();
   const loginParams = new URL(location.href).searchParams;
   const kindPinned = loginParams.has("identity_kind");
   const addingAccount = new URL(location.href).searchParams.has("add_account");
@@ -68,6 +69,7 @@ export default function Auth(props: {
   const [identity, setIdentity] = createSignal(""),
     [challenge, setChallenge] = createSignal<RecordValue>(),
     [code, setCode] = createSignal("");
+  const [verifiedChallenge, setVerifiedChallenge] = createSignal<string>();
   const [step, setStep] = createSignal<
     "email" | "email-code" | "phone" | "phone-code" | "profile" | "created"
   >("email");
@@ -100,7 +102,7 @@ export default function Auth(props: {
   async function continueLogin() {
     if (handoff() !== "idle") return;
     if (appLogin) {
-      // After OTP verification reload IAM's consent surface with its new
+      // After authentication reload IAM's consent surface with its new
       // HttpOnly session. Never navigate to an app until selection is approved.
       const destination = new URL(authDestination(props.config));
       destination.searchParams.delete("add_account");
@@ -145,22 +147,27 @@ export default function Auth(props: {
       const requestedKind = loginIdentityKind(loginParams);
       if (requestedKind && requestedKind !== kind())
         throw new Error("Use the requested account type to continue.");
-      if (signup && step() === "created") {
+      if (signup() && step() === "created") {
         await finishProfile();
-      } else if (kind() === "silicon" && !signup) {
+      } else if (kind() === "silicon" && !signup()) {
         await send("POST", "/api/v1/silicon-auth/token", {
           silicon_id: loginIdentity("silicon", identity()),
           silicon_token: siliconToken(),
         });
         setSiliconToken("");
         await continueLogin();
-      } else if (!signup || step() === "created") {
+      } else if (!signup() || step() === "created") {
         if (challenge()) {
-          await send(
-            "POST",
-            `/api/v1/login/challenges/${challenge()!.session_id}/verify`,
-            { code: code() },
-          );
+          const challengeId = String(challenge()!.session_id);
+          if (verifiedChallenge() !== challengeId) {
+            await send(
+              "POST",
+              `/api/v1/login/challenges/${challengeId}/verify`,
+              { code: code() },
+            );
+            // A continuation retry must not consume an already verified OTP again.
+            setVerifiedChallenge(challengeId);
+          }
           await continueLogin();
         } else {
           const value =
@@ -241,7 +248,7 @@ export default function Auth(props: {
         : "You’re signed in"
       : isCode()
         ? "Check your messages"
-        : !signup
+        : !signup()
           ? "Welcome back"
           : step() === "created"
             ? "Your account is ready"
@@ -301,7 +308,7 @@ export default function Auth(props: {
                   : `Continue as ${props.session.user?.display_name || props.session.user?.carbon_id}.`
                 : isCode()
                   ? "Enter the six-digit verification code. Codes expire; use the newest one."
-                  : !signup
+                  : !signup()
                     ? kind() === "silicon"
                       ? "Use your Silicon ID and password to continue."
                       : "Use your email, phone number, or Carbon ID."
@@ -354,11 +361,7 @@ export default function Auth(props: {
                       aria-busy={handoff() === "loading"}
                       onClick={() => void continueLogin()}
                     >
-                      <span
-                        role="status"
-                        aria-live="polite"
-                        class="handoff-label"
-                      >
+                      <span aria-live="polite" class="handoff-label">
                         <Show when={handoff() === "loading"}>
                           <span class="handoff-spinner" aria-hidden="true" />
                         </Show>
@@ -417,7 +420,9 @@ export default function Auth(props: {
             }
           >
             <Show
-              when={!kindPinned && !isCode() && (!signup || step() === "email")}
+              when={
+                !kindPinned && !isCode() && (!signup() || step() === "email")
+              }
             >
               <div
                 class="identity-tabs"
@@ -428,7 +433,10 @@ export default function Auth(props: {
                   type="button"
                   role="tab"
                   aria-selected={kind() === "carbon"}
-                  onClick={() => setKind("carbon")}
+                  disabled={busy()}
+                  onClick={() => {
+                    setKind("carbon");
+                  }}
                 >
                   Continue as Carbon
                 </button>
@@ -436,28 +444,31 @@ export default function Auth(props: {
                   type="button"
                   role="tab"
                   aria-selected={kind() === "silicon"}
-                  onClick={() => setKind("silicon")}
+                  disabled={busy()}
+                  onClick={() => {
+                    setKind("silicon");
+                  }}
                 >
                   Continue as Silicon
                 </button>
               </div>
             </Show>
             <Show
-              when={signup && kind() === "silicon"}
+              when={signup() && kind() === "silicon"}
               fallback={
                 <>
                   <Show
-                    when={signup && step() === "email" && kind() === "carbon"}
+                    when={signup() && step() === "email" && kind() === "carbon"}
                   >
                     <SocialSignup
                       disabled={busy()}
                       busy={setBusy}
                       complete={async (value) => {
-                        setEmail(value.email!);
-                        if (value.status === "already_registered") {
-                          setExistingAccount(true);
+                        if (value.status === "signed_in") {
+                          await continueLogin();
                           return;
                         }
+                        setEmail(value.email!);
                         setSignupId(value.signup_session_id!);
                         setExistingAccount(false);
                         await prepareProfile(value.email!, value.display_name);
@@ -465,12 +476,29 @@ export default function Auth(props: {
                       }}
                     />
                   </Show>
-                  <Show when={!signup && kind() === "carbon" && !isCode()}>
+                  <Show when={!signup() && kind() === "carbon" && !isCode()}>
                     <SocialSignup
                       disabled={busy()}
-                      availabilityOnly
-                      busy={() => {}}
-                      complete={async () => {}}
+                      busy={setBusy}
+                      complete={async (value) => {
+                        if (value.status === "signed_in") {
+                          await continueLogin();
+                          return;
+                        }
+                        if (
+                          value.status === "verified" &&
+                          value.signup_session_id &&
+                          value.email
+                        ) {
+                          setEmail(value.email);
+                          setSignupId(value.signup_session_id);
+                          await prepareProfile(value.email, value.display_name);
+                          setProviderSignup(true);
+                          setStep("phone");
+                          return;
+                        }
+                        setIdentity(value.email || "");
+                      }}
                     />
                   </Show>
                   <Show when={existingAccount()}>
@@ -511,7 +539,7 @@ export default function Auth(props: {
                           config={props.config}
                         />
                       </Match>
-                      <Match when={!signup && kind() === "silicon"}>
+                      <Match when={!signup() && kind() === "silicon"}>
                         <Field name="Silicon ID" required>
                           <input
                             required
@@ -545,7 +573,7 @@ export default function Auth(props: {
                           />
                         </Field>
                       </Match>
-                      <Match when={!signup}>
+                      <Match when={!signup()}>
                         <Field name="Email, phone, or Carbon ID" required>
                           <input
                             autofocus
@@ -681,11 +709,7 @@ export default function Auth(props: {
                       disabled={busy() || handoff() !== "idle"}
                       aria-busy={busy() && handoff() !== "ready"}
                     >
-                      <span
-                        role="status"
-                        aria-live="polite"
-                        class="handoff-label"
-                      >
+                      <span aria-live="polite" class="handoff-label">
                         <Show when={handoff() === "loading"}>
                           <span class="handoff-spinner" aria-hidden="true" />
                         </Show>
@@ -702,14 +726,14 @@ export default function Auth(props: {
                                 ? challenge()
                                   ? "Verify & sign in"
                                   : "Verify code"
-                                : signup && step() === "profile"
+                                : signup() && step() === "profile"
                                   ? "Create account"
-                                  : signup && step() === "created"
+                                  : signup() && step() === "created"
                                     ? "Finish setup"
                                     : "Continue"}
                       </span>
                     </button>
-                    <Show when={signup && step() === "created" && photo()}>
+                    <Show when={signup() && step() === "created" && photo()}>
                       <button
                         class="text-button"
                         type="button"
@@ -723,7 +747,7 @@ export default function Auth(props: {
                     </Show>
                     <Show
                       when={
-                        signup &&
+                        signup() &&
                         (step() === "phone" || step() === "phone-code")
                       }
                     >
@@ -778,16 +802,16 @@ export default function Auth(props: {
               <SiliconSignup complete={continueLogin} />
             </Show>
             <p class="auth-switch">
-              {signup ? "Already have an account?" : "New to Silicon?"}{" "}
+              {signup() ? "Already have an account?" : "New to Silicon?"}{" "}
               <a
                 href={(() => {
-                  const url = new URL(authDestination(props.config, !signup));
+                  const url = new URL(authDestination(props.config, !signup()));
                   if (addingAccount) url.searchParams.set("add_account", "1");
                   url.searchParams.set("type", kind());
                   return url.href;
                 })()}
               >
-                {signup ? "Sign in" : "Create an account"}
+                {signup() ? "Sign in" : "Create an account"}
               </a>
             </p>
           </Show>

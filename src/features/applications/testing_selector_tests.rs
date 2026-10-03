@@ -127,6 +127,7 @@ pub(super) async fn assert_selector_membership_transport(
             "selector query decode did not reach authorization: {status} {error}"
         );
     }
+    assert_selector_obo_routes(state, testing, bearer, &selector).await?;
     Ok(())
 }
 
@@ -160,4 +161,123 @@ async fn request(
     let body = serde_json::from_slice(&body)
         .unwrap_or_else(|_| json!({"body":String::from_utf8_lossy(&body)}));
     Ok((status, headers, body))
+}
+
+/// Real middleware, credentials, database role and request handlers. An app can
+/// prepare/read its review, but the selector never gains the user's decision authority.
+async fn assert_selector_obo_routes(
+    state: &ApiState,
+    testing: &PgPool,
+    bearer: &str,
+    selector: &HeaderValue,
+) -> anyhow::Result<()> {
+    sqlx::raw_sql(r#"
+        INSERT INTO iam.principals(id,kind,status,activated_at)
+        VALUES('selector-provider','application','active',now());
+        INSERT INTO iam.applications(id,app_id,organization_id,created_by_carbon_id,base_url,review_status)
+        VALUES('selector-provider','selector-provider','00000000-0000-0000-0000-000000000021','c:test_carbon','https://provider.example.test','verified');
+        INSERT INTO iam.application_obo_endpoints(organization_id,application_id,endpoint_id,path,metadata_definition,critical)
+        VALUES('00000000-0000-0000-0000-000000000021','selector-provider','files.read','/files','{}',false);
+        UPDATE iam.applications SET app_scope=jsonb_set(app_scope,'{external}','[{"app_id":"selector-provider","endpoint_id":"files.read"}]') WHERE id='app-alpha';
+        INSERT INTO iam.oauth_scope_catalog(scope,description) VALUES('obo:selector-provider:files.read','Read synthetic files');
+        INSERT INTO iam.application_requested_scopes(application_id,scope) VALUES('app-alpha','obo:selector-provider:files.read');
+        INSERT INTO iam.application_approved_scopes(application_id,scope,approved_by_carbon_id)
+        VALUES('app-alpha','obo:selector-provider:files.read','c:test_carbon');
+    "#).execute(testing).await?;
+    let router = crate::features::applications::router()
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::features::testing_environments::select_plane,
+        ))
+        .with_state(state.clone());
+    let send = |method: Method, path: String, body: Value, selected: bool| {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::AUTHORIZATION, selector.clone())
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("idempotency-key", "selector-obo-authorization");
+        if selected {
+            request = request.header("x-testing-application", selector.clone());
+        }
+        router.clone().oneshot(
+            request
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap_or_else(|_| unreachable!("valid static synthetic request")),
+        )
+    };
+    let body = json!({"subject_token":bearer,"org_id":"test_org","endpoints":[{"audience":"selector-provider","endpoint_id":"files.read"}]});
+    let response = send(
+        Method::POST,
+        "/api/v1/obo-access/authorizations".into(),
+        body.clone(),
+        true,
+    )
+    .await?;
+    let status = response.status();
+    let created: Value = serde_json::from_slice(&to_bytes(response.into_body(), 65536).await?)?;
+    ensure!(
+        status == StatusCode::CREATED,
+        "app selector OBO start failed: {status} {created}"
+    );
+    ensure!(created["status"] == "pending" && created["org_id"] == "test_org");
+    let id = created["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("authorization id"))?;
+    let read = send(
+        Method::GET,
+        format!("/api/v1/obo-access/authorizations/{id}"),
+        json!({}),
+        true,
+    )
+    .await?;
+    ensure!(
+        read.status() == StatusCode::OK,
+        "app selector could not read its review"
+    );
+    let read: Value = serde_json::from_slice(&to_bytes(read.into_body(), 65536).await?)?;
+    ensure!(read["id"] == id && read["status"] == "pending");
+    let replay = send(
+        Method::POST,
+        "/api/v1/obo-access/authorizations".into(),
+        body.clone(),
+        true,
+    )
+    .await?;
+    ensure!(replay.status() == StatusCode::CREATED);
+    let replay: Value = serde_json::from_slice(&to_bytes(replay.into_body(), 65536).await?)?;
+    ensure!(
+        replay == created,
+        "selector authorization retry changed its receipt"
+    );
+    for path in [
+        format!("/api/v1/obo-access/consents/{id}/decision"),
+        format!("/api/v1/obo-access/grants/{id}/revoke"),
+        "/api/v1/app-auth/short-lived-tokens".into(),
+    ] {
+        let denied = send(
+            Method::POST,
+            path,
+            json!({"decision":"approve","version":1,"iam_disclosures_reviewed":true}),
+            true,
+        )
+        .await?;
+        ensure!(
+            denied.status() == StatusCode::FORBIDDEN,
+            "app selector gained direct actor authority"
+        );
+    }
+    ensure!(
+        send(
+            Method::POST,
+            "/api/v1/obo-access/authorizations".into(),
+            body,
+            false
+        )
+        .await?
+        .status()
+            == StatusCode::UNAUTHORIZED,
+        "test credential authenticated without a world selector"
+    );
+    Ok(())
 }

@@ -49,7 +49,11 @@ pub async fn login(context: &Context, args: LoginArgs) -> Result<()> {
     if args.status.is_some() {
         return login_status(context).await;
     }
-    if args.email.is_none() && args.phone.is_none() && args.carbon_id.is_none() {
+    if args.email.is_none()
+        && args.phone.is_none()
+        && args.carbon_id.is_none()
+        && args.provider.is_none()
+    {
         if let Some(app_id) = args.app_id.as_deref() {
             let authenticated = context.authenticated().await?;
             return report_short_lived_token(
@@ -63,41 +67,32 @@ pub async fn login(context: &Context, args: LoginArgs) -> Result<()> {
             .await;
         }
         return Err(CliError::Usage(
-            "give one of --email, --phone or --carbon-id, or use --app-id with the stored session"
+            "give --provider, --email, --phone or --carbon-id, or use --app-id with the stored session"
                 .to_owned(),
         ));
     }
 
     let client = context.anonymous();
-    let challenge = client
-        .auth()
-        .start_login(
-            &models::LoginChallengeCreate {
+    let tokens = if let Some(provider) = args.provider.as_deref() {
+        match social_login(client, context, provider).await? {
+            SocialLogin::Tokens(tokens) => tokens,
+            SocialLogin::Signup(status) => {
+                return report_social_signup_continuation(context, &status);
+            }
+        }
+    } else {
+        fresh_carbon_login(
+            client,
+            context,
+            models::LoginChallengeCreate {
                 email: args.email.clone(),
                 phone_number: args.phone.clone(),
                 carbon_id: args.carbon_id.clone(),
             },
-            &context.mutation(),
+            args.code.as_deref(),
         )
-        .await?;
-
-    let code = match args.code {
-        Some(code) => code,
-        // The service echoes the code only where a deployment has explicitly
-        // allowed it, which is how a local run avoids needing a real inbox.
-        None => match challenge.local_otp.clone() {
-            Some(code) => code,
-            None => prompt_secret(
-                "IAM sign-in verification code (input hidden): ",
-                "Run this login command in an interactive terminal to enter the code sent to your verified contact, or supply --code when the code is already known. Application login uses an SLT, never an OTP.",
-            )?,
-        },
+        .await?
     };
-
-    let tokens = client
-        .auth()
-        .verify_login(challenge.session_id, &code, &context.mutation())
-        .await?;
 
     let signed_in = client
         .with_credential(Credential::bearer(tokens.access_token.clone()))
@@ -125,6 +120,127 @@ pub async fn login(context: &Context, args: LoginArgs) -> Result<()> {
             println!(
                 "Signed in as {} on profile {}.",
                 signed_in.carbon_id, context.profile_name
+            );
+            Ok(())
+        }
+    }
+}
+
+async fn fresh_carbon_login(
+    client: &Client,
+    context: &Context,
+    identity: models::LoginChallengeCreate,
+    code: Option<&str>,
+) -> Result<models::IamTokenResponse> {
+    let challenge = client
+        .auth()
+        .start_login(&identity, &context.mutation())
+        .await?;
+    let code = match code.map(str::to_owned).or(challenge.local_otp) {
+        Some(code) => code,
+        None => prompt_secret(
+            "IAM sign-in verification code (input hidden): ",
+            "Run this login command in an interactive terminal to enter the code sent to your verified contact, or supply --code when the code is already known. Application login uses an SLT, never an OTP.",
+        )?,
+    };
+    Ok(client
+        .auth()
+        .verify_login(challenge.session_id, &code, &context.mutation())
+        .await?)
+}
+
+enum SocialLogin {
+    Tokens(models::IamTokenResponse),
+    Signup(models::SocialLoginStatus),
+}
+
+async fn social_login(client: &Client, context: &Context, provider: &str) -> Result<SocialLogin> {
+    let started = client
+        .auth()
+        .social_start(provider, &context.mutation())
+        .await?;
+    validate_social_destination(provider, &started.authorization_url)?;
+    eprintln!(
+        "Open this {provider} sign-in page in your browser:\n{}",
+        started.authorization_url
+    );
+    eprintln!(
+        "This command will continue after your provider verifies your email. No additional IAM email code is needed."
+    );
+    let proof = models::SocialSignupStatusInput {
+        request_id: started.request_id,
+        poll_token: started.poll_token,
+    };
+    while OffsetDateTime::now_utc() < started.expires_at {
+        match client.auth().social_status(provider, &proof).await {
+            Ok(status) => match status.status {
+                models::SocialLoginStatusStatus::Pending => {},
+                models::SocialLoginStatusStatus::LoginReady => {
+                    return Ok(SocialLogin::Tokens(complete_social_login(client, context, provider, &proof).await?));
+                },
+                models::SocialLoginStatusStatus::LinkRequired | models::SocialLoginStatusStatus::AlreadyRegistered => return Err(CliError::Usage("This sign-in request used an older flow. Start again with the current IAM service, or sign in separately with --email.".to_owned())),
+                models::SocialLoginStatusStatus::Verified if status.signup_session_id.is_some() => return Ok(SocialLogin::Signup(status)),
+                models::SocialLoginStatusStatus::Expired => break,
+                _ => return Err(CliError::Usage("Provider sign-in is unavailable or already completed. Start a fresh login or use --email.".to_owned())),
+            },
+            Err(error) if social_retryable(&error) => {},
+            Err(error) => return Err(error.into()),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+    Err(CliError::Usage(
+        "Provider sign-in expired. Run login again for a fresh request.".to_owned(),
+    ))
+}
+
+fn social_retryable(error: &silicon_iam_client::Error) -> bool {
+    matches!(error, silicon_iam_client::Error::Transport(_))
+        || matches!(error, silicon_iam_client::Error::UnstructuredResponse { status, .. } if *status >= 500)
+        || matches!(error, silicon_iam_client::Error::Api(error) if error.status >= 500)
+}
+
+async fn complete_social_login(
+    client: &Client,
+    context: &Context,
+    provider: &str,
+    proof: &models::SocialSignupStatusInput,
+) -> Result<models::IamTokenResponse> {
+    let mutation = context.mutation();
+    for attempt in 0..3 {
+        match client
+            .auth()
+            .social_complete(provider, proof, &mutation)
+            .await
+        {
+            Ok(tokens) => return Ok(tokens),
+            Err(error) if attempt < 2 && social_retryable(&error) => {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(CliError::Usage(
+        "Provider sign-in could not be saved.".to_owned(),
+    ))
+}
+
+fn report_social_signup_continuation(
+    context: &Context,
+    status: &models::SocialLoginStatus,
+) -> Result<()> {
+    let session = status.signup_session_id.ok_or_else(|| {
+        CliError::Usage("IAM did not return a verified signup session.".to_owned())
+    })?;
+    match context.format {
+        Format::Json => json(
+            &serde_json::json!({"authenticated":false,"status":"signup_required","email_verified":true,"signup_session_id":session,"display_name":status.display_name,"next_command":format!("iam signup --session-id {session}")}),
+        ),
+        Format::Text => {
+            println!(
+                "Your provider email is verified. Finish your new account with `iam signup --session-id {session}`."
+            );
+            println!(
+                "Add --phone to verify an optional phone, and --carbon-id, --display-name, --timezone or --photo to set your profile. No account has been created yet."
             );
             Ok(())
         }
@@ -734,7 +850,29 @@ pub async fn signup(context: &Context, mut args: SignupArgs) -> Result<()> {
     let client = context.anonymous();
     let resuming = args.session_id.is_some();
     let social = match args.provider.as_deref() {
-        Some(provider) => Some(social_signup(client, context, provider).await?),
+        Some(provider) => match social_login(client, context, provider).await? {
+            SocialLogin::Signup(status) => Some(status),
+            SocialLogin::Tokens(tokens) => {
+                let profile = client
+                    .with_credential(Credential::bearer(tokens.access_token.clone()))
+                    .carbons()
+                    .me()
+                    .await?;
+                context.remember(session_from(&tokens, &profile.carbon_id))?;
+                return match context.format {
+                    Format::Json => json(&serde_json::json!({
+                        "profile": profile, "authenticated": true, "existing_account": true,
+                    })),
+                    Format::Text => {
+                        println!(
+                            "Signed in to your existing account {}. No new account was created.",
+                            profile.carbon_id
+                        );
+                        Ok(())
+                    }
+                };
+            }
+        },
         None => None,
     };
     if args.display_name.is_none() {
@@ -852,49 +990,6 @@ pub async fn signup(context: &Context, mut args: SignupArgs) -> Result<()> {
             Ok(())
         }
     }
-}
-
-async fn social_signup(
-    client: &Client,
-    context: &Context,
-    provider: &str,
-) -> Result<models::SocialSignupStatus> {
-    let started = client
-        .signup()
-        .social_start(provider, &context.mutation())
-        .await?;
-    validate_social_destination(provider, &started.authorization_url)?;
-    // Keep polling capability in memory; the browser URL carries only OAuth
-    // state and never IAM credentials. stdout remains one final JSON result.
-    eprintln!(
-        "Open this {provider} sign-up page in your browser:\n{}",
-        started.authorization_url
-    );
-    eprintln!("This command will continue when email verification completes.");
-    let input = models::SocialSignupStatusInput {
-        request_id: started.request_id,
-        poll_token: started.poll_token,
-    };
-    while OffsetDateTime::now_utc() < started.expires_at {
-        let status = client.signup().social_status(provider, &input).await;
-        match status {
-            Ok(value) => match value.status {
-                models::SocialSignupStatusStatus::Verified if value.signup_session_id.is_some() => return Ok(value),
-                models::SocialSignupStatusStatus::Pending => {},
-                models::SocialSignupStatusStatus::AlreadyRegistered => return Err(CliError::Usage("This provider email is already registered. Sign in to the existing account with `iam login --email <email>`.".to_owned())),
-                models::SocialSignupStatusStatus::Expired => break,
-                _ => return Err(CliError::Usage("Provider sign-up could not be verified. Run signup again, or use --email.".to_owned())),
-            },
-            Err(silicon_iam_client::Error::Transport(_)) => {},
-            Err(silicon_iam_client::Error::Api(ref error)) if error.status >= 500 => {},
-            Err(error) => return Err(error.into()),
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    }
-    Err(CliError::Usage(
-        "Provider sign-up expired. Run signup again to open a fresh verification request."
-            .to_owned(),
-    ))
 }
 
 fn validate_social_destination(provider: &str, value: &str) -> Result<()> {

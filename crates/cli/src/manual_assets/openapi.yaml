@@ -6362,6 +6362,144 @@ paths:
                           type: string
                         enabled:
                           type: boolean
+                        login_enabled:
+                          type: boolean
+                          description: Whether provider login is configured for this deployment.
+        default:
+          description: Structured IAM error.
+  "/api/v1/login/social/{provider}/start":
+    post:
+      operationId: startSocialLogin
+      tags: [Authentication]
+      summary: Start Google or Apple login
+      description: Use Google or Apple to verify the current email. An existing active Carbon with that exact canonical email may sign in without another OTP or account link; a new verified email continues explicit signup. Provider subjects never select accounts. Providers are unavailable in testing environments.
+      security: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [google, apple]
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+                type: object
+                additionalProperties: false
+      responses:
+        '201':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SocialSignupStart"
+        default:
+          description: Structured IAM error.
+  "/api/v1/login/social/{provider}/status":
+    post:
+      operationId: pollSocialLogin
+      tags: [Authentication]
+      summary: Status Google or Apple login
+      description: Poll using the request ID and confidential polling capability. verified means a new email can resume signup; login_ready may complete as the current email owner. New requests never return link_required.
+      security: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [google, apple]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+                "$ref": "#/components/schemas/SocialSignupStatusInput"
+      responses:
+        '200':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SocialLoginStatus"
+        default:
+          description: Structured IAM error.
+  "/api/v1/login/social/{provider}/complete":
+    post:
+      operationId: completeSocialLogin
+      tags: [Authentication]
+      summary: Complete Google or Apple login
+      description: Issue a direct Carbon session for the verified email owner. Revalidate the same active account, contact and security epoch before issuance or replay. Reuse the same Idempotency-Key and proof after an uncertain response.
+      security: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [google, apple]
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+                "$ref": "#/components/schemas/SocialSignupStatusInput"
+      responses:
+        '200':
+          description: Successful response. Do not cache.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/IamTokenResponse"
+        default:
+          description: Structured IAM error.
+  "/api/v1/login/social/{provider}/link":
+    post:
+      operationId: linkSocialLogin
+      tags: [Authentication]
+      summary: Retired provider linking
+      deprecated: true
+      description: Retained only for older clients. Returns 410 provider_link_retired_restart_login; restart provider login. This endpoint cannot create or use a subject association.
+      security:
+      - iamBearer: []
+      parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [google, apple]
+      - "$ref": "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+                "$ref": "#/components/schemas/SocialSignupStatusInput"
+      responses:
+        '410': { $ref: '#/components/responses/Gone' }
+        '200':
+          description: Legacy IAM 5.1 response only. IAM 5.2 always returns the restart error.
+          headers:
+            Idempotency-Replayed:
+              "$ref": "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                "$ref": "#/components/schemas/SocialLoginLinkResult"
         default:
           description: Structured IAM error.
   "/api/v1/signup/social/{provider}/start":
@@ -7202,6 +7340,34 @@ components:
           type: string
           writeOnly: true
       x-redact-debug: true
+    SocialLoginStatus:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [pending, verified, already_registered, login_ready, link_required, completed, failed, expired]
+        signup_session_id:
+          type: string
+          format: uuid
+          description: Present only for a verified new email; resume ordinary signup.
+        email:
+          type: string
+          nullable: true
+        display_name:
+          type: string
+          nullable: true
+    SocialLoginLinkResult:
+      type: object
+      additionalProperties: false
+      required: [linked, provider]
+      properties:
+        linked:
+          type: boolean
+        provider:
+          type: string
+          enum: [google, apple]
     SocialSignupStatus:
       type: object
       additionalProperties: false
