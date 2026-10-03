@@ -91,6 +91,8 @@ Access-token validity uses the shortest endpoint TTL in the approved graph. The 
 
 ## Verify every incoming request
 
+Each OBO action has a unique, stable registered path within its application. Verification uses that exact canonical path; for a parameterized route, use the router’s matched template (for example `/api/v1/obo/todos/{todo_id}/read`), not an expanded resource path. Select the endpoint ID and path from the matched server handler, never caller-supplied authorization fields. Distinct HTTP methods on one REST path do not create distinct OBO paths; use separate action routes when needed. The handler still checks the actual method, resource ID, payload and resource permissions.
+
 A sends the access token and actual payload directly to B. Before every operation B authenticates to IAM using B's own credentials:
 
 ```

@@ -1,18 +1,18 @@
 # Updating an application for IAM 5
 
-This guide describes the IAM 5.0.0 and Honeycomb 0.6.0 integration contracts. The documentation is being published before the coordinated runtime rollout. Until the documentation's release notice says otherwise, production still serves the previous APIs. Prepare and test your changes now; switch production callers and receivers together when the new runtime is available.
+This guide describes the IAM 5.0.0 and Honeycomb 0.6.0 integration contracts. IAM 5 is running in production. Update and test each application against these contracts, then coordinate its callers, receiving endpoints and approved Honeycomb catalog before enabling production traffic. A running IAM release does not by itself prove that every dependent application has completed its migration.
 
 For a broader product guide, read [Building a Team of Silicons-ready application](https://docs.honeycomb.teamofsilicons.com/guides/team-of-silicons-ready-applications/). This page focuses on changes an existing application needs to make.
 
 ## Start from the versioned contract
 
-Use the [OpenAPI document](/openapi.yaml) for exact bodies and response types, and the [Rust client guide](/client/guide/) for the SDK. While the crates.io release is pending, the reviewed SDK candidate can be pinned directly:
+Use the [OpenAPI document](/openapi.yaml) for exact bodies and response types, and the [Rust client guide](/client/guide/) for the SDK. The Rust SDK is published on crates.io:
 
 ```toml
-silicon-iam-client = { git = "https://github.com/teamofsilicons/silicon-iam", rev = "56d4be4a85f0155277c4e5d024c093d4443ef527", version = "5.0.0" }
+silicon-iam-client = "5.0.0"
 ```
 
-After 5.0.0 is published, use the registry dependency with the same version. Installing the current public CLI does not opt a production backend into the new protocol. Check [the running backend version](https://backend.iam.teamofsilicons.com/api/v1/version) when coordinating your deployment.
+Installing the CLI does not migrate an application backend into the new protocol. Check [the running backend version](https://backend.iam.teamofsilicons.com/api/v1/version) when coordinating your deployment.
 
 ## Keep login bound to one account and organization
 
@@ -41,7 +41,9 @@ The [HTTP OBO reference](/api/obo/) includes complete request examples, expiry s
 
 ## Update every OBO receiver
 
-Replace consumed, request-bound proofs with reusable access-token verification. On every incoming operation, authenticate to IAM as the receiving application and call `POST /api/v1/obo-access/token-verifications` with the incoming `access_token`, the handler's registered `endpoint_id`, and its actual request method/path.
+Replace consumed, request-bound proofs with reusable access-token verification. On every incoming operation, authenticate to IAM as the receiving application and call `POST /api/v1/obo-access/token-verifications` with the incoming `access_token`, the handler's registered `endpoint_id`, the request's HTTP method, and the canonical registered endpoint path. For a parameterized route, send the router's matched template, such as `/api/v1/obo/todos/{todo_id}/read`, rather than a path containing a particular todo ID.
+
+Each OBO action needs a unique, stable registered path within its provider application. Different methods on the same REST path do not create distinct OBO paths; expose separate action routes where needed. Choose the endpoint ID and path from the matched server handler, never from caller-supplied authorization fields. Continue checking the actual resource ID, payload, method and account permissions in that handler.
 
 Check the returned recipient, endpoint, originating app, selected account and organization before enforcing your own resource ACLs and payload rules. A successful token check does not permit access to every resource in an organization. Undisclosed roles or tags grant no authority; do not substitute the originating account's permissions for another selected provider account.
 
