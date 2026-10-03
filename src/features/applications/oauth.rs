@@ -3188,12 +3188,12 @@ mod oauth_empty_scope_tests;
 mod typed_login_tests {
     use super::*;
     #[test]
-    fn login_query_preserves_and_validates_optional_kind_and_popup() {
+    fn login_query_preserves_and_validates_optional_kind_and_popup() -> Result<(), serde_json::Error>
+    {
         for kind in ["carbon", "silicon"] {
             let query: LoginQuery = serde_json::from_value(json!({
                 "app_id": "briefcase", "identity_kind": kind, "display": "popup"
-            }))
-            .expect("query");
+            }))?;
             assert!(validation::login(&query).is_ok());
         }
         for input in [
@@ -3201,9 +3201,10 @@ mod typed_login_tests {
             json!({"app_id":"briefcase", "identity_kind":""}),
             json!({"app_id":"briefcase", "display":"iframe"}),
         ] {
-            let query: LoginQuery = serde_json::from_value(input).expect("query");
+            let query: LoginQuery = serde_json::from_value(input)?;
             assert!(validation::login(&query).is_err());
         }
+        Ok(())
     }
 
     #[test]
