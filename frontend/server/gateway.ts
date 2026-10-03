@@ -35,6 +35,9 @@ const isPublic = (path: string, method: string) =>
       /^\/api\/v1\/signup\/social\/(?:google|apple)\/(?:start|status)$/.test(
         path,
       ) ||
+      /^\/api\/v1\/login\/social\/(?:google|apple)\/(?:start|status|complete)$/.test(
+        path,
+      ) ||
       /^\/api\/v1\/signup\/sessions(?:\/[0-9a-f-]+\/(?:email|phone)(?:\/verify)?|\/[0-9a-f-]+\/complete)?$/.test(
         path,
       ) ||
@@ -172,13 +175,12 @@ export async function gateway(
     request.method === "GET" &&
     scopeRequest &&
     (path === "/applications" ||
-      (path === "/scope-reviews" && url.origin !== config.console.origin))
+      path === "/scope-reviews" ||
+      (path === "/auth/continue" &&
+        url.searchParams.get("next") === "scope-reviews"))
   )
     return finish(
-      Response.redirect(
-        scopeReviewDestination(scopeRequest, config.console.origin),
-        303,
-      ),
+      Response.redirect(scopeReviewDestination(scopeRequest), 303),
       config,
     );
   if (path === "/api/web/telemetry") return collectTelemetry(request, env);
@@ -382,10 +384,7 @@ export async function gateway(
         );
       if (url.searchParams.get("next") === "scope-reviews" && scopeRequest)
         return finish(
-          Response.redirect(
-            scopeReviewDestination(scopeRequest, config.console.origin),
-            303,
-          ),
+          Response.redirect(scopeReviewDestination(scopeRequest), 303),
           config,
           changed,
         );
@@ -814,6 +813,7 @@ export async function gateway(
     if (
       response.ok &&
       (/^\/api\/v1\/login\/challenges\/[0-9a-f-]+\/verify$/.test(path) ||
+        /^\/api\/v1\/login\/social\/(?:google|apple)\/complete$/.test(path) ||
         /^\/api\/v1\/signup\/sessions\/[0-9a-f-]+\/complete$/.test(path) ||
         path === "/api/v1/silicon-auth/token")
     ) {

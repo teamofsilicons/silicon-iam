@@ -59,6 +59,7 @@ The app validates the state and request ID against its initiating session, remov
 from browser history/logs, and redeems it server-side with its own Basic credentials.
 The code expires after two minutes and is single-use. Status polling never reveals it.
 Without a callback, IAM displays the code for manual handoff.</p>
+<p>Browser integrations can use compact popup approval with <code>display=popup</code> on the returned consent URL. The callback and state remain bound to the authorization request. Complete the server-side exchange before notifying an exact app-origin opener, and keep a full-page fallback. See the <a href="/client/obo/#approval-in-a-popup">popup approval guide</a> for return destinations, cancellation and uncertain retries.</p>
 <h2>Exchange and refresh tokens</h2>
 <pre><code>POST /api/v1/obo-access/tokens
 Authorization: Basic &lt;A's credentials&gt;

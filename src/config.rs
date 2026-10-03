@@ -63,7 +63,7 @@ pub struct HoneycombSettings {
     pub credential_sha256: SecretString,
     /// Explicit permission for actorless scheduled test lifecycle instructions.
     pub scheduled_testing: bool,
-    /// Disable legacy management writers only after Honeycomb adoption is complete.
+    /// Opt development/test processes into retirement; production always retires legacy writers.
     pub retire_legacy_writers: bool,
 }
 

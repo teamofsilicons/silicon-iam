@@ -12,7 +12,117 @@ use crate::{Client, Mutation, Result, models};
 /// behind the `cli-session` feature.
 pub struct Auth<'a>(pub(super) &'a Client);
 
+/// Provider availability for direct IAM login, separate from signup discovery.
+#[cfg(feature = "cli-session")]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct SocialLoginProviders {
+    /// Providers and their actual deployment capabilities.
+    pub providers: Vec<SocialLoginProvider>,
+}
+
+/// One external provider's enrollment and login capabilities.
+#[cfg(feature = "cli-session")]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct SocialLoginProvider {
+    /// Stable provider ID: google or apple.
+    pub id: String,
+    /// Whether enrollment is configured.
+    pub enabled: bool,
+    /// Whether sign-in is configured; older servers are treated as unavailable.
+    #[serde(default)]
+    pub login_enabled: bool,
+}
+
 impl Auth<'_> {
+    #[cfg(feature = "cli-session")]
+    /// Lists real deployment availability for Google and Apple direct IAM login.
+    ///
+    /// This additive result keeps signup's original provider type unchanged.
+    /// # Errors
+    /// Returns an error when discovery is unavailable or malformed.
+    pub async fn social_providers(&self) -> Result<SocialLoginProviders> {
+        self.0.get(&["signup", "social", "providers"]).await
+    }
+
+    #[cfg(feature = "cli-session")]
+    /// Starts Google or Apple authentication for a direct IAM session.
+    ///
+    /// Open the returned provider URL and keep the polling capability private.
+    /// Applications continue to use SLT login, never this first-party ceremony.
+    /// # Errors
+    /// Unsupported, unconfigured or testing-plane providers are rejected.
+    pub async fn social_start(
+        &self,
+        provider: &str,
+        mutation: &Mutation,
+    ) -> Result<models::SocialSignupStart> {
+        super::signup::check_social_provider(provider)?;
+        self.0
+            .post(
+                &["login", "social", provider, "start"],
+                &serde_json::json!({}),
+                mutation,
+            )
+            .await
+    }
+
+    #[cfg(feature = "cli-session")]
+    /// Polls provider authentication without exposing its capability in a URL.
+    /// # Errors
+    /// Invalid proof, expired requests and unsupported providers are rejected.
+    pub async fn social_status(
+        &self,
+        provider: &str,
+        proof: &models::SocialSignupStatusInput,
+    ) -> Result<models::SocialLoginStatus> {
+        super::signup::check_social_provider(provider)?;
+        self.0
+            .send_json(
+                self.0
+                    .route(
+                        reqwest::Method::POST,
+                        &["login", "social", provider, "status"],
+                    )?
+                    .json(proof),
+            )
+            .await
+    }
+
+    #[cfg(feature = "cli-session")]
+    /// Completes login for the current verified email owner. Retain proof and key for retries.
+    /// # Errors
+    /// The same active account, email contact and security epoch must still match.
+    pub async fn social_complete(
+        &self,
+        provider: &str,
+        proof: &models::SocialSignupStatusInput,
+        mutation: &Mutation,
+    ) -> Result<models::IamTokenResponse> {
+        super::signup::check_social_provider(provider)?;
+        self.0
+            .post(&["login", "social", provider, "complete"], proof, mutation)
+            .await
+    }
+
+    #[cfg(feature = "cli-session")]
+    /// Legacy linking method retained for source compatibility with older clients.
+    ///
+    /// IAM 5.2 returns `410 provider_link_retired_restart_login`. Start a new
+    /// provider login; verified email is the account authority and no link is needed.
+    /// # Errors
+    /// This retired operation returns a structured restart error on IAM 5.2.
+    pub async fn social_link(
+        &self,
+        provider: &str,
+        proof: &models::SocialSignupStatusInput,
+        mutation: &Mutation,
+    ) -> Result<models::SocialLoginLinkResult> {
+        super::signup::check_social_provider(provider)?;
+        self.0
+            .post(&["login", "social", provider, "link"], proof, mutation)
+            .await
+    }
+
     #[cfg(feature = "cli-session")]
     #[doc(hidden)]
     /// Starts a Carbon login by email, phone number, or Carbon ID.

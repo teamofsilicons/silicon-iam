@@ -221,6 +221,25 @@ class Release:
                 output.add(path, arcname=path.name, recursive=False)
         atomic_json(self.root / "offhost-backup.json", self.upload_verified(archive, archive.name))
 
+    def assert_quiesced(self):
+        for service in SERVICES:
+            unit = f"silicon-iam-{service}"
+            require(self.run(["systemctl", "show", "--property=MainPID", "--value", unit]).decode().strip() == "0",
+                    "IAM service still has a process at recovery boundary")
+            active = subprocess.run(["systemctl", "is-active", "--quiet", unit], capture_output=True)
+            require(active.returncode != 0, "IAM unit remained active at recovery boundary")
+            containers = self.run(["docker", "ps", "--all", "--format", "{{.Names}}"]).decode().splitlines()
+            if unit in containers:
+                running = self.run(["docker", "inspect", "--format", "{{.State.Running}}", unit])
+                require(running.strip() == b"false", "IAM application container remained running at recovery boundary")
+
+    def assert_environment_unchanged(self):
+        current = set(Path("/etc/silicon-iam").glob("*.env"))
+        saved = set(self.root.glob("*.env"))
+        require({p.name for p in current} == {p.name for p in saved}, "Runtime environment inventory changed")
+        require(all(digest(p) == digest(self.root / p.name) for p in current),
+                "Runtime environment changed during promotion")
+
     def execute(self):
         require(os.geteuid() == 0, "Execute only as root on the existing IAM host")
         os.umask(0o077)
@@ -292,6 +311,7 @@ class Release:
         self.state["services_stopped"] = True
         self.checkpoint("stopping-writers")
         self.run(["systemctl", "stop", *(f"silicon-iam-{service}" for service in SERVICES)])
+        self.assert_quiesced()
         backups = {}
         for label in self.databases:
             dump = self.root / f"{label}-before.dump"
@@ -307,6 +327,8 @@ class Release:
         self.checkpoint("both-backups-verified")
         self.upload_quiesced_backup()
         self.checkpoint("offhost-paired-backup-verified")
+        self.assert_quiesced()
+        self.assert_environment_unchanged()
         self.state["migration_started"] = True
         self.checkpoint("migration-started-no-image-only-rollback")
         environment = dict(os.environ, IAM_MIGRATOR_DATABASE_URL=self.databases["production"][1],
@@ -326,6 +348,7 @@ class Release:
         for label in self.databases:
             self.ledger(label, complete=True)
         self.checkpoint("schema-grants-and-scoped-helper-complete")
+        self.assert_environment_unchanged()
         for path, text in replacements:
             temporary = path.with_suffix(path.suffix + ".contracts-release")
             with temporary.open("w") as stream:

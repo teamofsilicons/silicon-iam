@@ -8,8 +8,10 @@ export function scopeReviewRequest(url: URL): string | undefined {
     return values[0];
 }
 
-export function scopeReviewDestination(request: string, origin: string): URL {
-  const destination = new URL("/scope-reviews", origin);
-  destination.searchParams.set("request", request);
+export function scopeReviewDestination(request: string): URL {
+  const destination = new URL(
+    "https://console.honeycomb.teamofsilicons.com/requests",
+  );
+  destination.searchParams.set("legacy_request", request);
   return destination;
 }

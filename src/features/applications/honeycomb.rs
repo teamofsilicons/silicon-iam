@@ -20,6 +20,7 @@ use subtle::ConstantTimeEq as _;
 use super::{error::ApiError, validation};
 use crate::{
     api::ApiState,
+    config::RuntimeEnvironment,
     domain::actor::ActorType,
     infrastructure::{postgres::tokens, testing_plane},
 };
@@ -332,61 +333,68 @@ async fn operation(
     Ok(Json(value.0))
 }
 
-/// Explicit writer cutover, independent of provisioned service API credentials.
+/// Production management belongs to Honeycomb even if a historical deployment
+/// still contains `IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS=false`. Development can
+/// opt into the same cutover without requiring provisioned service credentials.
+fn legacy_writers_retired(environment: RuntimeEnvironment, configured: bool) -> bool {
+    environment == RuntimeEnvironment::Production || configured
+}
+
+fn retired_management_route(route: &str) -> bool {
+    matches!(
+        route,
+        "/api/v1/applications"
+            | "/api/v1/applications/{app_id}"
+            | "/api/v1/applications/{app_id}/client-secret-rotations"
+            | "/api/v1/applications/{app_id}/webhook-secret-rotations"
+            | "/api/v1/applications/{app_id}/webhook"
+            | "/api/v1/applications/{app_id}/webhook/approvals"
+            | "/api/v1/admin/applications/{app_id}/decisions"
+            | "/api/v1/applications/{app_id}/scope-requests"
+            | "/api/v1/application-scope-requests/{request_id}/messages"
+            | "/api/v1/application-scope-requests/{request_id}/decisions"
+            | "/api/v1/application-bundles"
+            | "/api/v1/application-bundles/{bundle_id}"
+            | "/api/v1/application/testing-environments"
+            | "/api/v1/organizations/{org_id}/testing-environments"
+            | "/api/v1/organizations/{org_id}/testing-environments/{environment_id}"
+            | "/api/v1/organizations/{org_id}/testing-environments/{environment_id}/key-rotations"
+            | "/api/v1/organizations/{org_id}/testing-environments/{environment_id}/cleanings"
+            | "/api/v1/organizations/{org_id}/testing-environments/{environment_id}/restorations"
+            | "/api/v1/testing-environment/cleanings"
+    )
+}
+
 pub(crate) async fn legacy_writer_guard(
     State(state): State<ApiState>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::response::IntoResponse as _;
-    if state
-        .settings
-        .honeycomb
-        .as_ref()
-        .is_some_and(|settings| settings.retire_legacy_writers)
-        && request.method() == axum::http::Method::POST
-        && request
-            .extensions()
-            .get::<axum::extract::MatchedPath>()
-            .is_some_and(|path| path.as_str() == "/api/v1/testing-environment/applications/imports")
-    {
-        return ApiError::management_moved().into_response();
-    }
-    if state
-        .settings
-        .honeycomb
-        .as_ref()
-        .is_some_and(|settings| settings.retire_legacy_writers)
-        && !testing_plane::is_active()
+    let retired = legacy_writers_retired(
+        state.settings.environment,
+        state
+            .settings
+            .honeycomb
+            .as_ref()
+            .is_some_and(|settings| settings.retire_legacy_writers),
+    );
+    let route = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map_or("", axum::extract::MatchedPath::as_str);
+    // Importing a production app is management even when the destination is an
+    // isolated plane. Ordinary app fixtures within that plane stay available.
+    let importing = request.method() == axum::http::Method::POST
+        && route == "/api/v1/testing-environment/applications/imports";
+    let production_write = !testing_plane::is_active()
         && !matches!(
             *request.method(),
             axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
         )
-    {
-        let route = request
-            .extensions()
-            .get::<axum::extract::MatchedPath>()
-            .map_or("", axum::extract::MatchedPath::as_str);
-        if !route.starts_with("/api/v1/honeycomb/")
-            && (matches!(
-                route,
-                "/api/v1/applications"
-                    | "/api/v1/applications/{app_id}"
-                    | "/api/v1/applications/{app_id}/client-secret-rotations"
-                    | "/api/v1/applications/{app_id}/webhook-secret-rotations"
-                    | "/api/v1/applications/{app_id}/webhook"
-                    | "/api/v1/applications/{app_id}/webhook/approvals"
-                    | "/api/v1/admin/applications/{app_id}/decisions"
-                    | "/api/v1/applications/{app_id}/scope-requests"
-                    | "/api/v1/application-scope-requests/{request_id}/messages"
-                    | "/api/v1/application-scope-requests/{request_id}/decisions"
-                    | "/api/v1/application-bundles"
-                    | "/api/v1/application-bundles/{bundle_id}"
-            ) || route.contains("testing-environments")
-                || route == "/api/v1/testing-environment/cleanings")
-        {
-            return ApiError::management_moved().into_response();
-        }
+        && retired_management_route(route);
+    if retired && (importing || production_write) {
+        return ApiError::management_moved().into_response();
     }
     next.run(request).await
 }
@@ -394,6 +402,45 @@ pub(crate) async fn legacy_writer_guard(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_retirement_does_not_depend_on_optional_honeycomb_configuration() {
+        for configured in [false, true] {
+            assert!(legacy_writers_retired(
+                RuntimeEnvironment::Production,
+                configured
+            ));
+        }
+        for environment in [RuntimeEnvironment::Development, RuntimeEnvironment::Test] {
+            assert!(!legacy_writers_retired(environment, false));
+            assert!(legacy_writers_retired(environment, true));
+        }
+    }
+
+    #[test]
+    fn retirement_preserves_runtime_authorization_and_honeycomb_service_routes() {
+        for route in [
+            "/api/v1/honeycomb/applications/{app_id}/configuration",
+            "/api/v1/honeycomb/testing-environments/{environment_id}/cleanings",
+            "/api/v1/app-auth/short-lived-tokens",
+            "/api/v1/app-auth/tokens",
+            "/api/v1/oauth/revoke",
+            "/api/v1/obo-access/requests",
+            "/api/v1/ata-access/keys",
+            "/api/v1/applications/{app_id}/webhook/dead-letters/replays",
+        ] {
+            assert!(!retired_management_route(route), "{route}");
+        }
+        for route in [
+            "/api/v1/applications",
+            "/api/v1/applications/{app_id}/scope-requests",
+            "/api/v1/application-scope-requests/{request_id}/messages",
+            "/api/v1/application-scope-requests/{request_id}/decisions",
+            "/api/v1/organizations/{org_id}/testing-environments/{environment_id}/key-rotations",
+        ] {
+            assert!(retired_management_route(route), "{route}");
+        }
+    }
 
     #[test]
     fn ordinary_application_or_user_credentials_never_grant_service_authority() {

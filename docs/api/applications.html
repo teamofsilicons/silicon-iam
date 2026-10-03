@@ -127,7 +127,7 @@ Content-Type: application/json
 <code>[briefcase:ata:files.read]</code>, endpoint path, name, critical label, description,
 metadata, optional user note, predefined warnings and explicit ATA dependencies.
 Importing an OBO definition copies its fields; OBO dependencies are not ATA permissions.</p>
-<p>An authorized app manager creates a verification in Honeycomb after reviewing its expanded
+<p>An authorized app manager creates a verification on Honeycomb’s central <strong>App to App</strong> page after selecting the originating application and reviewing its expanded
 endpoint graph and recipient app list. The signing Carbon/Silicon is recorded and cannot be
 chosen separately. Verification expiry is at least one hour or never (default); access-token
 validity is 60–86400 seconds, default 1800. Creation reveals the refresh token once. Store
@@ -142,4 +142,4 @@ originating application. Success returns <code>{verified: true, valid_till: …}
 an invalid proof, unapproved recipient or unauthorized endpoint returns
 <code>{verified: false}</code>. Discovery uses
 <code>GET /api/v1/ata-access/applications/{app_id}/endpoints</code>. ATA proof remains
-application authority throughout its chain and can never become OBO authority.</p>
+application authority throughout its chain and can never become OBO authority. For complete client examples, see <a href="/client/ata/">the ATA SDK guide</a>.</p>

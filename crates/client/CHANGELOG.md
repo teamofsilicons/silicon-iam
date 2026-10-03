@@ -1,5 +1,21 @@
 # Changelog
 
+## 5.2.1
+
+- Production application registration, configuration and permission-review writes are owned by Honeycomb. Legacy direct management methods return `management_moved_to_honeycomb`; runtime authentication and isolated test fixtures remain available.
+- SDK wire types are unchanged.
+
+## 5.2.0
+
+- Provider authentication resolves the verified current email as an ordinary Carbon login or verified signup continuation. No provider-subject linking or additional email OTP is required.
+- Existing SDK response shapes remain compatible; the legacy `social_link` method remains available but returns a restart error from IAM 5.2.
+
+## 5.1.0
+
+- Add direct Google/Apple login, status, completion, and fresh OTP identity linking for the official IAM CLI through the `cli-session` feature.
+- Add separate login-provider capability types while preserving the existing signup-provider struct shape for Rust source compatibility.
+- Keep application integrations on the typed popup/SLT protocol; provider credentials and account linking remain internal IAM concerns.
+
 ## 5.0.0
 
 This is a breaking release. Deploy callers and receivers with the matching IAM

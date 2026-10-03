@@ -16,7 +16,7 @@ await collect(output);
 const failures = new Set();
 // Check the emitted routes independently of the collector so a future export
 // regression cannot publish an operator record while still passing link checks.
-const evidenceRoute = /(?:^|\/)(?:release-readiness-[^/]+|iam-redesign-[^/]+|deployment-verification-[^/]+|integration-fixes-[^/]+|session-bound-consent-fix|private-application-login-errors|honeycomb-implementation|frontend\/(?:deployment|manual-qa|scope-approvals))\//;
+const evidenceRoute = /(?:^|\/)(?:release-readiness-[^/]+|iam-redesign-[^/]+|deployment-verification-[^/]+|integration-fixes-[^/]+|session-bound-consent-fix|private-application-login-errors|honeycomb-implementation|provider-email-authentication|frontend\/(?:deployment|manual-qa|scope-approvals))\//;
 const sitemap = await readFile(join(output, "sitemap.xml"), "utf8");
 for (const [, route] of sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)) {
   if (evidenceRoute.test(new URL(route).pathname)) failures.add(`sitemap: internal evidence route ${route}`);

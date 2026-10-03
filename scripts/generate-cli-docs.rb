@@ -56,6 +56,7 @@ CATALOG = [
   ["client/login", "Application login using short-lived tokens", "docs/client/login.html", []],
   ["client/tokens", "Application tokens and authorization snapshots", "docs/client/tokens.html", %w[tokens]],
   ["client/obo", "Rust client OBO consent, tokens and verification", "docs/client/obo.html", []],
+  ["client/ata", "Rust client app-to-app verification", "docs/client/ata.html", %w[ata]],
   ["client/webhooks", "Rust client webhook verification", "docs/client/webhooks.html", []],
   ["client/testing-environments", "Rust client testing environment workflow", "docs/client/testing-environments.html", []],
   ["client/errors", "Rust client errors and safe retry policy", "docs/client/errors.html", []],
@@ -136,6 +137,7 @@ end
 # New consumer guides must receive a discoverable topic, not silently disappear
 # from installed CLI builds. These fix reports are evidence, not user manuals.
 excluded = %w[
+  docs/PROVIDER_EMAIL_AUTHENTICATION.md
   docs/IAM_REDESIGN_2026_10_02.md
   docs/RELEASE_READINESS_2026_10_03.md
   docs/INTEGRATION_FIXES_2026-09-05.md

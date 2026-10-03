@@ -25,6 +25,34 @@ See `iam --help`, then a noun such as `iam app --help`,
 then a verb such as `iam app create --help`. Every level includes purpose,
 arguments and related documentation. `iam commands --json` exposes the tree to agents.
 
+### Google and Apple login
+
+Use `iam login --provider google` or `iam login --provider apple` to verify your
+email in the provider's browser window. The CLI waits for verification and signs
+into the Carbon that currently owns that verified email. No account connection
+step or additional IAM email code is needed. Both providers require production
+configuration; isolated testing environments reject external provider login.
+
+For a new verified email, login returns `signup_required` and a
+`signup_session_id` without creating an account. Continue with
+`iam signup --session-id <id>`, optionally adding `--phone`, `--carbon-id`,
+`--display-name`, `--timezone`, or `--photo`. This reuses email verification; it
+does not reopen the provider or send an IAM email code. A supplied phone still
+requires verification, and profile completion remains explicit.
+
+`iam signup --provider google` or `--provider apple` follows the same email rule:
+an existing email signs into that account, preserving its profile; a new email
+continues signup. Any Carbon, including one created through Google or Apple,
+can instead use `iam login --email <email>` and an ordinary IAM email code.
+Apple's Hide My Email address is a distinct verified email; it does not identify
+your undisclosed underlying email.
+
+These email-based flows supersede IAM 5.1's provider-account connection step.
+Published 5.1 login clients can use the existing `login_ready` response; new CLI
+flows do not invoke the retired connection endpoint. An old in-flight request
+may need a fresh start. Polling secrets and access/refresh tokens are never
+printed in the normal login result.
+
 IAM is the credential issuer: Carbon verification and Silicon SID/STK login
 happen here. An application CLI must instead accept `app login '<SLT>'`, using a
 token minted by `iam login --app-id 'app'` or the IAM consent website. An
@@ -255,7 +283,7 @@ command line. Options may appear before or after positional identifiers. Applica
 | `iam logout` | None | Ends the current Carbon or Silicon session remotely. `--local-only` and `--all` conflict. `--all` uses step-up action `account.sessions_revoke_all` on the account principal ID, and affected sessions must satisfy the 12-hour rule. |
 | `iam whoami` | None | Requires an IAM session in the selected production or test plane. |
 | `iam step-up` | `<action> <resource-id>` | Carbon: OTP prompt or `--code`; Silicon: hidden current-password prompt or `--stk`. The action and exact resource must match the later protected mutation. |
-| `iam signup` | `--email <email>` or `--provider google\|apple`; optional `--phone`, `--carbon-id`, `--display-name`, `--timezone`, `--photo` | Creates and signs in a Carbon. Omitted ID and name receive available defaults. Provider signup requires configured production provider credentials; testing email signup uses the explicitly returned test code. Create or join your first organization afterward. |
+| `iam signup` | `--email <email>` or `--provider google\|apple`; optional `--phone`, `--carbon-id`, `--display-name`, `--timezone`, `--photo` | Creates and signs in a Carbon; a provider-verified existing email signs into its current account without changing the profile. Omitted ID and name receive available defaults. Providers require production configuration; testing email signup uses the returned test code. Create or join your first organization afterward. |
 | `iam commands` | None | Prints this same complete command tree from the installed binary. |
 | `iam docs` | Optional `<topic>` and/or `--search <words>` | Offline API/client/CLI manuals. `-o json` returns structured metadata, content or search results. No session or configuration is required. |
 
@@ -1126,9 +1154,10 @@ Telemetry defaults on when configured. Use `iam config set telemetry off` to dis
 ## Management ownership
 
 Use Honeycomb for production app configuration, scope reviews, bundles and shared
-testing lifecycles. Legacy IAM management commands remain for migration-era
-servers; after `IAM_HONEYCOMB_RETIRE_LEGACY_WRITERS=true` is enabled they receive
-`410 management_moved_to_honeycomb`. IAM continues to provide identity, login,
+testing lifecycles. Production IAM rejects legacy direct management commands with
+`410 management_moved_to_honeycomb`, including direct app registration and scope
+request submission. Register applications and follow approval discussions in
+Honeycomb. IAM continues to provide identity, login,
 consent and test-plane authentication. See [the service contract](../HONEYCOMB_INTEGRATION.md).
 
 ### Membership identifiers

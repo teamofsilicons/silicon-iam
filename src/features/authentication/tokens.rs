@@ -114,6 +114,33 @@ pub(super) async fn issue_login_session(
     principal_id: Id,
     channel: ContactChannel,
 ) -> Result<TokenResponse, AppError> {
+    issue_carbon_session(
+        transaction,
+        crypto,
+        security,
+        principal_id,
+        channel.authentication_method(),
+    )
+    .await
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "session, family, token pair, and security records commit atomically"
+)]
+pub(super) async fn issue_carbon_session(
+    transaction: &mut Transaction<'_, Postgres>,
+    crypto: &CryptoService,
+    security: &SecuritySettings,
+    principal_id: Id,
+    authentication_method: &'static str,
+) -> Result<TokenResponse, AppError> {
+    if !matches!(
+        authentication_method,
+        "email_otp" | "phone_otp" | "google_oidc" | "apple_oidc"
+    ) {
+        return Err(AppError::Unauthenticated);
+    }
     let auth_epoch = sqlx::query_scalar::<_, i64>(
         r"
         SELECT auth_epoch
@@ -138,7 +165,7 @@ pub(super) async fn issue_login_session(
     let session = sqlx::query_as::<_, SessionInsertRow>(CARBON_SESSION_INSERT_QUERY)
         .bind(session_id)
         .bind(principal_id)
-        .bind(channel.authentication_method())
+        .bind(authentication_method)
         .bind(auth_epoch)
         .bind(refresh_seconds)
         .fetch_one(&mut **transaction)
@@ -203,7 +230,7 @@ pub(super) async fn issue_login_session(
             aggregate_id: session_id,
             aggregate_version: 1,
             failure_code: None,
-            metadata: json!({ "authentication_method": channel.authentication_method() }),
+            metadata: json!({ "authentication_method": authentication_method }),
         },
     )
     .await?;

@@ -3,6 +3,8 @@ import importlib.util
 import base64
 from pathlib import Path
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 
 SPEC = importlib.util.spec_from_file_location("release_contracts", Path(__file__).with_name("release-honeycomb-contracts.py"))
 RELEASE = importlib.util.module_from_spec(SPEC)
@@ -45,6 +47,47 @@ class RecoveryReceipt(unittest.TestCase):
             release.upload_verified = lambda *_: self.fail("Cannot upload an incomplete pair")
             with self.assertRaisesRegex(RuntimeError, "Missing paired recovery component"):
                 release.upload_quiesced_backup()
+
+
+class QuiescedBoundary(unittest.TestCase):
+    def fixture(self, container_names=b"", running=b"false", pid=b"0"):
+        release = object.__new__(RELEASE.Release)
+        def run(command):
+            if command[0:2] == ["systemctl", "show"]:
+                return pid
+            if command[0:2] == ["docker", "ps"]:
+                return container_names
+            if command[0:2] == ["docker", "inspect"]:
+                return running
+            self.fail("Unexpected command")
+        release.run = run
+        return release
+
+    @patch.object(RELEASE.subprocess, "run", return_value=SimpleNamespace(returncode=3))
+    def test_stopped_units_and_absent_or_stopped_containers(self, _):
+        self.fixture().assert_quiesced()
+        self.fixture(b"silicon-iam-api\nsilicon-iam-scoped\nsilicon-iam-worker").assert_quiesced()
+        with self.assertRaisesRegex(RuntimeError, "still has a process"):
+            self.fixture(pid=b"123").assert_quiesced()
+        with self.assertRaisesRegex(RuntimeError, "remained running"):
+            self.fixture(b"silicon-iam-api", running=b"true").assert_quiesced()
+
+    @patch.object(RELEASE.subprocess, "run", return_value=SimpleNamespace(returncode=3))
+    def test_unavailable_docker_cannot_prove_no_writers(self, _):
+        release = self.fixture()
+        previous = release.run
+        def run(command):
+            if command[0] == "docker":
+                raise RuntimeError("Docker unavailable")
+            return previous(command)
+        release.run = run
+        with self.assertRaisesRegex(RuntimeError, "Docker unavailable"):
+            release.assert_quiesced()
+
+    @patch.object(RELEASE.subprocess, "run", return_value=SimpleNamespace(returncode=0))
+    def test_active_unit_is_rejected_even_without_a_pid(self, _):
+        with self.assertRaisesRegex(RuntimeError, "remained active"):
+            self.fixture().assert_quiesced()
 
 
 if __name__ == "__main__":

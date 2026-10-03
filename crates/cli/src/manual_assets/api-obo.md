@@ -73,6 +73,8 @@ The app may include `redirect_uri` and `state` when creating the authorization r
 
 After a confirmed decision, IAM returns `redirect_uri` with `authorization_id`, `state` and `code` for approval, or `error=access_denied` for decline. Follow only this confirmed server response. The app validates the state and request ID against its initiating session, removes the code from browser history/logs, and redeems it server-side with its own Basic credentials. The code expires after two minutes and is single-use. Status polling never reveals it. Without a callback, IAM displays the code for manual handoff.
 
+Browser integrations can use compact popup approval with `display=popup` on the returned consent URL. The callback and state remain bound to the authorization request. Complete the server-side exchange before notifying an exact app-origin opener, and keep a full-page fallback. See the popup approval guide (`iam docs client/obo`) for return destinations, cancellation and uncertain retries.
+
 ## Exchange and refresh tokens
 
 ```

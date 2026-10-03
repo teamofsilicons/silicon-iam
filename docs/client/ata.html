@@ -1,0 +1,34 @@
+<p class="lede">Use <code>client.ata()</code> when one application acts with another application's authority. ATA proof identifies the originating application and permits only the reviewed recipient endpoints. It carries no Carbon or Silicon identity and never becomes OBO authority later in a chain.</p>
+<h2>Configure endpoints and a verification</h2>
+<p>Each receiving app configures its <code>ata_endpoints</code> in Honeycomb. Give every action a stable local ID, a registered path, name, description, critical classification, metadata, warnings and explicit ATA dependencies. The public identifier is namespaced, for example <code>[briefcase:ata:files.write]</code>. Importing an OBO endpoint copies its definition; it does not transfer user consent or convert its dependencies into ATA permissions.</p>
+<p>Create and manage verification records on Honeycomb's central <strong>App to App</strong> page. Select an originating application you are authorized to manage, the allowed recipient applications and ATA endpoints. Review the expanded dependencies: adding a required downstream endpoint also adds its recipient to the reviewed application list. The immutable signing Carbon or Silicon identifies who created the record; it does not turn the proof into authority to act for that person.</p>
+<p>Verification expiry defaults to never, or can be set to at least one hour. Access-token validity defaults to 30 minutes and can be set from one minute to 24 hours. Honeycomb reveals the refresh credential once. Store it in the originating application's protected server configuration. The CLI can list your records with <code>honeycomb apps ata list</code>, or retain an explicit app argument for the app-scoped list.</p>
+<h2>Obtain and rotate access proof</h2>
+<pre><code>use silicon_iam_client::{Client, Credential, Mutation};
+
+let origin = Client::new("https://backend.iam.teamofsilicons.com")?
+    .with_credential(Credential::application("ting", "&lt;Ting app secret&gt;"));
+let exchange = Mutation::new(); // Persist this identity for an uncertain retry.
+let tokens = origin.ata().refresh(&amp;stored_refresh_token, &amp;exchange).await?;
+// Atomically save tokens.refresh_token before discarding the prior credential.
+// Send tokens.access_token only to recipients in this verification's approved graph.</code></pre>
+<p>The response includes <code>verification_id</code>, <code>token_id</code>, the reusable <code>access_token</code>, replacement <code>refresh_token</code>, <code>expires_at</code>, <code>expires_in</code> and optional <code>refresh_expires_at</code>. A verification with no expiry still issues expiring access tokens. Serialize refreshes per verification and retain the exact request and mutation key until its outcome is known. Never distribute the refresh token to receiving apps.</p>
+<h2>Verify at the receiving application</h2>
+<pre><code>let receiver = Client::new("https://backend.iam.teamofsilicons.com")?
+    .with_credential(Credential::application("waveform", "&lt;Waveform app secret&gt;"));
+let proof = receiver.ata().verify(
+    "ting", // Originating app, not the immediate forwarding app.
+    &amp;incoming_access_token,
+    "/v1/application-speech", // This handler's exact registered ATA endpoint path.
+).await?;
+if proof.verified {
+    // Enforce this handler's method, payload, resource policy and operation idempotency.
+} else {
+    // Reject the operation. Do not fall back to ordinary login or OBO.
+}</code></pre>
+<p>The receiving app authenticates with its own credentials. Select the endpoint path from the matched server handler, never from a caller's claimed authorization fields. <code>app_id</code> is the originating app throughout a declared chain. Success returns <code>{verified: true, valid_till: ...}</code>; <code>valid_till</code> is the UTC expiry as a <code>YYYYMMDDHHMMSS</code> integer. An invalid proof, unauthorized recipient or unapproved endpoint returns <code>{verified: false}</code>. Authentication, transport or server failures are errors, not permission to continue.</p>
+<p>Verification is reusable while authority remains valid. It does not authorize arbitrary resources or make an application's writes idempotent. Keep resource policy, request validation and duplicate-write protection in the receiver. Check proof before each protected operation; do not cache a successful result beyond the operation.</p>
+<h2>Keep the declared chain and testing context</h2>
+<p>For Ting → Waveform → Briefcase, the verification must explicitly include both receiving applications and the needed ATA dependency. Waveform may forward the same access proof only for that approved downstream action; Briefcase verifies it using Briefcase's own credentials and Ting as the origin. Neither receiver obtains the refresh credential, and no step may reinterpret ATA proof as a user's OBO token.</p>
+<p>Use <code>origin.ata().endpoints("waveform").await?</code> to discover endpoint definitions. Discovery alone grants no permission. Keep testing credentials, endpoint catalogs, verification records and requests in the same testing environment and cleaning generation. Never retry a failed testing lookup against production.</p>
+<p>Revocation, expiry or a change to required authority can stop a previously valid verification. Preserve the pending operation and surface a clear configuration error; require an authorized manager to review the verification instead of silently adding recipients or endpoints. See the <a href="/api/applications/#app-to-app-verification-ata">HTTP contract</a> and <a href="/client/obo/">OBO guide</a> when the action must instead represent a selected user account and organization.</p>
