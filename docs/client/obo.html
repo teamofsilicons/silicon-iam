@@ -33,13 +33,19 @@ or show an application completion page with a clear return link when it was omit
 <p>For a popup, send only a completion status and one-use attempt identifier to the opener's
 exact application origin, then close the window. The opener verifies the origin, popup window
 source and identifier before refreshing its authenticated state or navigating to its bound
-return URL. Never pass OBO codes or tokens in a message. Cancellation, denial and a blocked
+return URL. This server-callback pattern sends no code. Never pass OBO access/refresh tokens or direct IAM credentials in a message. Cancellation, denial and a blocked
 popup need explicit recovery; reopening the same pending review must not silently create a
 new grant. The application can offer a full-page consent link as a fallback. Keep the same
 exchange mutation key and protected callback state after an uncertain response; retries must
 recover that exchange instead of treating the code as a fresh credential. Status polling can
 confirm a request's state but cannot recover its code. A request created without a bound
 callback keeps its manual handoff; adding a callback to the browser URL cannot change it.</p>
+<p>For a single-page callback, a one-use OBO code may be handed to the exact app-origin opener
+together with its bound state, authorization ID and attempt identifier. Validate all of them,
+including the popup window source, before submitting the code to the authenticated same-origin
+backend. The backend must recheck the pending request and current account/organization context,
+exchange the code and save credentials before the UI reports approval complete. Clear the
+callback URL; keep access/refresh credentials and app secrets out of window messages.</p>
 <h2>Redeem the approved code</h2>
 <pre><code>let exchange = Mutation::new();
 let issued = application.obo().exchange_code(
