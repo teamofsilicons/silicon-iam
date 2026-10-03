@@ -25,8 +25,8 @@ organization before an application login. An absent phone is returned as null.</
 <h2>Google and Apple</h2>
 <p><code>GET /api/v1/signup/social/providers</code> reports which providers are enabled.
 The official IAM website and CLI use <code>POST /api/v1/login/social/{provider}/start</code>
-for provider sign-in and signup,
-and an idempotency key. Open its <code>authorization_url</code>; keep the returned
+for provider sign-in and signup. Send an idempotency key with the request.
+Open its <code>authorization_url</code>; keep the returned
 <code>request_id</code> and secret <code>poll_token</code> in memory. Poll
 <code>POST /api/v1/login/social/{provider}/status</code> with those two values.</p>
 <p>A provider-verified email belonging to an active Carbon returns
