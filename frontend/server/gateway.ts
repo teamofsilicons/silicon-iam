@@ -35,6 +35,9 @@ const isPublic = (path: string, method: string) =>
       /^\/api\/v1\/signup\/social\/(?:google|apple)\/(?:start|status)$/.test(
         path,
       ) ||
+      /^\/api\/v1\/login\/social\/(?:google|apple)\/(?:start|status|complete)$/.test(
+        path,
+      ) ||
       /^\/api\/v1\/signup\/sessions(?:\/[0-9a-f-]+\/(?:email|phone)(?:\/verify)?|\/[0-9a-f-]+\/complete)?$/.test(
         path,
       ) ||
@@ -814,6 +817,7 @@ export async function gateway(
     if (
       response.ok &&
       (/^\/api\/v1\/login\/challenges\/[0-9a-f-]+\/verify$/.test(path) ||
+        /^\/api\/v1\/login\/social\/(?:google|apple)\/complete$/.test(path) ||
         /^\/api\/v1\/signup\/sessions\/[0-9a-f-]+\/complete$/.test(path) ||
         path === "/api/v1/silicon-auth/token")
     ) {

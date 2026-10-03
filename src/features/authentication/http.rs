@@ -504,7 +504,7 @@ fn empty_idempotent_response(status: u16, replayed: bool) -> Result<Response, Ap
     Ok(response)
 }
 
-fn login_success_response(
+pub(super) fn login_success_response(
     state: &ApiState,
     status: u16,
     body: TokenResponse,

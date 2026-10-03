@@ -34,11 +34,21 @@ use sha2::{Digest as _, Sha256};
 use sqlx::FromRow;
 use time::OffsetDateTime;
 
+#[path = "social_login.rs"]
+mod login;
+
 pub(super) fn router() -> Router<ApiState> {
     Router::new()
         .route("/api/v1/signup/social/providers", get(providers))
         .route("/api/v1/signup/social/{provider}/start", post(start))
         .route("/api/v1/signup/social/{provider}/status", post(status))
+        .route("/api/v1/login/social/{provider}/start", post(login_start))
+        .route("/api/v1/login/social/{provider}/status", post(login_status))
+        .route(
+            "/api/v1/login/social/{provider}/complete",
+            post(login::complete),
+        )
+        .route("/api/v1/login/social/{provider}/link", post(login::link))
         .route(
             "/api/v1/signup/social/{provider}/callback",
             get(callback_get).post(callback_post),
@@ -65,8 +75,8 @@ async fn providers(State(state): State<ApiState>) -> Result<Response, AppError> 
     http::idempotent_no_store_json(Outcome::fresh(
         200,
         json!({"providers":[
- {"id":"google","enabled":configured(&state,"google").is_ok()},
- {"id":"apple","enabled":configured(&state,"apple").is_ok()}]}),
+ {"id":"google","enabled":configured(&state,"google").is_ok(),"login_enabled":configured(&state,"google").is_ok()},
+ {"id":"apple","enabled":configured(&state,"apple").is_ok(),"login_enabled":configured(&state,"apple").is_ok()}]}),
     ))
 }
 fn callback_uri(state: &ApiState, provider: &str) -> String {
@@ -102,16 +112,44 @@ async fn start(
     Path(provider): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    start_with_intent(state, provider, headers, "signup").await
+}
+async fn login_start(
+    State(state): State<ApiState>,
+    Path(provider): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    start_with_intent(state, provider, headers, "login").await
+}
+#[allow(
+    clippy::too_many_lines,
+    reason = "provider proof and encrypted initiating authority commit atomically"
+)]
+async fn start_with_intent(
+    state: ApiState,
+    provider: String,
+    headers: HeaderMap,
+    intent: &'static str,
+) -> Result<Response, AppError> {
     let config = configured(&state, &provider)?;
     let key = IdempotencyKey::from_headers(&headers)?;
     let mut tx = serializable(state.db(), "social_signup_start").await?;
-    let digest = idempotency::digest_parts(b"social-signup-start", &[provider.as_bytes()]);
+    let digest = if intent == "signup" {
+        idempotency::digest_parts(b"social-signup-start", &[provider.as_bytes()])
+    } else {
+        idempotency::digest_parts(b"social-login-start", &[provider.as_bytes()])
+    };
+    let route = if intent == "signup" {
+        "POST /api/v1/signup/social/{provider}/start"
+    } else {
+        "POST /api/v1/login/social/{provider}/start"
+    };
     let lease = match idempotency::begin::<StartReply>(
         &mut tx,
         &state.crypto,
         &key,
         b"anonymous-social-signup",
-        "POST /api/v1/signup/social/{provider}/start",
+        route,
         digest,
         true,
     )
@@ -164,8 +202,8 @@ async fn start(
         .crypto
         .digest_secret(DigestPurpose::SocialSignupPoll, &poll)
         .map_err(|_| internal("social_poll_digest"))?;
-    let expires_at=sqlx::query_scalar::<_,OffsetDateTime>("INSERT INTO iam.social_signup_requests(id,provider,state_digest,state_key_version,poll_digest,poll_key_version,proof_ciphertext,proof_nonce,proof_key_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING expires_at")
- .bind(request_id).bind(&provider).bind(state_digest.as_bytes().as_slice()).bind(state_digest.key_version()).bind(poll_digest.as_bytes().as_slice()).bind(poll_digest.key_version()).bind(&encrypted.ciphertext).bind(encrypted.nonce.as_slice()).bind(encrypted.key_version).fetch_one(&mut *tx).await.map_err(|_|internal("social_signup_insert"))?;
+    let expires_at=sqlx::query_scalar::<_,OffsetDateTime>("INSERT INTO iam.social_signup_requests(id,provider,state_digest,state_key_version,poll_digest,poll_key_version,proof_ciphertext,proof_nonce,proof_key_version,intent) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING expires_at")
+ .bind(request_id).bind(&provider).bind(state_digest.as_bytes().as_slice()).bind(state_digest.key_version()).bind(poll_digest.as_bytes().as_slice()).bind(poll_digest.key_version()).bind(&encrypted.ciphertext).bind(encrypted.nonce.as_slice()).bind(encrypted.key_version).bind(intent).fetch_one(&mut *tx).await.map_err(|_|internal("social_signup_insert"))?;
     let mut url = url::Url::parse(if provider == "google" {
         "https://accounts.google.com/o/oauth2/v2/auth"
     } else {
@@ -212,7 +250,7 @@ async fn start(
         .map_err(|_| internal("social_signup_commit"))?;
     http::idempotent_no_store_json(Outcome::fresh(201, reply))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StatusInput {
     request_id: Id,
@@ -233,6 +271,21 @@ async fn status(
     State(state): State<ApiState>,
     Path(provider): Path<String>,
     Json(input): Json<StatusInput>,
+) -> Result<Response, AppError> {
+    status_with_intent(state, provider, input, "signup").await
+}
+async fn login_status(
+    State(state): State<ApiState>,
+    Path(provider): Path<String>,
+    Json(input): Json<StatusInput>,
+) -> Result<Response, AppError> {
+    status_with_intent(state, provider, input, "login").await
+}
+async fn status_with_intent(
+    state: ApiState,
+    provider: String,
+    input: StatusInput,
+    intent: &'static str,
 ) -> Result<Response, AppError> {
     configured(&state, &provider)?;
     if input.poll_token.len() > 256 {
@@ -256,8 +309,8 @@ async fn status(
         .map_err(|_| internal("social_poll_begin"))?;
     let mut result = None;
     for digest in digests {
-        result=sqlx::query_as::<_,PollRow>("SELECT status,expires_at>transaction_timestamp() AS active,signup_session_id,candidate_id,email_ciphertext,email_nonce,email_key_version,display_name FROM iam.social_signup_requests WHERE id=$1 AND provider=$2 AND poll_key_version=$3 AND poll_digest=$4")
- .bind(input.request_id).bind(&provider).bind(digest.key_version()).bind(digest.as_bytes().as_slice()).fetch_optional(&mut *tx).await.map_err(|_|internal("social_poll_read"))?;
+        result=sqlx::query_as::<_,PollRow>("SELECT status,expires_at>transaction_timestamp() AS active,signup_session_id,candidate_id,email_ciphertext,email_nonce,email_key_version,display_name FROM iam.social_signup_requests WHERE id=$1 AND provider=$2 AND poll_key_version=$3 AND poll_digest=$4 AND intent=$5")
+ .bind(input.request_id).bind(&provider).bind(digest.key_version()).bind(digest.as_bytes().as_slice()).bind(intent).fetch_optional(&mut *tx).await.map_err(|_|internal("social_poll_read"))?;
         if result.is_some() {
             break;
         }
@@ -267,7 +320,12 @@ async fn status(
         .map_err(|_| internal("social_poll_commit"))?;
     let row = result.ok_or(AppError::Unauthenticated)?;
     let mut reply = json!({"status":if !row.active{"expired"}else if row.status=="processing"{"pending"}else{&row.status}});
-    if row.active && matches!(row.status.as_str(), "verified" | "already_registered") {
+    if row.active
+        && matches!(
+            row.status.as_str(),
+            "verified" | "already_registered" | "login_ready" | "link_required"
+        )
+    {
         if let (Some(id), Some(ciphertext), Some(nonce), Some(version)) = (
             row.candidate_id,
             row.email_ciphertext,
@@ -314,6 +372,7 @@ async fn callback_post(
 #[derive(FromRow)]
 struct Claimed {
     id: Id,
+    intent: String,
     proof_ciphertext: Vec<u8>,
     proof_nonce: Vec<u8>,
     proof_key_version: i16,
@@ -334,7 +393,7 @@ async fn claim(state: &ApiState, provider: &str, input: &Callback) -> Result<Cla
         .map_err(|_| internal("social_state_digest"))?;
     let mut result = None;
     for digest in state_digests {
-        result=sqlx::query_as::<_,Claimed>("UPDATE iam.social_signup_requests SET status='processing' WHERE provider=$1 AND state_key_version=$2 AND state_digest=$3 AND status='pending' AND expires_at>transaction_timestamp() RETURNING id,proof_ciphertext,proof_nonce,proof_key_version")
+        result=sqlx::query_as::<_,Claimed>("UPDATE iam.social_signup_requests SET status='processing' WHERE provider=$1 AND state_key_version=$2 AND state_digest=$3 AND status='pending' AND expires_at>transaction_timestamp() RETURNING id,intent,proof_ciphertext,proof_nonce,proof_key_version")
  .bind(provider).bind(digest.key_version()).bind(digest.as_bytes().as_slice()).fetch_optional(&mut *tx).await.map_err(|_|internal("social_callback_claim"))?;
         if result.is_some() {
             break;
@@ -355,7 +414,7 @@ async fn callback(state: ApiState, provider: String, input: Callback) -> Respons
  let proof_bytes=state.crypto.decrypt(EncryptionContext::global(ProtectedField::ProviderCredential,request.id),&EncryptedValue{key_version:request.proof_key_version,nonce:request.proof_nonce.try_into().map_err(|_|internal("social_proof_shape"))?,ciphertext:request.proof_ciphertext}).map_err(|_|internal("social_proof_decrypt"))?;
  let proof:Proof=serde_json::from_slice(&proof_bytes).map_err(|_|internal("social_proof_decode"))?;
  let identity=social_provider::exchange(&provider,&config.client_id,&config.client_secret,&callback_uri(&state,&provider),code,&proof.nonce,&proof.pkce).await?;
- finish(&state,&provider,request.id,identity).await
+ finish_with_intent(&state,&provider,request.id,&request.intent,identity).await
  }.await;
  if completion.is_err(){
  let mut tx=begin_scoped(state.db()).await.map_err(|_|internal("social_failure_begin"))?;
@@ -370,7 +429,7 @@ async fn callback(state: ApiState, provider: String, input: Callback) -> Respons
         )
     } else {
         (
-            "Signup could not continue",
+            "Verification could not continue",
             "Return to IAM and try again. This link may have expired or already been used.",
         )
     };
@@ -394,10 +453,11 @@ async fn callback(state: ApiState, provider: String, input: Callback) -> Respons
     );
     response
 }
-async fn finish(
+async fn finish_with_intent(
     state: &ApiState,
     provider: &str,
     request_id: Id,
+    intent: &str,
     identity: social_provider::VerifiedIdentity,
 ) -> Result<(), AppError> {
     let email = validation::email(identity.email)?;
@@ -433,7 +493,12 @@ async fn finish(
         .await
         .map_err(|_| internal("social_subject_lookup"))?;
     }
-    let session = if exists {
+    let login_target = if intent == "login" {
+        login::resolve_target(&mut tx, state, provider, &subject_json, &email).await?
+    } else {
+        None
+    };
+    let session = if exists || login_target.is_some() {
         None
     } else {
         let session = Id::now_v7();
@@ -453,8 +518,22 @@ async fn finish(
                 .collect::<String>()
         })
         .filter(|name| !name.trim().is_empty());
-    sqlx::query("UPDATE iam.social_signup_requests SET status=$2,signup_session_id=$3,candidate_id=$4,email_ciphertext=$5,email_nonce=$6,email_key_version=$7,display_name=$8,subject_digests=$9,proof_ciphertext=NULL,proof_nonce=NULL,proof_key_version=NULL WHERE id=$1")
- .bind(request_id).bind(if exists{"already_registered"}else{"verified"}).bind(session).bind(candidate_id).bind(&encrypted.ciphertext).bind(encrypted.nonce.as_slice()).bind(encrypted.key_version).bind(display_name).bind(subject_json).execute(&mut *tx).await.map_err(|_|internal("social_finish_write"))?;
+    let status = login_target.as_ref().map_or(
+        if exists {
+            "already_registered"
+        } else {
+            "verified"
+        },
+        |target| {
+            if target.linked {
+                "login_ready"
+            } else {
+                "link_required"
+            }
+        },
+    );
+    sqlx::query("UPDATE iam.social_signup_requests SET status=$2,signup_session_id=$3,candidate_id=$4,email_ciphertext=$5,email_nonce=$6,email_key_version=$7,display_name=$8,subject_digests=$9,login_principal_id=$10,login_auth_epoch=$11,proof_ciphertext=NULL,proof_nonce=NULL,proof_key_version=NULL WHERE id=$1")
+ .bind(request_id).bind(status).bind(session).bind(candidate_id).bind(&encrypted.ciphertext).bind(encrypted.nonce.as_slice()).bind(encrypted.key_version).bind(display_name).bind(subject_json).bind(login_target.as_ref().map(|target| target.principal_id.to_string())).bind(login_target.as_ref().map(|target| target.auth_epoch)).execute(&mut *tx).await.map_err(|_|internal("social_finish_write"))?;
     tx.commit()
         .await
         .map_err(|_| internal("social_finish_commit"))?;
@@ -511,10 +590,11 @@ mod tests {
             claim(state, "google", &callback).await.is_err(),
             "callback is single use"
         );
-        finish(
+        finish_with_intent(
             state,
             "google",
             request.id,
+            &request.intent,
             social_provider::VerifiedIdentity {
                 subject: subject.into(),
                 email: email.into(),
@@ -539,6 +619,10 @@ mod tests {
         .await
     }
     #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "restricted-role signup, login, linking, replay and revocation share one bounded fixture"
+    )]
     #[ignore = "requires isolated local PostgreSQL and synthetic IAM settings"]
     async fn social_signup_state_and_subject_binding() -> anyhow::Result<()> {
         let database = crate::test_database::TestDatabase::start().await?;
@@ -626,6 +710,279 @@ mod tests {
         ensure!(
             poll(&state, &third).await?["status"] == "already_registered",
             "immutable provider subject must not spawn another account after email changes"
+        );
+        // Existing subjects log in without trusting a newly presented email as account authority.
+        let input = |start: &Value| -> anyhow::Result<StatusInput> {
+            Ok(StatusInput {
+                request_id: Id::from_str(start["request_id"].as_str().context("request")?)?,
+                poll_token: start["poll_token"].as_str().context("poll")?.to_owned(),
+            })
+        };
+        let known = body(
+            login_start(
+                State(state.clone()),
+                Path("google".into()),
+                headers("social-known-login")?,
+            )
+            .await?,
+        )
+        .await?;
+        authenticate(
+            &state,
+            &known,
+            "subject-one",
+            "new-provider-email@example.test",
+        )
+        .await?;
+        let ready = body(
+            login_status(
+                State(state.clone()),
+                Path("google".into()),
+                Json(input(&known)?),
+            )
+            .await?,
+        )
+        .await?;
+        ensure!(ready["status"] == "login_ready");
+        ensure!(
+            status(
+                State(state.clone()),
+                Path("google".into()),
+                Json(input(&known)?)
+            )
+            .await
+            .is_err(),
+            "signup polling cannot retrieve a login proof"
+        );
+        let first_login = body(
+            login::complete(
+                State(state.clone()),
+                Path("google".into()),
+                headers("social-login-completion")?,
+                Json(input(&known)?),
+            )
+            .await?,
+        )
+        .await?;
+        let replay = body(
+            login::complete(
+                State(state.clone()),
+                Path("google".into()),
+                headers("social-login-completion")?,
+                Json(input(&known)?),
+            )
+            .await?,
+        )
+        .await?;
+        ensure!(
+            first_login == replay,
+            "uncertain completion replays the exact token pair"
+        );
+        ensure!(
+            login::complete(
+                State(state.clone()),
+                Path("google".into()),
+                headers("social-login-another-key")?,
+                Json(input(&known)?)
+            )
+            .await
+            .is_err(),
+            "one proof cannot create another session"
+        );
+        let method: String = sqlx::query_scalar(
+            "SELECT authentication_method FROM iam.authentication_sessions WHERE id=$1",
+        )
+        .bind(Id::from_str(
+            first_login["session_id"].as_str().context("session")?,
+        )?)
+        .fetch_one(&database.pool)
+        .await?;
+        ensure!(
+            method == "google_oidc",
+            "provider login is never reported as an OTP"
+        );
+        let mut wrong_proof = input(&known)?;
+        wrong_proof.poll_token.push('x');
+        ensure!(
+            login::complete(
+                State(state.clone()),
+                Path("google".into()),
+                headers("social-wrong-poll-denied")?,
+                Json(wrong_proof),
+            )
+            .await
+            .is_err(),
+            "provider state alone cannot redeem an initiating client's proof"
+        );
+        testing_plane::scope(
+            testing_plane::SelectedEnvironment {
+                id: Id::now_v7(),
+                organization_id: Id::now_v7(),
+            },
+            async {
+                ensure!(matches!(
+                    login_start(
+                        State(state.clone()),
+                        Path("google".into()),
+                        headers("social-test-plane")?
+                    )
+                    .await,
+                    Err(AppError::ServiceUnavailable)
+                ));
+                ensure!(matches!(
+                    login::complete(
+                        State(state.clone()),
+                        Path("google".into()),
+                        headers("social-test-proof")?,
+                        Json(input(&known)?)
+                    )
+                    .await,
+                    Err(AppError::ServiceUnavailable)
+                ));
+                anyhow::Ok(())
+            },
+        )
+        .await?;
+        let unbound = body(
+            login_start(
+                State(state.clone()),
+                Path("google".into()),
+                headers("social-new-subject-link")?,
+            )
+            .await?,
+        )
+        .await?;
+        authenticate(&state, &unbound, "subject-link", "ada-social@example.test").await?;
+        ensure!(
+            body(
+                login_status(
+                    State(state.clone()),
+                    Path("google".into()),
+                    Json(input(&unbound)?)
+                )
+                .await?
+            )
+            .await?["status"]
+                == "link_required"
+        );
+        ensure!(
+            login::complete(
+                State(state.clone()),
+                Path("google".into()),
+                headers("social-email-only-denied")?,
+                Json(input(&unbound)?)
+            )
+            .await
+            .is_err(),
+            "verified email alone cannot link or log in"
+        );
+        let old_access = crate::infrastructure::postgres::tokens::authenticate(
+            state.db(),
+            &state.crypto,
+            &SecretString::from(
+                completed_json["access_token"]
+                    .as_str()
+                    .context("access")?
+                    .to_owned(),
+            ),
+        )
+        .await?
+        .context("old access")?;
+        ensure!(
+            login::link(
+                State(state.clone()),
+                crate::api::authentication::Authenticated(old_access.clone()),
+                Path("google".into()),
+                headers("social-stale-session-denied")?,
+                Json(input(&unbound)?)
+            )
+            .await
+            .is_err(),
+            "link requires a fresh independent login"
+        );
+        let mut tx = serializable(state.db(), "social-test-fresh-login").await?;
+        let fresh = super::super::tokens::issue_login_session(
+            &mut tx,
+            &state.crypto,
+            &state.settings.security,
+            old_access.subject.id,
+            ContactChannel::Email,
+        )
+        .await?;
+        tx.commit().await?;
+        let access = crate::infrastructure::postgres::tokens::authenticate(
+            state.db(),
+            &state.crypto,
+            &SecretString::from(fresh.access_token),
+        )
+        .await?
+        .context("fresh access")?;
+        let linked = body(
+            login::link(
+                State(state.clone()),
+                crate::api::authentication::Authenticated(access.clone()),
+                Path("google".into()),
+                headers("social-fresh-link")?,
+                Json(input(&unbound)?),
+            )
+            .await?,
+        )
+        .await?;
+        ensure!(linked["linked"] == true);
+        let linked_replay = body(
+            login::link(
+                State(state.clone()),
+                crate::api::authentication::Authenticated(access),
+                Path("google".into()),
+                headers("social-fresh-link")?,
+                Json(input(&unbound)?),
+            )
+            .await?,
+        )
+        .await?;
+        ensure!(linked == linked_replay);
+        let audit_count: i64 = sqlx::query_scalar("SELECT count(*) FROM iam.authentication_events WHERE event_type='social_identity.linked' AND subject_principal_id=$1")
+            .bind(old_access.subject.id).fetch_one(&database.pool).await?;
+        ensure!(
+            audit_count == 1,
+            "linking is audited exactly once across replay"
+        );
+        let again = body(
+            login_start(
+                State(state.clone()),
+                Path("google".into()),
+                headers("social-linked-next-login")?,
+            )
+            .await?,
+        )
+        .await?;
+        authenticate(&state, &again, "subject-link", "ada-social@example.test").await?;
+        ensure!(
+            body(
+                login_status(
+                    State(state.clone()),
+                    Path("google".into()),
+                    Json(input(&again)?)
+                )
+                .await?
+            )
+            .await?["status"]
+                == "login_ready"
+        );
+        sqlx::query("UPDATE iam.principals SET auth_epoch=auth_epoch+1 WHERE id=$1")
+            .bind(old_access.subject.id)
+            .execute(&database.pool)
+            .await?;
+        ensure!(
+            login::complete(
+                State(state.clone()),
+                Path("google".into()),
+                headers("social-reset-denied")?,
+                Json(input(&again)?)
+            )
+            .await
+            .is_err(),
+            "security reset invalidates pending provider login proof"
         );
         sqlx::query("UPDATE iam.social_signup_requests SET expires_at=transaction_timestamp()-interval '1 second',created_at=transaction_timestamp()-interval '11 minutes' WHERE id=$1").bind(Id::from_str(first["request_id"].as_str().context("first id")?)?).execute(&database.pool).await?;
         ensure!(poll(&state, &first).await?["status"] == "expired");

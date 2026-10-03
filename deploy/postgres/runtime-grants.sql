@@ -750,6 +750,8 @@ DECLARE
         'lock_sso_membership_activation_state',
         'locked_application_approved_scopes',
         'social_identity_registered',
+        'social_login_identity',
+        'bind_social_login_identity',
         'non_deleted_carbon_contact_exists',
         'organization_handle_is_available',
         'production_application_id_is_reserved',
