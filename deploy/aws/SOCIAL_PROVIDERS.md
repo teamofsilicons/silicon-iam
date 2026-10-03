@@ -19,18 +19,20 @@ The callback path intentionally retains `signup/social` for both signup and logi
 
 Apple private-relay delivery must allow IAM's actual verified mail sender. Current production sender is `iam@teamofsilicons.com`; register the appropriate sender/domain in Apple's relay configuration and preserve the verified Postmark sender configuration. Do not infer delivery success from provider login: verify relay email delivery separately.
 
-## Account binding and recovery
+## Email authentication and recovery
 
-IAM verifies provider token signature, issuer, audience, nonce and verified email before accepting the callback. Existing provider subjects authenticate only their bound active Carbon, even if a provider email changes. Suspended bindings cannot move to another account by matching an email. First-time provider linking to an existing IAM email requires a new, independent OTP session for that exact Carbon created after the provider request. Successful linking is audited and consumes the provider proof; the already-established OTP session continues the login.
+The approved email-authentication contract is in `docs/PROVIDER_EMAIL_AUTHENTICATION.md`. Google and Apple verify the email used for Carbon authentication; users do not link a provider account. IAM verifies the provider signature, issuer, audience, nonce and verified-email claim before resolving that email to its active Carbon. An existing email signs in without an additional IAM OTP. Historical provider-subject associations grant no login authority.
 
-A new verified email uses the existing signup session, optional phone verification and profile steps. A provider login never silently creates an account. Request proofs expire after ten minutes, remain private to the initiating client and are consumed once. Completion and linking support stable idempotent retries after uncertain responses. Security-epoch changes invalidate pending completion. Social providers remain unavailable in isolated testing environments; use testing identities for app integration tests.
+A new provider-verified email uses the ordinary signup session, optional phone verification and profile steps, with no email OTP. Signup persists a normal verified email contact, so email-code login remains available later. A provider login never silently creates an account. Completion must revalidate that the email still belongs to the same active Carbon and its security epoch is unchanged. Request proofs expire after ten minutes, remain private to the initiating client, and are consumed once with stable idempotent retries after uncertain responses. Social providers remain unavailable in isolated testing environments; use testing identities for app integration tests.
+
+This product policy accepts the provider's verified-email assertion. It does not claim a fresh mailbox challenge occurred: Google documents that a verified third-party email may reflect an earlier verification. Apple's Hide My Email supplies a private-relay address; IAM authenticates that address and does not infer the undisclosed real email. See Google's [ID-token verification guidance](https://developers.google.com/identity/gsi/web/guides/verify-google-id-token).
 
 ## Release verification
 
 1. Pass full CI, restricted-role PostgreSQL tests, frontend checks and the exact candidate image migration rehearsal on isolated copies of both live databases.
 2. Preserve encrypted, versioned, checksum-verified paired quiesced backups and runtime configuration before applying the additive migrations and runtime grants.
 3. Deploy the tested backend before the frontend, then merge only the intended provider fields into the protected runtime configuration. Restart the relevant services through the reviewed operator and verify exact source, health and provider discovery.
-4. Verify a real provider login for an already-linked account and a fresh OTP first-link, plus new-account continuation where a dedicated test account is available. Synthetic callback fixtures prove UI/retry behavior, not real Google/Apple authorization.
+4. Verify an email-created Carbon can use provider login without an extra IAM OTP, a provider-created Carbon can use ordinary email-code login, and a new provider email can continue verified signup. Synthetic callback fixtures prove UI/retry behavior, not real Google/Apple authorization.
 5. Check user cancellation, expired proof, popup blocked/closed fallback, wrong OTP, idempotent retry and mail delivery. Keep an unconfigured provider visibly unavailable.
 
 Do not change provider issuer/subject associations manually in SQL, bypass OTP linking, or advertise provider availability before its configuration and live acceptance checks are complete.
