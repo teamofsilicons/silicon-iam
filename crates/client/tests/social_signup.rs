@@ -68,6 +68,42 @@ fn service(
     (client, receive, task)
 }
 
+#[test]
+fn existing_signup_provider_struct_literals_remain_source_compatible() {
+    let provider = silicon_iam_client::api::signup::SocialProvider {
+        id: "google".to_owned(),
+        enabled: true,
+    };
+    assert_eq!(
+        serde_json::to_value(provider).expect("provider"),
+        json!({"id":"google","enabled":true})
+    );
+}
+
+#[cfg(feature = "cli-session")]
+#[tokio::test]
+async fn login_discovery_has_an_additive_shape_and_old_servers_disable_login() {
+    let (client, capture, server) = service(
+        json!({"providers":[{"id":"google","enabled":true,"login_enabled":true},{"id":"apple","enabled":true}]}),
+    );
+    let providers = client
+        .auth()
+        .social_providers()
+        .await
+        .expect("login discovery");
+    assert!(providers.providers[0].login_enabled);
+    assert!(providers.providers[1].enabled);
+    assert!(!providers.providers[1].login_enabled);
+    assert!(
+        capture
+            .recv()
+            .expect("discovery request")
+            .0
+            .starts_with("GET /api/v1/signup/social/providers HTTP/1.1")
+    );
+    server.join().expect("discovery completed");
+}
+
 #[tokio::test]
 async fn social_start_and_status_use_fixed_signup_routes_and_redact_poll_tokens() {
     let id = Uuid::new_v4();
@@ -116,7 +152,6 @@ async fn provider_discovery_reports_configuration_and_unknown_providers_fail_bef
     let providers = client.signup().social_providers().await.expect("catalog");
     assert_eq!(providers.providers.len(), 2);
     assert!(!providers.providers[1].enabled);
-    assert!(!providers.providers[1].login_enabled);
     assert!(
         capture
             .recv()

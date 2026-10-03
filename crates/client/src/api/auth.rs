@@ -12,7 +12,38 @@ use crate::{Client, Mutation, Result, models};
 /// behind the `cli-session` feature.
 pub struct Auth<'a>(pub(super) &'a Client);
 
+/// Provider availability for direct IAM login, separate from signup discovery.
+#[cfg(feature = "cli-session")]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct SocialLoginProviders {
+    /// Providers and their actual deployment capabilities.
+    pub providers: Vec<SocialLoginProvider>,
+}
+
+/// One external provider's enrollment and login capabilities.
+#[cfg(feature = "cli-session")]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct SocialLoginProvider {
+    /// Stable provider ID: google or apple.
+    pub id: String,
+    /// Whether enrollment is configured.
+    pub enabled: bool,
+    /// Whether sign-in is configured; older servers are treated as unavailable.
+    #[serde(default)]
+    pub login_enabled: bool,
+}
+
 impl Auth<'_> {
+    #[cfg(feature = "cli-session")]
+    /// Lists real deployment availability for Google and Apple direct IAM login.
+    ///
+    /// This additive result keeps signup's original provider type unchanged.
+    /// # Errors
+    /// Returns an error when discovery is unavailable or malformed.
+    pub async fn social_providers(&self) -> Result<SocialLoginProviders> {
+        self.0.get(&["signup", "social", "providers"]).await
+    }
+
     #[cfg(feature = "cli-session")]
     /// Starts Google or Apple authentication for a direct IAM session.
     ///
